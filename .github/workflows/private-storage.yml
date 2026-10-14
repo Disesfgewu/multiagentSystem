@@ -1,0 +1,42 @@
+name: Private storage
+
+on:
+  pull_request:
+    paths:
+      - src/storage/**
+      - test/storage/**
+      - scripts/p0/check-private-storage.js
+      - .github/workflows/private-storage.yml
+  push:
+    branches: [main]
+    paths:
+      - src/storage/**
+      - test/storage/**
+      - scripts/p0/check-private-storage.js
+      - .github/workflows/private-storage.yml
+
+permissions:
+  contents: read
+
+jobs:
+  storage:
+    name: storage (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        # 20 is the oldest runtime we target (VS Code's extension host); 24 is current.
+        node: ['20', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      # Node 20 cannot expand globs itself, so the shell does it (bash on Windows too).
+      - run: node --test test/storage/*.test.js
+        shell: bash
+      - run: node scripts/p0/check-private-storage.js --repo .
