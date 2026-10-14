@@ -161,3 +161,152 @@ test('retries are spaced out: the budget is time to let the other process finish
   // Four waits of 25 ms. Only a lower bound is checked, so a slow machine cannot fail this.
   assert.ok(elapsedMs >= 80, `waited ${elapsedMs.toFixed(1)} ms for four 25 ms retries`);
 });
+
+// ---- a failure after the lock file was created -------------------------------
+
+// Makes writing the content of the lock file at `file` fail with `code` while `fails(writes)` holds
+// (writes count from 1). Writes to any other descriptor are never touched. Returns the write count.
+function failWrite(t, file, code, fails, beforeThrow) {
+  const open = fs.openSync;
+  const write = fs.writeSync;
+  const lockDescriptors = new Set();
+  let writes = 0;
+  t.mock.method(fs, 'openSync', function patched(...args) {
+    const descriptor = open.apply(this, args);
+    if (args[0] === file) lockDescriptors.add(descriptor);
+    return descriptor;
+  });
+  t.mock.method(fs, 'writeSync', function patched(descriptor, ...rest) {
+    if (lockDescriptors.has(descriptor)) {
+      lockDescriptors.delete(descriptor);
+      writes += 1;
+      if (fails(writes)) {
+        if (beforeThrow) beforeThrow();
+        throw Object.assign(new Error(`synthetic ${code}`), { code });
+      }
+    }
+    return write.call(this, descriptor, ...rest);
+  });
+  return () => writes;
+}
+
+test('a failed write of the lock content leaves no empty lock behind, and the next attempt can take the lock', (t) => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const file = lockFile(t);
+    const writes = failWrite(t, file, 'ENOSPC', () => true);
+    const closed = [];
+    const close = fs.closeSync;
+    t.mock.method(fs, 'closeSync', function patched(descriptor) { closed.push(descriptor); return close.call(this, descriptor); });
+    const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform }));
+    assert.ok(outcome.error instanceof LockIoError, platform);
+    assert.equal(outcome.error.code, 'ENOSPC');
+    assert.equal(writes(), 1, `${platform}: not a transient code, so no retry`);
+    assert.equal(closed.length, 1, `${platform}: the descriptor was released`);
+    assert.equal(fs.existsSync(file), false, `${platform}: no empty lock file was left`);
+    t.mock.restoreAll();
+    const next = new DirectoryLock(file, { ...quick, platform }).acquire();
+    assert.equal(next.ok, true, `${platform}: the next attempt is not blocked`);
+  }
+});
+
+test('on Windows a transient failure while writing is waited out: the half-made lock is removed, then the lock is taken', (t) => {
+  const file = lockFile(t);
+  const writes = failWrite(t, file, 'EPERM', (n) => n === 1);
+  const lock = new DirectoryLock(file, { ...quick, platform: 'win32' });
+  const got = lock.acquire();
+  assert.equal(got.ok, true, 'not reported as a lock held by someone else');
+  assert.equal(writes(), 2);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, got.token, 'the lock on disk is complete and ours');
+  assert.equal(lock.inspect().detail, 'owner-alive');
+});
+
+test('a write that keeps failing ends in an I/O error after the budget, with no lock file left over', (t) => {
+  const file = lockFile(t);
+  const writes = failWrite(t, file, 'EPERM', () => true);
+  const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform: 'win32' }));
+  assert.ok(outcome.error instanceof LockIoError);
+  assert.equal(outcome.error.code, 'EPERM');
+  assert.equal(writes(), quick.retries + 1);
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('a file that cannot be closed is discarded too, and the descriptor is released', (t) => {
+  const file = lockFile(t);
+  const open = fs.openSync;
+  const close = fs.closeSync;
+  const lockDescriptors = new Set();
+  let closes = 0;
+  t.mock.method(fs, 'openSync', function patched(...args) {
+    const descriptor = open.apply(this, args);
+    if (args[0] === file) lockDescriptors.add(descriptor);
+    return descriptor;
+  });
+  t.mock.method(fs, 'closeSync', function patched(descriptor) {
+    const mine = lockDescriptors.has(descriptor);
+    close.call(this, descriptor);
+    if (mine) {
+      closes += 1;
+      if (closes === 1) throw Object.assign(new Error('synthetic EIO'), { code: 'EIO' });
+    }
+  });
+  const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform: 'linux' }));
+  assert.ok(outcome.error instanceof LockIoError);
+  assert.equal(outcome.error.code, 'EIO');
+  assert.equal(fs.existsSync(file), false, 'the lock that could not be closed is removed');
+});
+
+test('only the file this call created is removed: if something else has taken its place, it is left alone', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('a file that is open cannot be replaced by name on Windows, so this situation does not arise there');
+    return;
+  }
+  const file = lockFile(t);
+  failWrite(t, file, 'EIO', () => true, () => {
+    // Between creating the lock and cleaning up, the file is replaced by someone else's.
+    fs.unlinkSync(file);
+    fs.writeFileSync(file, 'somebody else\'s file');
+  });
+  const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform: 'linux' }));
+  assert.equal(outcome.error.code, 'EIO');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'somebody else\'s file', 'removed by identity, not by name');
+});
+
+test('a lock held by someone else is never touched by an attempt that fails to take it', (t) => {
+  const file = lockFile(t);
+  const holder = new DirectoryLock(file, { ...quick, platform: 'win32' });
+  const held = holder.acquire();
+  assert.equal(held.ok, true);
+  const writes = failWrite(t, file, 'EIO', () => true);
+  const second = new DirectoryLock(file, { ...quick, platform: 'win32' }).acquire();
+  assert.deepEqual(second, { ok: false, reason: 'locked', detail: 'owner-alive' });
+  assert.equal(writes(), 0, 'it never got as far as writing');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, held.token, 'the holder\'s lock is intact');
+});
+
+test('a file that cannot be proven to be the one this call created is left in place rather than removed by guess', (t) => {
+  const file = lockFile(t);
+  failWrite(t, file, 'EIO', () => true);
+  const stat = fs.fstatSync;
+  t.mock.method(fs, 'fstatSync', function patched(descriptor) {
+    // The identity of the new file cannot be read.
+    if (fs.existsSync(file) && stat.call(this, descriptor).size === 0) throw Object.assign(new Error('synthetic EBADF'), { code: 'EBADF' });
+    return stat.call(this, descriptor);
+  });
+  const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform: 'linux' }));
+  assert.equal(outcome.error.code, 'EIO');
+  assert.equal(fs.existsSync(file), true, 'not removed: it was not proven to be ours');
+});
+
+test('a file with the same number on another device is not the same file', (t) => {
+  const file = lockFile(t);
+  failWrite(t, file, 'EIO', () => true);
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', function patched(target, ...rest) {
+    const real = lstat.call(this, target, ...rest);
+    if (target !== file) return real;
+    return { isFile: () => true, dev: real.dev + 1, ino: real.ino };
+  });
+  const outcome = acquireOutcome(new DirectoryLock(file, { ...quick, platform: 'linux' }));
+  assert.equal(outcome.error.code, 'EIO');
+  assert.equal(fs.existsSync(file), true, 'a different device means a different file');
+});
