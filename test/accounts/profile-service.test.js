@@ -436,16 +436,18 @@ test('a secret reference that was set cannot be replaced or cleared (the old sec
 test('a folder whose type cannot be read (permission error) is refused, not assumed fine', (t) => {
   const s = setup(t);
   const { profile } = claude(s, 'Locked');
-  const denied = new AccountProfileService({
-    store: s.store,
-    context: { isDirectory: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }
+  // Only this profile's folder fails; every other path is checked for real, so the result does not
+  // depend on what exists on the machine (for example the provider's default folder).
+  const failing = (code) => ({
+    isDirectory: (target) => {
+      if (target === profile.configDir) throw Object.assign(new Error('synthetic'), { code });
+      return fs.statSync(target).isDirectory();
+    }
   });
+  const denied = new AccountProfileService({ store: s.store, context: failing('EACCES') });
   const result = denied.resolveForLaunch(profile.id);
   assert.equal(result.code, 'config-dir-rejected');
-  assert.ok(result.problems.includes('config-dir-unreadable'));
-  const missing = new AccountProfileService({
-    store: s.store,
-    context: { isDirectory: () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } }
-  });
+  assert.deepEqual(result.problems, ['config-dir-unreadable']);
+  const missing = new AccountProfileService({ store: s.store, context: failing('ENOENT') });
   assert.ok(missing.resolveForLaunch(profile.id).ok, 'ENOENT means not created yet');
 });
