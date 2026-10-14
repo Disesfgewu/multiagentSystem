@@ -27,3 +27,21 @@ test('detects credential and identity shapes without returning the matched text'
 test('ordinary project notes pass', () => {
   assert.deepEqual(codes('The build uses node --test and keeps tests under test/.'), []);
 });
+
+test('detection stays linear on very long input (no quadratic backtracking)', () => {
+  const size = 150000;
+  const inputs = ['a'.repeat(size), 'a@'.repeat(size / 2), ('token' + ' '.repeat(50)).repeat(size / 55), 'eyJ' + 'a'.repeat(size), 'a.b.c.'.repeat(size / 6) + '@', 'Bearer' + ' '.repeat(size)];
+  const started = Date.now();
+  for (const input of inputs) scanSensitive(input);
+  // The old email pattern needed minutes for this; a generous bound keeps the test stable on slow runners.
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
+test('an email address is still found at the start, middle and end of a run of text', () => {
+  for (const text of ['person@example.test', 'mail: person@example.test.', 'x.y+z%w@sub.example.test!', 'a-b_c@d-e.test']) {
+    assert.ok(codes(text).includes('email-address'), text);
+  }
+  for (const text of ['no at sign here', '@example.test', 'person@', 'person@host']) {
+    assert.ok(!codes(text).includes('email-address'), text);
+  }
+});
