@@ -54,13 +54,18 @@ export async function runStorageChecks(registered: string[], workspace: string):
 
   const storageFolder = context.globalStorageUri.fsPath;
   const dataFolder = path.join(storageFolder, 'private');
+  // The project may already hold files (a Git repository, for one); what matters is that storage adds nothing to it.
+  const projectBefore = fs.readdirSync(workspace).sort();
   try {
     // 1. The status command reports availability with codes only.
     const status = await vscode.commands.executeCommand<StorageStatus>(STORAGE_COMMANDS.status, { interactive: false });
     assert.equal(status.state, 'available', JSON.stringify(status));
     assert.equal(JSON.stringify(status).includes(storageFolder), false, 'no path in the report');
-    // The test project is not a Git repository, so Git reports no repository for it, and the report says that only the folder itself was checked.
-    assert.deepEqual(status.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
+    // Whether Git can name a repository for the test project decides how much was established, and the report says so.
+    const inRepository = fs.existsSync(path.join(workspace, '.git'));
+    assert.deepEqual(status.coverage, inRepository
+      ? { level: 'complete', folders: 1, withoutRepositoryRoot: 0 }
+      : { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
 
     // 2. The real storage folder is outside the open project, and the store reads and writes there.
     const used = await handle.use();
@@ -74,7 +79,7 @@ export async function runStorageChecks(registered: string[], workspace: string):
     assert.equal(fs.existsSync(file), true, 'the file is in the editor\'s storage folder');
     assert.equal(relation(workspace, file), false);
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o077, 0, 'private to the user');
-    assert.deepEqual(fs.readdirSync(workspace), [], 'nothing was written into the project');
+    assert.deepEqual(fs.readdirSync(workspace).sort(), projectBefore, 'nothing was written into the project');
 
     // 3. The editor's real SecretStorage round-trips a synthetic value; the record holds only a reference.
     const saved = await within('SecretStorage store', used.vault.save('host-test-1', SECRET_VALUE)) as { secretRef: string };
@@ -101,7 +106,7 @@ export async function runStorageChecks(registered: string[], workspace: string):
     }).use();
     assert.equal(refused.ok, false);
     assert.ok(!refused.ok && refused.reason === 'directory-rejected' && refused.problems.includes('private-root-inside-repo'));
-    assert.deepEqual(fs.readdirSync(workspace), [], 'no folder was created in the project');
+    assert.deepEqual(fs.readdirSync(workspace).sort(), projectBefore, 'no folder was created in the project');
   } finally {
     // Whatever happened above, leave no synthetic data behind.
     try { await within('SecretStorage cleanup', context.secrets.delete('multiagentSystem/default/host-test-1')); } catch { /* nothing to remove */ }
