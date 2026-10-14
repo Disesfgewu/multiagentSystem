@@ -4,9 +4,10 @@ const fs = require('node:fs');
 const nodePath = require('node:path');
 const crypto = require('node:crypto');
 const { checkPrivateRoot } = require('./paths');
-const { DirectoryLock, LockIoError } = require('./lock');
+const { DirectoryLock, LockIoError } = require('../shared/lock');
 const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
+const { byCodeUnit } = require('./order');
 
 const SCHEMA_VERSION = 1;
 const MAX_CONTENT_CHARS = 2000;
@@ -106,7 +107,7 @@ class MemoryStore {
     return { ok: state === 'ok', reason: state === 'ok' ? null : state };
   }
 
-  // The single-writer lock is advisory and per directory (see lock.js). It is
+  // The single-writer lock is advisory and per directory (see src/shared/lock.js). It is
   // never taken from a writer that might still be running: a held lock makes the
   // call return `locked` with who seems to hold it, and a dead holder is cleared
   // only by an explicit `recoverLock`.
@@ -312,7 +313,7 @@ class MemoryStore {
       for (const token of wanted) if (own.has(token)) score += 1;
       if (score > 0) scored.push({ item, score });
     }
-    scored.sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));
+    scored.sort((a, b) => b.score - a.score || byCodeUnit(a.item.id, b.item.id));
 
     const selected = [];
     let used = 0;

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const { LAYERS } = require('./rules');
+const { byCodeUnit } = require('./order');
 const { checkPrivateRoot, resolvers, isSameOrInside } = require('./paths');
 
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
@@ -12,7 +13,7 @@ const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 function renderContext({ roleGroup, rules, memories }) {
   const lines = [`# Role: ${roleGroup.name}`];
   const ruleLines = [...rules.instructions]
-    .sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer) || a.id.localeCompare(b.id))
+    .sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer) || byCodeUnit(a.id, b.id))
     .map((rule) => `- ${rule.text}`);
   if (rules.forbids.length > 0) {
     ruleLines.push(`- Do not: ${rules.forbids.map((rule) => rule.key).sort().join(', ')}`);
@@ -25,7 +26,7 @@ function renderContext({ roleGroup, rules, memories }) {
   // Stable ordering keeps the injected prefix identical between launches so the
   // provider's prompt cache can be reused.
   const memoryLines = [...memories]
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort((a, b) => byCodeUnit(a.id, b.id))
     .map((item) => `- ${item.content} (source: ${item.source.ref}; verified: ${item.verifiedAt.slice(0, 10)})`);
   if (memoryLines.length > 0) lines.push('', '## Project notes (reviewed, role-scoped)', ...memoryLines);
   return `${lines.join('\n')}\n`;

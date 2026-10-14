@@ -6,6 +6,12 @@ const crypto = require('node:crypto');
 
 const DEFAULTS = Object.freeze({ retries: 100, waitMs: 20, staleMs: 30000 });
 const CONFIRM_RECOVER = 'recover-stale-lock';
+// On Windows a file that another process has just deleted stays "pending delete" until every
+// handle to it is closed, and creating a file of that name in the meantime fails with one of
+// these codes instead of EEXIST. The state is brief and clears by itself, so for acquiring the
+// lock it is treated like "someone else holds it": waited out within the same retry budget.
+// Elsewhere these codes mean what they say (no permission, busy) and fail at once.
+const WINDOWS_TRANSIENT_CODES = Object.freeze(['EPERM', 'EACCES', 'EBUSY']);
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -39,6 +45,11 @@ function pidAlive(pid) {
 //     and `force` is meant for cases a program cannot know, for example a process
 //     id that was reused after a restart.
 //
+// Acquiring waits within one retry budget (`retries` attempts, `waitMs` apart). Waiting
+// ends in one of two ways: "locked" when the lock is held by someone, or a LockIoError
+// when the file system itself kept failing (on Windows, the transient codes above; on any
+// platform, any other code, which fails at once). The wait is never unbounded.
+//
 // The lock is advisory and per directory, and relies on local-file-system
 // exclusive-create semantics: it does not cover network file systems.
 class DirectoryLock {
@@ -46,11 +57,14 @@ class DirectoryLock {
     this.file = file;
     this.options = { ...DEFAULTS, ...options };
     this.host = os.hostname();
+    // Injectable so the Windows behaviour can be tested on any platform.
+    this.platform = this.options.platform || process.platform;
   }
 
   acquire() {
     const { retries, waitMs } = this.options;
     const token = crypto.randomBytes(8).toString('hex');
+    let transient = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
         const descriptor = fs.openSync(this.file, 'wx', 0o600);
@@ -63,10 +77,19 @@ class DirectoryLock {
         }
         return { ok: true, token };
       } catch (error) {
-        if (error.code !== 'EEXIST') throw new LockIoError(error.code || 'unknown');
+        if (error.code === 'EEXIST') {
+          transient = null;
+        } else if (this.platform === 'win32' && WINDOWS_TRANSIENT_CODES.includes(error.code)) {
+          transient = error.code;
+        } else {
+          throw new LockIoError(error.code || 'unknown');
+        }
         sleep(waitMs);
       }
     }
+    // The budget ran out. If the last attempt still failed with a transient code the file
+    // system never settled, which is an I/O failure, not a lock held by someone else.
+    if (transient !== null) throw new LockIoError(transient);
     const info = this.inspect();
     return { ok: false, reason: 'locked', detail: info.held ? info.detail : 'owner-unreadable' };
   }
@@ -137,4 +160,4 @@ class DirectoryLock {
   }
 }
 
-module.exports = { DirectoryLock, LockIoError, CONFIRM_RECOVER, pidAlive };
+module.exports = { DirectoryLock, LockIoError, CONFIRM_RECOVER, WINDOWS_TRANSIENT_CODES, pidAlive };
