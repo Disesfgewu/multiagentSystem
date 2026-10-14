@@ -4,14 +4,18 @@ on:
   pull_request:
     paths:
       - src/storage/**
+      - src/shared/**
       - test/storage/**
+      - test/shared/**
       - scripts/p0/check-private-storage.js
       - .github/workflows/private-storage.yml
   push:
     branches: [main]
     paths:
       - src/storage/**
+      - src/shared/**
       - test/storage/**
+      - test/shared/**
       - scripts/p0/check-private-storage.js
       - .github/workflows/private-storage.yml
 
@@ -40,3 +44,19 @@ jobs:
       - run: node --test test/storage/*.test.js
         shell: bash
       - run: node scripts/p0/check-private-storage.js --repo .
+      - run: node --test test/shared/*.test.js
+        shell: bash
+      # Four processes contend for one lock in the cross-process write test. It once failed
+      # intermittently on a Windows runner, so it is repeated: a flaky lock shows up as a red
+      # job here, with the reason, instead of as a rare surprise later.
+      - name: Repeat the cross-process write test 20 times
+        shell: bash
+        run: |
+          for i in $(seq 1 20); do
+            if ! node --test --test-name-pattern="concurrent processes all land" test/storage/private-store.test.js > "$RUNNER_TEMP/repeat.log" 2>&1; then
+              echo "run $i of 20 failed"
+              cat "$RUNNER_TEMP/repeat.log"
+              exit 1
+            fi
+          done
+          echo "storage cross-process write test passed 20 of 20 runs"

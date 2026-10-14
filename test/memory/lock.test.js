@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-const { DirectoryLock, CONFIRM_RECOVER, pidAlive } = require('../../src/memory/lock');
+const { DirectoryLock, CONFIRM_RECOVER, pidAlive } = require('../../src/shared/lock');
 const { MemoryStore } = require('../../src/memory/store');
 
 const holder = path.join(__dirname, 'fixtures', 'lock-holder.js');
@@ -120,4 +120,41 @@ test('release removes only the lock this holder took; liveness probe', (t) => {
   assert.equal(JSON.parse(fs.readFileSync(lockPath(s), 'utf8')).token, 'second');
   assert.equal(pidAlive(process.pid), true);
   assert.equal(pidAlive(deadPid()), false);
+});
+
+// A synthetic file-system error while creating this store's lock file, for the first `count`
+// attempts (or always, when `count` is Infinity). Other files are never touched.
+function failLockCreate(t, s, code, count) {
+  const original = fs.openSync;
+  const target = lockPath(s);
+  let attempts = 0;
+  t.mock.method(fs, 'openSync', function patched(...args) {
+    if (args[0] !== target) return original.apply(this, args);
+    attempts += 1;
+    if (attempts <= count) throw Object.assign(new Error(`synthetic ${code}`), { code });
+    return original.apply(this, args);
+  });
+  return () => attempts;
+}
+
+test('on Windows a transient lock error is waited out by the store; one that never clears is reported with its code', (t) => {
+  const waited = sandbox(t);
+  const attempts = failLockCreate(t, waited, 'EPERM', 3);
+  assert.equal(open(waited, { retries: 10, waitMs: 1, platform: 'win32' }).propose(note()).ok, true);
+  assert.equal(attempts(), 4);
+  t.mock.restoreAll();
+
+  const stuck = sandbox(t);
+  const tries = failLockCreate(t, stuck, 'EBUSY', Infinity);
+  const outcome = open(stuck, { retries: 4, waitMs: 1, platform: 'win32' }).propose(note());
+  assert.deepEqual(outcome, { ok: false, reason: 'lock-failed', detail: 'EBUSY' });
+  assert.equal(tries(), 5, 'the retry budget and no more');
+  assert.equal(fs.existsSync(lockPath(stuck)), false);
+  t.mock.restoreAll();
+
+  const elsewhere = sandbox(t);
+  const once = failLockCreate(t, elsewhere, 'EPERM', Infinity);
+  assert.deepEqual(open(elsewhere, { retries: 4, waitMs: 1, platform: 'darwin' }).propose(note()),
+    { ok: false, reason: 'lock-failed', detail: 'EPERM' });
+  assert.equal(once(), 1, 'other platforms do not retry');
 });

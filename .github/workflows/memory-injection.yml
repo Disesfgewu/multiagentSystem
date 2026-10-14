@@ -4,14 +4,18 @@ on:
   pull_request:
     paths:
       - src/memory/**
+      - src/shared/**
       - test/memory/**
+      - test/shared/**
       - scripts/p0/check-memory-injection.js
       - .github/workflows/memory-injection.yml
   push:
     branches: [main]
     paths:
       - src/memory/**
+      - src/shared/**
       - test/memory/**
+      - test/shared/**
       - scripts/p0/check-memory-injection.js
       - .github/workflows/memory-injection.yml
 
@@ -40,3 +44,19 @@ jobs:
       # Node 20 cannot expand globs itself, so the shell does it (bash on Windows too).
       - run: node --test test/memory/*.test.js
         shell: bash
+      - run: node --test test/shared/*.test.js
+        shell: bash
+      # Four processes contend for one lock in the cross-process write test. It once failed
+      # intermittently on a Windows runner, so it is repeated: a flaky lock shows up as a red
+      # job here, with the reason, instead of as a rare surprise later.
+      - name: Repeat the cross-process write test 20 times
+        shell: bash
+        run: |
+          for i in $(seq 1 20); do
+            if ! node --test --test-name-pattern="concurrent processes all land" test/memory/store.test.js > "$RUNNER_TEMP/repeat.log" 2>&1; then
+              echo "run $i of 20 failed"
+              cat "$RUNNER_TEMP/repeat.log"
+              exit 1
+            fi
+          done
+          echo "memory cross-process write test passed 20 of 20 runs"

@@ -165,12 +165,14 @@ test('two instances opened before either wrote do not lose each other\'s updates
 test('concurrent processes all land their writes', async (t) => {
   const { dir, repoRoot } = setup(t);
   const worker = path.join(__dirname, 'fixtures', 'propose-worker.js');
+  const reasons = [];
   const run = (tag) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [worker, dir, repoRoot, tag, '5'], { stdio: 'ignore' });
+    const child = spawn(process.execPath, [worker, dir, repoRoot, tag, '5'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.on('data', (chunk) => reasons.push(String(chunk).trim()));
     child.on('exit', (code) => resolve(code));
   });
   const codes = await Promise.all(['a', 'b', 'c', 'd'].map(run));
-  assert.deepEqual(codes, [0, 0, 0, 0]);
+  assert.deepEqual(codes, [0, 0, 0, 0], reasons.join('; '));
   const items = new MemoryStore({ dir, repoRoot }).list();
   assert.equal(items.length, 20);
   assert.equal(new Set(items.map((item) => item.id)).size, 20);
