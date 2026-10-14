@@ -16,7 +16,7 @@
 | `src/storage/sensitive.js` | 拒絕把憑證存進檔案：欄位名稱與值的形態偵測（只回報代碼與欄位路徑） |
 | `src/storage/secrets.js` | `SecretVault`：憑證放在宿主的秘密儲存，記錄只保存不透明的 `secretRef`；`fromExtensionContext` 綁定擴充套件的 `globalStorageUri` 與 `secrets` |
 | `scripts/p0/check-private-storage.js` | 可在任何機器重現的檢查（臨時目錄、合成資料、不需憑證或網路） |
-| `test/storage/` | 73 項測試，含 4 個行程的並行寫入、跨行程的鎖持有與崩潰、真實 git repo |
+| `test/storage/` | 79 項測試，含 4 個行程的並行寫入、跨行程的鎖持有與崩潰、真實 git repo |
 
 儲存的集合由呼叫端宣告（預期為 `profiles`、`roleGroups`、`sessions`、`policies`），單一 JSON 檔 `store.json`：
 
@@ -36,7 +36,10 @@
 | 路徑解析出現 `EACCES`、`ELOOP`、`ENOTDIR` 等 | 拒絕（`private-root-unresolvable`）；只有 `ENOENT` 視為尚未建立 | 是 |
 | 一路 `ENOENT` 走到磁碟根目錄（例如沒有掛載的 `Z:\`、不存在的 UNC 主機） | 拒絕：沒有任何東西被驗證，不是「尚未建立」；repo 根目錄同理（`repo-root-unresolvable`） | 是（模擬 Windows 檔案系統） |
 | 最近的既有祖先是一般檔案（Windows 對檔案之下的路徑回報 `ENOENT`，macOS 回報 `ENOTDIR`） | 拒絕；兩個平台行為一致 | 是（模擬與真實檔案系統） |
-| 資料目錄（POSIX）不屬於目前使用者，或不是目錄 | 寫入與清除都拒絕（`directory-rejected`） | 是 |
+| 資料目錄（POSIX）不屬於目前使用者，或不是目錄 | 讀取、鎖檢查、寫入、清除與鎖復原都拒絕（`directory-rejected`） | 是 |
+| 資料目錄在建構之後被換成指向 repo 的連結（目錄已存在，repo 裡放著格式正確的 `store.json` 與鎖檔） | **每一個**會讀或改目錄內容的操作都先重新檢查：`get`／`list`／`status`／`exportMasked`／`inspectLock` 回報 `directory-rejected`，不會讀到 repo 內的記錄；`recoverLock` 不會刪除 repo 內的鎖檔；寫入與清除維持拒絕。讀取不取鎖的設計不變 | 是（四個讀取方法、鎖檢查與復原；變異測試：拿掉檢查，測試失敗） |
+| 資料目錄是目標已不存在的連結 | 讀取與寫入都拒絕（`ENOENT`），不當成空庫；repo 內不建立任何東西 | 是 |
+| 資料目錄尚不存在（本身 `ENOENT`） | 讀取視為空庫且**不建立目錄**；這是唯一視為「尚未建立」的情況 | 是 |
 | 資料目錄的上層在建構之後被換成指向 repo 的連結，而目錄尚不存在 | **建立任何目錄之前**就檢查並拒絕：repo 內不會出現新目錄 | 是 |
 | 取鎖或清除時的 I/O 錯誤（目錄不可寫、被檔案佔用、磁碟滿） | 回傳 `lock-failed`／`directory-rejected`／`clear-failed` 與錯誤碼，不以例外洩漏；讀取仍可使用 | 是（目錄不可寫的案例在 Windows 與 root 下跳過） |
 | 寫入中途失敗（磁碟滿、rename 失敗） | 舊檔不變、暫存檔移除，回傳 `write-failed` 與錯誤碼 | 是（注入失敗） |
@@ -91,7 +94,7 @@
 - 崩潰後需要一次明確的復原才能再寫入（`owner-dead` 時 `recoverLock` 不需要 `force`）。代價是少了自動復原；好處是不會破壞單一寫入者。
 - **行程代號重用**（重新開機後別的程序拿到相同代號）會讓死掉的持有者被誤認為仍存在：結果是 fail closed（`locked`），需要人工 `force` 復原，不會寫入。
 - 取不到鎖時最多等約 2 秒（`retries × waitMs`，可調）後回傳 `locked`。交易函式必須是**同步**的，並在持鎖期間執行。
-- 讀取不取鎖：寫入者以 rename 原子替換，讀者看到的是完整的舊版或新版。
+- 讀取不取鎖：寫入者以 rename 原子替換，讀者看到的是完整的舊版或新版。讀取前仍會重新檢查資料目錄（見第 2 節），所以被換成連結的目錄不會被當成私人資料讀進來。
 - 崩潰（行程在寫完暫存檔、rename 之前被終止）會留下 `.store.*.tmp`；舊檔不受影響，超過過期時間的暫存檔在下一次寫入時清掉。**以實際終止行程測試「寫到一半」這一點尚未做**；目前以注入的失敗、真實的崩潰行程（持鎖後離開）與過期檔案模擬。
 - **檢查與使用之間有時間差**：資料目錄與備份目錄在使用前驗證（不是連結、屬於本人、解析後在 repo 之外），備份寫入後會再驗證一次並移除自己剛建立的檔案；但無法排除驗證與寫入之間被替換的極短時間窗，因此資料目錄應只有使用者本人可寫（建立時 `0700`，POSIX 檢查擁有者）。
 - 不處理跨機器同步或多個使用者共用同一資料目錄。
@@ -104,7 +107,7 @@
   - 無法證明的項目保留並計數回報：`unrecognized`（不在清單內）、`modified`（內容或大小與記錄不同）、`not-regular`（被換成連結或非一般檔案）、`not-owned`、`manifest-unverified`（清單損壞、格式不符、含路徑穿越或重複的名稱，此時**整個備份目錄原封不動**）。回報只有原因與數量，不含路徑。
   - 清單的項目若沒有對應檔案（崩潰在兩步之間）會被忽略；全部處理完後，沒有保留項目就移除清單，有保留的就把清單改寫成只剩它們（之後可再次判斷），目錄空了才移除。
   - 可用 `includeBackups: false` 完全不碰備份。損壞或版本不符的儲存庫也可以清除，這是無法使用時的復原路徑；代價是：清單損壞時舊備份無法被證明、不會被刪，需使用者自行處理。
-- `exportMasked()`：給診斷用，不是備份。id 換成 `集合#序號` 別名；每個值換成型別佔位（`<string>`、`<number>`、`<boolean>`、`<array:n>`、`<object:n>`），**只有**欄位有固定的公開值清單，而且值**完全等於**清單中的某一項時才保留（預設只有 `provider`：`claude`／`codex`，與 `status`：`preparing`／`running`／`waiting`／`completed`／`failed`／`unknown`；可用 `publicValues` 依集合增加，且必須是精確字串清單）。**符合某種字元形態不算數**：`alice-private` 這類看起來像列舉的帳戶或代理標籤會被遮罩；巢狀物件只留下鍵的數量；不安全的欄位名稱以 `field#n` 取代。測試確認匯出中不含 email、路徑、id、label、`secretRef`、資料目錄與 repo 路徑，並通過憑證形態掃描。
+- `exportMasked()`：給診斷用，不是備份。id 換成 `集合#序號` 別名；每個值換成型別佔位（`<string>`、`<number>`、`<boolean>`、`<array:n>`、`<object:n>`），**只有**欄位有固定的公開值清單，而且值**完全等於**清單中的某一項時才保留（預設只有 `provider`：`claude`／`codex`，與 `status`：`preparing`／`running`／`waiting`／`completed`／`failed`／`unknown`；可用 `publicValues` 依集合增加，且必須是精確字串清單）。**符合某種字元形態不算數**：`alice-private` 這類看起來像列舉的帳戶或代理標籤會被遮罩；巢狀物件只留下鍵的數量；不安全的欄位名稱以 `field#n` 取代。**記錄的頂層欄位名稱若是一般識別字（`SAFE_KEY`）會照原樣輸出**，視為程式定義的公開結構（值仍被遮罩）；因此記錄**不得**以資料（帳號名稱、標籤、agent 名稱）當作頂層鍵，匯出的 `note` 也這樣寫明。若後續模組需要這種鍵，應改成與 `publicValues` 一樣的明確清單，而不是放寬這裡的規則。測試確認匯出中不含 email、路徑、id、label、`secretRef`、資料目錄與 repo 路徑，並通過憑證形態掃描。
 
 ## 6. 重現方式
 
@@ -113,15 +116,15 @@ node --test "test/storage/*.test.js"
 node scripts/p0/check-private-storage.js --repo <repo 路徑>
 ```
 
-檢查腳本在臨時資料夾（含空白與 Unicode）內以合成資料驗證 12 項：repo 內目錄被拒、讀寫、拒絕憑證、遷移中途失敗不動原檔、遷移與備份、損壞檔案保留、清除復原、`clear` 不刪名稱相似的無關檔案、匯出不含值、`git status` 不變。結束後移除臨時資料夾。repo 路徑不是 git 工作樹時，最後一項標為跳過。
+檢查腳本在臨時資料夾（含空白與 Unicode）內以合成資料驗證 13 項：repo 內目錄被拒、讀寫、拒絕憑證、遷移中途失敗不動原檔、遷移與備份、損壞檔案保留、清除復原、`clear` 不刪名稱相似的無關檔案、匯出不含值、資料目錄被換成指向 repo 的連結後讀取與鎖檢查都被拒、`git status` 不變。結束後移除臨時資料夾。repo 路徑不是 git 工作樹時，最後一項標為跳過。
 
 ## 7. 平台矩陣
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過；Node 20 與 24 都測 | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
+| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過；Node 20 與 24 都測 | CI 的 `windows-latest` runner 通過（POSIX 專用的案例跳過；實際通過與跳過數量以該 PR 的 CI 紀錄為準）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
 | 檔案權限（檔案 `0600`、目錄 `0700`） | 已測試 | **未驗證**：Windows 沒有同樣的權限位元，ACL 的實際效果未檢查，只能依賴使用者設定檔目錄的預設權限 |
-| 資料目錄擁有者檢查 | 每次取鎖時檢查目錄存在、是目錄且屬於目前使用者（`not-owned` 則拒絕）；已有測試 | 不適用（沒有 uid）；ACL 未驗證 |
+| 資料目錄擁有者檢查 | 每次讀取、鎖檢查、取鎖、清除與鎖復原時都檢查（目錄不存在視為空庫；是目錄、屬於目前使用者，否則 `not-owned` 拒絕）；已有測試 | 不適用（沒有 uid）；ACL 未驗證 |
 | fsync 的實際耐久性 | 呼叫但未驗證斷電情境 | 同左；目錄 fsync 在 Windows 上被略過 |
 
 ## 8. 尚未驗證／尚未實作

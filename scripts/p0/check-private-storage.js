@@ -128,6 +128,37 @@ function main() {
       skip('a backups link into the repository is refused and the repository is untouched', 'cannot create a directory link here');
     }
 
+    // The data directory itself replaced by a link into the repository must be
+    // refused for reads and lock inspection too, not only for writes. Nothing is
+    // written to the repository here; without the check these calls would answer
+    // as if the repository directory were the store. The link is always removed
+    // before the temporary folder is cleaned up.
+    const swapRoot = path.join(root, 'swapped');
+    fs.mkdirSync(swapRoot);
+    const swappedDir = path.join(swapRoot, 'data');
+    const swapped = new PrivateStore({ dir: swappedDir, repoRoot: options.repo, collections, schemaVersion: 1 });
+    swapped.put('profiles', 'p1', { provider: 'claude', name: 'Synthetic' });
+    fs.renameSync(swappedDir, `${swappedDir}.moved`);
+    let swapMade = true;
+    try {
+      fs.symlinkSync(options.repo, swappedDir, 'junction');
+    } catch {
+      swapMade = false;
+    }
+    if (swapMade) {
+      try {
+        const rejected = (result) => result.ok === false && result.reason === 'directory-rejected';
+        record('a data directory replaced by a link into the repository is refused for reads and lock inspection',
+          rejected(swapped.get('profiles', 'p1')) && rejected(swapped.list('profiles')) &&
+          rejected(swapped.exportMasked()) && rejected(swapped.inspectLock()) &&
+          swapped.status().reason === 'directory-rejected');
+      } finally {
+        fs.unlinkSync(swappedDir);
+      }
+    } else {
+      skip('a data directory replaced by a link into the repository is refused for reads and lock inspection', 'cannot create a directory link here');
+    }
+
     const gitAfter = gitStatus();
     if (gitBefore.status === 0 && gitAfter.status === 0) {
       record('git status of the repository is unchanged by the stored data', gitBefore.stdout === gitAfter.stdout);

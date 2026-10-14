@@ -123,3 +123,17 @@ test('an unusable store cannot be exported', (t) => {
   require('node:fs').writeFileSync(require('node:path').join(s.dir, 'store.json'), 'garbage');
   assert.deepEqual(store.exportMasked(), { ok: false, reason: 'store-unavailable', detail: 'corrupt' });
 });
+
+test('top-level field names are public structure and are kept as written; their values are not', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', { provider: 'claude', alicePrivateAccount: 'x', 'not a safe key': 'y' });
+  const { export: exported } = store.exportMasked();
+  assert.deepEqual(exported.collections.profiles.records[0].fields, {
+    provider: 'claude',
+    alicePrivateAccount: '<string>',
+    'field#1': '<string>'
+  }, 'a program-defined name stays, its value is masked, and an unsafe name is replaced');
+  assert.match(exported.note, /top-level field names are treated as public structure/i);
+  assert.match(exported.note, /never generated from data/);
+});

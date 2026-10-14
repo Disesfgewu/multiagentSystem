@@ -405,3 +405,122 @@ test('a link swapped in above a directory that did not exist yet creates nothing
   assert.equal(store.clear({ confirm: CONFIRM_CLEAR }).reason, 'directory-rejected');
   assert.deepEqual(fs.readdirSync(s.repoRoot), []);
 });
+
+// ---- the data directory is checked on reads as well as writes -----------------
+
+// After the store is open and has data, the data directory is moved aside and a
+// link to the repository takes its place. The repository holds a well-formed store
+// file and a lock file left by a process that no longer exists.
+function swapInLinkToRepository(t, s) {
+  const planted = JSON.parse(fs.readFileSync(path.join(s.dir, 'store.json'), 'utf8'));
+  planted.collections.profiles.evil = { provider: 'claude', label: 'planted in the repository' };
+  fs.writeFileSync(path.join(s.repoRoot, 'store.json'), JSON.stringify(planted));
+  const gone = spawnSync(process.execPath, ['-e', '0']).pid;
+  fs.writeFileSync(path.join(s.repoRoot, 'store.lock'), JSON.stringify({
+    token: 'planted', pid: gone, host: require('node:os').hostname(), createdAt: new Date().toISOString()
+  }));
+  fs.renameSync(s.dir, `${s.dir}.moved`);
+  try {
+    fs.symlinkSync(s.repoRoot, s.dir, 'junction');
+  } catch (error) {
+    t.skip(`cannot create a directory link here: ${error.code}`);
+    return false;
+  }
+  return true;
+}
+
+// A link that points at the repository itself is both "inside" and "containing" it.
+function assertIntoRepo(result) {
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'directory-rejected');
+  assert.match(result.detail, /private-root-inside-repo/);
+}
+
+test('every read refuses a data directory that was swapped for a link into the repository', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', profile());
+  assert.equal(store.list('profiles').items.length, 1, 'before the swap the data is readable');
+  if (!swapInLinkToRepository(t, s)) return;
+
+  assertIntoRepo(store.get('profiles', 'evil'));
+  const listed = store.list('profiles');
+  assertIntoRepo(listed);
+  assert.deepEqual(listed.items, []);
+  assertIntoRepo(store.exportMasked());
+  const status = store.status();
+  assertIntoRepo({ ok: status.ok, reason: status.reason, detail: status.detail });
+  assert.equal('looseFileMode' in status, false, 'the file behind the link is not even inspected');
+  assert.equal(JSON.stringify([store.get('profiles', 'evil'), store.list('profiles'), store.exportMasked()]).includes('evil'), false);
+
+  // The same instance's writes were already refused; they still are.
+  assert.equal(store.put('profiles', 'p2', profile()).reason, 'directory-rejected');
+  assert.equal(store.migrate().reason, 'directory-rejected');
+  assert.equal(store.clear({ confirm: CONFIRM_CLEAR }).reason, 'directory-rejected');
+  assert.equal(fs.existsSync(path.join(s.repoRoot, 'store.json')), true, 'nothing in the repository was removed');
+});
+
+test('lock inspection and recovery do not follow a link into the repository', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', profile());
+  if (!swapInLinkToRepository(t, s)) return;
+
+  assertIntoRepo(store.inspectLock());
+  assertIntoRepo(store.recoverLock({ confirm: 'recover-stale-lock' }));
+  assert.equal(fs.existsSync(path.join(s.repoRoot, 'store.lock')), true, 'the lock file in the repository was not deleted');
+});
+
+test('a data directory that is a link with no target is refused on reads, not read as empty', (t) => {
+  const s = sandbox(t);
+  try {
+    fs.symlinkSync(path.join(s.repoRoot, 'not-there'), s.dir, 'junction');
+  } catch (error) {
+    t.skip(`cannot create a directory link here: ${error.code}`);
+    return;
+  }
+  const store = open(s);
+  const result = store.list('profiles');
+  assert.deepEqual([result.ok, result.reason, result.items], [false, 'directory-rejected', []]);
+  assert.equal(store.get('profiles', 'p1').reason, 'directory-rejected');
+  assert.equal(store.status().reason, 'directory-rejected');
+  assert.equal(store.exportMasked().reason, 'directory-rejected');
+  assert.equal(store.put('profiles', 'p1', profile()).reason, 'directory-rejected');
+  assert.deepEqual(fs.readdirSync(s.repoRoot), [], 'nothing was created in the repository');
+});
+
+test('a data directory that does not exist yet reads as an empty store and is not created by reading', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  assert.deepEqual(store.list('profiles'), { ok: true, items: [] });
+  assert.deepEqual(store.get('profiles', 'p1'), { ok: true, found: false, value: null });
+  assert.equal(store.status().ok, true);
+  assert.equal(store.exportMasked().ok, true);
+  assert.deepEqual(store.inspectLock(), { ok: true, held: false });
+  assert.deepEqual(store.recoverLock({ confirm: 'recover-stale-lock' }), { ok: true, recovered: false });
+  assert.equal(fs.existsSync(s.dir), false);
+});
+
+test('reads refuse a data directory owned by someone else or replaced by a file', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', profile());
+
+  if (typeof process.getuid === 'function') {
+    t.mock.method(process, 'getuid', () => 424242);
+    const foreign = { ok: false, reason: 'directory-rejected', detail: 'not-owned' };
+    assert.deepEqual(store.get('profiles', 'p1'), foreign);
+    assert.deepEqual(store.list('profiles'), { ...foreign, items: [] });
+    assert.deepEqual(store.exportMasked(), foreign);
+    assert.equal(store.status().reason, 'directory-rejected');
+    assert.deepEqual(store.inspectLock(), foreign);
+    t.mock.restoreAll();
+  }
+
+  const other = sandbox(t);
+  fs.writeFileSync(other.dir, 'a file where the directory should be');
+  const blocked = open(other);
+  assert.deepEqual(blocked.list('profiles'), { ok: false, reason: 'directory-rejected', detail: 'not-a-directory', items: [] });
+  assert.equal(blocked.get('profiles', 'p1').reason, 'directory-rejected');
+  assert.equal(blocked.status().reason, 'directory-rejected');
+});

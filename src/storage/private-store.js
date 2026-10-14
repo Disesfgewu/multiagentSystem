@@ -106,6 +106,13 @@ const lstatOrNull = (target) => {
   }
 };
 
+// A load that did not produce usable data, as a result. A rejected directory is
+// reported under the same reason the write side uses, so a caller sees one name for
+// one cause.
+const unavailable = (loaded) => (loaded.state === 'directory-rejected'
+  ? { ok: false, reason: 'directory-rejected', detail: loaded.detail }
+  : { ok: false, reason: 'store-unavailable', detail: loaded.state });
+
 function validIdentifier(id) {
   return typeof id === 'string' && ID_PATTERN.test(id) && !RESERVED_IDS.has(id);
 }
@@ -206,6 +213,10 @@ class PrivateStore {
   // that cannot be used is never treated as empty and never overwritten.
   // `persist` additionally writes a pending migration (after a backup).
   #load(persist) {
+    const directory = this.#checkDirectory();
+    if (!directory.ok) return { state: 'directory-rejected', detail: directory.detail };
+    if (directory.missing) return { state: 'ok', data: this.#empty(), onDiskVersion: null };
+
     let stat;
     try {
       stat = lstatOrNull(this.file);
@@ -397,7 +408,7 @@ class PrivateStore {
       onDiskVersion: loaded.onDiskVersion ?? null,
       pendingMigration: Boolean(loaded.pendingMigration)
     };
-    if (process.platform !== 'win32') {
+    if (process.platform !== 'win32' && loaded.state !== 'directory-rejected') {
       try {
         result.looseFileMode = (fs.statSync(this.file).mode & 0o077) !== 0;
       } catch {
@@ -410,7 +421,7 @@ class PrivateStore {
   get(collection, id) {
     if (!this.names.includes(collection)) return { ok: false, reason: 'unknown-collection' };
     const loaded = this.#load(false);
-    if (loaded.state !== 'ok') return { ok: false, reason: 'store-unavailable', detail: loaded.state };
+    if (loaded.state !== 'ok') return unavailable(loaded);
     const records = loaded.data.collections[collection];
     if (!validIdentifier(id) || !Object.hasOwn(records, id)) return { ok: true, found: false, value: null };
     return { ok: true, found: true, value: clone(records[id]) };
@@ -419,7 +430,7 @@ class PrivateStore {
   list(collection) {
     if (!this.names.includes(collection)) return { ok: false, reason: 'unknown-collection', items: [] };
     const loaded = this.#load(false);
-    if (loaded.state !== 'ok') return { ok: false, reason: 'store-unavailable', detail: loaded.state, items: [] };
+    if (loaded.state !== 'ok') return { ...unavailable(loaded), items: [] };
     const records = loaded.data.collections[collection];
     const items = Object.keys(records).sort().map((id) => ({ id, value: clone(records[id]) }));
     return { ok: true, items };
@@ -458,6 +469,8 @@ class PrivateStore {
   }
 
   inspectLock() {
+    const directory = this.#checkDirectory();
+    if (!directory.ok) return { ok: false, reason: 'directory-rejected', detail: directory.detail };
     try {
       const { held, detail, ageMs, stale } = this.lock.inspect();
       return held ? { ok: true, held, detail, ageMs, stale } : { ok: true, held: false };
@@ -471,6 +484,9 @@ class PrivateStore {
   // owner a program cannot judge (another host, unreadable, or a reused process
   // id); it still requires the lock to be older than the stale age.
   recoverLock(options) {
+    // Recovery removes a file, so it must not follow a link out of the data directory.
+    const directory = this.#checkDirectory();
+    if (!directory.ok) return { ok: false, reason: 'directory-rejected', detail: directory.detail };
     try {
       const result = this.lock.recover(options);
       const { text, ...rest } = result;
@@ -481,18 +497,38 @@ class PrivateStore {
     }
   }
 
-  // The directory may have been replaced by a link since construction.
-  #assertDirectory() {
+  // The directory may have been replaced by a link since construction, so every
+  // operation that reads or changes anything inside it checks it again first, not
+  // only the ones that take the lock. A directory that does not exist yet is an
+  // empty store (`missing`); only ENOENT on the directory itself counts as that. A
+  // link whose target is gone, a file, a foreign owner, or any other failure is
+  // refused.
+  #checkDirectory() {
     const check = checkPrivateRoot(this.dir, this.repoRoot, this.context);
-    if (!check.ok) throw new StoreError('directory-rejected', check.problems.join(','));
+    if (!check.ok) return { ok: false, detail: check.problems.join(',') };
+    let entry;
+    try {
+      entry = lstatOrNull(this.dir);
+    } catch (error) {
+      return { ok: false, detail: error.code || 'unknown' };
+    }
+    if (!entry) return { ok: true, missing: true };
     let stat;
     try {
       stat = fs.statSync(this.dir);
     } catch (error) {
-      throw new StoreError('directory-rejected', error.code || 'unknown');
+      return { ok: false, detail: error.code || 'unknown' };
     }
-    if (!stat.isDirectory()) throw new StoreError('directory-rejected', 'not-a-directory');
-    if (!ownedByCurrentUser(stat)) throw new StoreError('directory-rejected', 'not-owned');
+    if (!stat.isDirectory()) return { ok: false, detail: 'not-a-directory' };
+    if (!ownedByCurrentUser(stat)) return { ok: false, detail: 'not-owned' };
+    return { ok: true, missing: false };
+  }
+
+  // Write side: the directory must exist and be verified.
+  #assertDirectory() {
+    const check = this.#checkDirectory();
+    if (!check.ok) throw new StoreError('directory-rejected', check.detail);
+    if (check.missing) throw new StoreError('directory-rejected', 'ENOENT');
   }
 
   #write(data) {
@@ -570,8 +606,9 @@ class PrivateStore {
     try {
       this.#sweepTemps();
       const loaded = this.#load(true);
+      if (loaded.state === 'directory-rejected') return unavailable(loaded);
       if (loaded.state !== 'ok') {
-        return { ok: false, reason: 'store-unavailable', detail: loaded.state, migration: loaded.detail ?? null };
+        return { ...unavailable(loaded), migration: loaded.detail ?? null };
       }
       const working = clone(loaded.data);
       let changed = false;
@@ -741,9 +778,12 @@ class PrivateStore {
   // value is replaced by a type placeholder unless the field has a fixed list of
   // public values and the value is exactly one of them. Matching a pattern is
   // never enough, because an account or agent label can look like an enumeration.
+  // The one thing kept as written is a record's top-level field name when it is a
+  // plain identifier: those names are the program's record structure, so a record
+  // must never use data (an account name, a label) as a top-level key.
   exportMasked() {
     const loaded = this.#load(false);
-    if (loaded.state !== 'ok') return { ok: false, reason: 'store-unavailable', detail: loaded.state };
+    if (loaded.state !== 'ok') return unavailable(loaded);
     const out = {};
     for (const name of this.names) {
       const allow = { ...this.publicValues['*'], ...this.publicValues[name] };
@@ -762,7 +802,7 @@ class PrivateStore {
         format: `${FORMAT}-masked`,
         schemaVersion: this.schemaVersion,
         exportedAt: new Date(this.now()).toISOString(),
-        note: 'Identifiers, values and nested keys are masked. This export is for diagnostics, not backup.',
+        note: 'Identifiers, values and nested keys are masked. Top-level field names are treated as public structure and are kept as written, so they must be fixed by the program and never generated from data. This export is for diagnostics, not backup.',
         collections: out
       }
     };
