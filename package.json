@@ -21,7 +21,8 @@
     "onCommand:multiagentSystem.github.openChecks",
     "onCommand:multiagentSystem.github.pullRequestStatus",
     "onCommand:multiagentSystem.github.signIn",
-    "onCommand:multiagentSystem.sessions.list"
+    "onCommand:multiagentSystem.sessions.list",
+    "onCommand:multiagentSystem.storage.status"
   ],
   "contributes": {
     "commands": [
@@ -68,6 +69,10 @@
       {
         "command": "multiagentSystem.github.signIn",
         "title": "Multiagent: Sign In to GitHub"
+      },
+      {
+        "command": "multiagentSystem.storage.status",
+        "title": "Multiagent: Show Private Storage Status"
       },
       {
         "command": "multiagentSystem.sessions.list",
