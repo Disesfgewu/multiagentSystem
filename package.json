@@ -8,7 +8,7 @@
   "engines": {
     "vscode": "^1.95.0"
   },
-  "main": "./src/extension.js",
+  "main": "./out/src/extension.js",
   "activationEvents": [
     "onCommand:multiagentSystem.openTerminalGroup",
     "onCommand:multiagentSystem.launchAgent"
@@ -26,6 +26,17 @@
     ]
   },
   "scripts": {
-    "check": "node --check src/extension.js"
+    "build": "tsc -p .",
+    "check": "tsc -p . --noEmit",
+    "test:unit": "npm run build && node --test \"test/**/*.test.js\" \"out/test/unit/**/*.test.js\"",
+    "test:host": "npm run build && node out/test/host/runTest.js",
+    "test": "npm run check && npm run test:unit",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.95.0",
+    "@vscode/test-electron": "3.1.0",
+    "typescript": "7.0.2"
   }
 }

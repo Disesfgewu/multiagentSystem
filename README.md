@@ -13,4 +13,21 @@
 - `Multiagent: Open Four Native Terminals`：開啟四個可直接輸入的 VS Code 原生 terminal，名稱為 PM、Worker 1–3。依 VS Code 實際排列，必要時手動拖曳或分割成想要的格局。
 - `Multiagent: Launch CLI Agent in Native Terminal`：選 Claude Code 或 Codex CLI，再輸入 terminal 名稱；CLI 在新建的原生 terminal 執行，使用目前環境的 CLI 登入與預設 shell。
 
+## 開發與驗證
+
+需求：Node.js 24 以上與 VS Code 1.95 以上。
+
+```text
+npm ci               # 依 package-lock.json 安裝（鎖定相依版本）
+npm run check        # TypeScript 型別檢查，不輸出檔案
+npm run build        # 編譯到 out/
+npm test             # 型別檢查 + 建置 + 單元測試
+npm run test:host    # 在隔離的 Extension Host 載入建置結果並執行命令
+```
+
+- 按 `F5` 會先執行 `npm: build`，再啟動 Extension Development Host。建置輸出位於 `out/`，不納入版本控制。
+- `npm run test:host` 會下載 VS Code（預設 1.95.0，可用環境變數 `VSCODE_VERSION` 指定，例如 `stable`）到 `.vscode-test/`，使用暫存的使用者資料與工作區，執行時會短暫開啟一個視窗，不讀取或修改你的 VS Code 設定。
+- CI 在 macOS 與 Windows 分開回報兩類結果：**型別檢查與單元測試**，以及 **Extension Host 冒煙測試**（只證明建置結果可載入、命令可執行且建立四個原生 terminal）。輸入、互動提示、`Ctrl+C`、重啟與分格排列等**實機驗收不在 CI 內**，仍須在真實視窗中人工驗證。
+- 既有的 `test/**/*.test.js`（純 Node 的 P0 模組測試）與編譯後的 TypeScript 測試一起由 `npm run test:unit` 執行；新增 JavaScript 模組時放在 `src/`，會隨 `allowJs` 原樣輸出到 `out/`。
+
 此雛形尚未實作帳號隔離、額度讀取、Issue／PR 操作、身份規則或防外洩強制控制，也尚未完成 macOS／Windows 的四格實機驗收。給 Claude Code worker 的持續實作指令與 PM 工作方式見 [Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
