@@ -11,7 +11,10 @@
   "main": "./out/src/extension.js",
   "activationEvents": [
     "onCommand:multiagentSystem.openTerminalGroup",
-    "onCommand:multiagentSystem.launchAgent"
+    "onCommand:multiagentSystem.launchAgent",
+    "onCommand:multiagentSystem.worktrees.list",
+    "onCommand:multiagentSystem.worktrees.create",
+    "onCommand:multiagentSystem.worktrees.remove"
   ],
   "contributes": {
     "commands": [
@@ -22,6 +25,18 @@
       {
         "command": "multiagentSystem.launchAgent",
         "title": "Multiagent: Launch CLI Agent in Native Terminal"
+      },
+      {
+        "command": "multiagentSystem.worktrees.list",
+        "title": "Multiagent: List and Open Worktrees"
+      },
+      {
+        "command": "multiagentSystem.worktrees.create",
+        "title": "Multiagent: Create Worktree"
+      },
+      {
+        "command": "multiagentSystem.worktrees.remove",
+        "title": "Multiagent: Release Worktree"
       }
     ]
   },

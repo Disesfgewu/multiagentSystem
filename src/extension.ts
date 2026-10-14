@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerWorktreeCommands } from './projects/worktreeCommands';
 import { GROUP_NAMES, PROVIDERS, CliProvider, errorMessage, terminalTitle, validateTerminalName } from './agents';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
@@ -75,6 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)
   );
+  registerWorktreeCommands(context);
 }
 
 export function deactivate(): void {}
