@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const { PROVIDERS, validateProfile, findConfigDirConflicts } = require('./profile');
 const { REF_PATTERN } = require('../storage/secrets');
 
@@ -34,6 +35,8 @@ const MESSAGES = Object.freeze({
   'duplicate-label': 'Another profile for this provider already has that label. Labels must be distinct so accounts are not mixed up.',
   'config-dir-conflict': 'Another profile uses this folder, or a folder inside or around it. Give every account its own separate folder.',
   'too-many-profiles': 'The maximum number of profiles was reached.',
+  'config-dir-rejected': 'The configuration folder no longer passes the checks (it moved, was replaced by a link, or now overlaps another profile). It was not used.',
+  'secret-ref-locked': 'The secret reference cannot be replaced or removed here, because the old secret would be left behind. Create a new profile instead.',
   'profile-not-found': 'That profile no longer exists.',
   'provider-immutable': 'The provider cannot be changed. Create a new profile instead.',
   'unknown-field': 'That field cannot be edited.',
@@ -176,9 +179,36 @@ class AccountProfileService {
     return { ok: true, profile: { id, ...loaded.value } };
   }
 
-  /** For a session start: the profile must exist now. The caller fixes the returned id in the session. */
+  /**
+   * The gate before a session starts under a profile. The profile must exist now AND its folder
+   * must still pass every check: the checks made when it was created can be undone later (the folder
+   * replaced by a link into the repository or into another profile's folder, deleted, or replaced by
+   * a file). Any problem refuses with `config-dir-rejected` and the problems named; the profile is
+   * not returned. The caller fixes the returned id in the session.
+   */
   resolveForLaunch(id) {
-    return this.get(id);
+    const loaded = this.get(id);
+    if (!loaded.ok) return loaded;
+    const all = this.list();
+    if (!all.ok) return all;
+    const profile = loaded.profile;
+    const problems = [];
+    const validation = validateProfile(profile, this.context);
+    if (!validation.ok) problems.push(...validation.problems);
+    // A folder that does not exist yet is fine (the login creates it); one that exists must be a directory.
+    const isDirectory = this.context.isDirectory || ((target) => fs.statSync(target).isDirectory());
+    try {
+      if (!isDirectory(profile.configDir)) problems.push('config-dir-not-a-directory');
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') problems.push('config-dir-unreadable');
+    }
+    const conflicts = findConfigDirConflicts(all.profiles, this.context).filter((entry) => entry.a === id || entry.b === id);
+    for (const entry of conflicts) problems.push(`config-dir-conflict:${entry.kind}`);
+    if (problems.length > 0) {
+      const other = conflicts.map((entry) => (entry.a === id ? entry.b : entry.a)).find((value) => value);
+      return fail('config-dir-rejected', { problems, ...(other ? { conflictsWith: other } : {}) });
+    }
+    return loaded;
   }
 
   create({ provider, label, configDir, expectedAuthMethod = null, secretRef = null } = {}) {
@@ -243,6 +273,11 @@ class AccountProfileService {
       const current = tx.get(COLLECTION, id);
       if (current === null) return { rejected: fail('profile-not-found') };
       if (expectedRevision !== undefined && expectedRevision !== current.revision) return { rejected: fail('stale-revision') };
+      // A secret that was set stays tied to this profile: replacing or clearing the reference would
+      // leave the old secret behind in the secret store with nothing pointing at it.
+      if ('secretRef' in fields && current.secretRef !== null && fields.secretRef !== current.secretRef) {
+        return { rejected: fail('secret-ref-locked') };
+      }
       const next = { ...current, ...fields };
       const unchanged = keys.every((key) => next[key] === current[key]);
       if (unchanged) return { rejected: fail('nothing-to-change') };
@@ -303,15 +338,19 @@ class AccountProfileService {
    * with neither choice the answer is `no-account-assigned`.
    */
   assign({ provider, sessionOverride, roleGroupDefault } = {}) {
-    const chosen = sessionOverride ?? roleGroupDefault;
-    if (chosen === undefined || chosen === null || chosen === '') return fail('no-account-assigned');
-    const source = sessionOverride !== undefined && sessionOverride !== null && sessionOverride !== '' ? 'session-override' : 'role-group-default';
-    const loaded = this.get(chosen);
+    // An empty or null choice means "no choice" everywhere, so the default is used.
+    const given = (value) => (value === undefined || value === null || value === '' ? undefined : value);
+    const override = given(sessionOverride);
+    const chosen = override ?? given(roleGroupDefault);
+    if (chosen === undefined) return fail('no-account-assigned');
+    const source = override !== undefined ? 'session-override' : 'role-group-default';
+    // Same gate as resolveForLaunch: an id is only handed out for a profile that passes the folder checks now.
+    const loaded = this.resolveForLaunch(chosen);
     if (!loaded.ok) {
       if (loaded.code === 'profile-not-found') {
         return fail(source === 'session-override' ? 'override-profile-missing' : 'default-profile-missing', { source });
       }
-      return loaded;
+      return { ...loaded, source };
     }
     if (loaded.profile.provider !== provider) return fail('provider-mismatch', { source });
     return { ok: true, accountProfileId: loaded.profile.id, source };

@@ -315,3 +315,137 @@ test('the service needs a store with a profiles collection', (t) => {
   const other = new PrivateStore({ dir: path.join(s.root, 'other'), repoRoot: s.repoRoot, collections: ['sessions'] });
   assert.throws(() => new AccountProfileService({ store: other }), TypeError);
 });
+
+// ---- review: the launch gate re-validates the folder every time -----------------------------
+
+function link(t, target, at) {
+  try {
+    fs.symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch (error) {
+    t.skip(`links cannot be created here: ${error.code}`);
+    return false;
+  }
+}
+
+function replaceWithLink(t, folder, target) {
+  fs.rmSync(folder, { recursive: true, force: true });
+  return link(t, target, folder);
+}
+
+test('resolveForLaunch returns a healthy profile and refuses an unknown one', (t) => {
+  const s = setup(t);
+  const { profile } = claude(s, 'Healthy');
+  const resolved = s.service.resolveForLaunch(profile.id);
+  assert.ok(resolved.ok);
+  assert.equal(resolved.profile.id, profile.id);
+  assert.equal(s.service.resolveForLaunch('acct-missing').code, 'profile-not-found');
+});
+
+test('resolveForLaunch refuses a folder that was later replaced by a link into the repository', (t) => {
+  const s = setup(t);
+  const { profile } = claude(s, 'A');
+  claude(s, 'B');
+  assert.ok(s.service.resolveForLaunch(profile.id).ok, 'it was fine when created');
+  if (!replaceWithLink(t, profile.configDir, s.repoRoot)) return;
+  const result = s.service.resolveForLaunch(profile.id);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'config-dir-rejected');
+  assert.ok(result.problems.includes('config-dir-inside-repo') || result.problems.includes('config-dir-contains-repo'), JSON.stringify(result.problems));
+  assert.equal(result.profile, undefined, 'the profile is not handed out');
+});
+
+test('resolveForLaunch refuses a folder that was later replaced by a link to another profile\'s folder', (t) => {
+  const s = setup(t);
+  const a = claude(s, 'A').profile;
+  const b = claude(s, 'B').profile;
+  if (!replaceWithLink(t, a.configDir, b.configDir)) return;
+  const forA = s.service.resolveForLaunch(a.id);
+  assert.equal(forA.code, 'config-dir-rejected');
+  assert.ok(forA.problems.includes('config-dir-conflict:same'));
+  assert.equal(forA.conflictsWith, b.id);
+  // The other side of the conflict is refused too: neither may start while they share a login folder.
+  const forB = s.service.resolveForLaunch(b.id);
+  assert.equal(forB.code, 'config-dir-rejected');
+  assert.equal(forB.conflictsWith, a.id);
+});
+
+test('resolveForLaunch refuses a folder replaced by a file or whose parent became a file; a deleted folder is allowed', (t) => {
+  const s = setup(t);
+  const a = claude(s, 'A').profile;
+  fs.rmSync(a.configDir, { recursive: true, force: true });
+  assert.ok(s.service.resolveForLaunch(a.id).ok, 'not created yet is fine: the login creates it');
+  fs.writeFileSync(a.configDir, 'a file now');
+  const isFile = s.service.resolveForLaunch(a.id);
+  assert.equal(isFile.code, 'config-dir-rejected');
+  assert.ok(isFile.problems.includes('config-dir-not-a-directory'));
+
+  const parent = path.join(s.root, 'accounts', 'shaky');
+  const b = s.service.create({ provider: 'claude', label: 'B', configDir: (fs.mkdirSync(path.join(parent, 'cfg'), { recursive: true }), path.join(parent, 'cfg')) }).profile;
+  fs.rmSync(parent, { recursive: true, force: true });
+  fs.writeFileSync(parent, 'a file now');
+  assert.equal(s.service.resolveForLaunch(b.id).code, 'config-dir-rejected');
+});
+
+test('one profile\'s unresolvable folder does not block another profile from launching', (t) => {
+  const s = setup(t);
+  const a = claude(s, 'A').profile;
+  const parent = path.join(s.root, 'accounts', 'broken');
+  const b = s.service.create({ provider: 'claude', label: 'B', configDir: (fs.mkdirSync(path.join(parent, 'cfg'), { recursive: true }), path.join(parent, 'cfg')) }).profile;
+  fs.rmSync(parent, { recursive: true, force: true });
+  fs.writeFileSync(parent, 'a file now');
+  assert.ok(s.service.resolveForLaunch(a.id).ok);
+  assert.equal(s.service.resolveForLaunch(b.id).code, 'config-dir-rejected');
+});
+
+test('assign is gated by the same re-validation and keeps its source in the failure', (t) => {
+  const s = setup(t);
+  const a = claude(s, 'A').profile;
+  const b = claude(s, 'B').profile;
+  assert.ok(s.service.assign({ provider: 'claude', sessionOverride: a.id }).ok);
+  if (!replaceWithLink(t, a.configDir, s.repoRoot)) return;
+  const viaOverride = s.service.assign({ provider: 'claude', sessionOverride: a.id, roleGroupDefault: b.id });
+  assert.equal(viaOverride.code, 'config-dir-rejected');
+  assert.equal(viaOverride.source, 'session-override');
+  assert.equal(s.service.assign({ provider: 'claude', roleGroupDefault: a.id }).source, 'role-group-default');
+  assert.equal(s.service.assign({ provider: 'claude', roleGroupDefault: a.id }).code, 'config-dir-rejected');
+  assert.ok(s.service.assign({ provider: 'claude', sessionOverride: b.id }).ok, 'a healthy profile is unaffected');
+});
+
+test('an empty or null session choice means no choice: the role group default is used', (t) => {
+  const s = setup(t);
+  const a = claude(s, 'A').profile;
+  for (const empty of ['', null, undefined]) {
+    assert.deepEqual(s.service.assign({ provider: 'claude', sessionOverride: empty, roleGroupDefault: a.id }), { ok: true, accountProfileId: a.id, source: 'role-group-default' });
+    assert.equal(s.service.assign({ provider: 'claude', sessionOverride: empty, roleGroupDefault: empty }).code, 'no-account-assigned');
+  }
+});
+
+test('a secret reference that was set cannot be replaced or cleared (the old secret would be orphaned)', (t) => {
+  const s = setup(t);
+  const { profile } = claude(s, 'Keyed');
+  assert.equal(profile.secretRef, null);
+  const first = s.service.update(profile.id, { secretRef: 'secret:accounts/key-1' });
+  assert.ok(first.ok, 'setting it for the first time is allowed');
+  assert.equal(s.service.update(profile.id, { secretRef: 'secret:accounts/key-2' }).code, 'secret-ref-locked');
+  assert.equal(s.service.update(profile.id, { secretRef: null }).code, 'secret-ref-locked');
+  assert.equal(s.service.update(profile.id, { secretRef: 'secret:accounts/key-1' }).code, 'nothing-to-change');
+  assert.equal(s.service.get(profile.id).profile.secretRef, 'secret:accounts/key-1');
+});
+
+test('a folder whose type cannot be read (permission error) is refused, not assumed fine', (t) => {
+  const s = setup(t);
+  const { profile } = claude(s, 'Locked');
+  const denied = new AccountProfileService({
+    store: s.store,
+    context: { isDirectory: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }
+  });
+  const result = denied.resolveForLaunch(profile.id);
+  assert.equal(result.code, 'config-dir-rejected');
+  assert.ok(result.problems.includes('config-dir-unreadable'));
+  const missing = new AccountProfileService({
+    store: s.store,
+    context: { isDirectory: () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } }
+  });
+  assert.ok(missing.resolveForLaunch(profile.id).ok, 'ENOENT means not created yet');
+});
