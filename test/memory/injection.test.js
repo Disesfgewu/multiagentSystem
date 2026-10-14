@@ -188,3 +188,95 @@ test('unresolvable locations are rejected, not treated as missing', (t) => {
   };
   assert.throws(() => planInjection(claudeOptions(p, { context: { realpath } })), /private-root-unresolvable/);
 });
+
+function written(t, extra) {
+  const p = paths(t);
+  const plan = planInjection(claudeOptions(p, extra));
+  writePlan(plan);
+  return { p, plan, file: plan.files[0].path, sessionDir: path.dirname(plan.files[0].path) };
+}
+
+test('cleanup removes exactly what the plan created and reports it', (t) => {
+  const { p, plan, file } = written(t);
+  assert.equal(fs.existsSync(file), true);
+  const first = cleanupPlan(plan);
+  assert.deepEqual(first, { removed: 4, skipped: [] }, 'the file and the three directories this call created');
+  assert.equal(fs.existsSync(p.privateDir), false);
+  assert.deepEqual(cleanupPlan(plan), { removed: 0, skipped: [] }, 'a second cleanup is a no-op');
+});
+
+test('a file replaced by another file of the same name is not deleted (different content)', (t) => {
+  const { plan, file } = written(t);
+  fs.unlinkSync(file);
+  fs.writeFileSync(file, 'unrelated replacement');
+  const result = cleanupPlan(plan);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'unrelated replacement', 'the replacement survived');
+  assert.ok(result.skipped.some((entry) => entry.kind === 'file' && ['replaced', 'content-changed'].includes(entry.reason)));
+  assert.equal(JSON.stringify(result).includes(path.basename(file)), false, 'the report carries no path');
+});
+
+test('a file replaced by one with identical content but a different identity is not deleted', (t) => {
+  const { plan, file, sessionDir } = written(t);
+  const original = fs.readFileSync(file, 'utf8');
+  fs.renameSync(file, path.join(sessionDir, 'moved-away.md'));
+  fs.writeFileSync(file, original);
+  const result = cleanupPlan(plan);
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+  assert.ok(result.skipped.some((entry) => entry.kind === 'file' && entry.reason === 'replaced'));
+});
+
+test('a file whose content was changed in place is not deleted', (t) => {
+  const { plan, file } = written(t);
+  fs.appendFileSync(file, '\nsomeone added a line');
+  const result = cleanupPlan(plan);
+  assert.equal(fs.existsSync(file), true);
+  assert.ok(result.skipped.some((entry) => entry.reason === 'content-changed'));
+});
+
+test('a file replaced by a link is not followed or removed', (t) => {
+  const { p, plan, file } = written(t);
+  const target = path.join(p.repoRoot, 'precious.txt');
+  fs.writeFileSync(target, 'precious');
+  fs.unlinkSync(file);
+  try {
+    fs.symlinkSync(target, file, 'file');
+  } catch (error) {
+    t.skip(`cannot create a file link here: ${error.code}`);
+    return;
+  }
+  const result = cleanupPlan(plan);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'precious');
+  assert.ok(result.skipped.some((entry) => entry.reason === 'replaced-by-link'));
+});
+
+test('a directory replaced by another directory is not removed, and a non-empty one is never emptied', (t) => {
+  const { p, plan, file, sessionDir } = written(t);
+  const aside = path.join(p.root, 'aside');
+  fs.renameSync(sessionDir, aside);       // the original keeps its identity elsewhere
+  fs.mkdirSync(sessionDir);               // an unrelated directory takes the name
+  const result = cleanupPlan(plan);
+  assert.equal(fs.existsSync(sessionDir), true, 'the replacement directory survived');
+  assert.ok(result.skipped.some((entry) => entry.kind === 'dir' && entry.reason === 'replaced'));
+  assert.equal(fs.existsSync(path.join(aside, path.basename(file))), true, 'what was moved away is untouched');
+});
+
+test('a plan whose files were written by this call, but whose directory gained someone else\'s file, keeps that file', (t) => {
+  const { plan, file, sessionDir } = written(t);
+  fs.writeFileSync(path.join(sessionDir, 'someone-elses.txt'), 'keep me');
+  const result = cleanupPlan(plan);
+  assert.equal(fs.existsSync(file), false, 'our file is removed');
+  assert.equal(fs.readFileSync(path.join(sessionDir, 'someone-elses.txt'), 'utf8'), 'keep me');
+  assert.ok(result.skipped.some((entry) => entry.kind === 'dir' && entry.reason === 'not-empty'));
+});
+
+test('a failure while writing removes only what was created, by the same identity rules', (t) => {
+  const p = paths(t);
+  const plan = planInjection(claudeOptions(p));
+  plan.files.push({ path: path.join(path.dirname(plan.files[0].path), 'second.md'), content: 'x' });
+  fs.mkdirSync(path.dirname(plan.files[0].path), { recursive: true });
+  fs.writeFileSync(plan.files[1].path, 'already there');
+  const before = fs.readdirSync(path.dirname(plan.files[0].path)).sort();
+  assert.throws(() => writePlan(plan), /private-path-exists/);
+  assert.deepEqual(fs.readdirSync(path.dirname(plan.files[0].path)).sort(), before, 'nothing of ours, nothing of theirs removed');
+  assert.equal(fs.readFileSync(plan.files[1].path, 'utf8'), 'already there');
+});

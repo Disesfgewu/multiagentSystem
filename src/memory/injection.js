@@ -1,9 +1,10 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const { LAYERS } = require('./rules');
-const { checkPrivateRoot, contextOf, isSameOrInside } = require('./paths');
+const { checkPrivateRoot, resolvers, isSameOrInside } = require('./paths');
 
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -97,6 +98,15 @@ const lstatOrNull = (target) => {
   }
 };
 
+// What a created file or directory was at creation time. Removal later requires
+// the same object to still be at that path, so a name that was replaced by
+// someone else's file or directory is never deleted because it shares a path.
+// `ino` of 0 means the file system does not report a usable identity.
+const identityOf = (stat) => ({ dev: stat.dev, ino: stat.ino });
+const sameIdentity = (stat, identity) => identity.ino !== 0n && stat.dev === identity.dev && stat.ino === identity.ino;
+const digestOf = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+const lstatBig = (target) => fs.lstatSync(target, { bigint: true });
+
 // Directories we use must belong to the current user. Windows has no uid; its
 // access control is the user profile's default and is not verified here.
 function assertOwned(stat) {
@@ -115,7 +125,7 @@ function assertOutsideRepo(target, plan, context) {
 // is a link, junction, file or someone else's directory is refused, and the
 // final resolved location is checked against the repository again.
 function ensureDirectory(plan, dir, created, context) {
-  const { platform, realpath } = contextOf(context);
+  const { platform, realpath } = resolvers(context);
   const root = nodePath.resolve(plan.root);
   const target = nodePath.resolve(dir);
   const rel = nodePath.relative(root, target);
@@ -128,7 +138,7 @@ function ensureDirectory(plan, dir, created, context) {
     for (let current = root; !lstatOrNull(current); current = nodePath.dirname(current)) missing.unshift(current);
     for (const directory of missing) {
       fs.mkdirSync(directory, { mode: 0o700 });
-      created.push({ path: directory, kind: 'dir' });
+      created.push({ path: directory, kind: 'dir', identity: identityOf(lstatBig(directory)) });
     }
   }
   const rootStat = fs.statSync(root);
@@ -142,7 +152,7 @@ function ensureDirectory(plan, dir, created, context) {
     const entry = lstatOrNull(current);
     if (!entry) {
       fs.mkdirSync(current, { mode: 0o700 });
-      created.push({ path: current, kind: 'dir' });
+      created.push({ path: current, kind: 'dir', identity: identityOf(lstatBig(current)) });
       return;
     }
     if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error('private-path-not-a-directory');
@@ -159,19 +169,45 @@ function ensureDirectory(plan, dir, created, context) {
   }
 }
 
+// Removes only what this plan created, and only if it is still the same object:
+// a file must have the identity and the exact content that was written, a
+// directory the identity it was created with. Anything else is left alone and
+// reported by kind and reason (never by path).
 function removeCreated(created) {
+  const result = { removed: 0, skipped: [] };
   for (const item of [...created].reverse()) {
+    const skip = (reason) => result.skipped.push({ kind: item.kind, reason });
+    let entry;
     try {
-      const entry = lstatOrNull(item.path);
-      if (!entry || entry.isSymbolicLink()) continue;
-      if (item.kind === 'file' && entry.isFile()) fs.unlinkSync(item.path);
-      else if (item.kind === 'dir' && entry.isDirectory()) fs.rmdirSync(item.path);
+      entry = lstatBig(item.path);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      skip(error.code || 'unreadable');
+      continue;
+    }
+    if (entry.isSymbolicLink()) { skip('replaced-by-link'); continue; }
+    if (!sameIdentity(entry, item.identity)) { skip(item.identity.ino === 0n ? 'identity-unavailable' : 'replaced'); continue; }
+    try {
+      if (item.kind === 'file') {
+        if (!entry.isFile()) { skip('replaced'); continue; }
+        if (entry.size !== BigInt(item.size) || digestOf(fs.readFileSync(item.path)) !== item.digest) {
+          skip('content-changed');
+          continue;
+        }
+        fs.unlinkSync(item.path);
+      } else {
+        if (!entry.isDirectory()) { skip('replaced'); continue; }
+        fs.rmdirSync(item.path);
+      }
+      result.removed += 1;
     } catch (error) {
       // A directory that is no longer empty belongs to someone else now.
-      if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(error.code)) throw error;
+      if (['ENOTEMPTY', 'EEXIST'].includes(error.code)) skip('not-empty');
+      else if (error.code !== 'ENOENT') throw error;
     }
   }
   created.length = 0;
+  return result;
 }
 
 // Files are created exclusively (never over an existing file, so permissions on
@@ -184,15 +220,23 @@ function writePlan(plan, context) {
     for (const file of plan.files) {
       ensureDirectory(plan, nodePath.dirname(file.path), created, context);
       const descriptor = fs.openSync(file.path, 'wx', 0o600);
-      created.push({ path: file.path, kind: 'file' });
+      const entry = { path: file.path, kind: 'file', identity: null, size: 0, digest: null };
+      created.push(entry);
       try {
-        fs.writeFileSync(descriptor, file.content);
+        const bytes = Buffer.from(file.content);
+        fs.writeFileSync(descriptor, bytes);
+        entry.identity = identityOf(fs.fstatSync(descriptor, { bigint: true }));
+        entry.size = bytes.length;
+        entry.digest = digestOf(bytes);
       } finally {
         fs.closeSync(descriptor);
       }
-      assertOutsideRepo(contextOf(context).realpath(nodePath.dirname(file.path)), plan, context);
+      assertOutsideRepo(resolvers(context).realpath(nodePath.dirname(file.path)), plan, context);
     }
   } catch (error) {
+    // Whatever was created before the failure is removed by the same rules; an
+    // entry whose identity was not recorded yet is left alone rather than guessed.
+    for (const item of created) if (item.kind === 'file' && !item.identity) item.identity = { dev: 0n, ino: 0n };
     removeCreated(created);
     throw error;
   }
@@ -202,7 +246,7 @@ function writePlan(plan, context) {
 // Removes only what writePlan created for this plan. It never deletes
 // recursively, so unrelated files that appeared later are left alone.
 function cleanupPlan(plan) {
-  if (plan.created) removeCreated(plan.created);
+  return plan.created ? removeCreated(plan.created) : { removed: 0, skipped: [] };
 }
 
 module.exports = { renderContext, planInjection, writePlan, cleanupPlan };

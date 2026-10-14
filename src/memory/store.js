@@ -4,13 +4,13 @@ const fs = require('node:fs');
 const nodePath = require('node:path');
 const crypto = require('node:crypto');
 const { checkPrivateRoot } = require('./paths');
+const { DirectoryLock, LockIoError } = require('./lock');
 const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
 
 const SCHEMA_VERSION = 1;
 const MAX_CONTENT_CHARS = 2000;
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_LOCK = Object.freeze({ retries: 100, waitMs: 20, staleMs: 30000 });
 
 const normalize = (text) => text.toLowerCase().replace(/\s+/g, ' ').trim();
 
@@ -34,6 +34,10 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// Windows has no uid; its access control is the user profile's default and is
+// not verified here.
+const ownedByCurrentUser = (stat) => typeof process.getuid !== 'function' || stat.uid === process.getuid();
+
 class MemoryStore {
   constructor({ dir, repoRoot, now = () => Date.now(), context, lock } = {}) {
     const check = checkPrivateRoot(dir, repoRoot, context);
@@ -43,10 +47,30 @@ class MemoryStore {
       throw error;
     }
     this.dir = dir;
+    this.repoRoot = repoRoot;
+    this.context = context;
     this.file = nodePath.join(dir, 'memory.json');
-    this.lockFile = nodePath.join(dir, 'memory.lock');
     this.now = now;
-    this.lockOptions = { ...DEFAULT_LOCK, ...lock };
+    this.lock = new DirectoryLock(nodePath.join(dir, 'memory.lock'), lock);
+  }
+
+  // The directory was checked when the store was built, but it can be replaced
+  // later (for example by a link into the repository). It is checked again on
+  // every read and write, and the file itself must be a regular file, not a link.
+  // There is an unavoidable window between this check and the operation that
+  // follows; the directory is expected to be private to the user.
+  #directoryProblem() {
+    const check = checkPrivateRoot(this.dir, this.repoRoot, this.context);
+    if (!check.ok) return check.problems.join(',');
+    let stat;
+    try {
+      stat = fs.statSync(this.dir);
+    } catch (error) {
+      return error.code === 'ENOENT' ? null : error.code || 'unknown';
+    }
+    if (!stat.isDirectory()) return 'not-a-directory';
+    if (!ownedByCurrentUser(stat)) return 'not-owned';
+    return null;
   }
 
   // The file on disk is the only source of truth and is read fresh on every
@@ -54,8 +78,12 @@ class MemoryStore {
   // that cannot be parsed or has another schema version is reported, never
   // treated as empty, and is never overwritten.
   #read() {
+    const problem = this.#directoryProblem();
+    if (problem) return { state: 'unsafe-path', detail: problem, items: [] };
     let text;
     try {
+      const stat = fs.lstatSync(this.file);
+      if (stat.isSymbolicLink() || !stat.isFile()) return { state: 'unsafe-path', detail: 'not-a-regular-file', items: [] };
       text = fs.readFileSync(this.file, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return { state: 'ok', items: [] };
@@ -78,45 +106,60 @@ class MemoryStore {
     return { ok: state === 'ok', reason: state === 'ok' ? null : state };
   }
 
-  #acquire() {
-    const { retries, waitMs, staleMs } = this.lockOptions;
-    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
-      try {
-        const descriptor = fs.openSync(this.lockFile, 'wx', 0o600);
-        fs.writeSync(descriptor, `${process.pid}\n`);
-        fs.closeSync(descriptor);
-        return true;
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        try {
-          if (Date.now() - fs.statSync(this.lockFile).mtimeMs > staleMs) {
-            fs.unlinkSync(this.lockFile);
-            continue;
-          }
-        } catch {
-          continue;
-        }
-        sleep(waitMs);
-      }
-    }
-    return false;
-  }
-
-  #release() {
+  // The single-writer lock is advisory and per directory (see lock.js). It is
+  // never taken from a writer that might still be running: a held lock makes the
+  // call return `locked` with who seems to hold it, and a dead holder is cleared
+  // only by an explicit `recoverLock`.
+  #lock() {
+    // Check before creating anything, so a link into the repository cannot cause
+    // directories to be created there, then again once the directory exists.
+    const before = checkPrivateRoot(this.dir, this.repoRoot, this.context);
+    if (!before.ok) return { ok: false, reason: 'directory-rejected', detail: before.problems.join(',') };
     try {
-      fs.unlinkSync(this.lockFile);
-    } catch {
-      // Already removed as stale by another writer.
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      return { ok: false, reason: 'directory-rejected', detail: error.code || 'unknown' };
+    }
+    const problem = this.#directoryProblem();
+    if (problem) return { ok: false, reason: 'directory-rejected', detail: problem };
+    let got;
+    try {
+      got = this.lock.acquire();
+    } catch (error) {
+      if (error instanceof LockIoError) return { ok: false, reason: 'lock-failed', detail: error.code };
+      throw error;
+    }
+    return got.ok ? { ok: true, token: got.token } : { ok: false, reason: 'locked', detail: got.detail };
+  }
+
+  inspectLock() {
+    try {
+      const { held, detail, ageMs, stale } = this.lock.inspect();
+      return held ? { ok: true, held, detail, ageMs, stale } : { ok: true, held: false };
+    } catch (error) {
+      if (error instanceof LockIoError) return { ok: false, reason: 'lock-failed', detail: error.code };
+      throw error;
     }
   }
 
-  // One writer at a time (lock file), always re-reading inside the lock, then a
-  // temp file plus rename so a crash never leaves a half-written memory file.
-  // The lock is advisory and per directory: it does not protect against a
-  // process that ignores it, nor across a network file system.
+  // Clears a lock whose owner is provably gone. `force` is for a stale lock whose
+  // owner a program cannot judge (another host, unreadable, or a reused process
+  // id); it still requires the lock to be older than the stale age.
+  recoverLock(options) {
+    try {
+      const { text, ...rest } = this.lock.recover(options);
+      return rest;
+    } catch (error) {
+      if (error instanceof LockIoError) return { ok: false, reason: 'lock-failed', detail: error.code };
+      throw error;
+    }
+  }
+
+  // One writer at a time, always re-reading inside the lock, then a temp file
+  // plus rename so a crash never leaves a half-written memory file.
   #mutate(apply) {
-    if (!this.#acquire()) return { ok: false, reason: 'locked' };
+    const lock = this.#lock();
+    if (!lock.ok) return lock;
     try {
       const current = this.#read();
       if (current.state !== 'ok') return { ok: false, reason: 'store-unavailable', detail: current.state };
@@ -124,7 +167,7 @@ class MemoryStore {
       if (outcome.changed) this.#write(current.items);
       return outcome.result;
     } finally {
-      this.#release();
+      this.lock.release(lock.token);
     }
   }
 

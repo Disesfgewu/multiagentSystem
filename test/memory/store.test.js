@@ -202,20 +202,73 @@ test('a corrupt or unsupported file is preserved, reported and never overwritten
   }
 });
 
-test('a held lock makes writes fail with a reason; a stale lock is recovered', (t) => {
-  const { dir, repoRoot } = setup(t);
-  fs.mkdirSync(dir, { recursive: true });
-  const lock = path.join(dir, 'memory.lock');
-  const quick = { retries: 2, waitMs: 1, staleMs: 60000 };
 
-  fs.writeFileSync(lock, 'someone else\n');
-  const held = new MemoryStore({ dir, repoRoot, lock: quick });
-  assert.deepEqual(held.propose(note()), { ok: false, reason: 'locked' });
-  assert.equal(fs.existsSync(lock), true, 'a live lock is not removed');
+function linkOrSkip(t, target, link) {
+  try {
+    fs.symlinkSync(target, link, 'junction');
+    return true;
+  } catch (error) {
+    t.skip(`cannot create a directory link here: ${error.code}`);
+    return false;
+  }
+}
 
-  const old = new Date(Date.now() - 120000);
-  fs.utimesSync(lock, old, old);
-  const recovered = new MemoryStore({ dir, repoRoot, lock: quick });
-  assert.equal(recovered.propose(note()).ok, true);
-  assert.equal(fs.existsSync(lock), false);
+test('a directory replaced by a link into the repository after construction is refused on write and read', (t) => {
+  const { dir, repoRoot, store } = setup(t);
+  assert.equal(store.propose(note()).ok, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir);
+  fs.rmdirSync(dir);
+  if (!linkOrSkip(t, repoRoot, dir)) return;
+
+  const result = store.propose(note({ content: 'Another note about the release packaging steps.' }));
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'directory-rejected');
+  assert.deepEqual(fs.readdirSync(repoRoot), [], 'nothing was written into the repository');
+  assert.equal(store.adopt('mem_x', human).reason, 'directory-rejected');
+  assert.equal(store.status().reason, 'unsafe-path');
+  assert.deepEqual(store.list(), []);
+  assert.equal(store.select({ ...scopeA, task: 'release packaging' }).unavailable, 'unsafe-path');
+});
+
+test('a link swapped in above a directory that did not exist yet creates nothing in the repository', (t) => {
+  const s = setup(t);
+  const outer = path.join(s.root, 'outer');
+  fs.mkdirSync(outer);
+  const dir = path.join(outer, 'link', 'data');
+  const store = new MemoryStore({ dir, repoRoot: s.repoRoot });
+  if (!linkOrSkip(t, s.repoRoot, path.join(outer, 'link'))) return;
+  const result = store.propose(note());
+  assert.deepEqual([result.ok, result.reason], [false, 'directory-rejected']);
+  assert.deepEqual(fs.readdirSync(s.repoRoot), [], 'the check runs before any directory is created');
+});
+
+test('memory.json that is a link, or not a regular file, is never followed', (t) => {
+  const { dir, repoRoot, store } = setup(t);
+  fs.mkdirSync(dir);
+  const target = path.join(repoRoot, 'planted.json');
+  fs.writeFileSync(target, JSON.stringify({ schemaVersion: 1, items: [] }));
+  try {
+    fs.symlinkSync(target, path.join(dir, 'memory.json'), 'file');
+  } catch (error) {
+    t.skip(`cannot create a file link here: ${error.code}`);
+    return;
+  }
+  assert.equal(store.status().reason, 'unsafe-path');
+  assert.equal(store.propose(note()).reason, 'store-unavailable');
+  assert.equal(fs.readFileSync(target, 'utf8').includes('mem_'), false);
+  fs.rmSync(path.join(dir, 'memory.json'));
+  fs.mkdirSync(path.join(dir, 'memory.json'));
+  assert.equal(store.status().reason, 'unsafe-path');
+});
+
+test('a directory owned by someone else is refused', (t) => {
+  if (typeof process.getuid !== 'function') { t.skip('no uid on this platform'); return; }
+  const { dir, store } = setup(t);
+  store.propose(note());
+  t.mock.method(process, 'getuid', () => 424242);
+  assert.deepEqual([store.propose(note({ content: 'A different note about test fixtures.' })).reason, store.status().reason],
+    ['directory-rejected', 'unsafe-path']);
+  t.mock.restoreAll();
+  assert.equal(fs.existsSync(path.join(dir, 'memory.json')), true);
 });
