@@ -1,0 +1,34 @@
+name: GitHub read adapter
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        # 20 is the oldest runtime we target (VS Code's extension host); 24 is current.
+        node: ['20', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/github-read-adapter
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      # The package has no dependencies, so there is nothing to install. The tests use
+      # synthetic data and an injected transport: no network, no tokens, no GitHub writes.
+      - run: npm test
