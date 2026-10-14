@@ -17,6 +17,7 @@ const path = require('node:path');
 const { PROVIDERS, validateProfile, findConfigDirConflicts, buildLaunchEnv } =
   require('../../src/accounts/profile');
 const observation = require('../../src/accounts/observation');
+const { reportEntry, profileReadiness, fleetReadiness } = require('../../src/accounts/readiness');
 
 const TIMEOUT_MS = 20000;
 const shell = process.platform === 'win32'; // .cmd shims; arguments below are constants
@@ -139,20 +140,12 @@ async function main() {
       ? await inspect(profile, env, observedAt)
       : { identity: null, quota: [] };
     if (result.identity) identities.push(result.identity);
-    const identity = result.identity;
+    const entry = reportEntry(profile.id, { validation, blockers, identity: result.identity });
+    const readiness = profileReadiness(entry);
     report.push({
-      id: profile.id,
-      configDirProblems: validation.problems,
-      launchBlockers: blockers.map((b) => b.variable),
-      loggedIn: identity ? identity.loggedIn : null,
-      authMethod: identity ? identity.authMethod : null,
-      apiProvider: identity ? identity.apiProvider : null,
-      configDirMatches: identity ? identity.configDirMatches : null,
-      anomalies: identity ? identity.anomalies : [],
-      subject: identity ? identity.subject.confidence : 'unknown',
-      subjectReason: identity
-        ? identity.subject.reason || null
-        : (validation.ok ? 'cli-unavailable-or-error' : 'not-inspected-invalid-profile'),
+      ...entry,
+      ready: readiness.ready,
+      readyReasons: readiness.reasons,
       quota: result.quota.map((q) => ({
         field: q.field, value: q.value, unit: q.unit, confidence: q.confidence, reason: q.reason || null
       }))
@@ -160,10 +153,8 @@ async function main() {
   }
 
   const groups = observation.groupBySubject(identities);
-  const ready = report.every((r) =>
-    r.configDirProblems.length === 0 && r.launchBlockers.length === 0 && r.loggedIn === true &&
-    r.subject === 'actual' && r.configDirMatches !== false && r.anomalies.length === 0) &&
-    conflicts.length === 0 && groups.duplicates.length === 0;
+  const fleet = fleetReadiness(report, { conflicts, duplicates: groups.duplicates });
+  const ready = fleet.ready;
 
   console.log(JSON.stringify({
     observedAt,
@@ -175,7 +166,8 @@ async function main() {
     profiles: report,
     dirConflicts: conflicts,
     duplicateAccounts: groups.duplicates,
-    ready
+    ready,
+    readyReasons: fleet.reasons
   }, null, 2));
   return ready ? 0 : 1;
 }

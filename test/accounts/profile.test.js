@@ -2,9 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateProfile, findConfigDirConflicts, buildLaunchEnv } = require('../../src/accounts/profile');
+const {
+  validateProfile, findConfigDirConflicts, buildLaunchEnv, sameDirectory
+} = require('../../src/accounts/profile');
 
 const identity = (value) => value;
+const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code });
 const posix = { platform: 'darwin', homeDir: '/home/user', repoRoot: '/work/project', realpath: identity };
 const win = {
   platform: 'win32',
@@ -60,7 +63,7 @@ test('follows symlinks, including through a directory that does not exist yet', 
   const realpath = (value) => {
     if (value === '/exists/link') return '/work/project/inner';
     if (value === '/exists' || value === '/work/project' || value === '/') return value;
-    throw new Error('ENOENT');
+    throw failure('ENOENT');
   };
   const result = validateProfile(
     profile({ configDir: '/exists/link/new-account' }),
@@ -155,4 +158,65 @@ test('Codex credential overrides are blocked too', () => {
     posix
   );
   assert.deepEqual(blockers.map((entry) => entry.variable), ['OPENAI_API_KEY', 'CODEX_API_KEY']);
+});
+
+test('permission and resolution errors fail closed instead of looking like a missing directory', () => {
+  const realpath = (value) => {
+    if (value === '/opaque/link') throw failure('EACCES');
+    if (['/opaque', '/work/project', '/'].includes(value)) return value;
+    throw failure('ENOENT');
+  };
+  const ctx = { ...posix, realpath };
+  assert.deepEqual(validateProfile(profile({ configDir: '/opaque/link' }), ctx),
+    { ok: false, problems: ['config-dir-unresolvable'] });
+  assert.deepEqual(validateProfile(profile({ configDir: '/opaque/link/new' }), ctx).problems,
+    ['config-dir-unresolvable']);
+  // An ordinary not-yet-created subdirectory of an existing parent is accepted.
+  assert.deepEqual(validateProfile(profile({ configDir: '/opaque/fresh/new' }), ctx), { ok: true, problems: [] });
+});
+
+test('ENOTDIR, ELOOP and errors without a code are all unresolvable', () => {
+  for (const make of [() => failure('ENOTDIR'), () => failure('ELOOP'), () => new Error('no code')]) {
+    const realpath = (value) => {
+      if (value === '/data/file/acct') throw make();
+      if (value === '/work/project') return value;
+      throw failure('ENOENT');
+    };
+    const result = validateProfile(profile({ configDir: '/data/file/acct' }), { ...posix, realpath });
+    assert.deepEqual(result.problems, ['config-dir-unresolvable']);
+  }
+});
+
+test('an unresolvable repository root is reported rather than ignored', () => {
+  const realpath = (value) => {
+    if (value === '/work/project') throw failure('EACCES');
+    throw failure('ENOENT');
+  };
+  const result = validateProfile(profile(), { ...posix, realpath });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.problems, ['repo-root-unresolvable']);
+});
+
+test('conflict detection reports unresolvable directories instead of skipping them', () => {
+  const realpath = (value) => {
+    if (value.startsWith('/opaque')) throw failure('EACCES');
+    throw failure('ENOENT');
+  };
+  const profiles = [
+    profile({ id: 'a', configDir: '/opaque/a' }),
+    profile({ id: 'b', configDir: '/home/user/accounts/b' })
+  ];
+  assert.deepEqual(findConfigDirConflicts(profiles, { ...posix, realpath }),
+    [{ a: 'a', b: null, kind: 'unresolvable' }]);
+});
+
+test('sameDirectory is unknown (null) when either side cannot be resolved', () => {
+  const realpath = (value) => {
+    if (value === '/opaque') throw failure('EACCES');
+    throw failure('ENOENT');
+  };
+  const ctx = { ...posix, realpath };
+  assert.equal(sameDirectory('/opaque', '/data/a', ctx), null);
+  assert.equal(sameDirectory('/data/a', '/data/a/', ctx), true);
+  assert.equal(sameDirectory('/data/a', '/data/b', ctx), false);
 });

@@ -17,6 +17,14 @@ function toIso(value) {
   return new Date(value).toISOString();
 }
 
+function toTime(value) {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+function isPercent(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
 function unknown(field, { source, observedAt, reason }) {
   return {
     field,
@@ -36,6 +44,9 @@ function observe(field, value, options) {
   if (value === null || value === undefined) {
     return unknown(field, { source, observedAt, reason });
   }
+  if (unit === 'percent' && !isPercent(value)) {
+    return unknown(field, { source, observedAt, reason: 'invalid-value' });
+  }
   return {
     field,
     value,
@@ -48,16 +59,38 @@ function observe(field, value, options) {
   };
 }
 
-// Only fresh, service-reported values may gate new work. Estimates and values
-// with no stated lifetime can warn but never block or allow by themselves.
+// Only fresh, service-reported values may gate new work. Estimates, values with
+// no usable lifetime, samples from the future and out-of-range percentages can
+// warn but never block or allow by themselves. The lifetime ends exactly at
+// observedAt + validForMs, which for quota readings never passes the reset.
 function isGateEligible(observation, now) {
   if (observation.confidence !== CONFIDENCE.ACTUAL) return false;
-  if (observation.value === null || observation.validForMs === null) return false;
-  return Date.parse(observation.observedAt) + observation.validForMs >= toTime(now);
+  if (observation.value === null || observation.value === undefined) return false;
+  if (observation.unit === 'percent' && !isPercent(observation.value)) return false;
+
+  const observedMs = Date.parse(observation.observedAt);
+  const nowMs = toTime(now);
+  if (!Number.isFinite(observedMs) || !Number.isFinite(nowMs)) return false;
+  if (observedMs > nowMs) return false;
+
+  const lifetime = observation.validForMs;
+  if (typeof lifetime !== 'number' || !Number.isFinite(lifetime) || lifetime <= 0) return false;
+  return nowMs < observedMs + lifetime;
 }
 
-function toTime(value) {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+// Lifetime of a quota reading: the configured TTL, cut short so it never
+// reaches the window's reset instant when that is known.
+function quotaLifetime(ttlMs, nowMs, resetsMs) {
+  const cap = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : QUOTA_TTL_MS;
+  return resetsMs === null ? cap : Math.min(cap, resetsMs - nowMs);
+}
+
+// `resetsAt` has no documented unit in the protocol schema. Magnitude separates
+// seconds (~1.7e9) from milliseconds (~1.7e12); the result is only used to
+// shorten a reading's lifetime, so a wrong guess cannot extend it.
+function codexResetMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return value < 1e11 ? value * 1000 : value;
 }
 
 // Opaque, in-memory comparison key for "is this the same real account". The
@@ -124,20 +157,21 @@ function claudeQuotaFromStatusLine(payload, { profileId, observedAt, ttlMs = QUO
     const reasonMissing = limits
       ? 'window-absent'
       : 'rate_limits-absent (subscription accounts only, after first API response)';
-    const resetsMs = window && Number.isFinite(window.resets_at) ? window.resets_at * 1000 : null;
+    const rawReset = window ? window.resets_at : undefined;
+    const resetGiven = rawReset !== undefined && rawReset !== null;
+    const resetsMs = resetGiven && Number.isFinite(rawReset) && rawReset > 0 ? rawReset * 1000 : null;
+    const resetInvalid = resetGiven && resetsMs === null;
     const expired = resetsMs !== null && resetsMs <= nowMs;
-    const base = { source, observedAt, scope, validForMs: ttlMs };
+    let reason = reasonMissing;
+    if (expired) reason = 'window-reset-passed';
+    else if (resetInvalid) reason = 'invalid-reset';
+    const usable = Boolean(window) && !expired && !resetInvalid;
+    const base = { source, observedAt, scope, validForMs: quotaLifetime(ttlMs, nowMs, resetsMs) };
 
-    out.push(observe(
-      `quota.${name}.used_percent`,
-      !expired && window ? window.used_percentage : null,
-      { ...base, unit: 'percent', reason: expired ? 'window-reset-passed' : reasonMissing }
-    ));
-    out.push(observe(
-      `quota.${name}.resets_at`,
-      !expired && resetsMs !== null ? toIso(resetsMs) : null,
-      { ...base, unit: 'iso-8601', reason: expired ? 'window-reset-passed' : reasonMissing }
-    ));
+    out.push(observe(`quota.${name}.used_percent`, usable ? window.used_percentage : null,
+      { ...base, unit: 'percent', reason }));
+    out.push(observe(`quota.${name}.resets_at`, usable && resetsMs !== null ? toIso(resetsMs) : null,
+      { ...base, unit: 'iso-8601', reason }));
   }
   return { profileId, observations: out };
 }
@@ -175,10 +209,11 @@ function codexIdentityFromAccountRead(response, { profile, observedAt, codexHome
   };
 }
 
-// `resetsAt` has no documented unit in the protocol schema, so it is carried raw
-// and labelled; nothing derives a time from it.
+// The raw `resetsAt` value is carried and labelled as-is; the derived instant is
+// used only to end a reading's lifetime at the reset.
 function codexQuotaFromRateLimits(response, { profileId, observedAt, ttlMs = QUOTA_TTL_MS }) {
   const source = 'codex app-server account/rateLimits/read';
+  const nowMs = toTime(observedAt);
   const snapshots = response && response.rateLimitsByLimitId
     ? Object.entries(response.rateLimitsByLimitId)
     : [['default', response && response.rateLimits]];
@@ -191,11 +226,20 @@ function codexQuotaFromRateLimits(response, { profileId, observedAt, ttlMs = QUO
       const scope = window && Number.isFinite(window.windowDurationMins)
         ? `${window.windowDurationMins}-minute window reported by service`
         : 'window length not reported';
-      const base = { source, observedAt, scope, validForMs: ttlMs };
-      out.push(observe(`${prefix}.used_percent`, window ? window.usedPercent : null,
-        { ...base, unit: 'percent', reason: 'window-absent' }));
-      out.push(observe(`${prefix}.resets_at_raw`, window ? window.resetsAt : null,
-        { ...base, unit: 'epoch-unit-unspecified', reason: 'window-absent' }));
+      const rawReset = window ? window.resetsAt : undefined;
+      const resetGiven = rawReset !== undefined && rawReset !== null;
+      const resetsMs = resetGiven ? codexResetMs(rawReset) : null;
+      const resetInvalid = resetGiven && resetsMs === null;
+      const expired = resetsMs !== null && resetsMs <= nowMs;
+      let reason = 'window-absent';
+      if (expired) reason = 'window-reset-passed';
+      else if (resetInvalid) reason = 'invalid-reset';
+      const usable = Boolean(window) && !expired && !resetInvalid;
+      const base = { source, observedAt, scope, validForMs: quotaLifetime(ttlMs, nowMs, resetsMs) };
+      out.push(observe(`${prefix}.used_percent`, usable ? window.usedPercent : null,
+        { ...base, unit: 'percent', reason }));
+      out.push(observe(`${prefix}.resets_at_raw`, usable && resetGiven ? rawReset : null,
+        { ...base, unit: 'epoch-unit-unspecified', reason }));
     }
   }
   return { profileId, observations: out };

@@ -50,8 +50,19 @@ function isSameOrInside(p, platform, candidate, parent) {
   return !p.isAbsolute(rel);
 }
 
+// Raised when a path cannot be resolved for a reason other than "does not exist
+// yet". Only the error code is kept, never the path.
+class PathResolutionError extends Error {
+  constructor(code) {
+    super(`path-unresolvable:${code}`);
+    this.code = code;
+  }
+}
+
 // Resolve symlinks on the nearest existing ancestor so a not-yet-created
 // config directory cannot hide a link that points back into the repository.
+// Only ENOENT means "not created yet"; permission errors, loops, a file where a
+// directory is expected and anything unrecognised fail closed.
 function canonicalize(target, p, realpath) {
   const resolved = p.resolve(target);
   const tail = [];
@@ -60,7 +71,10 @@ function canonicalize(target, p, realpath) {
     try {
       const real = realpath(current);
       return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
-    } catch {
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+      }
       const parent = p.dirname(current);
       if (parent === current) return resolved;
       tail.push(p.basename(current));
@@ -78,13 +92,29 @@ function defaultContext(context) {
   };
 }
 
+function samePath(p, platform, left, right) {
+  return isSameOrInside(p, platform, left, right) && isSameOrInside(p, platform, right, left);
+}
+
+// true / false when both sides resolve, null when either cannot be resolved.
 function sameDirectory(a, b, context) {
   const ctx = defaultContext(context);
   const p = pathFor(ctx.platform);
-  const left = canonicalize(a, p, ctx.realpath);
-  const right = canonicalize(b, p, ctx.realpath);
-  return isSameOrInside(p, ctx.platform, left, right) &&
-    isSameOrInside(p, ctx.platform, right, left);
+  try {
+    return samePath(p, ctx.platform, canonicalize(a, p, ctx.realpath), canonicalize(b, p, ctx.realpath));
+  } catch (error) {
+    if (error instanceof PathResolutionError) return null;
+    throw error;
+  }
+}
+
+function tryCanonicalize(target, p, realpath) {
+  try {
+    return { value: canonicalize(target, p, realpath) };
+  } catch (error) {
+    if (error instanceof PathResolutionError) return { code: error.code };
+    throw error;
+  }
 }
 
 function validateProfile(profile, context) {
@@ -107,35 +137,45 @@ function validateProfile(profile, context) {
     return { ok: false, problems };
   }
 
-  const dir = canonicalize(profile.configDir, p, ctx.realpath);
-  const repo = canonicalize(ctx.repoRoot, p, ctx.realpath);
-  const providerDefault = canonicalize(
+  const dir = tryCanonicalize(profile.configDir, p, ctx.realpath);
+  const repo = tryCanonicalize(ctx.repoRoot, p, ctx.realpath);
+  const providerDefault = tryCanonicalize(
     p.join(ctx.homeDir, PROVIDERS[profile.provider].defaultDirName),
     p,
     ctx.realpath
   );
+  if (dir.code) problems.push('config-dir-unresolvable');
+  if (repo.code) problems.push('repo-root-unresolvable');
+  if (providerDefault.code) problems.push('provider-default-unresolvable');
 
-  if (isSameOrInside(p, ctx.platform, dir, repo)) problems.push('config-dir-inside-repo');
-  if (isSameOrInside(p, ctx.platform, repo, dir)) problems.push('config-dir-contains-repo');
-  if (sameDirectory(dir, providerDefault, ctx)) problems.push('config-dir-is-provider-default');
+  if (dir.value && repo.value) {
+    if (isSameOrInside(p, ctx.platform, dir.value, repo.value)) problems.push('config-dir-inside-repo');
+    if (isSameOrInside(p, ctx.platform, repo.value, dir.value)) problems.push('config-dir-contains-repo');
+  }
+  if (dir.value && providerDefault.value && samePath(p, ctx.platform, dir.value, providerDefault.value)) {
+    problems.push('config-dir-is-provider-default');
+  }
 
   return { ok: problems.length === 0, problems };
 }
 
-// Two profiles must never read or write the same configuration tree.
+// Two profiles must never read or write the same configuration tree. A profile
+// whose directory cannot be resolved is reported instead of being skipped.
 function findConfigDirConflicts(profiles, context) {
   const ctx = defaultContext(context);
   const p = pathFor(ctx.platform);
-  const dirs = profiles.map((profile) => ({
-    id: profile.id,
-    dir: canonicalize(profile.configDir, p, ctx.realpath)
-  }));
   const conflicts = [];
+  const dirs = [];
+  for (const profile of profiles) {
+    const resolved = tryCanonicalize(profile.configDir, p, ctx.realpath);
+    if (resolved.code) conflicts.push({ a: profile.id, b: null, kind: 'unresolvable' });
+    else dirs.push({ id: profile.id, dir: resolved.value });
+  }
   for (let i = 0; i < dirs.length; i += 1) {
     for (let j = i + 1; j < dirs.length; j += 1) {
       const a = dirs[i];
       const b = dirs[j];
-      if (sameDirectory(a.dir, b.dir, ctx)) {
+      if (samePath(p, ctx.platform, a.dir, b.dir)) {
         conflicts.push({ a: a.id, b: b.id, kind: 'same' });
       } else if (isSameOrInside(p, ctx.platform, a.dir, b.dir) ||
                  isSameOrInside(p, ctx.platform, b.dir, a.dir)) {

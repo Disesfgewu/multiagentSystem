@@ -40,7 +40,8 @@ test('observe turns a missing value into an explicit unknown with a reason', () 
 
 test('only fresh actual values with a lifetime are gate eligible', () => {
   const fresh = observe('x', 10, { source: 's', observedAt, validForMs: 1000 });
-  assert.equal(isGateEligible(fresh, new Date(Date.parse(observedAt) + 1000)), true);
+  assert.equal(isGateEligible(fresh, new Date(Date.parse(observedAt) + 999)), true);
+  assert.equal(isGateEligible(fresh, new Date(Date.parse(observedAt) + 1000)), false, 'ends exactly at the lifetime');
   assert.equal(isGateEligible(fresh, new Date(Date.parse(observedAt) + 1001)), false);
   assert.equal(isGateEligible(observe('x', 10, { source: 's', observedAt }), observedAt), false);
   const estimate = observe('x', 10, { source: 's', observedAt, validForMs: 1000, confidence: CONFIDENCE.ESTIMATED });
@@ -149,10 +150,10 @@ test('Codex account types map to verified or unknown subjects', () => {
 
 test('Codex rate limits are listed per bucket with the reset value left raw', () => {
   const response = {
-    rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1767225600 } },
+    rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: nowSeconds + 3600 } },
     rateLimitsByLimitId: {
       codex: {
-        primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1767225600 },
+        primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: nowSeconds + 3600 },
         secondary: { usedPercent: 3, windowDurationMins: 10080, resetsAt: null }
       }
     }
@@ -161,7 +162,7 @@ test('Codex rate limits are listed per bucket with the reset value left raw', ()
   const byField = Object.fromEntries(observations.map((entry) => [entry.field, entry]));
   assert.equal(byField['quota.codex.primary.used_percent'].value, 10);
   assert.equal(byField['quota.codex.primary.used_percent'].scope, '300-minute window reported by service');
-  assert.equal(byField['quota.codex.primary.resets_at_raw'].value, 1767225600);
+  assert.equal(byField['quota.codex.primary.resets_at_raw'].value, nowSeconds + 3600);
   assert.equal(byField['quota.codex.primary.resets_at_raw'].unit, 'epoch-unit-unspecified');
   assert.equal(byField['quota.codex.secondary.resets_at_raw'].confidence, CONFIDENCE.UNKNOWN);
   assert.equal(Object.keys(byField).some((field) => field.startsWith('quota.default')), false);
@@ -185,4 +186,93 @@ test('two profiles on one real account are grouped; other providers and unknowns
   assert.deepEqual(groups.duplicates, [['p1', 'p2']]);
   assert.deepEqual(groups.accounts, [['p1', 'p2'], ['p3']]);
   assert.deepEqual(groups.unverified, ['p4']);
+});
+
+const MINUTE = 60 * 1000;
+const at = (offsetMs) => new Date(Date.parse(observedAt) + offsetMs);
+const field = (observations, name) => observations.find((entry) => entry.field === name);
+
+test('a quota reading never outlives its window reset', () => {
+  // Observed at 00:00, window resets at 00:01, default lifetime is ten minutes.
+  const payload = { rate_limits: { five_hour: { used_percentage: 80, resets_at: nowSeconds + 60 } } };
+  const { observations } = claudeQuotaFromStatusLine(payload, { profileId: 'p1', observedAt });
+  const used = field(observations, 'quota.five_hour.used_percent');
+  assert.equal(used.validForMs, MINUTE);
+  assert.equal(isGateEligible(used, at(MINUTE - 1)), true);
+  assert.equal(isGateEligible(used, at(MINUTE)), false, 'invalid at the reset instant');
+  assert.equal(isGateEligible(used, at(2 * MINUTE)), false, 'invalid after the reset');
+});
+
+test('a reset later than the TTL does not extend the lifetime', () => {
+  const payload = { rate_limits: { five_hour: { used_percentage: 10, resets_at: nowSeconds + 3 * 3600 } } };
+  const { observations } = claudeQuotaFromStatusLine(payload, { profileId: 'p1', observedAt });
+  const used = field(observations, 'quota.five_hour.used_percent');
+  assert.equal(used.validForMs, QUOTA_TTL_MS);
+  assert.equal(isGateEligible(used, at(QUOTA_TTL_MS - 1)), true);
+  assert.equal(isGateEligible(used, at(QUOTA_TTL_MS)), false);
+});
+
+test('out-of-range, non-numeric and non-finite percentages are unknown, never a gate', () => {
+  for (const bad of ['invalid', NaN, Infinity, -1, 100.5, null, {}]) {
+    const claude = claudeQuotaFromStatusLine(
+      { rate_limits: { five_hour: { used_percentage: bad, resets_at: nowSeconds + 3600 } } },
+      { profileId: 'p1', observedAt }
+    );
+    const used = field(claude.observations, 'quota.five_hour.used_percent');
+    assert.equal(used.confidence, CONFIDENCE.UNKNOWN, `claude ${String(bad)}`);
+    assert.equal(isGateEligible(used, observedAt), false);
+
+    const codex = codexQuotaFromRateLimits(
+      { rateLimits: { primary: { usedPercent: bad, windowDurationMins: 300, resetsAt: nowSeconds + 3600 } } },
+      { profileId: 'p2', observedAt }
+    );
+    const codexUsed = field(codex.observations, 'quota.default.primary.used_percent');
+    assert.equal(codexUsed.confidence, CONFIDENCE.UNKNOWN, `codex ${String(bad)}`);
+  }
+  assert.equal(claudeQuotaFromStatusLine(
+    { rate_limits: { five_hour: { used_percentage: 100, resets_at: nowSeconds + 60 } } },
+    { profileId: 'p1', observedAt }
+  ).observations[0].value, 100);
+});
+
+test('an unusable reset invalidates the window', () => {
+  for (const bad of ['soon', NaN, -5, 0]) {
+    const { observations } = claudeQuotaFromStatusLine(
+      { rate_limits: { five_hour: { used_percentage: 5, resets_at: bad } } },
+      { profileId: 'p1', observedAt }
+    );
+    const used = field(observations, 'quota.five_hour.used_percent');
+    assert.equal(used.confidence, CONFIDENCE.UNKNOWN);
+    assert.equal(used.reason, 'invalid-reset');
+  }
+});
+
+test('samples from the future, bad clocks and bad lifetimes cannot gate', () => {
+  const sample = observe('x', 10, { unit: 'percent', source: 's', observedAt: at(MINUTE), validForMs: 5 * MINUTE });
+  assert.equal(isGateEligible(sample, observedAt), false, 'observed after "now"');
+  assert.equal(isGateEligible(sample, at(MINUTE)), true);
+  assert.equal(isGateEligible(sample, 'not a date'), false);
+  for (const lifetime of [NaN, 0, -1, Infinity, '600000']) {
+    const odd = { ...sample, observedAt, validForMs: lifetime };
+    assert.equal(isGateEligible(odd, observedAt), false, `lifetime ${String(lifetime)}`);
+  }
+  assert.equal(isGateEligible({ ...sample, observedAt, value: 250 }, observedAt), false);
+});
+
+test('Codex readings end at the reset whichever unit the value uses', () => {
+  const secondsReset = nowSeconds + 60;
+  for (const raw of [secondsReset, secondsReset * 1000]) {
+    const { observations } = codexQuotaFromRateLimits(
+      { rateLimits: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: raw } } },
+      { profileId: 'p2', observedAt }
+    );
+    const used = field(observations, 'quota.default.primary.used_percent');
+    assert.equal(used.validForMs, MINUTE);
+    assert.equal(isGateEligible(used, at(MINUTE)), false);
+  }
+  const passed = codexQuotaFromRateLimits(
+    { rateLimits: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: nowSeconds - 1 } } },
+    { profileId: 'p2', observedAt }
+  );
+  assert.equal(field(passed.observations, 'quota.default.primary.used_percent').reason, 'window-reset-passed');
 });

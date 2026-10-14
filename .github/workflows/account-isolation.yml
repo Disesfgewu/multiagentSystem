@@ -35,5 +35,6 @@ jobs:
           node-version: '24'
       - run: node --check src/accounts/profile.js
       - run: node --check src/accounts/observation.js
+      - run: node --check src/accounts/readiness.js
       - run: node --check scripts/p0/check-account-isolation.js
       - run: node --test "test/accounts/*.test.js"
