@@ -40,3 +40,21 @@ jobs:
       - run: node --test test/storage/*.test.js
         shell: bash
       - run: node scripts/p0/check-private-storage.js --repo .
+      # Four processes contend for one lock in the cross-process write test. It once failed
+      # intermittently on a Windows runner, so it is repeated: a flaky lock shows up as a red
+      # job here, with the reason, instead of as a rare surprise later.
+      - name: Repeat the cross-process write test 40 times (baseline: lock without the fix)
+        shell: bash
+        run: |
+          failed=0
+          for i in $(seq 1 40); do
+            if ! node --test --test-name-pattern="concurrent processes all land" test/storage/private-store.test.js > "$RUNNER_TEMP/repeat.log" 2>&1; then
+              failed=$((failed + 1))
+              if [ "$failed" -le 3 ]; then
+                echo "run $i of 40 failed:"
+                grep -E "failed:|AssertionError|error:" "$RUNNER_TEMP/repeat.log" | head -8
+              fi
+            fi
+          done
+          echo "storage baseline: $failed of 40 runs failed"
+          [ "$failed" -eq 0 ]
