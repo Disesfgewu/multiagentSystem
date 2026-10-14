@@ -10,7 +10,7 @@ const { checkPrivateRoot, resolvers, isSameOrInside } = require('./paths');
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-function renderContext({ roleGroup, rules, memories }) {
+function renderContext({ roleGroup, rules, memories, omitted }) {
   const lines = [`# Role: ${roleGroup.name}`];
   const ruleLines = [...rules.instructions]
     .sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer) || byCodeUnit(a.id, b.id))
@@ -28,6 +28,9 @@ function renderContext({ roleGroup, rules, memories }) {
   const memoryLines = [...memories]
     .sort((a, b) => byCodeUnit(a.id, b.id))
     .map((item) => `- ${item.content} (source: ${item.source.ref}; verified: ${item.verifiedAt.slice(0, 10)})`);
+  // What the size limit left out is said, not dropped silently, so the model knows the list is partial.
+  const left = omitted && Number.isInteger(omitted.count) && omitted.count > 0 ? omitted.count : 0;
+  if (left > 0) memoryLines.push(`- (${left} more reviewed ${left === 1 ? 'note was' : 'notes were'} left out to stay within the size limit.)`);
   if (memoryLines.length > 0) lines.push('', '## Project notes (reviewed, role-scoped)', ...memoryLines);
   return `${lines.join('\n')}\n`;
 }
@@ -39,14 +42,14 @@ function tomlString(text) {
 // Builds a launch plan. The context text only ever goes into files under a
 // private directory; argv carries a file path or a profile name, never content.
 function planInjection(options) {
-  const { provider, roleGroup, rules, memories, privateDir, repoRoot, sessionToken,
+  const { provider, roleGroup, rules, memories, omitted, privateDir, repoRoot, sessionToken,
     codexHome, capabilities = {}, context } = options;
   if (!TOKEN.test(sessionToken || '')) throw new Error('invalid session token');
 
   const privateCheck = checkPrivateRoot(privateDir, repoRoot, context);
   if (!privateCheck.ok) throw new Error(`private directory rejected: ${privateCheck.problems.join(', ')}`);
 
-  const text = renderContext({ roleGroup, rules, memories });
+  const text = renderContext({ roleGroup, rules, memories, omitted });
   const sessionDir = nodePath.join(privateDir, 'sessions', sessionToken);
   const scope = { root: privateDir, repoRoot, exclusiveDir: sessionDir };
   const manual = () => ({
