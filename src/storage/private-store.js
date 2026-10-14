@@ -3,7 +3,8 @@
 const fs = require('node:fs');
 const nodePath = require('node:path');
 const crypto = require('node:crypto');
-const { checkPrivateRoot } = require('./paths');
+const { checkPrivateRoot, isSameOrInside, pathFor, resolvers } = require('./paths');
+const { DirectoryLock, LockIoError } = require('./lock');
 const { findSecrets } = require('./sensitive');
 
 const FORMAT = 'multiagent-private-store';
@@ -16,9 +17,16 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const RESERVED_IDS = new Set(['constructor', 'prototype', 'toString', 'valueOf', 'hasOwnProperty']);
 const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_STORE_BYTES = 8 * 1024 * 1024;
-const DEFAULT_LOCK = Object.freeze({ retries: 100, waitMs: 20, staleMs: 30000 });
-const DEFAULT_PUBLIC_FIELDS = Object.freeze(['provider', 'role', 'kind', 'status', 'layer', 'type', 'method']);
-const SAFE_ENUM = /^[a-z][a-z0-9_.-]{0,40}$/;
+// Values that may be shown in a masked export, by field. A value is kept only if
+// it is exactly one of the listed strings; nothing is kept because of its shape.
+const DEFAULT_PUBLIC_VALUES = Object.freeze({
+  '*': Object.freeze({
+    provider: Object.freeze(['claude', 'codex']),
+    status: Object.freeze(['preparing', 'running', 'waiting', 'completed', 'failed', 'unknown'])
+  })
+});
+const TEMP_NAME = /^\.store\.\d+\.[0-9a-f]{8}\.tmp$/;
+const BACKUP_NAME = /^store\.v\d+\..+\.json$/;
 const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 
 // An expected, recoverable failure inside a transaction. The transaction is
@@ -65,6 +73,24 @@ const isPlainObject = (value) => {
 
 const clone = (value) => structuredClone(value);
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Windows has no uid; its access control is the user profile's default and is
+// not verified here.
+const ownedByCurrentUser = (stat) => typeof process.getuid !== 'function' || stat.uid === process.getuid();
+
+function normalizePublicValues(input) {
+  const out = {};
+  for (const [scope, fields] of Object.entries(input)) {
+    if (!isPlainObject(fields)) throw new TypeError('publicValues must map collections to fields');
+    out[scope] = {};
+    for (const [field, values] of Object.entries(fields)) {
+      if (!Array.isArray(values) || !values.every((value) => typeof value === 'string')) {
+        throw new TypeError('publicValues fields must list exact string values');
+      }
+      out[scope][field] = [...values];
+    }
+  }
+  return out;
+}
 const lstatOrNull = (target) => {
   try {
     return fs.lstatSync(target);
@@ -98,7 +124,7 @@ function validateEnvelope(data, names, { checkSecrets }) {
 }
 
 class PrivateStore {
-  constructor({ dir, repoRoot, collections, schemaVersion = 1, migrations = [], publicFields = {},
+  constructor({ dir, repoRoot, collections, schemaVersion = 1, migrations = [], publicValues = DEFAULT_PUBLIC_VALUES,
     now = () => Date.now(), context, lock, io } = {}) {
     if (!Array.isArray(collections) || collections.length === 0 || !collections.every(validIdentifier)) {
       throw new TypeError('collections must be a non-empty list of identifiers');
@@ -128,12 +154,11 @@ class PrivateStore {
     this.names = [...collections];
     this.schemaVersion = schemaVersion;
     this.migrations = byFrom;
-    this.publicFields = publicFields;
+    this.publicValues = normalizePublicValues(publicValues);
     this.now = now;
-    this.lockOptions = { ...DEFAULT_LOCK, ...lock };
+    this.lock = new DirectoryLock(nodePath.join(dir, LOCK_FILE), lock);
     this.io = { ...defaultIo, ...io };
     this.file = nodePath.join(dir, STORE_FILE);
-    this.lockFile = nodePath.join(dir, LOCK_FILE);
     this.backupDir = nodePath.join(dir, BACKUP_DIR);
   }
 
@@ -216,8 +241,12 @@ class PrivateStore {
 
     try {
       this.#backup(text, onDiskVersion);
-    } catch {
-      return { state: 'backup-failed', onDiskVersion };
+    } catch (error) {
+      return {
+        state: 'backup-failed',
+        detail: error instanceof StoreError ? `${error.reason}:${error.detail}` : error.code || 'unknown',
+        onDiskVersion
+      };
     }
     try {
       this.#write(migrated);
@@ -227,17 +256,63 @@ class PrivateStore {
     return { state: 'ok', data: migrated, onDiskVersion, migrated: true };
   }
 
+  // The backup directory is checked at the level where it is used: it must be a
+  // real directory (not a link or junction) owned by the current user, and it must
+  // resolve inside the verified data directory and outside the repository. There
+  // is an unavoidable window between this check and the file operation that
+  // follows; it is re-checked after writing and the data directory is expected to
+  // be private to the user.
+  #backupDirectory(create) {
+    let stat = lstatOrNull(this.backupDir);
+    if (!stat) {
+      if (!create) return null;
+      try {
+        fs.mkdirSync(this.backupDir, { mode: 0o700 });
+      } catch (error) {
+        throw new StoreError('backup-dir-rejected', error.code || 'unknown');
+      }
+      stat = fs.lstatSync(this.backupDir);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new StoreError('backup-dir-rejected', 'not-a-directory');
+    if (!ownedByCurrentUser(stat)) throw new StoreError('backup-dir-rejected', 'not-owned');
+    const { platform, realpath } = resolvers(this.context);
+    let real;
+    let base;
+    try {
+      real = realpath(this.backupDir);
+      base = realpath(this.dir);
+    } catch (error) {
+      throw new StoreError('backup-dir-rejected', error.code || 'unknown');
+    }
+    const check = checkPrivateRoot(real, this.repoRoot, this.context);
+    if (!check.ok) throw new StoreError('backup-dir-rejected', check.problems.join(','));
+    if (!isSameOrInside(pathFor(platform), platform, real, base)) throw new StoreError('backup-dir-rejected', 'outside-data-dir');
+    return this.backupDir;
+  }
+
   #backup(text, version) {
-    fs.mkdirSync(this.backupDir, { recursive: true, mode: 0o700 });
+    const dir = this.#backupDirectory(true);
     const stamp = new Date(this.now()).toISOString().replace(/[-:.]/g, '');
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const name = `store.v${version}.${stamp}${attempt === 0 ? '' : `-${attempt}`}.json`;
+      const target = nodePath.join(dir, name);
       try {
-        this.io.writeFile(nodePath.join(this.backupDir, name), text);
-        return name;
+        this.io.writeFile(target, text);
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
+        continue;
       }
+      try {
+        this.#backupDirectory(false);
+      } catch (error) {
+        try {
+          fs.unlinkSync(target);
+        } catch {
+          // Best effort: the file was created by this call a moment ago.
+        }
+        throw error;
+      }
+      return name;
     }
     throw new Error('backup-name-exhausted');
   }
@@ -282,47 +357,53 @@ class PrivateStore {
 
   // ---- locking and writing --------------------------------------------------
 
-  // The lock is advisory and per directory. It does not protect against a
-  // process that ignores it or against network file systems, and recovery of a
-  // stale lock is best effort: a holder that stalls past `staleMs` can lose it.
-  #acquire() {
-    const { retries, waitMs, staleMs } = this.lockOptions;
+  // The single-writer lock is advisory and per directory (see lock.js). It is
+  // never taken from a writer that might still be running: a held lock makes the
+  // call return `locked` with who seems to hold it, and a person (or the product,
+  // on request) clears a dead holder with `recoverLock`.
+  #lock() {
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     } catch (error) {
       throw new StoreError('directory-rejected', error.code || 'unknown');
     }
     this.#assertDirectory();
-    const token = crypto.randomBytes(8).toString('hex');
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
-      try {
-        const descriptor = fs.openSync(this.lockFile, 'wx', 0o600);
-        fs.writeSync(descriptor, `${token}\n`);
-        fs.closeSync(descriptor);
-        return token;
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw new StoreError('lock-failed', error.code || 'unknown');
-        try {
-          const stat = fs.statSync(this.lockFile);
-          if (Date.now() - stat.mtimeMs > staleMs) {
-            const again = fs.statSync(this.lockFile);
-            if (again.mtimeMs === stat.mtimeMs && again.ino === stat.ino) fs.unlinkSync(this.lockFile);
-            continue;
-          }
-        } catch {
-          continue;
-        }
-        sleep(waitMs);
-      }
+    let got;
+    try {
+      got = this.lock.acquire();
+    } catch (error) {
+      if (error instanceof LockIoError) throw new StoreError('lock-failed', error.code);
+      throw error;
     }
-    return null;
+    if (!got.ok) throw new StoreError('locked', got.detail);
+    return got.token;
   }
 
   #release(token) {
+    this.lock.release(token);
+  }
+
+  inspectLock() {
     try {
-      if (fs.readFileSync(this.lockFile, 'utf8').trim() === token) fs.unlinkSync(this.lockFile);
-    } catch {
-      // Already removed or taken over as stale; never delete someone else's lock.
+      const { held, detail, ageMs, stale } = this.lock.inspect();
+      return held ? { ok: true, held, detail, ageMs, stale } : { ok: true, held: false };
+    } catch (error) {
+      if (error instanceof LockIoError) return { ok: false, reason: 'lock-failed', detail: error.code };
+      throw error;
+    }
+  }
+
+  // Clears a lock whose owner is provably gone. `force` is for a stale lock whose
+  // owner a program cannot judge (another host, unreadable, or a reused process
+  // id); it still requires the lock to be older than the stale age.
+  recoverLock(options) {
+    try {
+      const result = this.lock.recover(options);
+      const { text, ...rest } = result;
+      return rest;
+    } catch (error) {
+      if (error instanceof LockIoError) return { ok: false, reason: 'lock-failed', detail: error.code };
+      throw error;
     }
   }
 
@@ -337,11 +418,7 @@ class PrivateStore {
       throw new StoreError('directory-rejected', error.code || 'unknown');
     }
     if (!stat.isDirectory()) throw new StoreError('directory-rejected', 'not-a-directory');
-    // Windows has no uid; its access control is the user profile's default and
-    // is not verified here.
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-      throw new StoreError('directory-rejected', 'not-owned');
-    }
+    if (!ownedByCurrentUser(stat)) throw new StoreError('directory-rejected', 'not-owned');
   }
 
   #write(data) {
@@ -389,10 +466,11 @@ class PrivateStore {
     }
     let removed = 0;
     for (const name of names) {
-      if (!/^\.store\.\d+\.[0-9a-f]{8}\.tmp$/.test(name)) continue;
+      if (!TEMP_NAME.test(name)) continue;
       const target = nodePath.join(this.dir, name);
       try {
-        if (Date.now() - fs.statSync(target).mtimeMs > this.lockOptions.staleMs) {
+        const stat = fs.lstatSync(target);
+        if (stat.isFile() && ownedByCurrentUser(stat) && Date.now() - stat.mtimeMs > this.lock.options.staleMs) {
           fs.unlinkSync(target);
           removed += 1;
         }
@@ -410,12 +488,11 @@ class PrivateStore {
     if (typeof work !== 'function') throw new TypeError('transact requires a function');
     let token;
     try {
-      token = this.#acquire();
+      token = this.#lock();
     } catch (error) {
       if (error instanceof StoreError) return { ok: false, reason: error.reason, detail: error.detail };
       throw error;
     }
-    if (!token) return { ok: false, reason: 'locked' };
     try {
       this.#sweepTemps();
       const loaded = this.#load(true);
@@ -510,38 +587,49 @@ class PrivateStore {
     if (confirm !== CONFIRM_CLEAR) return { ok: false, reason: 'confirmation-required' };
     let token;
     try {
-      token = this.#acquire();
+      token = this.#lock();
     } catch (error) {
       if (error instanceof StoreError) return { ok: false, reason: error.reason, detail: error.detail };
       throw error;
     }
-    if (!token) return { ok: false, reason: 'locked' };
     try {
+      // Verify everything that will be touched before deleting anything.
+      const backupDir = includeBackups ? this.#backupDirectory(false) : null;
       const removed = { store: false, backups: 0, temps: 0 };
       if (lstatOrNull(this.file)) {
         fs.unlinkSync(this.file);
         removed.store = true;
       }
       for (const name of fs.readdirSync(this.dir)) {
-        if (/^\.store\.\d+\.[0-9a-f]{8}\.tmp$/.test(name)) {
-          fs.unlinkSync(nodePath.join(this.dir, name));
+        if (!TEMP_NAME.test(name)) continue;
+        const target = nodePath.join(this.dir, name);
+        const stat = fs.lstatSync(target);
+        if (stat.isFile() && ownedByCurrentUser(stat)) {
+          fs.unlinkSync(target);
           removed.temps += 1;
         }
       }
-      if (includeBackups && lstatOrNull(this.backupDir)) {
-        for (const name of fs.readdirSync(this.backupDir)) {
-          if (!/^store\.v\d+\..+\.json$/.test(name)) continue;
-          fs.unlinkSync(nodePath.join(this.backupDir, name));
-          removed.backups += 1;
+      if (backupDir) {
+        for (const name of fs.readdirSync(backupDir)) {
+          if (!BACKUP_NAME.test(name)) continue;
+          const target = nodePath.join(backupDir, name);
+          const stat = fs.lstatSync(target);
+          // Only regular files owned by this user; never a link, and never anything
+          // that merely happens to share a name.
+          if (stat.isFile() && !stat.isSymbolicLink() && ownedByCurrentUser(stat)) {
+            fs.unlinkSync(target);
+            removed.backups += 1;
+          }
         }
         try {
-          fs.rmdirSync(this.backupDir);
+          fs.rmdirSync(backupDir);
         } catch {
           // Not empty: it holds something this store does not own.
         }
       }
       return { ok: true, removed };
     } catch (error) {
+      if (error instanceof StoreError) return { ok: false, reason: error.reason, detail: error.detail };
       return { ok: false, reason: 'clear-failed', detail: error.code || 'unknown' };
     } finally {
       this.#release(token);
@@ -549,14 +637,15 @@ class PrivateStore {
   }
 
   // Structure only: ids become aliases, nested values are summarised, and every
-  // value is replaced by a type placeholder unless its field is on the public
-  // allow-list and the value is a short lower-case enumeration.
+  // value is replaced by a type placeholder unless the field has a fixed list of
+  // public values and the value is exactly one of them. Matching a pattern is
+  // never enough, because an account or agent label can look like an enumeration.
   exportMasked() {
     const loaded = this.#load(false);
     if (loaded.state !== 'ok') return { ok: false, reason: 'store-unavailable', detail: loaded.state };
     const out = {};
     for (const name of this.names) {
-      const allow = new Set(this.publicFields[name] || DEFAULT_PUBLIC_FIELDS);
+      const allow = { ...this.publicValues['*'], ...this.publicValues[name] };
       const ids = Object.keys(loaded.data.collections[name]).sort();
       out[name] = {
         count: ids.length,
@@ -584,7 +673,7 @@ function maskRecord(record, allow) {
   let unnamed = 0;
   for (const [key, value] of Object.entries(record)) {
     const name = SAFE_KEY.test(key) ? key : `field#${(unnamed += 1)}`;
-    if (allow.has(key) && typeof value === 'string' && SAFE_ENUM.test(value) && findSecrets(value).length === 0) {
+    if (typeof value === 'string' && Object.hasOwn(allow, key) && allow[key].includes(value)) {
       fields[name] = value;
     } else if (Array.isArray(value)) {
       fields[name] = `<array:${value.length}>`;
@@ -607,5 +696,5 @@ module.exports = {
   CONFIRM_CLEAR,
   MAX_RECORD_BYTES,
   MAX_STORE_BYTES,
-  DEFAULT_PUBLIC_FIELDS
+  DEFAULT_PUBLIC_VALUES
 };

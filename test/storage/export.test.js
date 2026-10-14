@@ -73,14 +73,36 @@ test('nothing identifying appears anywhere in the export', (t) => {
   assert.deepEqual(findSecrets(JSON.parse(text)), []);
 });
 
-test('the allow-list is per collection and values must be short lower-case enumerations', (t) => {
+test('a value is public only if it is exactly one of the listed values for its field', (t) => {
   const s = sandbox(t);
-  const store = open(s, { publicFields: { profiles: ['authMethod', 'label'] } });
-  store.put('profiles', 'p1', { provider: 'claude', authMethod: 'claude.ai', label: 'Has Capitals And Spaces' });
-  const fields = store.exportMasked().export.collections.profiles.records[0].fields;
-  assert.equal(fields.provider, '<string>', 'not on this collection\'s list');
-  assert.equal(fields.authMethod, 'claude.ai');
-  assert.equal(fields.label, '<string>', 'allow-listed but not an enumeration-shaped value');
+  const store = open(s);
+  store.put('profiles', 'p1', { provider: 'alice-private', status: 'on-call-rotation', role: 'worker' });
+  store.put('profiles', 'p2', { provider: 'claude', status: 'running', role: 'worker' });
+  const [first, second] = store.exportMasked().export.collections.profiles.records.map((record) => record.fields);
+  assert.deepEqual(first, { provider: '<string>', status: '<string>', role: '<string>' },
+    'enumeration-shaped labels are not trusted');
+  assert.deepEqual(second, { provider: 'claude', status: 'running', role: '<string>' });
+  assert.equal(JSON.stringify(store.exportMasked()).includes('alice-private'), false);
+});
+
+test('public values are configured per collection and fall back to the defaults', (t) => {
+  const s = sandbox(t);
+  const store = open(s, { publicValues: {
+    '*': { provider: ['claude'] },
+    profiles: { authMethod: ['claude.ai', 'api_key'] }
+  } });
+  store.put('profiles', 'p1', { provider: 'claude', authMethod: 'claude.ai', label: 'Has Capitals' });
+  store.put('sessions', 's1', { provider: 'codex', authMethod: 'claude.ai' });
+  const out = store.exportMasked().export.collections;
+  assert.deepEqual(out.profiles.records[0].fields, { provider: 'claude', authMethod: 'claude.ai', label: '<string>' });
+  assert.deepEqual(out.sessions.records[0].fields, { provider: '<string>', authMethod: '<string>' });
+});
+
+test('public value lists must be exact string lists', (t) => {
+  const s = sandbox(t);
+  for (const bad of [{ '*': 'provider' }, { '*': { provider: 'claude' } }, { '*': { provider: [1] } }, { '*': { provider: [/x/] } }]) {
+    assert.throws(() => open(s, { publicValues: bad }), TypeError);
+  }
 });
 
 test('aliases are stable for the same data and do not reveal insertion order or ids', (t) => {

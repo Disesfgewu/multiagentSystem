@@ -11,11 +11,12 @@
 | 檔案 | 內容 |
 | --- | --- |
 | `src/storage/private-store.js` | `PrivateStore`：集合式儲存、交易、遷移、清除、遮罩匯出 |
-| `src/storage/paths.js` | 資料目錄必須在 repo 之外；連結解析與 fail-closed |
+| `src/storage/paths.js` | 資料目錄必須在 repo 之外；連結解析與 fail-closed（含磁碟根目錄與「既有祖先必須是目錄」） |
+| `src/storage/lock.js` | 單一寫入者鎖：持有者資訊、不依時間自動搶鎖、明確的復原路徑 |
 | `src/storage/sensitive.js` | 拒絕把憑證存進檔案：欄位名稱與值的形態偵測（只回報代碼與欄位路徑） |
 | `src/storage/secrets.js` | `SecretVault`：憑證放在宿主的秘密儲存，記錄只保存不透明的 `secretRef`；`fromExtensionContext` 綁定擴充套件的 `globalStorageUri` 與 `secrets` |
 | `scripts/p0/check-private-storage.js` | 可在任何機器重現的檢查（臨時目錄、合成資料、不需憑證或網路） |
-| `test/storage/` | 41 項測試，含 4 個行程的並行寫入與真實 git repo |
+| `test/storage/` | 64 項測試，含 4 個行程的並行寫入、跨行程的鎖持有與崩潰、真實 git repo |
 
 儲存的集合由呼叫端宣告（預期為 `profiles`、`roleGroups`、`sessions`、`policies`），單一 JSON 檔 `store.json`：
 
@@ -33,6 +34,8 @@
 | 資料目錄在 repo 內、包含 repo、不是絕對路徑（含 Windows 無磁碟機的路徑） | 建構時拒絕，不建立任何東西 | 是 |
 | 目錄路徑經由連結／junction 指回 repo | 拒絕（解析最近的既有上層目錄） | 是（連結不可建立時跳過並標示） |
 | 路徑解析出現 `EACCES`、`ELOOP`、`ENOTDIR` 等 | 拒絕（`private-root-unresolvable`）；只有 `ENOENT` 視為尚未建立 | 是 |
+| 一路 `ENOENT` 走到磁碟根目錄（例如沒有掛載的 `Z:\`、不存在的 UNC 主機） | 拒絕：沒有任何東西被驗證，不是「尚未建立」；repo 根目錄同理（`repo-root-unresolvable`） | 是（模擬 Windows 檔案系統） |
+| 最近的既有祖先是一般檔案（Windows 對檔案之下的路徑回報 `ENOENT`，macOS 回報 `ENOTDIR`） | 拒絕；兩個平台行為一致 | 是（模擬與真實檔案系統） |
 | 資料目錄（POSIX）不屬於目前使用者，或不是目錄 | 寫入與清除都拒絕（`directory-rejected`） | 是 |
 | 取鎖或清除時的 I/O 錯誤（目錄不可寫、被檔案佔用、磁碟滿） | 回傳 `lock-failed`／`directory-rejected`／`clear-failed` 與錯誤碼，不以例外洩漏；讀取仍可使用 | 是（目錄不可寫的案例在 Windows 與 root 下跳過） |
 | 寫入中途失敗（磁碟滿、rename 失敗） | 舊檔不變、暫存檔移除，回傳 `write-failed` 與錯誤碼 | 是（注入失敗） |
@@ -42,7 +45,11 @@
 | `store.json` 是符號連結或不是一般檔案 | 不跟隨、不寫入（`unsafe-path`） | 是 |
 | 遷移函式丟出例外、回傳無效結構、加入憑證 | 原檔不變、不建立不完整的備份、回報步驟（不含例外文字）、寫入被拒 | 是（8 種） |
 | 備份建立失敗，或備份後的寫入失敗 | 原檔不變；已建立的備份保留；重試可成功 | 是 |
+| `backups` 是連結／junction（例如指向 repo）、一般檔案或屬於他人 | 遷移與寫入回報 `backup-failed`（`backup-dir-rejected`），**寫入前**就拒絕：repo 內連暫時性的檔案都不會出現；`clear` 在刪除任何東西之前就拒絕 | 是（以 `io.writeFile` 確認沒有任何寫入嘗試） |
+| `clear` 遇到名稱符合備份格式的連結或非本人擁有的檔案 | 只刪除本人擁有的一般檔案；連結不跟隨、原樣留給使用者 | 是 |
 | 兩個實例／行程同時寫入 | 目錄鎖加鎖內重新讀取，無遺失更新 | 是（4 個行程各 5 筆；拿掉鎖後該測試失敗） |
+| 鎖被仍在執行的行程持有（即使超過過期時間） | **不會被取走**：回傳 `locked`、`detail: owner-alive`；持有者釋放後寫入恢復 | 是（獨立行程持有、超過過期時間） |
+| 鎖的持有者已崩潰 | 回傳 `locked`、`detail: owner-dead`，**不自動清除**；`recoverLock({ confirm })` 清除 | 是（真實的崩潰行程） |
 | 交易中途出錯 | 全部不寫入；呼叫端自己的例外在釋放鎖後原樣拋出 | 是 |
 | 記錄含憑證（欄位名稱或值的形態） | 拒絕，只回報代碼與欄位路徑 | 是 |
 | 私人檔案與 git | 資料目錄在 repo 外，`git status --ignored` 前後相同 | 是（真實 git repo） |
@@ -62,20 +69,35 @@
 
 ## 4. 並行與跨行程限制
 
-`PrivateStore` 的鎖是目錄內的鎖檔（`store.lock`，排他建立），寫入前取得、在鎖內重新讀取、寫完釋放。已知限制：
+`PrivateStore` 的鎖是目錄內的鎖檔（`store.lock`，排他建立；內容為持有者的行程代號、主機名稱、時間與一個隨機 token），寫入前取得、在鎖內重新讀取、寫完只釋放自己持有的那一把。
+
+**單一寫入者不變量以 fail closed 維持：鎖不會因為「看起來太久」而被取走。**
+
+| 鎖的狀況 | `transact`／`put`／`clear` | `recoverLock({ confirm: 'recover-stale-lock' })` |
+| --- | --- | --- |
+| 持有者行程仍存在（`owner-alive`） | `locked`，絕不取走，不論多久 | 拒絕（`owner-not-confirmed-gone`）；`force: true` 且鎖已超過過期時間才可清除，由人判斷，例如重新開機後行程代號被別的程序重用 |
+| 持有者行程確定已不存在（`owner-dead`，同一主機） | `locked`，不自動清除 | 清除 |
+| 持有者在另一台主機（`owner-other-host`）或鎖檔無法解析（`owner-unreadable`，例如持有者在寫入內容前崩潰） | `locked` | 拒絕；`force: true` 且已超過過期時間才可清除 |
+| 沒有鎖 | 取得 | 無動作 |
+
+`inspectLock()` 回報持有狀況（`held`、`detail`、`ageMs`、`stale`），不含行程代號與主機名稱，供介面決定要不要提供「復原」。清除時會再讀一次鎖檔，確認仍是剛才檢查的那一把才刪除。過期時間（預設 30 秒）現在只用於「`force` 的前提」與暫存檔清理，**不再用於自動搶鎖**。
+
+已知限制：
 
 - **建議性鎖**：只保護遵守它的行程；不防止直接編輯檔案或使用其他程式寫入。
 - **只作用於同一個目錄**，且依賴本機檔案系統的排他建立語意；**不支援網路檔案系統**（NFS／SMB）或雲端同步資料夾，這些環境下可能遺失更新。
-- 超過 30 秒未更新的鎖視為過期並回收（比對 mtime 與 inode 後移除）。**回收不是無競爭的**：若持有者停滯超過 30 秒，另一個寫入者可能取走鎖，造成其中一次更新遺失；釋放時只會刪除自己持有的鎖。
-- 交易函式必須是**同步**的，並在持鎖期間執行；取不到鎖時最多等約 2 秒後回傳 `locked`（可調）。
+- 崩潰後需要一次明確的復原才能再寫入（`owner-dead` 時 `recoverLock` 不需要 `force`）。代價是少了自動復原；好處是不會破壞單一寫入者。
+- **行程代號重用**（重新開機後別的程序拿到相同代號）會讓死掉的持有者被誤認為仍存在：結果是 fail closed（`locked`），需要人工 `force` 復原，不會寫入。
+- 取不到鎖時最多等約 2 秒（`retries × waitMs`，可調）後回傳 `locked`。交易函式必須是**同步**的，並在持鎖期間執行。
 - 讀取不取鎖：寫入者以 rename 原子替換，讀者看到的是完整的舊版或新版。
-- 崩潰（行程在寫完暫存檔、rename 之前被終止）會留下 `.store.*.tmp`；舊檔不受影響，超過過期時間的暫存檔在下一次寫入時清掉。**以實際終止行程的方式測試這一點尚未做**；目前只以注入的失敗與過期檔案模擬。
-- 不處理跨機器同步或多個 VS Code 視窗之外的多使用者情境。
+- 崩潰（行程在寫完暫存檔、rename 之前被終止）會留下 `.store.*.tmp`；舊檔不受影響，超過過期時間的暫存檔在下一次寫入時清掉。**以實際終止行程測試「寫到一半」這一點尚未做**；目前以注入的失敗、真實的崩潰行程（持鎖後離開）與過期檔案模擬。
+- **檢查與使用之間有時間差**：資料目錄與備份目錄在使用前驗證（不是連結、屬於本人、解析後在 repo 之外），備份寫入後會再驗證一次並移除自己剛建立的檔案；但無法排除驗證與寫入之間被替換的極短時間窗，因此資料目錄應只有使用者本人可寫（建立時 `0700`，POSIX 檢查擁有者）。
+- 不處理跨機器同步或多個使用者共用同一資料目錄。
 
 ## 5. 清除與匯出
 
-- `clear({ confirm: 'delete-private-data' })`：沒有確認字串一律拒絕。只移除本模組擁有的檔案（`store.json`、符合命名的備份與暫存檔），不碰目錄內其他檔案；可用 `includeBackups: false` 保留備份。損壞或版本不符的儲存庫也可以清除，這是無法使用時的復原路徑。
-- `exportMasked()`：給診斷用，不是備份。id 換成 `集合#序號` 別名；每個值換成型別佔位（`<string>`、`<number>`、`<boolean>`、`<array:n>`、`<object:n>`），**只有**欄位在公開白名單（預設 `provider`、`role`、`kind`、`status`、`layer`、`type`、`method`，可依集合調整）且值是短的小寫列舉字串時才保留；巢狀物件只留下鍵的數量；不安全的欄位名稱以 `field#n` 取代。測試確認匯出中不含 email、路徑、id、label、`secretRef`、資料目錄與 repo 路徑，並通過憑證形態掃描。
+- `clear({ confirm: 'delete-private-data' })`：沒有確認字串一律拒絕。先驗證所有要碰的路徑（備份目錄必須是本人擁有、不是連結、解析後在資料目錄內且在 repo 之外），**驗證失敗就不刪除任何東西**；之後只移除本模組擁有的檔案（`store.json`、符合命名且為本人擁有的一般備份檔與暫存檔），連結不跟隨，不碰目錄內其他檔案；可用 `includeBackups: false` 保留備份。損壞或版本不符的儲存庫也可以清除，這是無法使用時的復原路徑。
+- `exportMasked()`：給診斷用，不是備份。id 換成 `集合#序號` 別名；每個值換成型別佔位（`<string>`、`<number>`、`<boolean>`、`<array:n>`、`<object:n>`），**只有**欄位有固定的公開值清單，而且值**完全等於**清單中的某一項時才保留（預設只有 `provider`：`claude`／`codex`，與 `status`：`preparing`／`running`／`waiting`／`completed`／`failed`／`unknown`；可用 `publicValues` 依集合增加，且必須是精確字串清單）。**符合某種字元形態不算數**：`alice-private` 這類看起來像列舉的帳戶或代理標籤會被遮罩；巢狀物件只留下鍵的數量；不安全的欄位名稱以 `field#n` 取代。測試確認匯出中不含 email、路徑、id、label、`secretRef`、資料目錄與 repo 路徑，並通過憑證形態掃描。
 
 ## 6. 重現方式
 
@@ -84,13 +106,13 @@ node --test "test/storage/*.test.js"
 node scripts/p0/check-private-storage.js --repo <repo 路徑>
 ```
 
-檢查腳本在臨時資料夾（含空白與 Unicode）內以合成資料驗證 10 項：repo 內目錄被拒、讀寫、拒絕憑證、遷移中途失敗不動原檔、遷移與備份、損壞檔案保留、清除復原、匯出不含值、`git status` 不變。結束後移除臨時資料夾。repo 路徑不是 git 工作樹時，最後一項標為跳過。
+檢查腳本在臨時資料夾（含空白與 Unicode）內以合成資料驗證 11 項：repo 內目錄被拒、讀寫、拒絕憑證、遷移中途失敗不動原檔、遷移與備份、損壞檔案保留、清除復原、匯出不含值、`git status` 不變。結束後移除臨時資料夾。repo 路徑不是 git 工作樹時，最後一項標為跳過。
 
 ## 7. 平台矩陣
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過（41 項、0 跳過） | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
+| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過 | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
 | 檔案權限（檔案 `0600`、目錄 `0700`） | 已測試 | **未驗證**：Windows 沒有同樣的權限位元，ACL 的實際效果未檢查，只能依賴使用者設定檔目錄的預設權限 |
 | 資料目錄擁有者檢查 | 每次取鎖時檢查目錄存在、是目錄且屬於目前使用者（`not-owned` 則拒絕）；已有測試 | 不適用（沒有 uid）；ACL 未驗證 |
 | fsync 的實際耐久性 | 呼叫但未驗證斷電情境 | 同左；目錄 fsync 在 Windows 上被略過 |
@@ -102,7 +124,7 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 | 與 VS Code `globalStorageUri`／`SecretStorage` 的整合 | 需要 #8 合併後在 Extension Host 驗證；`fromExtensionContext` 只以假物件測試，介面與 VS Code 的 `SecretStorage` 形狀一致，**未**在真實 Extension Host 執行 |
 | SecretStorage 的實際後端（macOS Keychain、Windows 憑證管理員）行為與錯誤 | 同上 |
 | Windows 實機與 ACL | 沒有設備 |
-| 以終止行程測試崩潰復原 | 尚未做 |
+| 以終止行程測試「寫到一半」的崩潰復原 | 尚未做（持鎖後崩潰已有真實行程的測試） |
 | 網路檔案系統、雲端同步資料夾 | 明確不支援，未測 |
 | 具體記錄結構（profile、身份組、session、政策版本）與其遷移 | 屬 #12、#14、#11 等後續功能；本 PR 只提供容器 |
 | 設定頁的「清除」與「匯出」入口 | UI 屬後續功能 |
@@ -110,7 +132,8 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 
 ## 9. 需要 PM 決策
 
-1. **三處重複的路徑檢查與原子寫入**：是否在三個 PR 合併後安排一個整理 Issue，統一成共用模組，並讓 #30 的 `MemoryStore` 改用 `PrivateStore`。
-2. **備份保留策略**：目前不自動刪除。是否要設保留份數或天數（備份含私人資料）。
+1. **三處重複的路徑檢查、鎖與原子寫入**：是否在三個 PR 合併後安排一個整理 Issue，統一成共用模組，並讓 #30 的 `MemoryStore` 改用 `PrivateStore`。
+2. **備份保留策略**：目前不自動刪除（PM 已同意暫不刪除，但必須留在已驗證的私人路徑）。是否要設保留份數或天數。
 3. **單一檔案 vs 每集合一檔**：目前單檔，以便跨集合的交易保持原子；代價是整體大小上限 8 MiB 與每次寫入重寫整個檔案。記憶庫（#21）資料量大時是否另用獨立的儲存。
-4. **鎖等待上限**：預設約 2 秒、30 秒過期；是否需要依實際使用調整。
+4. **崩潰後的自動復原**：目前一律需要明確呼叫 `recoverLock`（持有者已死亡時不需 `force`）。介面是否在偵測到 `owner-dead` 時直接提示一鍵復原，或由使用者在設定頁操作。
+5. **鎖等待上限**：預設約 2 秒；過期時間（30 秒）現在只是 `force` 的前提。是否需要調整。

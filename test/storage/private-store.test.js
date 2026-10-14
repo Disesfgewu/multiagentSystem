@@ -292,22 +292,6 @@ test('two instances that each loaded before the other wrote do not lose updates'
   assert.deepEqual(first.list('profiles').items.map((item) => item.id), ['a', 'b']);
 });
 
-test('a held lock fails the write with a reason; a stale lock is recovered; a foreign lock is not deleted', (t) => {
-  const s = sandbox(t);
-  fs.mkdirSync(s.dir);
-  const lock = path.join(s.dir, 'store.lock');
-  const quick = { retries: 2, waitMs: 1, staleMs: 60000 };
-
-  fs.writeFileSync(lock, 'someone else\n');
-  assert.deepEqual(open(s, { lock: quick }).put('profiles', 'p1', profile()), { ok: false, reason: 'locked' });
-  assert.equal(fs.existsSync(lock), true);
-
-  const old = new Date(Date.now() - 120000);
-  fs.utimesSync(lock, old, old);
-  assert.equal(open(s, { lock: quick }).put('profiles', 'p1', profile()).ok, true);
-  assert.equal(fs.existsSync(lock), false);
-});
-
 test('clear requires confirmation, removes only owned files, and recovers a corrupt store', (t) => {
   const s = sandbox(t);
   const store = open(s);

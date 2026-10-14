@@ -32,32 +32,53 @@ class PathResolutionError extends Error {
 
 // Follow links through the nearest existing ancestor so a directory that does
 // not exist yet cannot hide a link pointing back into the repository. Only
-// ENOENT means "not created yet"; every other failure fails closed.
-function canonicalize(target, p, realpath) {
+// ENOENT means "not created yet"; every other failure fails closed, and so does
+// a walk that reaches the filesystem root without anything existing (for
+// example a drive letter that is not mounted), because nothing was verified.
+// The nearest existing ancestor must be a directory: Windows reports ENOENT
+// for a path below a regular file, which must not pass as "not created yet".
+function canonicalize(target, p, realpath, isDirectory) {
   const resolved = p.resolve(target);
   const tail = [];
   let current = resolved;
   for (;;) {
     try {
       const real = realpath(current);
+      if (tail.length > 0) {
+        let directory;
+        try {
+          directory = isDirectory(real);
+        } catch (error) {
+          throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+        }
+        if (!directory) throw new PathResolutionError('ENOTDIR');
+      }
       return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
     } catch (error) {
+      if (error instanceof PathResolutionError) throw error;
       if (!error || error.code !== 'ENOENT') {
         throw new PathResolutionError(error && error.code ? error.code : 'unknown');
       }
       const parent = p.dirname(current);
-      if (parent === current) return resolved;
+      if (parent === current) throw new PathResolutionError('ENOROOT');
       tail.push(p.basename(current));
       current = parent;
     }
   }
 }
 
+function resolvers(context = {}) {
+  return {
+    platform: context.platform || process.platform,
+    realpath: context.realpath || ((value) => fs.realpathSync.native(value)),
+    isDirectory: context.isDirectory || ((value) => fs.statSync(value).isDirectory())
+  };
+}
+
 // Private data must live outside the repository working tree, and the repository
 // must not live inside the data directory.
-function checkPrivateRoot(dir, repoRoot, context = {}) {
-  const platform = context.platform || process.platform;
-  const realpath = context.realpath || ((value) => fs.realpathSync.native(value));
+function checkPrivateRoot(dir, repoRoot, context) {
+  const { platform, realpath, isDirectory } = resolvers(context);
   const p = pathFor(platform);
   if (typeof dir !== 'string' || !isStableAbsolute(p, platform, dir)) {
     return { ok: false, problems: ['private-root-not-absolute'] };
@@ -69,13 +90,13 @@ function checkPrivateRoot(dir, repoRoot, context = {}) {
   let target;
   let repo;
   try {
-    target = canonicalize(dir, p, realpath);
+    target = canonicalize(dir, p, realpath, isDirectory);
   } catch (error) {
     if (!(error instanceof PathResolutionError)) throw error;
     problems.push('private-root-unresolvable');
   }
   try {
-    repo = canonicalize(repoRoot, p, realpath);
+    repo = canonicalize(repoRoot, p, realpath, isDirectory);
   } catch (error) {
     if (!(error instanceof PathResolutionError)) throw error;
     problems.push('repo-root-unresolvable');
@@ -87,4 +108,4 @@ function checkPrivateRoot(dir, repoRoot, context = {}) {
   return { ok: problems.length === 0, problems };
 }
 
-module.exports = { PathResolutionError, canonicalize, checkPrivateRoot, isSameOrInside, pathFor };
+module.exports = { PathResolutionError, canonicalize, checkPrivateRoot, isSameOrInside, pathFor, resolvers };

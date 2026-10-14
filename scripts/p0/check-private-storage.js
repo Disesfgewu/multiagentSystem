@@ -92,6 +92,34 @@ function main() {
     record('the masked export contains no stored value',
       !exported.includes('Visible only') && !exported.includes(dir) && !exported.includes('p5'));
 
+    // A backups directory that links into the repository must be refused before
+    // anything is written there, and clearing must not touch repository files.
+    const linkRoot = path.join(root, 'linked');
+    fs.mkdirSync(linkRoot);
+    const linkedDir = path.join(linkRoot, 'data');
+    const linked = new PrivateStore({ dir: linkedDir, repoRoot: options.repo, collections, schemaVersion: 1 });
+    linked.put('profiles', 'p1', { provider: 'claude', name: 'Synthetic' });
+    let linkMade = true;
+    try {
+      fs.symlinkSync(options.repo, path.join(linkedDir, 'backups'), 'junction');
+    } catch {
+      linkMade = false;
+    }
+    if (linkMade) {
+      const repoBefore = fs.readdirSync(options.repo).sort().join('\n');
+      const migrating = new PrivateStore({
+        dir: linkedDir, repoRoot: options.repo, collections, schemaVersion: 2, migrations
+      });
+      const refusedMigration = migrating.migrate();
+      const refusedClear = migrating.clear({ confirm: CONFIRM_CLEAR });
+      record('a backups link into the repository is refused and the repository is untouched',
+        refusedMigration.ok === false && refusedClear.ok === false &&
+        fs.readdirSync(options.repo).sort().join('\n') === repoBefore);
+      fs.unlinkSync(path.join(linkedDir, 'backups'));
+    } else {
+      skip('a backups link into the repository is refused and the repository is untouched', 'cannot create a directory link here');
+    }
+
     const gitAfter = gitStatus();
     if (gitBefore.status === 0 && gitAfter.status === 0) {
       record('git status of the repository is unchanged by the stored data', gitBefore.stdout === gitAfter.stdout);
