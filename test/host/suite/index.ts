@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
+import { runGitHubChecks } from './github';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -158,6 +159,7 @@ export async function run(): Promise<void> {
 
   const registered = await vscode.commands.getCommands(true);
   for (const id of COMMANDS) assert.ok(registered.includes(id), `${id} is registered`);
+  console.log(await runGitHubChecks(registered));
 
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
   assert.ok(workspace, 'the test workspace path is provided');
