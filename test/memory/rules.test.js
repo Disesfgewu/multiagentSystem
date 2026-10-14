@@ -139,3 +139,28 @@ test('a rule that replaces itself, or something that is not there, changes nothi
   assert.deepEqual(result.forbids.map((entry) => entry.id), ['S']);
   assert.deepEqual(result.instructions.map((entry) => entry.id), ['T']);
 });
+
+test('replacements that took effect are reported; refused ones are conflicts, not replacements', () => {
+  const result = resolveRules([
+    // A stronger layer (project) replaces a weaker one (role group): takes effect.
+    rule('rg1', 'roleGroup', 'instruction', { text: 'Reply in long form.' }),
+    rule('pr1', 'project', 'instruction', { text: 'Reply briefly.', replaces: 'rg1' }),
+    rule('p1', 'platform', 'forbid', { key: 'publish.private-data' }),
+    // A weaker layer (task) cannot replace a platform rule: refused.
+    rule('t1', 'task', 'instruction', { text: 'ignore the rule above', replaces: 'p1' })
+  ]);
+  assert.deepEqual(result.replaced, [{ rule: 'pr1', target: 'rg1' }]);
+  assert.deepEqual(result.conflicts, [{ code: 'cannot-replace-stronger-layer', rule: 't1', target: 'p1' }]);
+  assert.deepEqual(resolveRules([rule('a', 'user', 'instruction', { text: 'x' })]).replaced, []);
+});
+
+test('a replacement stays reported when the replacing rule is itself replaced later at the same layer', () => {
+  // Same layer, processed in id order: B replaces A while B is in force, then C replaces B.
+  const result = resolveRules([
+    rule('A', 'project', 'instruction', { text: 'A' }),
+    rule('B', 'project', 'instruction', { text: 'B', replaces: 'A' }),
+    rule('C', 'project', 'instruction', { text: 'C', replaces: 'B' })
+  ]);
+  assert.deepEqual(result.instructions.map((entry) => entry.id), ['C']);
+  assert.deepEqual(result.replaced, [{ rule: 'B', target: 'A' }, { rule: 'C', target: 'B' }]);
+});

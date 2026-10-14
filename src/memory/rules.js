@@ -47,6 +47,7 @@ function resolveRules(entries) {
   const byId = new Map(unique.map((entry) => [entry.id, entry]));
   const removed = new Set();
   const ignored = new Set();
+  const replacements = [];
   for (const entry of ordered) {
     if (removed.has(entry.id) || !entry.replaces || entry.replaces === entry.id) continue;
     const target = byId.get(entry.replaces);
@@ -56,6 +57,7 @@ function resolveRules(entries) {
       ignored.add(entry.id);
     } else {
       removed.add(target.id);
+      replacements.push({ rule: entry.id, target: target.id });
     }
   }
 
@@ -81,6 +83,11 @@ function resolveRules(entries) {
     requires: pick('require').map((entry) => ({ id: entry.id, layer: entry.layer, key: entry.key })),
     instructions: pick('instruction').map((entry) => ({ id: entry.id, layer: entry.layer, text: entry.text })),
     conflicts,
+    // Which rule replaced which, for rules that were in force when they did so.
+    // Refused attempts are in `conflicts`, not here. A target stays removed even if
+    // the rule that replaced it is itself replaced afterwards, so it is kept here to
+    // explain why the target is missing.
+    replaced: replacements,
     sources: accepted.map((entry) => ({ id: entry.id, layer: entry.layer, version: entry.version ?? null }))
   };
 }
