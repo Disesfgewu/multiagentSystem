@@ -5,9 +5,9 @@ const nodePath = require('node:path');
 const crypto = require('node:crypto');
 const { checkPrivateRoot } = require('./paths');
 const { DirectoryLock, LockIoError } = require('./lock');
-const { byCodeUnit } = require('./order');
 const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
+const { byCodeUnit } = require('./order');
 
 const SCHEMA_VERSION = 1;
 const MAX_CONTENT_CHARS = 2000;
