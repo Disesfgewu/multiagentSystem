@@ -11,7 +11,8 @@
   "main": "./out/src/extension.js",
   "activationEvents": [
     "onCommand:multiagentSystem.openTerminalGroup",
-    "onCommand:multiagentSystem.launchAgent"
+    "onCommand:multiagentSystem.launchAgent",
+    "onCommand:multiagentSystem.sessions.list"
   ],
   "contributes": {
     "commands": [
@@ -22,6 +23,10 @@
       {
         "command": "multiagentSystem.launchAgent",
         "title": "Multiagent: Launch CLI Agent in Native Terminal"
+      },
+      {
+        "command": "multiagentSystem.sessions.list",
+        "title": "Multiagent: Sessions"
       }
     ]
   },
