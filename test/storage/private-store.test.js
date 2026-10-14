@@ -292,12 +292,21 @@ test('two instances that each loaded before the other wrote do not lose updates'
   assert.deepEqual(first.list('profiles').items.map((item) => item.id), ['a', 'b']);
 });
 
+const keepMigration = { from: 1, to: 2, up: (data) => data };
+const openV2 = (s) => new PrivateStore({
+  dir: s.dir, repoRoot: s.repoRoot, collections: COLLECTIONS, schemaVersion: 2, migrations: [keepMigration]
+});
+// A store that has a real backup: written by v1, then migrated by v2.
+function withBackup(s) {
+  open(s).put('profiles', 'p1', profile());
+  const v2 = openV2(s);
+  assert.equal(v2.migrate().ok, true);
+  return v2;
+}
+
 test('clear requires confirmation, removes only owned files, and recovers a corrupt store', (t) => {
   const s = sandbox(t);
-  const store = open(s);
-  store.put('profiles', 'p1', profile());
-  fs.mkdirSync(path.join(s.dir, 'backups'));
-  fs.writeFileSync(path.join(s.dir, 'backups', 'store.v1.20260101T000000000Z.json'), '{}');
+  const store = withBackup(s);
   fs.writeFileSync(path.join(s.dir, 'backups', 'notes.txt'), 'not ours');
   fs.writeFileSync(path.join(s.dir, 'unrelated.txt'), 'not ours');
 
@@ -305,9 +314,10 @@ test('clear requires confirmation, removes only owned files, and recovers a corr
   assert.equal(store.clear({ confirm: 'yes' }).reason, 'confirmation-required');
   assert.equal(store.get('profiles', 'p1').found, true);
 
-  assert.deepEqual(store.clear({ confirm: CONFIRM_CLEAR }), { ok: true, removed: { store: true, backups: 1, temps: 0 } });
+  assert.deepEqual(store.clear({ confirm: CONFIRM_CLEAR }),
+    { ok: true, removed: { store: true, backups: 1, temps: 0, kept: { unrecognized: 1 } } });
   assert.deepEqual(listing(s.dir), ['backups', 'unrelated.txt']);
-  assert.deepEqual(listing(path.join(s.dir, 'backups')), ['notes.txt']);
+  assert.deepEqual(listing(path.join(s.dir, 'backups')), ['notes.txt'], 'the manifest and our backup are gone, the stranger stays');
   assert.deepEqual(store.list('profiles'), { ok: true, items: [] });
 
   fs.writeFileSync(path.join(s.dir, 'store.json'), 'garbage');
@@ -318,12 +328,11 @@ test('clear requires confirmation, removes only owned files, and recovers a corr
 
 test('keeps backups when asked to', (t) => {
   const s = sandbox(t);
-  const store = open(s);
-  store.put('profiles', 'p1', profile());
-  fs.mkdirSync(path.join(s.dir, 'backups'));
-  fs.writeFileSync(path.join(s.dir, 'backups', 'store.v1.x.json'), '{}');
-  assert.equal(store.clear({ confirm: CONFIRM_CLEAR, includeBackups: false }).removed.backups, 0);
-  assert.deepEqual(listing(path.join(s.dir, 'backups')), ['store.v1.x.json']);
+  const store = withBackup(s);
+  const before = listing(path.join(s.dir, 'backups'));
+  const outcome = store.clear({ confirm: CONFIRM_CLEAR, includeBackups: false });
+  assert.deepEqual([outcome.ok, outcome.removed.store, outcome.removed.backups], [true, true, 0]);
+  assert.deepEqual(listing(path.join(s.dir, 'backups')), before);
 });
 
 test('private files never show up in git status of the repository', (t) => {

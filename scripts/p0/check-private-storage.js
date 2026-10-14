@@ -85,7 +85,15 @@ function main() {
     const refused = v2.put('profiles', 'p4', { provider: 'claude' });
     record('a corrupt file is preserved and writes are refused',
       refused.reason === 'store-unavailable' && fs.readFileSync(path.join(dir, 'store.json'), 'utf8') === before);
-    record('clear recovers a corrupt store', v2.clear({ confirm: CONFIRM_CLEAR }).ok === true && v2.status().ok === true);
+    // An unrelated file whose name looks like a backup must survive `clear`; only a
+    // backup the manifest proves we wrote (and whose content is unchanged) is deleted.
+    const stranger = path.join(dir, 'backups', 'store.v1.user-document.json');
+    fs.writeFileSync(stranger, 'unrelated user document');
+    const cleared = v2.clear({ confirm: CONFIRM_CLEAR });
+    record('clear recovers a corrupt store', cleared.ok === true && v2.status().ok === true);
+    record('clear keeps an unrelated file that is named like a backup',
+      fs.existsSync(stranger) && fs.readFileSync(stranger, 'utf8') === 'unrelated user document' &&
+      cleared.removed.backups === 1 && cleared.removed.kept && cleared.removed.kept.unrecognized === 1);
 
     v2.put('profiles', 'p5', { provider: 'claude', label: 'Visible only to the owner' });
     const exported = JSON.stringify(v2.exportMasked());

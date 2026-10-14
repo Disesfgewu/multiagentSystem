@@ -30,7 +30,9 @@ const open = (s, version, migrations, extra) => new PrivateStore({
   dir: s.dir, repoRoot: s.repoRoot, collections: COLLECTIONS, schemaVersion: version, migrations, ...extra
 });
 const file = (s) => path.join(s.dir, 'store.json');
-const backups = (s) => (fs.existsSync(path.join(s.dir, 'backups')) ? fs.readdirSync(path.join(s.dir, 'backups')).sort() : []);
+const backups = (s) => (fs.existsSync(path.join(s.dir, 'backups'))
+  ? fs.readdirSync(path.join(s.dir, 'backups')).filter((name) => name.startsWith('store.v')).sort()
+  : []);
 
 function seedV1(s) {
   const v1 = open(s, 1, []);
@@ -152,7 +154,10 @@ test('a failed backup or a failed write after the backup keeps the original data
   assert.equal(fs.readFileSync(file(s), 'utf8'), before);
   assert.deepEqual(backups(s), []);
 
-  const noWrite = open(s, 2, [toV2], { io: { rename() { throw failure('EIO'); } } });
+  // Only the final replacement of store.json fails; the backup and its manifest are written.
+  const noWrite = open(s, 2, [toV2], {
+    io: { rename(from, to) { if (path.basename(to) === 'store.json') throw failure('EIO'); fs.renameSync(from, to); } }
+  });
   const second = noWrite.put('profiles', 'p2', { provider: 'codex' });
   assert.deepEqual([second.reason, second.detail], ['store-unavailable', 'write-failed']);
   assert.equal(fs.readFileSync(file(s), 'utf8'), before, 'original still in place');

@@ -26,7 +26,13 @@ const DEFAULT_PUBLIC_VALUES = Object.freeze({
   })
 });
 const TEMP_NAME = /^\.store\.\d+\.[0-9a-f]{8}\.tmp$/;
-const BACKUP_NAME = /^store\.v\d+\..+\.json$/;
+// A backup this store wrote is named exactly like this and is recorded in the
+// manifest before the file is created. Matching a name proves nothing: only a
+// manifest entry whose file still has the recorded content counts as ours.
+const BACKUP_NAME = /^store\.v\d+\.\d{8}T\d{9}Z(?:-\d+)?\.json$/;
+const MANIFEST_FILE = 'manifest.json';
+const MANIFEST_FORMAT = 'multiagent-private-store-backups';
+const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
 
 // An expected, recoverable failure inside a transaction. The transaction is
@@ -290,26 +296,90 @@ class PrivateStore {
     return this.backupDir;
   }
 
+  // The manifest lists the backups this store created, with the content each had
+  // when written. It is the only provenance `clear` trusts. An unreadable or
+  // malformed manifest is moved aside (never overwritten) and a new one started;
+  // the backups it listed then count as unrecognised and are kept.
+  #readManifest(dir) {
+    const file = nodePath.join(dir, MANIFEST_FILE);
+    const stat = lstatOrNull(file);
+    if (!stat) return { state: 'none', entries: [] };
+    if (stat.isSymbolicLink() || !stat.isFile() || !ownedByCurrentUser(stat)) return { state: 'invalid', entries: [] };
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return { state: 'invalid', entries: [] };
+    }
+    const valid = isPlainObject(data) && data.format === MANIFEST_FORMAT && Array.isArray(data.entries) &&
+      data.entries.every((entry) => isPlainObject(entry) && BACKUP_NAME.test(entry.name || '') &&
+        SHA256.test(entry.sha256 || '') && Number.isInteger(entry.bytes) && entry.bytes >= 0) &&
+      new Set(data.entries.map((entry) => entry.name)).size === data.entries.length;
+    return valid ? { state: 'ok', entries: data.entries } : { state: 'invalid', entries: [] };
+  }
+
+  #writeManifest(dir, entries) {
+    const temp = nodePath.join(dir, `.manifest.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+    try {
+      this.io.writeFile(temp, JSON.stringify({ format: MANIFEST_FORMAT, entries }, null, 2));
+      this.io.rename(temp, nodePath.join(dir, MANIFEST_FILE));
+    } catch (error) {
+      try {
+        fs.unlinkSync(temp);
+      } catch {
+        // Nothing was created.
+      }
+      throw error;
+    }
+  }
+
+  #setAsideManifest(dir) {
+    const file = nodePath.join(dir, MANIFEST_FILE);
+    const stamp = new Date(this.now()).toISOString().replace(/[-:.]/g, '');
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const target = nodePath.join(dir, `manifest.invalid.${stamp}${attempt === 0 ? '' : `-${attempt}`}.json`);
+      if (lstatOrNull(target)) continue;
+      fs.renameSync(file, target);
+      return;
+    }
+    throw new Error('manifest-name-exhausted');
+  }
+
   #backup(text, version) {
     const dir = this.#backupDirectory(true);
+    let manifest = this.#readManifest(dir);
+    if (manifest.state === 'invalid') {
+      this.#setAsideManifest(dir);
+      manifest = { state: 'none', entries: [] };
+    }
+    const sha256 = crypto.createHash('sha256').update(text).digest('hex');
+    const bytes = Buffer.byteLength(text);
     const stamp = new Date(this.now()).toISOString().replace(/[-:.]/g, '');
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const name = `store.v${version}.${stamp}${attempt === 0 ? '' : `-${attempt}`}.json`;
       const target = nodePath.join(dir, name);
+      if (lstatOrNull(target) || manifest.entries.some((entry) => entry.name === name)) continue;
+
+      // Record the intent first. A crash between the two steps leaves an entry
+      // without a file, which is harmless; the other order would leave a backup
+      // nobody can prove is ours.
+      const entry = { name, sha256, bytes, fromVersion: version, createdAt: new Date(this.now()).toISOString() };
+      this.#writeManifest(dir, [...manifest.entries, entry]);
       try {
         this.io.writeFile(target, text);
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        continue;
-      }
-      try {
         this.#backupDirectory(false);
       } catch (error) {
         try {
-          fs.unlinkSync(target);
+          if (lstatOrNull(target)) fs.unlinkSync(target);
         } catch {
           // Best effort: the file was created by this call a moment ago.
         }
+        try {
+          this.#writeManifest(dir, manifest.entries);
+        } catch {
+          // The stray entry has no file and is ignored by clear.
+        }
+        if (error.code === 'EEXIST') continue;
         throw error;
       }
       return name;
@@ -600,6 +670,9 @@ class PrivateStore {
       // Verify everything that will be touched before deleting anything.
       const backupDir = includeBackups ? this.#backupDirectory(false) : null;
       const removed = { store: false, backups: 0, temps: 0 };
+      const kept = {};
+      const keep = (reason) => { kept[reason] = (kept[reason] || 0) + 1; };
+
       if (lstatOrNull(this.file)) {
         fs.unlinkSync(this.file);
         removed.store = true;
@@ -613,24 +686,48 @@ class PrivateStore {
           removed.temps += 1;
         }
       }
+
       if (backupDir) {
-        for (const name of fs.readdirSync(backupDir)) {
-          if (!BACKUP_NAME.test(name)) continue;
-          const target = nodePath.join(backupDir, name);
-          const stat = fs.lstatSync(target);
-          // Only regular files owned by this user; never a link, and never anything
-          // that merely happens to share a name.
-          if (stat.isFile() && !stat.isSymbolicLink() && ownedByCurrentUser(stat)) {
+        // Provenance: a backup is deleted only if the manifest lists it, it is a
+        // regular file owned by this user, and its content is exactly what was
+        // recorded. Everything else in the directory, however it is named, is
+        // someone else's or unproven, and is kept and counted by reason.
+        const manifest = this.#readManifest(backupDir);
+        const listed = new Map(manifest.entries.map((entry) => [entry.name, entry]));
+        const survivors = [];
+        for (const entry of manifest.entries) {
+          const target = nodePath.join(backupDir, entry.name);
+          const stat = lstatOrNull(target);
+          if (!stat) continue;                                  // intent without a file
+          let verdict = null;
+          if (stat.isSymbolicLink() || !stat.isFile()) verdict = 'not-regular';
+          else if (!ownedByCurrentUser(stat)) verdict = 'not-owned';
+          else if (stat.size !== entry.bytes) verdict = 'modified';
+          else if (crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== entry.sha256) verdict = 'modified';
+          if (verdict) {
+            keep(verdict);
+            survivors.push(entry);
+          } else {
             fs.unlinkSync(target);
             removed.backups += 1;
           }
         }
+        for (const name of fs.readdirSync(backupDir)) {
+          if (name === MANIFEST_FILE || listed.has(name) || /^\.manifest\.\d+\.[0-9a-f]{8}\.tmp$/.test(name)) continue;
+          keep(manifest.state === 'invalid' && /^manifest(\.invalid\..+)?\.json$/.test(name) ? 'manifest-unverified' : 'unrecognized');
+        }
+        if (manifest.state === 'invalid') keep('manifest-unverified');
+        if (manifest.state === 'ok') {
+          if (survivors.length > 0) this.#writeManifest(backupDir, survivors);
+          else fs.unlinkSync(nodePath.join(backupDir, MANIFEST_FILE));
+        }
         try {
           fs.rmdirSync(backupDir);
         } catch {
-          // Not empty: it holds something this store does not own.
+          // Not empty: it holds something this store does not own or cannot prove.
         }
       }
+      removed.kept = kept;
       return { ok: true, removed };
     } catch (error) {
       if (error instanceof StoreError) return { ok: false, reason: error.reason, detail: error.detail };
