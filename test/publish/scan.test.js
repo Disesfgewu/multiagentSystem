@@ -260,3 +260,95 @@ test('the path of a binary or renamed file is still scanned', () => {
   assert.ok(codes(result).includes('sensitive-file-name'));
   assert.equal(result.unscanned.length, 1);
 });
+
+// ---- review: nothing outside a hunk may be dropped silently ---------------------------------
+
+const TOK = 'ghp_syntheticsyntheticsynthetic1234';
+
+test('lines the diff reader does not understand are never dropped: the whole text is scanned instead (fail closed)', () => {
+  const cases = {
+    'undercounted hunk header': ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,1 @@', '-a', '+b', `+${TOK}`].join('\n') + '\n',
+    'noise line after a hunk': ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,1 @@', '-a', '+b', `note ${TOK}`].join('\n') + '\n',
+    'preface before the first header': [`Subject: [PATCH] something ${TOK}`, '', '---', 'diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n') + '\n',
+    'text between two files': ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,1 @@', '-a', '+b', `comment ${TOK}`, 'diff --git a/b.md b/b.md', '--- a/b.md', '+++ b/b.md', '@@ -1,1 +1,1 @@', '-c', '+d'].join('\n') + '\n',
+    'plus line directly outside any hunk': ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', `+${TOK}`].join('\n') + '\n',
+    'merge-style diff': ['diff --cc a.md', 'index 1,2..3', '--- a/a.md', '+++ b/a.md', '@@@ -1,1 -1,1 +1,2 @@@', ` +${TOK}`].join('\n') + '\n'
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    const result = scan('diff', text);
+    assert.equal(result.status, 'blocked', name);
+    assert.ok(result.findings.some((f) => f.code === 'github-token'), name);
+    assert.ok(result.findings.every((f) => f.degraded === 'unparsed-diff'), `${name}: reported as degraded`);
+    assertNoEcho(result);
+  }
+});
+
+test('a correct hunk with the same content is still read normally, with exact line numbers', () => {
+  const text = ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,2 @@', '-a', '+b', `+${TOK}`].join('\n') + '\n';
+  const result = scan('diff', text);
+  assert.deepEqual(result.findings.map((f) => [f.code, f.line, f.degraded]), [['github-token', 2, undefined]]);
+});
+
+test('every git extended header is understood and does not make a diff degrade', () => {
+  const text = [
+    'diff --git a/old.sh b/new.sh',
+    'old mode 100644',
+    'new mode 100755',
+    'similarity index 90%',
+    'rename from old.sh',
+    'rename to new.sh',
+    'index 1234567..89abcde 100755',
+    '--- a/old.sh',
+    '+++ b/new.sh',
+    '@@ -1,1 +1,1 @@',
+    '-echo a',
+    '+echo b',
+    'diff --git a/c.txt b/copy.txt',
+    'dissimilarity index 10%',
+    'copy from c.txt',
+    'copy to copy.txt',
+    'diff --git a/gone.txt b/gone.txt',
+    'deleted file mode 100644',
+    'index 1111111..0000000',
+    '',
+    'diff --git a/pic.png b/pic.png',
+    'new file mode 100644',
+    'index 0000000..2222222',
+    'GIT binary patch',
+    'literal 12',
+    'zc$@SOMEBASE85PAYLOAD',
+    '',
+    'literal 0',
+    'HcmV?d00001',
+    ''
+  ].join('\n');
+  const result = scan('diff', text);
+  assert.ok(result.findings.every((f) => f.degraded === undefined), JSON.stringify(result.findings));
+  assert.equal(result.status, 'incomplete', 'only the binary patch is unscanned');
+  assert.deepEqual(result.unscanned.map((u) => u.reason), ['binary-content']);
+});
+
+test('a template literal assigned to a password in code is still a literal', () => {
+  const result = scan('diff', newFileDiff('src/a.js', ['const password = `hunter2hunter2`;']));
+  assert.deepEqual(result.findings.map((f) => f.code), ['credential-assignment']);
+  assert.equal(scan('diff', newFileDiff('src/a.js', ['const password = `${process.env.PASSWORD_VALUE}`;'])).status, 'clear', 'an interpolation alone is code, not a literal');
+  assert.equal(scan('diff', newFileDiff('src/a.js', ["const password = 'hunter2hunter2';"])).status, 'blocked');
+});
+
+test('WSL and other UNC hosts with a dollar sign are local paths', () => {
+  for (const text of ['\\\\wsl$\\Ubuntu\\home\\alice\\x', '\\\\wsl.localhost\\Ubuntu\\home\\alice', '\\\\server$\\share', '/mnt/c/Users/alice/x', 'C:\\Users\\alice\\x', 'C:/Users/alice/x']) {
+    assert.equal(scan('pr-body', `see ${text} here`).status, 'blocked', text);
+  }
+});
+
+test('when a detector hits its cap the result says it is truncated', () => {
+  const many = scan('pr-body', `${TOK}\n`.repeat(40));
+  assert.equal(many.status, 'blocked');
+  assert.equal(many.truncated, true);
+  assert.equal(scan('pr-body', `${TOK}\n`.repeat(3)).truncated, false);
+});
+
+test('a copied file with a sensitive name is refused like a new one', () => {
+  const diff = ['diff --git a/c.txt b/.env', 'similarity index 100%', 'copy from c.txt', 'copy to .env'].join('\n') + '\n';
+  assert.deepEqual(codes(scan('diff', diff)), ['sensitive-file-name']);
+});

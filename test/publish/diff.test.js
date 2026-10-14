@@ -120,3 +120,56 @@ test('a plain ---/+++ diff without diff --git lines is split into files by the s
   assert.equal(malformed, false);
   assert.deepEqual(files.map((f) => [f.newPath, f.added.map((a) => a.text)]), [['one.txt', ['b']], ['two.txt', ['d']]]);
 });
+
+test('git extended headers, copies and binary patch payloads are understood: the diff is not malformed', () => {
+  const diff = lines(
+    'diff --git a/old.sh b/new.sh',
+    'old mode 100644',
+    'new mode 100755',
+    'similarity index 90%',
+    'rename from old.sh',
+    'rename to new.sh',
+    'index 1234567..89abcde 100755',
+    '--- a/old.sh',
+    '+++ b/new.sh',
+    '@@ -1,1 +1,1 @@',
+    '-echo a',
+    '+echo b',
+    'diff --git a/c.txt b/copy.txt',
+    'dissimilarity index 10%',
+    'copy from c.txt',
+    'copy to copy.txt',
+    'diff --git a/pic.png b/pic.png',
+    'new file mode 100644',
+    'index 0000000..2222222',
+    'GIT binary patch',
+    'literal 12',
+    'zc$@SOMEBASE85PAYLOAD',
+    '',
+    'literal 0',
+    'HcmV?d00001',
+    ''
+  );
+  const { files, malformed } = parseUnifiedDiff(diff);
+  assert.equal(malformed, false, 'binary payload lines must not make the diff malformed');
+  assert.deepEqual(files.map((f) => [f.oldPath, f.newPath, f.isRename, f.binary]), [['old.sh', 'new.sh', true, false], ['c.txt', 'copy.txt', true, false], ['pic.png', 'pic.png', false, true]]);
+  assert.deepEqual(files[0].added, [{ line: 1, text: 'echo b' }]);
+});
+
+test('anything outside a hunk that git does not write is malformed, never dropped', () => {
+  const hunk = ['diff --git a/a.md b/a.md', '--- a/a.md', '+++ b/a.md', '@@ -1,1 +1,1 @@', '-a', '+b'];
+  for (const [name, extra] of Object.entries({
+    'an extra plus line': ['+extra'],
+    'an extra minus line': ['-extra'],
+    'a noise line': ['note about the change'],
+    'a context line': [' context'],
+    'a merge-style hunk header': ['@@@ -1 -1 +1 @@@'],
+    'a combined diff header': ['diff --cc other.md']
+  })) {
+    assert.equal(parseUnifiedDiff(lines(...hunk, ...extra)).malformed, true, name);
+  }
+  for (const preface of ['Subject: [PATCH] a change', 'From: someone', '---', 'plain text first']) {
+    assert.equal(parseUnifiedDiff(lines(preface, ...hunk)).malformed, true, preface);
+  }
+  assert.equal(parseUnifiedDiff(lines(...hunk, '', '')).malformed, false, 'blank lines are harmless');
+});

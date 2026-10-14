@@ -11,6 +11,8 @@ const { findPrivateFragments } = require('../memory/publish-check');
 // Credential shapes are NOT defined here: they live in src/memory/sensitive.js (one list) and
 // are reused through locateSensitive. This file adds no credential rule.
 
+const LOCATE_LIMIT = 20;
+
 const CATEGORY = Object.freeze({
   'private-key-block': 'credential',
   'anthropic-key': 'credential',
@@ -29,7 +31,15 @@ const CATEGORY = Object.freeze({
 function sensitiveShapes() {
   return {
     name: 'sensitive-shapes',
-    detect: (text) => locateSensitive(text).map((hit) => ({ code: hit.code, category: CATEGORY[hit.code] || 'credential', index: hit.index }))
+    detect: (text) => {
+      const hits = locateSensitive(text);
+      const out = hits.map((hit) => ({ code: hit.code, category: CATEGORY[hit.code] || 'credential', index: hit.index }));
+      // locateSensitive stops after 20 places per code: reaching that number means there may be more.
+      const perCode = new Map();
+      for (const hit of hits) perCode.set(hit.code, (perCode.get(hit.code) || 0) + 1);
+      if ([...perCode.values()].some((count) => count >= LOCATE_LIMIT)) out.truncated = true;
+      return out;
+    }
   };
 }
 
@@ -41,7 +51,7 @@ const LOCAL_PATH = new RegExp(
     String.raw`/(?:Users|home|root|Volumes)/[^\s/\\"'` + '`' + String.raw`)\]]+` +
     String.raw`|/private/(?:var|tmp)/|/var/folders/` +
     String.raw`|[A-Za-z]:[\\/](?![\\/])[^\s"'` + '`' + String.raw`]+` +
-    String.raw`|\\\\[A-Za-z0-9_.-]+\\[A-Za-z0-9_$.-]+` +
+    String.raw`|\\\\[A-Za-z0-9_.$-]+\\[A-Za-z0-9_$.-]+` +
     String.raw`)`,
   'g'
 );
@@ -54,12 +64,13 @@ function localPaths() {
       LOCAL_PATH.lastIndex = 0;
       let match = LOCAL_PATH.exec(text);
       let count = 0;
-      while (match !== null && count < 20) {
+      while (match !== null && count < LOCATE_LIMIT) {
         hits.push({ code: 'local-absolute-path', category: 'local-path', index: match.index });
         count += 1;
         match = LOCAL_PATH.exec(text);
       }
       LOCAL_PATH.lastIndex = 0;
+      if (match !== null) hits.truncated = true;
       return hits;
     }
   };

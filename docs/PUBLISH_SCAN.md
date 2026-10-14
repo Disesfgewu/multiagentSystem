@@ -15,7 +15,7 @@ const result = scanPublication(
 
 ## 掃描單位
 
-`commit-message`、`issue-title`、`issue-body`、`pr-title`、`pr-body`、`review`、`comment`、`branch-name`、`broker-payload`（純文字），以及 `diff`（unified diff）。diff 只看**新增的內容**：新增行（附新檔案中的行號與欄位）與新增／改名後的檔案路徑；刪除行與上下文行已在歷史中，不是這次要發布的內容。無法以把握讀懂的 diff 會退回「整份文字都掃」（包含刪除行），不信任部分解析。
+`commit-message`、`issue-title`、`issue-body`、`pr-title`、`pr-body`、`review`、`comment`、`branch-name`、`broker-payload`（純文字），以及 `diff`（unified diff）。diff 只看**新增的內容**：新增行（附新檔案中的行號與欄位）與新增／改名後的檔案路徑；刪除行與上下文行已在歷史中，不是這次要發布的內容。無法以把握讀懂的 diff 會退回「整份文字都掃」（包含刪除行），不信任部分解析：hunk 之外凡是不屬於 git 已知擴充標頭（`index`、`old|new mode`、`(dis)similarity index`、`rename|copy from|to`、`new|deleted file mode`、`Binary files`、`GIT binary patch`）的非空行、hunk 計數之外的 `+`／`-` 行、第一個檔案標頭之前的內容（例如 `format-patch` 的郵件前言）、檔案之間的文字、合併式（`@@@`／`diff --cc`）標頭，一律視為無法讀懂。二進位補丁的酬載行視為二進位內容（列為 `unscanned`），不逐行讀。
 
 ## 偵測
 
@@ -30,11 +30,11 @@ const result = scanPublication(
 
 偵測器是可替換的介面：`{ name, detect(text) -> [{ code, category, index, id? }] }`（只回傳代碼與位置，不回傳命中的文字）；`options.detectors` 會取代預設組合，丟出例外的偵測器使掃描 fail closed。
 
-**程式碼檔案的調整**：在新增行屬於程式碼檔案（`.js .ts .py .go .rs .java .cs .c .cpp` 等）時，共用的 `credential-assignment` 只在被指派的值是**引號字串字面值**時才算（`password = "hunter2hunter2"` 會擋；`const token = crypto.randomBytes(8)`、`token = this.#lock()`、含 `secret:` 的正規表示式則不會）。這是縮小既有規則的適用範圍，不是新規則，目的是讓正常程式碼通過；代價是程式碼檔案中未加引號的指派不會被這條規則抓到。shell、PowerShell、設定檔、資料檔與純文字維持嚴格。對本倉庫的檔案實測：README、計劃書與 `src/agents.ts` 通過；先前 `src/` 中 6 個檔案被誤判，全是這類程式碼用法。測試檔中刻意放的合成憑證仍會被標記，這是預期的（需要人工確認）。
+**程式碼檔案的調整**：在新增行屬於程式碼檔案（`.js .ts .py .go .rs .java .cs .c .cpp` 等）時，共用的 `credential-assignment` 只在被指派的值是**引號字串字面值**時才算（`password = "hunter2hunter2"` 與 JS／TS 的樣板字串 `` `hunter2hunter2` `` 會擋，只有插值的 `` `${process.env.X}` `` 不算；`const token = crypto.randomBytes(8)`、`token = this.#lock()`、含 `secret:` 的正規表示式則不會）。這是縮小既有規則的適用範圍，不是新規則，目的是讓正常程式碼通過；代價是程式碼檔案中未加引號的指派不會被這條規則抓到。shell、PowerShell、設定檔、資料檔與純文字維持嚴格。對本倉庫的檔案實測：README、計劃書與 `src/agents.ts` 通過；先前 `src/` 中 6 個檔案被誤判，全是這類程式碼用法。測試檔中刻意放的合成憑證仍會被標記，這是預期的（需要人工確認）。
 
 ## 輸出：位置與類別，不回顯
 
-每個 finding 只有 `unit`、`kind`、`code`、`category`、`line`、`column`（1 起算，diff 為新檔案中的行號）、`fileIndex`、呼叫端的 `id`、固定的修正提示 `hint`；**永遠不含命中的文字**（測試確認結果、錯誤與 `knownValues` 的值都不會出現在輸出中）。同一位置被兩個偵測器回報的本機路徑只算一次；最多 200 筆，超過時 `truncated: true` 且仍然阻擋。
+每個 finding 只有 `unit`、`kind`、`code`、`category`、`line`、`column`（1 起算，diff 為新檔案中的行號）、`fileIndex`、呼叫端的 `id`、固定的修正提示 `hint`；**永遠不含命中的文字**（測試確認結果、錯誤與 `knownValues` 的值都不會出現在輸出中）。同一位置被兩個偵測器回報的本機路徑只算一次；最多 200 筆，超過時 `truncated: true` 且仍然阻擋；偵測器自己的上限（每個代碼最多定位 20 處，剛好達到 20 也視為可能還有）達到時也回報 `truncated: true`，偵測器可在回傳的陣列上設 `truncated` 屬性。
 
 ## Fail closed
 

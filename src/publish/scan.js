@@ -56,7 +56,8 @@ const HINTS = Object.freeze({
 // Shell, PowerShell, config, data and text files keep the strict shape: there an unquoted value
 // is often the secret itself. Every other shape (tokens, keys, paths, ...) is unaffected.
 const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kt|swift|php|cs|c|h|cc|cpp|hpp)$/i;
-const QUOTED_LITERAL = /^[A-Za-z_-]+\s*[:=]\s*["'][^"'\s]{8,}["']/;
+// A quoted literal: single or double quotes, or a template literal that is not only an interpolation.
+const QUOTED_LITERAL = /^[A-Za-z_-]+\s*[:=]\s*(?:["'][^"'\s]{8,}["']|`(?!\$\{)[^`\s]{8,}`)/;
 
 function codeRefine(text, hit) {
   if (hit.code !== 'credential-assignment' || hit.index === null || hit.index === undefined) return true;
@@ -150,7 +151,10 @@ function run(units, options) {
   const scanText = (text, base, where, keep = () => true) => {
     const starts = lineStarts(text);
     for (const detector of active) {
-      for (const hit of detector.detect(text)) {
+      const hits = detector.detect(text);
+      // A detector that stopped at its own cap says so; the result then reports the truncation.
+      if (hits && hits.truncated === true) truncated = true;
+      for (const hit of hits) {
         if (!keep(text, hit)) continue;
         const position = hit.index === null || hit.index === undefined ? { line: null, column: null } : where(locate(starts, hit.index));
         add({ ...base, code: hit.code, category: hit.category, ...position, ...(hit.id !== undefined ? { id: hit.id } : {}), hint: HINTS[hit.category] || HINTS.credential });

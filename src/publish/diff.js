@@ -9,6 +9,26 @@
 
 const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
+// The lines git writes between `diff --git` and the first hunk. Anything outside a hunk that is
+// not one of these (and not blank) is not understood, and the diff is then reported as malformed
+// instead of being read selectively.
+const EXTENDED_HEADERS = [
+  'index ',
+  'old mode ',
+  'new mode ',
+  'similarity index ',
+  'dissimilarity index ',
+  'rename from ',
+  'rename to ',
+  'copy from ',
+  'copy to ',
+  'new file mode',
+  'deleted file mode',
+  'Binary files ',
+  'GIT binary patch'
+];
+const isExtendedHeader = (line) => EXTENDED_HEADERS.some((prefix) => line.startsWith(prefix));
+
 function unquote(path) {
   if (!(path.startsWith('"') && path.endsWith('"') && path.length >= 2)) return path;
   const bytes = [];
@@ -107,6 +127,9 @@ function parseUnifiedDiff(text) {
       continue;
     }
 
+    // Blank lines outside a hunk carry nothing.
+    if (line.trim() === '') continue;
+
     if (line.startsWith('diff --git ')) {
       start();
       const paths = gitHeaderPaths(line.slice('diff --git '.length));
@@ -126,21 +149,33 @@ function parseUnifiedDiff(text) {
       } else current.newPath = headerPath(line.slice(4));
       continue;
     }
-    if (!current) continue;
+    // The payload of a binary patch (base85 data, `literal`/`delta` lines) is binary content: it is
+    // reported as unscanned, and is not read line by line.
+    if (current && current.binary) continue;
+    // Text before the first file header (a mail preface, any commentary) is not understood.
+    if (!current) {
+      malformed = true;
+      continue;
+    }
     if (line.startsWith('new file mode')) current.isNew = true;
     else if (line.startsWith('deleted file mode')) current.newPath = null;
-    else if (line.startsWith('rename to ')) {
+    else if (line.startsWith('rename to ') || line.startsWith('copy to ')) {
       current.isRename = true;
-      current.newPath = headerPath(line.slice('rename to '.length));
-    } else if (line.startsWith('rename from ')) current.oldPath = headerPath(line.slice('rename from '.length));
-    else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) current.binary = true;
-    else {
+      current.newPath = headerPath(line.slice(line.indexOf(' to ') + 4));
+    } else if (line.startsWith('rename from ') || line.startsWith('copy from ')) {
+      current.oldPath = headerPath(line.slice(line.indexOf(' from ') + 6));
+    } else if (line.startsWith('Binary files ') || line.startsWith('GIT binary patch')) current.binary = true;
+    else if (isExtendedHeader(line)) {
+      // index, modes, similarity: nothing to record
+    } else {
       const hunk = HUNK.exec(line);
       if (hunk) {
         oldLeft = hunk[2] === undefined ? 1 : Number.parseInt(hunk[2], 10);
         newLeft = hunk[4] === undefined ? 1 : Number.parseInt(hunk[4], 10);
         newLine = Number.parseInt(hunk[3], 10);
-      } else if (line.startsWith('@@')) {
+      } else {
+        // Text between files or after a hunk, a + or - line outside any hunk, a merge-style header:
+        // not understood, so the caller must not trust a partial reading.
         malformed = true;
       }
     }
