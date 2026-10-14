@@ -1,0 +1,8 @@
+.agent-artifacts/
+.agent-eye/
+.agents/
+.claude/
+.codex/
+node_modules/
+.vscode-test/
+*.vsix

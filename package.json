@@ -1,0 +1,31 @@
+{
+  "name": "multiagentsystem",
+  "displayName": "Multiagent System",
+  "description": "Native terminal prototype for coordinating CLI coding agents in VS Code.",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onCommand:multiagentSystem.openTerminalGroup",
+    "onCommand:multiagentSystem.launchAgent"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "multiagentSystem.openTerminalGroup",
+        "title": "Multiagent: Open Four Native Terminals"
+      },
+      {
+        "command": "multiagentSystem.launchAgent",
+        "title": "Multiagent: Launch CLI Agent in Native Terminal"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node --check src/extension.js"
+  }
+}
