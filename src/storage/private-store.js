@@ -362,6 +362,10 @@ class PrivateStore {
   // call return `locked` with who seems to hold it, and a person (or the product,
   // on request) clears a dead holder with `recoverLock`.
   #lock() {
+    // Check before creating anything, so a link into the repository cannot cause
+    // directories to be created there, then again once the directory exists.
+    const before = checkPrivateRoot(this.dir, this.repoRoot, this.context);
+    if (!before.ok) throw new StoreError('directory-rejected', before.problems.join(','));
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     } catch (error) {

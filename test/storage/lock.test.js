@@ -46,7 +46,7 @@ test('a lock held by a live process is never taken, however old it is', (t) => {
 test('a live holder in another process keeps the lock through the stale age; writes resume when it releases', async (t) => {
   const s = sandbox(t);
   fs.mkdirSync(s.dir);
-  const child = spawn(process.execPath, [holder, lockPath(s), 'hold', '800'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const child = spawn(process.execPath, [holder, lockPath(s), 'hold', '2500'], { stdio: ['ignore', 'pipe', 'ignore'] });
   t.after(() => child.kill());
   await new Promise((resolve) => child.stdout.once('data', resolve));
 
@@ -70,7 +70,10 @@ test('a crashed holder is reported as dead and cleared only on request', async (
   const store = open(s, quick);
   assert.deepEqual(store.put('profiles', 'p1', { provider: 'claude' }), { ok: false, reason: 'locked', detail: 'owner-dead' });
   assert.equal(fs.existsSync(lockPath(s)), true, 'writing does not clear it automatically');
-  assert.deepEqual(store.inspectLock(), { ok: true, held: true, detail: 'owner-dead', ageMs: store.inspectLock().ageMs, stale: store.inspectLock().stale });
+  const { ageMs, ...inspected } = store.inspectLock();
+  assert.deepEqual(inspected, { ok: true, held: true, detail: 'owner-dead', stale: inspected.stale });
+  assert.equal(typeof ageMs, 'number');
+  assert.equal(typeof inspected.stale, 'boolean');
 
   assert.equal(store.recoverLock().reason, 'confirmation-required');
   assert.equal(store.recoverLock({ confirm: 'yes' }).reason, 'confirmation-required');
@@ -83,8 +86,9 @@ test('recovery refuses a live owner unless forced, and forcing needs a stale loc
   const store = open(s, quick);
 
   writeLock(s, mine());
-  assert.deepEqual(store.recoverLock({ confirm: CONFIRM_RECOVER }),
-    { ok: false, reason: 'owner-not-confirmed-gone', detail: 'owner-alive', ageMs: store.recoverLock({ confirm: CONFIRM_RECOVER }).ageMs });
+  const refused = store.recoverLock({ confirm: CONFIRM_RECOVER });
+  assert.deepEqual([refused.ok, refused.reason, refused.detail], [false, 'owner-not-confirmed-gone', 'owner-alive']);
+  assert.equal(typeof refused.ageMs, 'number');
   assert.equal(store.recoverLock({ confirm: CONFIRM_RECOVER, force: true }).reason, 'not-stale', 'fresh lock, even forced');
   assert.equal(fs.existsSync(lockPath(s)), true);
 

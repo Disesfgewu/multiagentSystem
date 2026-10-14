@@ -378,3 +378,21 @@ test('I/O errors while locking come back as results, not exceptions', (t) => {
     fs.chmodSync(s.dir, 0o700);
   }
 });
+
+test('a link swapped in above a directory that did not exist yet creates nothing in the repository', (t) => {
+  const s = sandbox(t);
+  const outer = path.join(s.root, 'outer');
+  fs.mkdirSync(outer);
+  const store = new PrivateStore({ dir: path.join(outer, 'link', 'data'), repoRoot: s.repoRoot, collections: COLLECTIONS });
+  try {
+    fs.symlinkSync(s.repoRoot, path.join(outer, 'link'), 'junction');
+  } catch (error) {
+    t.skip(`cannot create a directory link here: ${error.code}`);
+    return;
+  }
+  const result = store.put('profiles', 'p1', profile());
+  assert.deepEqual([result.ok, result.reason], [false, 'directory-rejected']);
+  assert.deepEqual(fs.readdirSync(s.repoRoot), [], 'the check runs before any directory is created');
+  assert.equal(store.clear({ confirm: CONFIRM_CLEAR }).reason, 'directory-rejected');
+  assert.deepEqual(fs.readdirSync(s.repoRoot), []);
+});

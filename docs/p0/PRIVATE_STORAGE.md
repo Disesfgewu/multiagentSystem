@@ -4,7 +4,7 @@
 
 狀態：**儲存核心已實作並以合成資料測試；與 VS Code storage／SecretStorage 的整合尚未做、也尚未驗證**。#9 要求的「功能整合依賴：#8」在 #8 合併前無法完成，本 PR 依 Issue 的說明先交付明確介面與合成資料測試，不把它們當成整合驗收。
 
-測試環境：macOS（Darwin 25.6）、Node.js 24，實測日期 2026-10-14。全部使用合成資料。
+測試環境：macOS（Darwin 25.6）、Node.js 24 與 20.20.2（VS Code 1.95 的 extension host 使用 Node 20，是專案鎖定的最舊執行環境），實測日期 2026-10-14。全部使用合成資料。
 
 ## 1. 範圍與檔案
 
@@ -16,7 +16,7 @@
 | `src/storage/sensitive.js` | 拒絕把憑證存進檔案：欄位名稱與值的形態偵測（只回報代碼與欄位路徑） |
 | `src/storage/secrets.js` | `SecretVault`：憑證放在宿主的秘密儲存，記錄只保存不透明的 `secretRef`；`fromExtensionContext` 綁定擴充套件的 `globalStorageUri` 與 `secrets` |
 | `scripts/p0/check-private-storage.js` | 可在任何機器重現的檢查（臨時目錄、合成資料、不需憑證或網路） |
-| `test/storage/` | 64 項測試，含 4 個行程的並行寫入、跨行程的鎖持有與崩潰、真實 git repo |
+| `test/storage/` | 65 項測試，含 4 個行程的並行寫入、跨行程的鎖持有與崩潰、真實 git repo |
 
 儲存的集合由呼叫端宣告（預期為 `profiles`、`roleGroups`、`sessions`、`policies`），單一 JSON 檔 `store.json`：
 
@@ -37,6 +37,7 @@
 | 一路 `ENOENT` 走到磁碟根目錄（例如沒有掛載的 `Z:\`、不存在的 UNC 主機） | 拒絕：沒有任何東西被驗證，不是「尚未建立」；repo 根目錄同理（`repo-root-unresolvable`） | 是（模擬 Windows 檔案系統） |
 | 最近的既有祖先是一般檔案（Windows 對檔案之下的路徑回報 `ENOENT`，macOS 回報 `ENOTDIR`） | 拒絕；兩個平台行為一致 | 是（模擬與真實檔案系統） |
 | 資料目錄（POSIX）不屬於目前使用者，或不是目錄 | 寫入與清除都拒絕（`directory-rejected`） | 是 |
+| 資料目錄的上層在建構之後被換成指向 repo 的連結，而目錄尚不存在 | **建立任何目錄之前**就檢查並拒絕：repo 內不會出現新目錄 | 是 |
 | 取鎖或清除時的 I/O 錯誤（目錄不可寫、被檔案佔用、磁碟滿） | 回傳 `lock-failed`／`directory-rejected`／`clear-failed` 與錯誤碼，不以例外洩漏；讀取仍可使用 | 是（目錄不可寫的案例在 Windows 與 root 下跳過） |
 | 寫入中途失敗（磁碟滿、rename 失敗） | 舊檔不變、暫存檔移除，回傳 `write-failed` 與錯誤碼 | 是（注入失敗） |
 | Windows 上 rename 暫時被拒（`EPERM`／`EBUSY`／`EACCES`） | 重試最多 10 次 | 是（注入） |
@@ -112,7 +113,7 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過 | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
+| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過；Node 20 與 24 都測 | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
 | 檔案權限（檔案 `0600`、目錄 `0700`） | 已測試 | **未驗證**：Windows 沒有同樣的權限位元，ACL 的實際效果未檢查，只能依賴使用者設定檔目錄的預設權限 |
 | 資料目錄擁有者檢查 | 每次取鎖時檢查目錄存在、是目錄且屬於目前使用者（`not-owned` 則拒絕）；已有測試 | 不適用（沒有 uid）；ACL 未驗證 |
 | fsync 的實際耐久性 | 呼叫但未驗證斷電情境 | 同左；目錄 fsync 在 Windows 上被略過 |
