@@ -7,7 +7,7 @@ on:
       - test/publish-policy.test.js
       - .github/workflows/publish-policy.yml
   push:
-    branches: [main, feat/p0-publish-policy]
+    branches: [main]
     paths:
       - src/publish-policy.js
       - test/publish-policy.test.js
