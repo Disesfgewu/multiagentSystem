@@ -291,3 +291,16 @@ test('an enterprise api base path is kept for REST and mapped for GraphQL', asyn
   assert.equal((await client.getJson('/x')).kind, 'ok');
   assert.equal((await client.graphql({ query: 'query Q { a }' })).kind, 'ok');
 });
+
+test('a hung request still times out when nothing else keeps the process alive', () => {
+  // Regression: an unref()ed timeout timer let the process exit before the timeout fired.
+  const { spawnSync } = require('node:child_process');
+  const path = require('node:path');
+  const script = `
+    const { createGitHubClient } = require(${JSON.stringify(path.join(__dirname, '..', 'src'))});
+    const client = createGitHubClient({ transport: () => new Promise(() => {}), timeoutMs: 50, retry: { maxRetries: 0 } });
+    client.getJson('/x').then((result) => console.log(result.kind + ':' + result.reason));
+  `;
+  const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(run.stdout.trim(), 'transient:timeout');
+});

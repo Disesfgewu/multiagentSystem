@@ -300,7 +300,6 @@ function createGitHubClient(options) {
         timedOut = true;
         controller.abort();
       }, timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref();
     }
     try {
       const raw = await raceAbort(
