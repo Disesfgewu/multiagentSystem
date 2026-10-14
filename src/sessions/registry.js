@@ -44,6 +44,7 @@ class SessionRegistry {
     this.now = now;
     this.entries = new Map();
     this.bindings = new Map();
+    this.retiredTokens = new Set();
   }
 
   create(input) {
@@ -85,10 +86,12 @@ class SessionRegistry {
   attachTerminal(id, token) {
     const entry = this.#entry(id);
     required(token, 'terminal-token');
+    if (this.retiredTokens.has(token)) throw new SessionError('terminal-token-reused');
     for (const [otherId, otherToken] of this.bindings) {
       if (otherId !== id && otherToken === token) throw new SessionError('terminal-already-bound');
     }
     if (this.bindings.get(id) === token) throw new SessionError('terminal-already-bound');
+    if (this.bindings.has(id)) this.retiredTokens.add(this.bindings.get(id));
     this.bindings.set(id, token);
     entry.state = STATES.TERMINAL_OPEN;
     entry.observedAt = null;
@@ -130,6 +133,7 @@ class SessionRegistry {
     if (typeof stamp !== 'string' || !Number.isFinite(Date.parse(stamp))) {
       throw new SessionError('invalid-observed-at');
     }
+    if (Date.parse(stamp) > Date.parse(this.now())) throw new SessionError('future-observation');
     entry.state = STATES.CLI_OBSERVED;
     entry.observedAt = stamp;
     entry.observationSource = source;
@@ -150,6 +154,7 @@ class SessionRegistry {
   terminalClosed(id, token) {
     const entry = this.#bound(id, token);
     this.bindings.delete(id);
+    this.retiredTokens.add(token);
     entry.state = STATES.TERMINAL_CLOSED;
     entry.observedAt = null;
     entry.observationSource = null;

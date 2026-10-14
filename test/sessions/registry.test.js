@@ -25,6 +25,7 @@ test('a session keeps its provider and account binding across terminal reopens',
     { provider: 'claude', accountProfileId: 'account-a' }
   );
   assert.throws(() => registry.launchRequested('session-a', 'terminal-1'), { code: 'stale-terminal-event' });
+  assert.throws(() => registry.attachTerminal('session-a', 'terminal-1'), { code: 'terminal-token-reused' });
 });
 
 test('sending a CLI command never by itself reports an active CLI', () => {
@@ -67,6 +68,28 @@ test('two sessions cannot silently share a native terminal binding', () => {
   registry.attachTerminal('session-a', 'terminal-1');
   assert.throws(() => registry.attachTerminal('session-b', 'terminal-1'), { code: 'terminal-already-bound' });
   assert.equal(registry.get('session-b').state, STATES.UNKNOWN);
+});
+
+test('replacing a terminal binding retires the old token even without a close event', () => {
+  const registry = new SessionRegistry();
+  registry.create(input());
+  registry.attachTerminal('session-a', 'terminal-1');
+  registry.attachTerminal('session-a', 'terminal-2');
+  assert.throws(() => registry.terminalClosed('session-a', 'terminal-1'), { code: 'stale-terminal-event' });
+  assert.throws(() => registry.attachTerminal('session-a', 'terminal-1'), { code: 'terminal-token-reused' });
+  assert.equal(registry.get('session-a').state, STATES.TERMINAL_OPEN);
+});
+
+test('a future provider timestamp cannot claim that a CLI is active', () => {
+  const registry = new SessionRegistry({ now: () => '2026-01-01T00:00:00Z' });
+  registry.create(input());
+  registry.attachTerminal('session-a', 'terminal-1');
+  registry.launchRequested('session-a', 'terminal-1');
+  assert.throws(() => registry.observeCli('session-a', 'terminal-1', {
+    provider: 'claude', accountProfileId: 'account-a', source: 'provider-event',
+    observedAt: '2026-01-01T00:00:01Z'
+  }), { code: 'future-observation' });
+  assert.equal(registry.get('session-a').state, STATES.LAUNCH_REQUESTED);
 });
 
 test('CLI exit is distinct from terminal close and permits a fresh launch', () => {
