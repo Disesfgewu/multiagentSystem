@@ -5,6 +5,7 @@ const nodePath = require('node:path');
 const crypto = require('node:crypto');
 const { checkPrivateRoot } = require('./paths');
 const { DirectoryLock, LockIoError } = require('./lock');
+const { byCodeUnit } = require('./order');
 const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
 
@@ -312,7 +313,7 @@ class MemoryStore {
       for (const token of wanted) if (own.has(token)) score += 1;
       if (score > 0) scored.push({ item, score });
     }
-    scored.sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));
+    scored.sort((a, b) => b.score - a.score || byCodeUnit(a.item.id, b.item.id));
 
     const selected = [];
     let used = 0;
