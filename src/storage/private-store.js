@@ -287,7 +287,11 @@ class PrivateStore {
   // stale lock is best effort: a holder that stalls past `staleMs` can lose it.
   #acquire() {
     const { retries, waitMs, staleMs } = this.lockOptions;
-    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    try {
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      throw new StoreError('directory-rejected', error.code || 'unknown');
+    }
     this.#assertDirectory();
     const token = crypto.randomBytes(8).toString('hex');
     for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -297,7 +301,7 @@ class PrivateStore {
         fs.closeSync(descriptor);
         return token;
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        if (error.code !== 'EEXIST') throw new StoreError('lock-failed', error.code || 'unknown');
         try {
           const stat = fs.statSync(this.lockFile);
           if (Date.now() - stat.mtimeMs > staleMs) {
@@ -326,8 +330,18 @@ class PrivateStore {
   #assertDirectory() {
     const check = checkPrivateRoot(this.dir, this.repoRoot, this.context);
     if (!check.ok) throw new StoreError('directory-rejected', check.problems.join(','));
-    const stat = lstatOrNull(this.dir);
-    if (stat && !stat.isDirectory() && !stat.isSymbolicLink()) throw new StoreError('directory-rejected', 'not-a-directory');
+    let stat;
+    try {
+      stat = fs.statSync(this.dir);
+    } catch (error) {
+      throw new StoreError('directory-rejected', error.code || 'unknown');
+    }
+    if (!stat.isDirectory()) throw new StoreError('directory-rejected', 'not-a-directory');
+    // Windows has no uid; its access control is the user profile's default and
+    // is not verified here.
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      throw new StoreError('directory-rejected', 'not-owned');
+    }
   }
 
   #write(data) {
@@ -527,6 +541,8 @@ class PrivateStore {
         }
       }
       return { ok: true, removed };
+    } catch (error) {
+      return { ok: false, reason: 'clear-failed', detail: error.code || 'unknown' };
     } finally {
       this.#release(token);
     }

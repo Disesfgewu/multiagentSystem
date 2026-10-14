@@ -356,3 +356,41 @@ test('private files never show up in git status of the repository', (t) => {
   assert.equal(git('status', '--porcelain', '--ignored').stdout.trim(), '');
   assert.equal(git('ls-files').stdout.trim(), 'tracked.txt');
 });
+
+test('a data directory owned by someone else, or that is not a directory, is refused', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', profile());
+  const before = fs.readFileSync(path.join(s.dir, 'store.json'), 'utf8');
+
+  if (typeof process.getuid === 'function') {
+    t.mock.method(process, 'getuid', () => process.getuid.mock.calls.length * 0 + 424242);
+    assert.deepEqual(store.put('profiles', 'p2', profile()), { ok: false, reason: 'directory-rejected', detail: 'not-owned' });
+    assert.deepEqual(store.clear({ confirm: CONFIRM_CLEAR }), { ok: false, reason: 'directory-rejected', detail: 'not-owned' });
+    t.mock.restoreAll();
+  }
+  assert.equal(fs.readFileSync(path.join(s.dir, 'store.json'), 'utf8'), before);
+
+  const other = sandbox(t);
+  fs.writeFileSync(other.dir, 'a file where the directory should be');
+  const result = open(other).put('profiles', 'p1', profile());
+  assert.equal(result.reason, 'directory-rejected');
+});
+
+test('I/O errors while locking come back as results, not exceptions', (t) => {
+  if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) {
+    t.skip('needs a POSIX directory that the current user cannot write to');
+    return;
+  }
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'p1', profile());
+  fs.chmodSync(s.dir, 0o500);
+  try {
+    assert.deepEqual(store.put('profiles', 'p2', profile()), { ok: false, reason: 'lock-failed', detail: 'EACCES' });
+    assert.deepEqual(store.clear({ confirm: CONFIRM_CLEAR }), { ok: false, reason: 'lock-failed', detail: 'EACCES' });
+    assert.equal(store.get('profiles', 'p1').found, true, 'reads still work');
+  } finally {
+    fs.chmodSync(s.dir, 0o700);
+  }
+});
