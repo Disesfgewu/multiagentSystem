@@ -61,16 +61,37 @@ export interface Unavailable {
   problems: string[];
 }
 
+/**
+ * How much of "is the data folder outside every repository" was actually established.
+ *   complete        every open folder was checked, and so was the repository Git reported for it
+ *   folders-only    the open folders themselves were checked, but Git did not report a repository
+ *                   for at least one of them (it is not in one, or Git could not be asked, for
+ *                   example in a workspace that is not trusted yet). A data folder that is inside
+ *                   such a folder's repository, outside the folder itself, is not caught.
+ *   no-folder-open  nothing is open, so there is no repository to be inside of
+ */
+export interface Coverage {
+  level: 'complete' | 'folders-only' | 'no-folder-open';
+  folders: number;
+  withoutRepositoryRoot: number;
+}
+
 export interface Ready {
   ok: true;
   store: PrivateStoreInstance;
   vault: SecretVaultInstance;
+  coverage: Coverage;
 }
 
 export type StorageResult = Ready | Unavailable;
 
 export interface StorageHandle {
-  /** Re-checks the data folder against every open repository, then returns the store and vault. */
+  /**
+   * Re-checks the data folder against every open folder and its repository, then returns the
+   * store and vault. Call it for each operation and do not keep the returned `store`: the store
+   * only ever compares against the one folder it was opened with, so a folder opened later is
+   * noticed only by the next `use()`.
+   */
   use(): Promise<StorageResult>;
 }
 
@@ -82,21 +103,24 @@ function distinct(values: string[]): string[] {
 
 export function createStorageHandle(deps: StorageDeps): StorageHandle {
   const namespace = deps.namespace ?? DEFAULT_NAMESPACE;
-  // Repository roots found by Git are remembered per folder, so the Git lookup is not repeated
-  // on every use. The folder itself is still checked each time.
-  const roots = new Map<string, string | null>();
+  // A repository root that Git reported is remembered per folder, so Git is not asked again on
+  // every use. A lookup that found nothing is NOT remembered: "no answer" (Git missing, the
+  // workspace not trusted yet, a temporary failure) must not become a permanent "no repository",
+  // so it is asked again next time. The folder itself is checked on every use either way.
+  const roots = new Map<string, string>();
 
   async function rootOf(folder: string): Promise<string | null> {
     if (!deps.repositoryRoot) return null;
-    if (roots.has(folder)) return roots.get(folder) ?? null;
+    const known = roots.get(folder);
+    if (known !== undefined) return known;
     let found: string | null = null;
     try {
       found = await deps.repositoryRoot(folder);
     } catch {
-      found = null; // not a repository, or Git is unavailable: the folder itself is still checked
+      found = null;
     }
-    roots.set(folder, found);
-    return found;
+    if (typeof found === 'string' && found !== '') roots.set(folder, found);
+    return typeof found === 'string' && found !== '' ? found : null;
   }
 
   return {
@@ -114,11 +138,18 @@ export function createStorageHandle(deps: StorageDeps): StorageHandle {
       // Every folder that is open now, and the repository it belongs to.
       const folders = deps.workspaceFolders();
       const checked: string[] = [];
+      let withoutRoot = 0;
       for (const folder of folders) {
         checked.push(folder);
         const root = await rootOf(folder);
-        if (root !== null && root !== folder) checked.push(root);
+        if (root === null) withoutRoot += 1;
+        else if (root !== folder) checked.push(root);
       }
+      const coverage: Coverage = {
+        level: folders.length === 0 ? 'no-folder-open' : withoutRoot === 0 ? 'complete' : 'folders-only',
+        folders: folders.length,
+        withoutRepositoryRoot: withoutRoot
+      };
       // With nothing open there is no repository to be inside of. The extension's own folder
       // stands in only so the store has a repository path to compare against; it is never
       // used as a place to store anything.
@@ -136,7 +167,7 @@ export function createStorageHandle(deps: StorageDeps): StorageHandle {
       try {
         const options = { dir, repoRoot: toCheck[0], collections: [...COLLECTIONS], schemaVersion: SCHEMA_VERSION };
         const store = new PrivateStore(options as unknown as ConstructorParameters<typeof PrivateStore>[0]);
-        return { ok: true, store, vault };
+        return { ok: true, store, vault, coverage };
       } catch (error) {
         const found = (error as { problems?: unknown }).problems;
         return unavailable('store-rejected', Array.isArray(found) ? found.filter((item): item is string => typeof item === 'string') : ['unknown']);
@@ -151,6 +182,8 @@ export interface StorageStatus {
   problems: string[];
   /** The store's own report: `null` when the data folder cannot be used. */
   store: { ok: boolean; reason: string | null; detail: string | null } | null;
+  /** How much of the repository check was actually established; `null` when unavailable. */
+  coverage: Coverage | null;
   /** Whether a value could be written to, read from and removed from the editor's secret storage. */
   secrets: 'reachable' | 'unreachable' | 'not-checked';
 }
@@ -160,7 +193,10 @@ export function statusMessage(status: StorageStatus): { level: 'info' | 'error';
   if (status.state === 'available') {
     const store = status.store;
     const detail = store === null ? 'unknown' : store.ok ? 'ok' : (store.reason ?? 'unknown');
-    return { level: store !== null && !store.ok ? 'error' : 'info', text: `Private storage is available (store: ${detail}).` };
+    const partial = status.coverage !== null && status.coverage.level === 'folders-only'
+      ? ` Only the open folders themselves were checked: Git did not report a repository for ${status.coverage.withoutRepositoryRoot} of ${status.coverage.folders}.`
+      : '';
+    return { level: store !== null && !store.ok ? 'error' : 'info', text: `Private storage is available (store: ${detail}).${partial}` };
   }
   const codes = status.problems.length > 0 ? ` (${status.problems.join(', ')})` : '';
   return { level: 'error', text: `Private storage is unavailable: ${status.reason ?? 'unknown'}${codes}. Nothing is stored elsewhere instead.` };
@@ -176,7 +212,7 @@ const SECRET_PROBE_TIMEOUT_MS = 10000;
 export async function describeStorage(handle: StorageHandle, options: { probeSecrets?: boolean } = {}): Promise<StorageStatus> {
   const result = await handle.use();
   if (!result.ok) {
-    return { state: 'unavailable', reason: result.reason, problems: result.problems, store: null, secrets: 'not-checked' };
+    return { state: 'unavailable', reason: result.reason, problems: result.problems, store: null, coverage: null, secrets: 'not-checked' };
   }
   const status = result.store.status() as { ok: boolean; reason: string | null; detail: string | null };
   let secrets: StorageStatus['secrets'] = 'not-checked';
@@ -186,17 +222,20 @@ export async function describeStorage(handle: StorageHandle, options: { probeSec
     reason: null,
     problems: [],
     store: { ok: status.ok, reason: status.reason ?? null, detail: status.detail ?? null },
+    coverage: result.coverage,
     secrets
   };
 }
 
 /** Writes, reads and removes one synthetic value. Never leaves it behind, and never waits without end. */
 export async function probeSecretVault(vault: SecretVaultInstance, timeoutMs = SECRET_PROBE_TIMEOUT_MS): Promise<boolean> {
-  const value = `probe-${Date.now()}`;
+  // Each probe uses its own key, so two windows probing at once cannot delete each other's value.
+  const unique = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  const value = `probe-${unique}`;
   const attempt = (async (): Promise<boolean> => {
     let ref: string | undefined;
     try {
-      const saved = await vault.save('storage-probe', value) as { secretRef: string };
+      const saved = await vault.save(`storage-probe-${unique}`, value) as { secretRef: string };
       ref = saved.secretRef;
       return (await vault.read(ref)) === value;
     } catch {

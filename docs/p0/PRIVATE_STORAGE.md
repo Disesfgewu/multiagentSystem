@@ -156,9 +156,12 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 
 - **位置**：私人資料只放在編輯器給這個擴充套件的儲存資料夾（`context.globalStorageUri`）下的 `private/`；憑證只放在編輯器的 `context.secrets`，記錄只存不透明的 `secretRef`（命名空間 `default`）。集合為 `profiles`、`roleGroups`、`sessions`、`policies`，schema 版本 1。
 - **每次 `use()` 都重新檢查**資料資料夾與**每一個目前開啟的工作區資料夾**，以及 Git 回報的該資料夾所屬 repo 的頂層目錄（只在已信任的工作區才詢問 Git）：資料夾在 repo 內、或 repo 在資料資料夾內、或連結指向 repo，都回報 `unavailable`／`directory-rejected`。檢查在**任何目錄被建立之前**完成。所以工作區在啟動之後才加入資料夾也會被檢查，不需重新啟動。
+- **呼叫端必須每次操作都呼叫 `use()`，不要保存它回傳的 `store`**：`PrivateStore` 只會對它建立時的那一個資料夾比對，之後才開啟的資料夾只有下一次 `use()` 才會被發現（接上 #12 等模組時要確認）。
+- **Git 的查詢結果只在「找到」時才記住。** 找不到、Git 不存在、查詢失敗、工作區尚未信任，都不記住，下一次 `use()` 會再問一次；否則「沒有回答」會變成永久的「沒有 repo」，是 fail open。
+- **結果會說明驗證了多少**（`coverage`，狀態命令也會顯示）：`complete`＝每個開啟的資料夾及其 repo 根目錄都檢查過；`folders-only`＝只檢查了開啟的資料夾本身，Git 沒有為其中至少一個回報 repo（它不在 repo 裡，或當下無法詢問 Git）——此時**資料資料夾若在該資料夾所屬 repo 之內、但在開啟的資料夾之外，不會被偵測到**；`no-folder-open`＝沒有開啟任何資料夾。狀態訊息在 `folders-only` 時會寫明 `Only the open folders themselves were checked: Git did not report a repository for N of M.`，不讓報告看起來像完整驗證過。
 - **不可用時不退路**：沒有備用位置——不是 repo 內的資料夾、不是家目錄、暫存資料夾或工作目錄。回報的原因只有代碼（`context-incomplete`、`directory-rejected` 與 `private-root-inside-repo` 等），不含路徑；測試以遞迴快照確認被拒絕之後整個暫存樹沒有新增任何東西。編輯器沒有提供儲存資料夾或 `secrets` 時回報 `context-incomplete`，不丟例外。
 - **沒有開啟任何資料夾**時沒有 repo 可言，所以可以使用；此時以擴充套件自己的資料夾作為「比較用的 repo 路徑」，只用來讓儲存核心有路徑可比，**不會在那裡存任何東西**。
-- **命令** `Multiagent: Show Private Storage Status`（`multiagentSystem.storage.status`）：回報可用與否、儲存核心自己的狀態（例如 `corrupt`）；只有代碼，不含路徑或內容。傳入 `{ probeSecrets: true }` 才會對編輯器的秘密儲存做一次合成值的寫入、讀取、刪除（會有逾時，不會無限等待，也不會留下值），因為真實後端可能詢問使用者授權；預設不探測。
+- **命令** `Multiagent: Show Private Storage Status`（`multiagentSystem.storage.status`）：回報可用與否、儲存核心自己的狀態（例如 `corrupt`）；只有代碼，不含路徑或內容。傳入 `{ probeSecrets: true }` 才會對編輯器的秘密儲存做一次合成值的寫入、讀取、刪除（會有逾時，不會無限等待，也不會留下值），因為真實後端可能詢問使用者授權；預設不探測。每次探測用自己的 key（隨機後綴），兩個視窗同時探測不會互相刪除。
 - **Extension Host 測試**（`test/host/suite/storage.ts`，VS Code 1.95.0 與 stable，macOS 與 Windows）：真實的 `globalStorageUri` 在專案之外；寫入、讀取、清除；真實 `SecretStorage` 的合成值往返；憑證不在資料檔；資料夾被視為在專案內時回報原因且專案內沒有新增任何東西；結束時刪除所有合成資料。
 - **未驗證**：後端的保護與持久性（見第 8 節）；真實使用者授權提示；`SecretStorage` 在登入鎖定、跨重新啟動、多個 VS Code 視窗同時使用時的行為；Windows 實機與 ACL；多根工作區之外的真實專案。
 

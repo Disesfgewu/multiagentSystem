@@ -59,6 +59,8 @@ export async function runStorageChecks(registered: string[], workspace: string):
     const status = await vscode.commands.executeCommand<StorageStatus>(STORAGE_COMMANDS.status, { interactive: false });
     assert.equal(status.state, 'available', JSON.stringify(status));
     assert.equal(JSON.stringify(status).includes(storageFolder), false, 'no path in the report');
+    // The test project is not a Git repository, so Git reports no repository for it, and the report says that only the folder itself was checked.
+    assert.deepEqual(status.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
 
     // 2. The real storage folder is outside the open project, and the store reads and writes there.
     const used = await handle.use();
@@ -103,7 +105,6 @@ export async function runStorageChecks(registered: string[], workspace: string):
   } finally {
     // Whatever happened above, leave no synthetic data behind.
     try { await within('SecretStorage cleanup', context.secrets.delete('multiagentSystem/default/host-test-1')); } catch { /* nothing to remove */ }
-    try { await within('SecretStorage cleanup', context.secrets.delete('multiagentSystem/default/storage-probe')); } catch { /* nothing to remove */ }
     fs.rmSync(dataFolder, { recursive: true, force: true });
   }
   return 'storage host smoke: the editor\'s own storage folder is outside the project; the store reads, writes and clears there; SecretStorage round-trips a synthetic value; an unusable folder is reported and nothing is stored elsewhere';

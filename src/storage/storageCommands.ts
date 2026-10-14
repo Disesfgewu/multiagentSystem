@@ -11,8 +11,10 @@ let testContext: vscode.ExtensionContext | undefined;
 
 /**
  * The private store and secret vault of this extension, for the other parts of it. Every
- * `use()` checks the data folder against the repositories that are open at that moment. It is
- * undefined until the extension has been activated.
+ * `use()` checks the data folder against the repositories that are open at that moment. Call
+ * `use()` for each operation and do not keep the `store` it returns: the store compares only
+ * against the one folder it was opened with. It is undefined until the extension has been
+ * activated.
  */
 export function privateStorage(): StorageHandle | undefined {
   return handle;

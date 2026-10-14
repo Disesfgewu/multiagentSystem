@@ -190,14 +190,70 @@ test('every open folder is checked: one bad folder among several is enough to re
   assert.equal(result.ok, false);
 });
 
-test('a Git lookup that fails or finds nothing does not stop the folder itself being checked, and is not repeated each time', async (t) => {
+test('a lookup that found a repository is remembered; one that found nothing is asked again every time', async (t) => {
   const s = sandbox(t);
-  let calls = 0;
-  const handle = handleFor(s, () => [s.root], { repositoryRoot: async () => { calls += 1; throw new Error('not a repository'); } });
-  for (let n = 0; n < 3; n += 1) assert.equal((await handle.use()).ok, false, 'the folder above the storage is still refused');
-  assert.equal(calls, 1, 'the lookup result is remembered per folder');
-  const fine = handleFor(s, () => [s.repo], { repositoryRoot: async () => null });
-  assert.equal((await fine.use()).ok, true);
+  let found = 0;
+  const remembers = handleFor(s, () => [s.repo], { repositoryRoot: async () => { found += 1; return s.repo; } });
+  for (let n = 0; n < 3; n += 1) assert.equal((await remembers.use()).ok, true);
+  assert.equal(found, 1, 'a repository root that Git reported is remembered per folder');
+
+  for (const [name, answer] of [['nothing', async () => null], ['an exception', async () => { throw new Error('git is not available'); }]] as const) {
+    let calls = 0;
+    const handle = handleFor(s, () => [s.root], { repositoryRoot: async () => { calls += 1; return answer(); } });
+    for (let n = 0; n < 3; n += 1) assert.equal((await handle.use()).ok, false, `${name}: the folder itself is still checked`);
+    assert.equal(calls, 3, `${name}: "no answer" is not remembered as "no repository"`);
+  }
+});
+
+test('Git could not say at first, and says later: the repository is checked from then on', async (t) => {
+  // The case that matters: the editor's data is inside the repository's top level, but outside the
+  // opened subfolder. While Git cannot be asked (an untrusted workspace, a missing Git, a failure)
+  // that cannot be seen. It must be seen as soon as Git can answer, without a restart.
+  const s = sandbox(t);
+  const repo = path.join(s.root, 'monorepo');
+  const subfolder = path.join(repo, 'packages', 'app');
+  const storage = path.join(repo, '.editor-data', 'ext');
+  fs.mkdirSync(subfolder, { recursive: true });
+  fs.mkdirSync(path.dirname(storage), { recursive: true });
+  const context: ExtensionContextLike = { ...s.context, globalStorageUri: { fsPath: storage } };
+  const before = snapshot(repo);
+
+  for (const failure of ['null', 'throw'] as const) {
+    let answer: 'none' | 'repository' = 'none';
+    const handle = createStorageHandle({
+      context,
+      workspaceFolders: () => [subfolder],
+      repositoryRoot: async () => {
+        if (answer === 'repository') return repo;
+        if (failure === 'throw') throw new Error('git is not available');
+        return null;
+      }
+    });
+    const first = await handle.use();
+    assert.equal(first.ok, true, 'cannot be seen while Git cannot answer');
+    assert.deepEqual(first.ok && first.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 }, 'and the result says so');
+    answer = 'repository'; // the workspace is trusted now, or Git works again
+    const second = await handle.use();
+    assert.equal(second.ok, false, `${failure}: the earlier "no answer" was not kept`);
+    assert.ok(!second.ok && second.problems.includes('private-root-inside-repo'));
+    answer = 'none';
+    assert.equal((await handle.use()).ok, false, 'and the repository found once keeps being checked');
+  }
+  assert.deepEqual(snapshot(repo), before, 'nothing was created in the repository');
+});
+
+test('the result says how much was checked: complete, the open folders only, or nothing open', async (t) => {
+  const s = sandbox(t);
+  const complete = await handleFor(s, () => [s.repo, s.other], { repositoryRoot: async (folder) => folder }).use();
+  assert.deepEqual(complete.ok && complete.coverage, { level: 'complete', folders: 2, withoutRepositoryRoot: 0 });
+  const mixed = await handleFor(s, () => [s.repo, s.other], { repositoryRoot: async (folder) => (folder === s.repo ? folder : null) }).use();
+  assert.deepEqual(mixed.ok && mixed.coverage, { level: 'folders-only', folders: 2, withoutRepositoryRoot: 1 });
+  const noResolver = await handleFor(s, () => [s.repo]).use();
+  assert.deepEqual(noResolver.ok && noResolver.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
+  const none = await handleFor(s, () => []).use();
+  assert.deepEqual(none.ok && none.coverage, { level: 'no-folder-open', folders: 0, withoutRepositoryRoot: 0 });
+  const empty = await handleFor(s, () => [s.repo], { repositoryRoot: async () => '' }).use();
+  assert.equal(empty.ok && empty.coverage.level, 'folders-only', 'an empty answer is not a repository root');
 });
 
 // ---- the editor does not provide what is needed -------------------------------
@@ -234,11 +290,15 @@ test('a folder where a file is in the way is refused by the store, not worked ar
 
 test('the status report holds codes only: no path, no contents', async (t) => {
   const s = sandbox(t);
-  const ready = await describeStorage(handleFor(s, () => [s.repo]), { probeSecrets: true });
-  assert.deepEqual(ready, { state: 'available', reason: null, problems: [], store: { ok: true, reason: null, detail: null }, secrets: 'reachable' });
+  const ready = await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder }), { probeSecrets: true });
+  assert.deepEqual(ready, {
+    state: 'available', reason: null, problems: [], store: { ok: true, reason: null, detail: null },
+    coverage: { level: 'complete', folders: 1, withoutRepositoryRoot: 0 }, secrets: 'reachable'
+  });
   const refused = await describeStorage(handleFor(s, () => [s.root]));
   assert.equal(refused.state, 'unavailable');
   assert.equal(refused.reason, 'directory-rejected');
+  assert.equal(refused.coverage, null);
   assert.equal(refused.secrets, 'not-checked');
   for (const report of [ready, refused]) {
     const text = JSON.stringify(report);
@@ -298,8 +358,13 @@ test('secret references are scoped to the namespace the extension chose', async 
 
 test('the message for the user says what is wrong in codes, and that nothing is stored elsewhere', async (t) => {
   const s = sandbox(t);
-  const ready = statusMessage(await describeStorage(handleFor(s, () => [s.repo])));
+  const ready = statusMessage(await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder })));
   assert.deepEqual(ready, { level: 'info', text: 'Private storage is available (store: ok).' });
+  const partial = statusMessage(await describeStorage(handleFor(s, () => [s.repo, s.other])));
+  assert.deepEqual(partial, {
+    level: 'info',
+    text: 'Private storage is available (store: ok). Only the open folders themselves were checked: Git did not report a repository for 2 of 2.'
+  });
 
   const refused = statusMessage(await describeStorage(handleFor(s, () => [s.root])));
   assert.equal(refused.level, 'error');
@@ -314,5 +379,16 @@ test('the message for the user says what is wrong in codes, and that nothing is 
   if (!opened.ok) return;
   opened.store.put('profiles', 'p1', { provider: 'claude' });
   fs.writeFileSync(path.join(s.storage, 'private', 'store.json'), '{ truncated');
-  assert.deepEqual(statusMessage(await describeStorage(handleFor(s, () => [s.repo]))), { level: 'error', text: 'Private storage is available (store: corrupt).' });
+  assert.deepEqual(statusMessage(await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder }))),
+    { level: 'error', text: 'Private storage is available (store: corrupt).' });
+});
+
+test('two probes at once cannot delete each other\'s value', async (t) => {
+  const s = sandbox(t);
+  const opened = await handleFor(s, () => [s.repo]).use();
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  const results = await Promise.all(Array.from({ length: 6 }, () => probeSecretVault(opened.vault)));
+  assert.deepEqual(results, [true, true, true, true, true, true], 'each probe has its own key');
+  assert.equal(s.backend.size, 0, 'and none leaves a value behind');
 });
