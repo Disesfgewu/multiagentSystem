@@ -2,7 +2,7 @@
 
 對應 Issue #5，以及 `docs/IMPLEMENTATION_PLAN.md` 的 R04、R05、R08。
 
-狀態：**部分驗證**。macOS 上完成了兩個 CLI 的注入路徑實測、角色範圍隔離、候選／採納流程與發布前檢查的單元與實驗驗證；原生 Windows 的 CLI 行為、互動式 session 的實際效果與記憶的 A/B 成本量測尚未完成，見第 9 節。
+狀態：**部分驗證**。macOS 上完成了兩個 CLI 的注入路徑實測、角色範圍隔離、候選／採納流程與發布前檢查的單元與實驗驗證；單元測試另在 CI 的 macOS 與 Windows runner 通過。原生 Windows 上的 CLI 行為、互動式 session 的實際效果與記憶的 A/B 成本量測尚未完成，見第 9 節。
 
 測試環境：macOS（Darwin 25.6）、Node.js 24、Claude Code 2.1.299、Codex CLI 0.162.1，實測日期 2026-10-14。全部使用合成資料；本文不含真實規則、記憶、帳號或 session 資訊。
 
@@ -180,7 +180,7 @@ node scripts/p0/check-memory-injection.js [--repo <路徑>] [--live-claude [--mo
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試（規則、記憶庫、注入計畫、路徑、發布檢查） | 本機通過 | 見 PR 的 CI 結果；僅邏輯層，不含 CLI |
+| 單元測試（規則、記憶庫、注入計畫、路徑、發布檢查） | 本機與 CI 通過 | CI 的 `windows-latest` runner 通過（35 項、0 跳過，含真實檔案系統的寫入、rename、清除）；GitHub 託管環境，僅邏輯層，不含 CLI，**不是**正式支援矩陣內的實機驗收 |
 | Codex profile／全域指示注入 | 已驗證（`prompt-input`） | **未驗證**（無設備） |
 | Claude 檔案注入、SessionStart hook | 已驗證（`-p`） | **未驗證**（無設備） |
 | 私人檔案權限 | `0600` 已測試 | **未驗證**（需確認 ACL） |
