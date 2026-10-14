@@ -224,7 +224,7 @@ test('list: marks primary and current, opens another worktree in a new window, h
 });
 
 test('create: asks for branch and folder, suggests a folder outside the repo, creates a real worktree and can open it', async (t) => {
-  const { root, temporary } = await repository(t);
+  const { root } = await repository(t);
   const h = harness(root);
   h.ui.branch = 'feature/new';
   h.ui.open = true;
@@ -235,7 +235,9 @@ test('create: asks for branch and folder, suggests a folder outside the repo, cr
   assert.equal((await fs.stat(path.join(result.worktree.path, '.git'))).isFile(), true);
   assert.equal(h.ui.opened.length, 1);
   assert.equal(await git(root, 'rev-parse', '--verify', 'refs/heads/feature/new') !== '', true);
-  assert.ok(result.worktree.path.startsWith(await fs.realpath(temporary)) || result.worktree.path.startsWith(temporary));
+  // Git reports forward-slash paths on Windows, so compare resolved directories, not strings.
+  const fold = (value: string): string => (process.platform === 'win32' ? value.toLowerCase() : value);
+  assert.equal(fold(await fs.realpath(result.worktree.path)), fold(await fs.realpath(h.ui.askedTargetDefault as string)), 'created in the suggested folder');
 
   h.ui.branch = 'feature/second';
   h.ui.open = false;
