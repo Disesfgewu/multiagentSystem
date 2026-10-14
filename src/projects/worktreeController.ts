@@ -57,7 +57,7 @@ export interface WorktreeDeps {
 /**
  * Options double as the programmatic form of each command. With `interactive: false` no prompt
  * is ever shown, which is what the Extension Host smoke test uses. Releasing without a prompt
- * additionally requires `confirmed: true`.
+ * additionally requires `confirmed: true`, which has no effect on an interactive call.
  */
 export interface WorktreeCommandOptions {
   interactive?: boolean;
@@ -310,7 +310,10 @@ export class WorktreeController {
     }
 
     // Releasing deletes a folder: always ask unless the caller states it already confirmed.
-    if (!(options.confirmed === true) && !(interactive && (await ui.confirmRelease(entry)))) return cancelled();
+    // `confirmed` is honoured only for programmatic (non-interactive) callers; an interactive
+    // call is always decided by the confirmation dialog, whatever the options say.
+    const confirmed = !interactive && options.confirmed === true;
+    if (!confirmed && !(interactive && (await ui.confirmRelease(entry)))) return cancelled();
 
     try {
       const result = await project.remove(entry.path);

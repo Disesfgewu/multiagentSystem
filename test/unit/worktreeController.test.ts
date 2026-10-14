@@ -373,3 +373,47 @@ test('release: primary, current, locked and unknown folders are refused with the
   assert.equal((current as { code: string }).code, 'current-worktree-protected');
   assert.equal((await fs.stat(target)).isDirectory(), true);
 });
+
+test('an interactive release ignores confirmed:true and is decided by the dialog alone', async (t) => {
+  const { root, temporary } = await repository(t);
+  const h = harness(root);
+  const target = path.join(temporary, 'worker');
+  assert.ok((await h.controller.create({ interactive: false, branch: 'feature/dialog', target })).ok);
+
+  h.ui.confirm = false;
+  const declined = await h.controller.remove({ path: target, confirmed: true });
+  assert.equal((declined as { code: string }).code, 'cancelled');
+  assert.equal(h.ui.confirmCalls, 1, 'the dialog was shown despite confirmed:true');
+  assert.equal((await fs.stat(target)).isDirectory(), true);
+
+  h.ui.confirm = true;
+  assert.ok((await h.controller.remove({ path: target, confirmed: true })).ok);
+  assert.equal(h.ui.confirmCalls, 2);
+});
+
+test('a workspace folder inside a worktree still identifies that worktree as this window', async (t) => {
+  const { root, temporary } = await repository(t);
+  const sub = path.join(root, 'src', 'nested');
+  await fs.mkdir(sub, { recursive: true });
+  const h = harness(sub);
+  const target = path.join(temporary, 'worker');
+  assert.ok((await h.controller.create({ interactive: false, branch: 'feature/sub', target })).ok);
+
+  const listed = await h.controller.list({ interactive: false });
+  assert.ok(listed.ok);
+  assert.deepEqual(listed.worktrees.map((w) => [w.branch, w.current]), [['main', true], ['feature/sub', false]]);
+
+  const protectedCurrent = await h.controller.remove({ interactive: false, path: root, confirmed: true });
+  assert.ok(['primary-worktree-protected', 'current-worktree-protected'].includes((protectedCurrent as { code: string }).code));
+
+  // The same from a subfolder of the linked worktree: it is the current one and stays protected.
+  const linkedSub = path.join(target, 'inner');
+  await fs.mkdir(linkedSub);
+  const inLinked = harness(linkedSub);
+  const result = await inLinked.controller.remove({ interactive: false, path: target, confirmed: true });
+  assert.equal((result as { code: string }).code, 'current-worktree-protected');
+  const entries = await inLinked.controller.list({ interactive: false });
+  assert.ok(entries.ok);
+  assert.deepEqual(entries.worktrees.map((w) => [w.branch, w.current]), [['main', false], ['feature/sub', true]]);
+  assert.equal((await fs.stat(target)).isDirectory(), true);
+});

@@ -32,10 +32,10 @@ await project.remove(created.path);
 
 - 釋放**沒有強制選項**。含 tracked 變更、untracked 或 ignored 檔案、locked、missing 的 worktree 會被拒絕並顯示原因與「Nothing was deleted」；不存在任何略過檢查的參數。
 - Git 失敗（例如 branch 已存在或已被其他 worktree 使用）顯示 Git 自己的 `fatal:` 說明；路徑重疊、無法驗證的路徑、非法 branch 分別有獨立訊息。
-- 需要受信任的工作區（`capabilities.untrustedWorkspaces: limited`，命令內再檢查 `isTrusted`）；多根工作區會先選專案資料夾；不在 Git repo 內時回報明確訊息。
+- 需要受信任的工作區：擴充套件沿用 VS Code 預設（未宣告 `untrustedWorkspaces`，Restricted Mode 下整個擴充套件停用），命令內再檢查 `isTrusted` 作為縱深防禦；信任策略由 #11 重寫啟動流程時一併決定。多根工作區會先選專案資料夾；不在 Git repo 內時回報明確訊息。從 repo 子資料夾開啟時，服務以 `git rev-parse --show-toplevel` 取得該 worktree 根目錄，所以「此視窗」標示與保護仍正確。
 - 路徑與 worktree 資訊只用於本機 UI，不寫 log、不進入 GitHub。
 
-命令可帶選項物件呼叫（供 Extension Host 冒煙測試）：`{ interactive: false, folder?, branch?, target?, base?, path?, confirmed? }`。`interactive: false` 不顯示任何提示並回傳結構化結果；釋放時若沒有 `confirmed: true` 就視為取消。這個形式沒有放寬任何服務檢查。
+命令可帶選項物件呼叫（供 Extension Host 冒煙測試）：`{ interactive: false, folder?, branch?, target?, base?, path?, confirmed? }`。`interactive: false` 不顯示任何提示並回傳結構化結果；釋放時若沒有 `confirmed: true` 就視為取消。`confirmed` 只對 `interactive: false` 生效，互動呼叫一律由確認視窗決定。這個形式沒有放寬任何服務檢查；其他擴充套件仍可用非互動形式釋放**乾淨**的 worktree（含本機檔案者仍被服務拒絕，branch 保留）。
 
 ### 驗證範圍
 
