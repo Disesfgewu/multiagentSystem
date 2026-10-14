@@ -35,6 +35,8 @@
 
 - 必須是絕對路徑。Windows 上沒有磁碟機代號或 UNC 前綴的路徑（例如 `\temp\x`）會依「目前磁碟機」解析，因此視為不穩定而拒絕。
 - 不得位於 repo 內，也不得是 repo 的上層目錄；比較前先解析符號連結，目錄尚未建立時解析最近的既有上層目錄。**只有 `ENOENT` 被視為「尚未建立」**；權限錯誤、迴圈、路徑中有檔案（`ENOTDIR`）或沒有錯誤碼的失敗一律 fail closed，回報 `config-dir-unresolvable`（repo 根目錄或預設目錄無法解析時分別為 `repo-root-unresolvable`、`provider-default-unresolvable`），不會當成「不存在」而通過。
+- **一路 `ENOENT` 走到磁碟根目錄也 fail closed**（例如沒有掛載的 `Z:\`、不存在的 UNC 主機）：沒有任何一層被驗證過，不能當成「尚未建立」。repo 根目錄與預設目錄同理，無法解析時不宣稱已驗證。
+- **最近的既有祖先必須是目錄**：Windows 對一般檔案之下的路徑回報 `ENOENT`（macOS 回報 `ENOTDIR`），兩者都拒絕，避免把檔案祖先當成可建立的目錄。
 - 不得等於該 provider 的預設設定目錄（`~/.claude`、`~/.codex`），避免與使用者自己開的非受管 terminal 共用登入。
 - 兩個 profile 不得相同或互相包含；Windows 比較時忽略大小寫。
 
@@ -143,7 +145,7 @@ node scripts/p0/check-account-isolation.js --repo <repo 路徑> \
 
 輸出已遮罩：不含 email、組織、token 與目錄路徑；profile 只以 `claude#1` 這類序號標示。腳本以引數陣列呼叫 CLI、不經過 shell 字串拼接（Windows 上為相容 `.cmd` 捷徑使用 shell，引數皆為常數，設定目錄只經環境變數傳遞）。
 
-單元測試：`node --test "test/**/*.test.js"`（47 項，全部使用合成資料；其中 5 項使用真實主機平台與暫存檔案系統，其餘注入平台與 realpath）。`.github/workflows/account-isolation.yml` 在 GitHub 託管的 `macos-latest` 與 `windows-latest` 各執行一次。
+單元測試：`node --test "test/**/*.test.js"`（53 項，全部使用合成資料；其中 6 項使用真實主機平台與暫存檔案系統，其餘注入平台與模擬的檔案系統）。`.github/workflows/account-isolation.yml` 在 GitHub 託管的 `macos-latest` 與 `windows-latest` 各執行一次。
 
 ## 6. 平台支援矩陣
 

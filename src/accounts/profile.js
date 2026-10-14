@@ -62,21 +62,35 @@ class PathResolutionError extends Error {
 // Resolve symlinks on the nearest existing ancestor so a not-yet-created
 // config directory cannot hide a link that points back into the repository.
 // Only ENOENT means "not created yet"; permission errors, loops, a file where a
-// directory is expected and anything unrecognised fail closed.
-function canonicalize(target, p, realpath) {
+// directory is expected and anything unrecognised fail closed. So does a walk
+// that reaches the filesystem root without anything existing (for example a
+// drive letter that is not mounted): nothing was verified. The nearest existing
+// ancestor must be a directory, because Windows reports ENOENT for a path below
+// a regular file where macOS reports ENOTDIR.
+function canonicalize(target, p, realpath, isDirectory) {
   const resolved = p.resolve(target);
   const tail = [];
   let current = resolved;
   for (;;) {
     try {
       const real = realpath(current);
+      if (tail.length > 0) {
+        let directory;
+        try {
+          directory = isDirectory(real);
+        } catch (error) {
+          throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+        }
+        if (!directory) throw new PathResolutionError('ENOTDIR');
+      }
       return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
     } catch (error) {
+      if (error instanceof PathResolutionError) throw error;
       if (!error || error.code !== 'ENOENT') {
         throw new PathResolutionError(error && error.code ? error.code : 'unknown');
       }
       const parent = p.dirname(current);
-      if (parent === current) return resolved;
+      if (parent === current) throw new PathResolutionError('ENOROOT');
       tail.push(p.basename(current));
       current = parent;
     }
@@ -88,6 +102,7 @@ function defaultContext(context) {
     platform: process.platform,
     homeDir: os.homedir(),
     realpath: (value) => fs.realpathSync.native(value),
+    isDirectory: (value) => fs.statSync(value).isDirectory(),
     ...context
   };
 }
@@ -101,16 +116,16 @@ function sameDirectory(a, b, context) {
   const ctx = defaultContext(context);
   const p = pathFor(ctx.platform);
   try {
-    return samePath(p, ctx.platform, canonicalize(a, p, ctx.realpath), canonicalize(b, p, ctx.realpath));
+    return samePath(p, ctx.platform, canonicalize(a, p, ctx.realpath, ctx.isDirectory), canonicalize(b, p, ctx.realpath, ctx.isDirectory));
   } catch (error) {
     if (error instanceof PathResolutionError) return null;
     throw error;
   }
 }
 
-function tryCanonicalize(target, p, realpath) {
+function tryCanonicalize(target, p, realpath, isDirectory) {
   try {
-    return { value: canonicalize(target, p, realpath) };
+    return { value: canonicalize(target, p, realpath, isDirectory) };
   } catch (error) {
     if (error instanceof PathResolutionError) return { code: error.code };
     throw error;
@@ -137,12 +152,13 @@ function validateProfile(profile, context) {
     return { ok: false, problems };
   }
 
-  const dir = tryCanonicalize(profile.configDir, p, ctx.realpath);
-  const repo = tryCanonicalize(ctx.repoRoot, p, ctx.realpath);
+  const dir = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory);
+  const repo = tryCanonicalize(ctx.repoRoot, p, ctx.realpath, ctx.isDirectory);
   const providerDefault = tryCanonicalize(
     p.join(ctx.homeDir, PROVIDERS[profile.provider].defaultDirName),
     p,
-    ctx.realpath
+    ctx.realpath,
+    ctx.isDirectory
   );
   if (dir.code) problems.push('config-dir-unresolvable');
   if (repo.code) problems.push('repo-root-unresolvable');
@@ -167,7 +183,7 @@ function findConfigDirConflicts(profiles, context) {
   const conflicts = [];
   const dirs = [];
   for (const profile of profiles) {
-    const resolved = tryCanonicalize(profile.configDir, p, ctx.realpath);
+    const resolved = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory);
     if (resolved.code) conflicts.push({ a: profile.id, b: null, kind: 'unresolvable' });
     else dirs.push({ id: profile.id, dir: resolved.value });
   }

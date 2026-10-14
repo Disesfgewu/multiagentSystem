@@ -8,12 +8,17 @@ const {
 
 const identity = (value) => value;
 const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code });
-const posix = { platform: 'darwin', homeDir: '/home/user', repoRoot: '/work/project', realpath: identity };
+const alwaysDirectory = () => true;
+const BASE = ['/', '/home', '/home/user', '/work', '/work/project', '/data'];
+const posix = {
+  platform: 'darwin', homeDir: '/home/user', repoRoot: '/work/project', realpath: identity, isDirectory: alwaysDirectory
+};
 const win = {
   platform: 'win32',
   homeDir: 'C:\\Users\\Me',
   repoRoot: 'C:\\Users\\Me\\Project With Space',
-  realpath: identity
+  realpath: identity,
+  isDirectory: alwaysDirectory
 };
 
 function profile(overrides) {
@@ -179,7 +184,7 @@ test('ENOTDIR, ELOOP and errors without a code are all unresolvable', () => {
   for (const make of [() => failure('ENOTDIR'), () => failure('ELOOP'), () => new Error('no code')]) {
     const realpath = (value) => {
       if (value === '/data/file/acct') throw make();
-      if (value === '/work/project') return value;
+      if (BASE.includes(value)) return value;
       throw failure('ENOENT');
     };
     const result = validateProfile(profile({ configDir: '/data/file/acct' }), { ...posix, realpath });
@@ -190,6 +195,7 @@ test('ENOTDIR, ELOOP and errors without a code are all unresolvable', () => {
 test('an unresolvable repository root is reported rather than ignored', () => {
   const realpath = (value) => {
     if (value === '/work/project') throw failure('EACCES');
+    if (BASE.includes(value)) return value;
     throw failure('ENOENT');
   };
   const result = validateProfile(profile(), { ...posix, realpath });
@@ -200,6 +206,7 @@ test('an unresolvable repository root is reported rather than ignored', () => {
 test('conflict detection reports unresolvable directories instead of skipping them', () => {
   const realpath = (value) => {
     if (value.startsWith('/opaque')) throw failure('EACCES');
+    if (BASE.includes(value)) return value;
     throw failure('ENOENT');
   };
   const profiles = [
@@ -213,10 +220,107 @@ test('conflict detection reports unresolvable directories instead of skipping th
 test('sameDirectory is unknown (null) when either side cannot be resolved', () => {
   const realpath = (value) => {
     if (value === '/opaque') throw failure('EACCES');
+    if (BASE.includes(value)) return value;
     throw failure('ENOENT');
   };
   const ctx = { ...posix, realpath };
   assert.equal(sameDirectory('/opaque', '/data/a', ctx), null);
   assert.equal(sameDirectory('/data/a', '/data/a/', ctx), true);
   assert.equal(sameDirectory('/data/a', '/data/b', ctx), false);
+});
+
+// A small fake Windows file system: `existing` maps a path to "is a directory".
+function fakeWindows(existing) {
+  const index = new Map(Object.entries(existing).map(([key, value]) => [key.toLowerCase(), [key, value]]));
+  return {
+    platform: 'win32',
+    homeDir: 'C:\\Users\\u',
+    repoRoot: 'C:\\work\\repo',
+    realpath(value) {
+      const hit = index.get(value.toLowerCase());
+      if (!hit) throw failure('ENOENT');
+      return hit[0];
+    },
+    isDirectory(value) {
+      const hit = index.get(value.toLowerCase());
+      if (!hit) throw failure('ENOENT');
+      return hit[1];
+    }
+  };
+}
+const baseWindows = { 'C:\\': true, 'C:\\work': true, 'C:\\work\\repo': true, 'C:\\Users': true, 'C:\\Users\\u': true };
+
+test('a drive that does not exist is rejected: ENOENT at every level means nothing was verified', () => {
+  // The reviewer's reproduction, with the same shape: every realpath call fails with ENOENT.
+  const result = validateProfile(
+    { id: 'p', provider: 'claude', label: 'p', configDir: 'Z:\\managed\\acct' },
+    { platform: 'win32', homeDir: 'C:\\Users\\u', repoRoot: 'C:\\work\\repo', realpath: () => { throw failure('ENOENT'); } }
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.includes('config-dir-unresolvable'));
+  assert.ok(result.problems.includes('repo-root-unresolvable'), 'an unverifiable repository root is not "verified" either');
+  assert.ok(result.problems.includes('provider-default-unresolvable'));
+
+  const fake = fakeWindows(baseWindows);
+  assert.deepEqual(validateProfile(profile({ configDir: 'Z:\\managed\\acct' }), fake),
+    { ok: false, problems: ['config-dir-unresolvable'] });
+  assert.deepEqual(validateProfile(profile({ configDir: '\\\\nohost\\share\\acct' }), fake).problems, ['config-dir-unresolvable']);
+});
+
+test('a new directory below an existing drive and directory is accepted', () => {
+  const fake = fakeWindows({ ...baseWindows, 'D:\\': true, 'D:\\accounts': true });
+  assert.deepEqual(validateProfile(profile({ configDir: 'D:\\accounts\\work\\one' }), fake), { ok: true, problems: [] });
+  assert.deepEqual(validateProfile(profile({ configDir: 'D:\\brand\\new\\tree' }), fake), { ok: true, problems: [] });
+});
+
+test('a path below a regular file is rejected whether the platform says ENOENT (Windows) or ENOTDIR (macOS)', () => {
+  const fake = fakeWindows({ ...baseWindows, 'D:\\': true, 'D:\\notes.txt': false });
+  assert.deepEqual(validateProfile(profile({ configDir: 'D:\\notes.txt\\acct' }), fake).problems, ['config-dir-unresolvable']);
+  assert.deepEqual(validateProfile(profile({ configDir: 'D:\\notes.txt\\a\\b' }), fake).problems, ['config-dir-unresolvable']);
+
+  const mac = (value) => {
+    if (value.startsWith('/data/notes.txt/')) throw failure('ENOTDIR');
+    if (['/data', '/work/project', '/'].includes(value)) return value;
+    throw failure('ENOENT');
+  };
+  assert.deepEqual(validateProfile(profile({ configDir: '/data/notes.txt/acct' }), { ...posix, realpath: mac }).problems,
+    ['config-dir-unresolvable']);
+});
+
+test('a failing directory check fails closed, and an existing path needs no such check', () => {
+  const denied = { ...fakeWindows({ ...baseWindows, 'D:\\': true }), isDirectory: () => { throw failure('EACCES'); } };
+  assert.ok(validateProfile(profile({ configDir: 'D:\\acct\\new' }), denied).problems.includes('config-dir-unresolvable'));
+  const everything = { ...baseWindows, 'C:\\Users\\u\\.claude': true, 'D:\\': true, 'D:\\acct': true };
+  const exists = { ...fakeWindows(everything), isDirectory: () => { throw new Error('not consulted'); } };
+  assert.equal(validateProfile(profile({ configDir: 'D:\\acct' }), exists).ok, true);
+});
+
+test('the same rules apply to conflict detection and directory comparison', () => {
+  const fake = fakeWindows({ ...baseWindows, 'D:\\': true, 'D:\\notes.txt': false });
+  const conflicts = findConfigDirConflicts([
+    profile({ id: 'a', configDir: 'Z:\\one' }),
+    profile({ id: 'b', configDir: 'D:\\notes.txt\\two' }),
+    profile({ id: 'c', configDir: 'D:\\fine' })
+  ], fake);
+  assert.deepEqual(conflicts, [{ a: 'a', b: null, kind: 'unresolvable' }, { a: 'b', b: null, kind: 'unresolvable' }]);
+  assert.equal(sameDirectory('Z:\\one', 'D:\\fine', fake), null);
+  assert.equal(sameDirectory('D:\\fine', 'd:\\FINE\\', fake), true);
+});
+
+test('real file system: below a regular file is unresolvable here too, a fresh directory is accepted', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-profile-'));
+  try {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    fs.writeFileSync(path.join(root, 'plain.txt'), 'x');
+    const ctx = { repoRoot: repo };
+    assert.deepEqual(validateProfile(profile({ configDir: path.join(root, 'plain.txt', 'acct') }), ctx).problems,
+      ['config-dir-unresolvable']);
+    assert.deepEqual(validateProfile(profile({ configDir: path.join(root, 'fresh', 'acct') }), ctx), { ok: true, problems: [] });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
