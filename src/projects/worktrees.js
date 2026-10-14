@@ -73,7 +73,11 @@ async function canonicalFuturePath(target) {
   let cursor = path.resolve(target);
   const missing = [];
   for (;;) {
-    try { return path.join(await fs.realpath(cursor), ...missing.reverse()); }
+    try {
+      const canonical = await fs.realpath(cursor);
+      if (!(await fs.stat(canonical)).isDirectory()) throw new WorktreeError('path-unverifiable');
+      return path.join(canonical, ...missing.reverse());
+    }
     catch (cause) {
       if (cause.code !== 'ENOENT') throw new WorktreeError('path-unverifiable', cause);
       try {

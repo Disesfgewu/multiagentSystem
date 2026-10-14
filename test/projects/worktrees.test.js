@@ -84,13 +84,15 @@ test('a link into the repo cannot disguise a nested destination', async t => {
 });
 
 test('unresolvable dangling links and non-directory ancestors are rejected', async t => {
-  const { temporary, service } = await fixture(t);
+  const { temporary, root, service } = await fixture(t);
   const link = path.join(temporary, 'dangling');
   await fs.symlink(path.join(temporary, 'missing'), link, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(service.create({ branch: 'dangling', target: path.join(link, 'child') }), { code: 'path-unverifiable' });
   const file = path.join(temporary, 'ordinary-file');
   await fs.writeFile(file, 'preserve');
   await assert.rejects(service.create({ branch: 'file', target: path.join(file, 'child') }), { code: 'path-unverifiable' });
+  assert.equal(await fs.readFile(file, 'utf8'), 'preserve');
+  assert.equal(await git(root, 'branch', '--list', 'file'), '');
 });
 
 for (const kind of ['tracked', 'untracked', 'ignored']) {
