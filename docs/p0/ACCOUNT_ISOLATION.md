@@ -2,7 +2,7 @@
 
 對應 Issue #3，以及 `docs/IMPLEMENTATION_PLAN.md` 的 R06、R12、R13。
 
-狀態：**部分驗證**。macOS 上以無需憑證的方式完成了隔離機制、覆寫來源與欄位來源的實測；兩個真實登入帳號的並行測試與原生 Windows 全部尚未驗證，原因見第 7 節。
+狀態：**部分驗證**。macOS 上以無需憑證的方式完成了隔離機制、覆寫來源與欄位來源的實測；路徑與環境變數規則另在 CI 的 macOS 與 Windows runner 上通過。兩個真實登入帳號的並行測試，以及原生 Windows 上的 CLI 登入隔離與 terminal 整合，尚未驗證，原因見第 7 節。
 
 測試環境：macOS（Darwin 25.6）、Node.js 24、Claude Code 2.1.299、Codex CLI 0.162.1，實測日期 2026-10-14。本文不含任何真實帳號身份、token、設定目錄或 session 資訊；實測使用空的暫存設定目錄與明顯無效的假值。
 
@@ -130,15 +130,15 @@ node scripts/p0/check-account-isolation.js --repo <repo 路徑> \
 
 輸出已遮罩：不含 email、組織、token 與目錄路徑；profile 只以 `claude#1` 這類序號標示。腳本以引數陣列呼叫 CLI、不經過 shell 字串拼接（Windows 上為相容 `.cmd` 捷徑使用 shell，引數皆為常數，設定目錄只經環境變數傳遞）。
 
-單元測試：`node --test "test/**/*.test.js"`（24 項，全部使用合成資料）。
+單元測試：`node --test "test/**/*.test.js"`（29 項，全部使用合成資料；其中 5 項使用真實主機平台與暫存檔案系統，其餘注入平台與 realpath）。`.github/workflows/account-isolation.yml` 在 GitHub 託管的 `macos-latest` 與 `windows-latest` 各執行一次。
 
 ## 6. 平台支援矩陣
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 設定目錄隔離（空目錄對預設登入） | 已實測 | **未驗證** |
-| 路徑規則（磁碟機代號、大小寫、空白、Unicode、無磁碟機路徑） | 以 `path.win32` 驗證邏輯 | 邏輯已有單元測試；**未在 Windows 實機執行** |
-| 腳本與 CLI 啟動（`.cmd` 捷徑、PowerShell、Git Bash） | 已實測（macOS） | **未驗證** |
+| 設定目錄隔離（空目錄對預設登入） | 已實測 | **未驗證**（runner 未安裝也未登入 CLI） |
+| 路徑與環境變數規則（目錄連結、尾端分隔符、空白、Unicode、環境變數名稱大小寫） | 已實測（本機與 CI） | 已在 CI 的 `windows-latest` runner 通過（29 項、0 跳過）；此為 GitHub 託管環境，**不是**正式支援版本矩陣內的實機，也沒有 PowerShell／Git Bash 互動驗收 |
+| 檢查腳本與 CLI 啟動（`.cmd` 捷徑、PowerShell、Git Bash） | 已實測（macOS） | **未驗證**（CI 只做語法檢查，未執行腳本） |
 | 憑證存放位置 | Keychain 項目以目錄為鍵（官方文件） | 官方文件稱位於設定目錄下的 `.credentials.json`；**未實測** |
 | 兩個真實帳號並行 | **未驗證** | **未驗證** |
 
@@ -154,7 +154,7 @@ node scripts/p0/check-account-isolation.js --repo <repo 路徑> \
 | Claude `apiKeyHelper` 設定導致的覆寫偵測 | 屬設定檔而非環境變數，尚無檢查 |
 | 真實 `rate_limits` 與 `rateLimits` 數值與各 CLI 原生顯示對照 | 需要真實登入與實際用量 |
 | Codex `resetsAt` 單位 | 需要真實回應 |
-| 原生 Windows 全部項目 | 本機沒有 Windows 設備 |
+| 原生 Windows 上的 CLI 登入隔離、憑證存放、PowerShell／Git Bash、雙帳號 | 本機沒有 Windows 設備；CI runner 未安裝也未登入 CLI。僅路徑與環境變數邏輯已在 runner 通過 |
 | 帳號設定頁、session 儲存、額度閘門與 UI | 不在本 Issue 範圍（P1、P3） |
 
 ## 8. 需要 PM 決策
