@@ -142,6 +142,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private loaded = false;
   private blockedNotified = false;
   private initializing: Promise<{ restored: number }> | undefined;
+  // start/reopen calls that are past the "wait for the load" gate and have not finished. Their
+  // sessions would be replaced if the snapshot were restored over them, so they forbid it.
+  private inFlight = 0;
 
   constructor(private readonly deps: ManagerDeps<T>) {
     this.registry = createRegistry(deps.now);
@@ -153,11 +156,12 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    *
    * Fail closed: if the store cannot be loaded or its content cannot be read, the manager starts
    * empty and SAVING STAYS OFF, so the unreadable data is never overwritten. It runs once, and only
-   * before any session exists. `start` and `reopen` wait for it to finish.
+   * before any session exists or is being created (`sessions-exist` otherwise, also when one appears
+   * while it loads). `start` and `reopen` that begin after it started wait for it to finish.
    */
   initialize(): Promise<{ restored: number }> {
     if (this.initializing) return Promise.reject(new SessionError('already-initialized'));
-    if (this.registry.list().length > 0) return Promise.reject(new SessionError('sessions-exist'));
+    if (this.registry.list().length > 0 || this.inFlight > 0) return Promise.reject(new SessionError('sessions-exist'));
     this.initializing = this.load();
     return this.initializing;
   }
@@ -180,6 +184,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     if (!Array.isArray(loaded)) throw this.block('invalid-snapshot');
     const records = loaded as Array<Partial<SessionRecord>>;
+    // A session created while the snapshot was loading (a call that was already past the gate)
+    // would be replaced by the restored registry and become unmanageable. Refuse, and keep saving off.
+    if (this.registry.list().length > 0 || this.inFlight > 0) throw this.block('sessions-exist');
     try {
       this.registry = restoreRegistry(records, this.deps.now);
     } catch {
@@ -272,18 +279,23 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (!name) throw new SessionError('invalid-name');
     if (typeof input.cwd !== 'string' || !this.deps.directoryExists(input.cwd)) throw new SessionError('worktree-missing');
     await this.ready();
-    const project = await this.deps.resolveProject(input.cwd);
-    const identity: SessionIdentity = {
-      id: (this.deps.newId ?? randomId)(),
-      repoId: project.repoId,
-      roleGroupId: input.roleGroupId ?? UNASSIGNED,
-      provider: input.provider,
-      accountProfileId: input.accountProfileId ?? UNASSIGNED,
-      worktree: input.cwd
-    };
-    const view = this.open(identity, name, executable, input.launch !== false);
-    await this.persist();
-    return view;
+    this.inFlight += 1;
+    try {
+      const project = await this.deps.resolveProject(input.cwd);
+      const identity: SessionIdentity = {
+        id: (this.deps.newId ?? randomId)(),
+        repoId: project.repoId,
+        roleGroupId: input.roleGroupId ?? UNASSIGNED,
+        provider: input.provider,
+        accountProfileId: input.accountProfileId ?? UNASSIGNED,
+        worktree: input.cwd
+      };
+      const view = this.open(identity, name, executable, input.launch !== false);
+      await this.persist();
+      return view;
+    } finally {
+      this.inFlight -= 1;
+    }
   }
 
   private open(identity: SessionIdentity, name: string, executable: string, launch: boolean): SessionView {
@@ -356,25 +368,30 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    */
   async reopen(id: string, options: { launch?: boolean; acknowledgeUnknown?: boolean } = {}): Promise<SessionView> {
     await this.ready();
-    const old = this.registry.get(id);
-    if (!old) throw new SessionError('session-not-found');
-    if (this.handles.has(id)) throw new SessionError('session-still-open');
-    // After a restart a terminal from before may still be running a CLI in this folder, and this
-    // window cannot see it. Reopening then risks a second writer, so it needs an explicit yes.
-    if (old.state === 'unknown' && options.acknowledgeUnknown !== true) throw new SessionError('confirm-unknown-reopen');
-    if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
-    const executable = this.executableFor(old.provider);
-    const identity: SessionIdentity = {
-      id: (this.deps.newId ?? randomId)(),
-      repoId: old.repoId,
-      roleGroupId: old.roleGroupId,
-      provider: old.provider,
-      accountProfileId: old.accountProfileId,
-      worktree: old.worktree
-    };
-    const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false);
-    await this.persist();
-    return view;
+    this.inFlight += 1;
+    try {
+      const old = this.registry.get(id);
+      if (!old) throw new SessionError('session-not-found');
+      if (this.handles.has(id)) throw new SessionError('session-still-open');
+      // After a restart a terminal from before may still be running a CLI in this folder, and this
+      // window cannot see it. Reopening then risks a second writer, so it needs an explicit yes.
+      if (old.state === 'unknown' && options.acknowledgeUnknown !== true) throw new SessionError('confirm-unknown-reopen');
+      if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
+      const executable = this.executableFor(old.provider);
+      const identity: SessionIdentity = {
+        id: (this.deps.newId ?? randomId)(),
+        repoId: old.repoId,
+        roleGroupId: old.roleGroupId,
+        provider: old.provider,
+        accountProfileId: old.accountProfileId,
+        worktree: old.worktree
+      };
+      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false);
+      await this.persist();
+      return view;
+    } finally {
+      this.inFlight -= 1;
+    }
   }
 
   /** For provider adapters: a verified provider event confirms the CLI. Account and provider must match the session. */

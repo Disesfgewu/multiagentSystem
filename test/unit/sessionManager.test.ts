@@ -497,3 +497,47 @@ test('stop releases the terminal even if recording the state throws', async () =
   assert.equal(r.terminals[0].disposed, 1, 'the terminal was still disposed');
   assert.throws(() => r.manager.focus(session.id), { code: 'terminal-not-open' });
 });
+
+// ---- review follow-up: a start already in progress when initialize runs -------------------
+
+test('initialize is refused while a start is already past the load gate; its session stays managed and nothing is overwritten', async () => {
+  const store = new MemoryStore();
+  store.saved = [identityRecord('old-1')];
+  let loads = 0;
+  const original = store.load.bind(store);
+  store.load = async () => { loads += 1; return original(); };
+  const hold = deferred<{ repoId: string }>();
+  const r = rig({ resolveProject: () => hold.promise }, store);
+  const starting = start(r, { name: 'Early' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await assert.rejects(r.manager.initialize(), (error: { code?: string }) => error.code === 'sessions-exist');
+  assert.equal(loads, 0, 'the refusal happens up front: the stored snapshot is not even read');
+  hold.resolve({ repoId: 'repo-1' });
+  const created = await starting;
+  assert.equal(r.manager.focus(created.id).terminalOpen, true, 'the early session is still managed');
+  assert.equal(r.manager.stop(created.id).state, 'terminal-closed');
+  assert.equal(store.saves, 0, 'nothing was read, so nothing was written');
+  assert.deepEqual(store.saved?.map((record) => record.id), ['old-1']);
+});
+
+test('a start and an initialize called back to back: the restore is refused rather than replacing the new session', async () => {
+  const store = new MemoryStore();
+  store.saved = [identityRecord('old-1')];
+  const gate = deferred<unknown>();
+  store.load = () => gate.promise;
+  let blocked = 0;
+  const r = rig({ onPersistenceBlocked: () => { blocked += 1; } }, store);
+  const starting = start(r, { name: 'Racing' });
+  const initializing = r.manager.initialize();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  gate.resolve(JSON.parse(JSON.stringify(store.saved)));
+  await assert.rejects(initializing, (error: { code?: string }) => error.code === 'sessions-exist');
+  const created = await starting;
+  assert.deepEqual(r.manager.list().map((s) => s.id), [created.id], 'the restored registry did not replace the new session');
+  assert.equal(r.manager.focus(created.id).terminalOpen, true);
+  assert.equal(store.saves, 0, 'saving stays off after a refused restore');
+  assert.equal(blocked, 1);
+  await start(r, { name: 'Later' });
+  assert.equal(store.saves, 0, 'a session started after the refused restore is not saved over the unread snapshot either');
+  assert.deepEqual(store.saved?.map((record) => record.id), ['old-1']);
+});
