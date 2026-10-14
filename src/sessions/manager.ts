@@ -64,7 +64,8 @@ export interface ManagerDeps<T extends TerminalHandle> {
   /** provider id -> executable typed into the terminal. Unknown providers are refused. */
   providers: Readonly<Record<string, string>>;
   resolveProject(cwd: string): Promise<{ repoId: string }>;
-  pathExists(path: string): boolean;
+  /** True only for an existing directory. */
+  directoryExists(path: string): boolean;
   store?: SessionSnapshotStore;
   newId?: () => string;
   newToken?: () => string;
@@ -72,6 +73,11 @@ export interface ManagerDeps<T extends TerminalHandle> {
   terminalTitle?: (name: string) => string;
   /** Called when saving fails. Receives no details: they could contain local paths. */
   onPersistError?: () => void;
+  /**
+   * Called once when saving is switched off because saved sessions could not be read or loaded.
+   * While blocked nothing is saved, so the unreadable data is never overwritten.
+   */
+  onPersistenceBlocked?: () => void;
 }
 
 // The registry is plain JavaScript (src/sessions/registry.js); this is the part of it used here.
@@ -115,11 +121,27 @@ export function describeState(state: SessionState): string {
 
 const randomId = (): string => randomUUID();
 
+const MAX_NAME = 80;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
+/** One rule for every name, whether typed now or restored from a snapshot. */
+export function cleanName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  return name === '' || name.length > MAX_NAME || CONTROL.test(name) ? null : name;
+}
+
 export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private registry: Registry;
   private readonly names = new Map<string, string>();
   private readonly bound = new Map<T, { id: string; token: string }>();
   private readonly handles = new Map<string, T>();
+  // Saving is allowed only after the saved sessions were read successfully (or when there is no
+  // store). Anything else would overwrite data that was never read.
+  private loaded = false;
+  private blockedNotified = false;
+  private initializing: Promise<{ restored: number }> | undefined;
 
   constructor(private readonly deps: ManagerDeps<T>) {
     this.registry = createRegistry(deps.now);
@@ -128,21 +150,69 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   /**
    * Restores sessions from the store. Every restored session is `unknown`: terminals, tokens and
    * observations are never persisted, so nothing can look active after a restart.
-   * A snapshot that cannot be read is rejected as a whole (fail closed) and the manager starts empty.
+   *
+   * Fail closed: if the store cannot be loaded or its content cannot be read, the manager starts
+   * empty and SAVING STAYS OFF, so the unreadable data is never overwritten. It runs once, and only
+   * before any session exists. `start` and `reopen` wait for it to finish.
    */
-  async initialize(): Promise<{ restored: number }> {
+  initialize(): Promise<{ restored: number }> {
+    if (this.initializing) return Promise.reject(new SessionError('already-initialized'));
+    if (this.registry.list().length > 0) return Promise.reject(new SessionError('sessions-exist'));
+    this.initializing = this.load();
+    return this.initializing;
+  }
+
+  private async load(): Promise<{ restored: number }> {
     const store = this.deps.store;
-    if (!store) return { restored: 0 };
-    const loaded = await store.load();
-    if (loaded === undefined || loaded === null) return { restored: 0 };
-    if (!Array.isArray(loaded)) throw new SessionError('invalid-snapshot');
+    if (!store) {
+      this.loaded = true;
+      return { restored: 0 };
+    }
+    let loaded: unknown;
+    try {
+      loaded = await store.load();
+    } catch {
+      throw this.block('store-unavailable');
+    }
+    if (loaded === undefined || loaded === null) {
+      this.loaded = true;
+      return { restored: 0 };
+    }
+    if (!Array.isArray(loaded)) throw this.block('invalid-snapshot');
     const records = loaded as Array<Partial<SessionRecord>>;
-    this.registry = restoreRegistry(records, this.deps.now);
+    try {
+      this.registry = restoreRegistry(records, this.deps.now);
+    } catch {
+      throw this.block('invalid-snapshot');
+    }
     this.names.clear();
     for (const record of records) {
-      if (typeof record.id === 'string' && typeof record.name === 'string') this.names.set(record.id, record.name);
+      const name = cleanName(record.name);
+      if (typeof record.id === 'string' && name !== null) this.names.set(record.id, name);
     }
+    this.loaded = true;
     return { restored: records.length };
+  }
+
+  private block(code: string): Error {
+    this.notifyBlocked();
+    return new SessionError(code);
+  }
+
+  private notifyBlocked(): void {
+    if (this.blockedNotified) return;
+    this.blockedNotified = true;
+    this.deps.onPersistenceBlocked?.();
+  }
+
+  /** Start and reopen queue behind a load that is still running, so nothing is replaced under them. */
+  private async ready(): Promise<void> {
+    if (!this.initializing) return;
+    try {
+      await this.initializing;
+    } catch {
+      // Saving is already blocked; sessions still work in memory.
+    }
   }
 
   private executableFor(provider: string): string {
@@ -172,6 +242,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private async persist(): Promise<void> {
     const store = this.deps.store;
     if (!store) return;
+    if (!this.loaded) {
+      this.notifyBlocked();
+      return;
+    }
     const records = this.registry.snapshot().map((identity) => ({ ...identity, name: this.names.get(identity.id) ?? '' }));
     try {
       await store.save(records);
@@ -194,8 +268,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     launch?: boolean;
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
-    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    const name = cleanName(input.name);
     if (!name) throw new SessionError('invalid-name');
+    if (typeof input.cwd !== 'string' || !this.deps.directoryExists(input.cwd)) throw new SessionError('worktree-missing');
+    await this.ready();
     const project = await this.deps.resolveProject(input.cwd);
     const identity: SessionIdentity = {
       id: (this.deps.newId ?? randomId)(),
@@ -262,10 +338,14 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   stop(id: string): SessionView {
     const terminal = this.liveTerminal(id);
     const binding = this.bound.get(terminal);
-    this.bound.delete(terminal);
-    this.handles.delete(id);
-    if (binding) this.registry.terminalClosed(id, binding.token);
-    terminal.dispose();
+    try {
+      if (binding) this.registry.terminalClosed(id, binding.token);
+    } finally {
+      // The terminal is released and forgotten even if recording the state failed.
+      this.bound.delete(terminal);
+      this.handles.delete(id);
+      terminal.dispose();
+    }
     return this.view(id);
   }
 
@@ -274,11 +354,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    * directory. The old session is kept as history and is never reused. The account cannot be
    * changed here: use `start` with another account for that.
    */
-  async reopen(id: string, options: { launch?: boolean } = {}): Promise<SessionView> {
+  async reopen(id: string, options: { launch?: boolean; acknowledgeUnknown?: boolean } = {}): Promise<SessionView> {
+    await this.ready();
     const old = this.registry.get(id);
     if (!old) throw new SessionError('session-not-found');
     if (this.handles.has(id)) throw new SessionError('session-still-open');
-    if (!this.deps.pathExists(old.worktree)) throw new SessionError('worktree-missing');
+    // After a restart a terminal from before may still be running a CLI in this folder, and this
+    // window cannot see it. Reopening then risks a second writer, so it needs an explicit yes.
+    if (old.state === 'unknown' && options.acknowledgeUnknown !== true) throw new SessionError('confirm-unknown-reopen');
+    if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
     const executable = this.executableFor(old.provider);
     const identity: SessionIdentity = {
       id: (this.deps.newId ?? randomId)(),

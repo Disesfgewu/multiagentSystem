@@ -34,6 +34,7 @@ in Issue #11 and the P0 acceptance matrix in Issues #1 and #3.
 - **Focus**: shows the live terminal and takes focus; refused (`terminal-not-open`) when there is none.
 - **Reopen**: always creates a NEW session with the same project, role group, provider, account profile and folder. The old session stays as history and is never revived. It is refused while the old session still has an open terminal, or when the folder is gone. The account cannot be changed here; starting a session with another account is the account switch.
 - **Restart**: after the Extension Host restarts every restored session is `unknown` with no terminal, token or observation, and focus/stop/observation are refused. Terminals left over from before are not adopted.
+- **Reopening after a restart**: a session restored as `unknown` can have an earlier terminal (and CLI) still running in the same folder that this window cannot see, because VS Code can keep terminals alive across a reload. `reopen` therefore refuses with `confirm-unknown-reopen` until the caller passes `acknowledgeUnknown: true`; the interactive command asks in a modal dialog first. A session this window knows is closed reopens without asking. Known limitation: even after confirmation the manager cannot tell whether the old terminal is still writing.
 - **Account and role group**: no account profiles (#12) or role groups (#14) exist yet, so sessions carry the explicit placeholder `unassigned`. The terminal inherits the environment exactly as before; nothing here verifies an account identity, isolates a config directory or blocks an unsafe credential source.
 
 ### Persistence interface (injected; not implemented here)
@@ -46,7 +47,11 @@ interface SessionSnapshotStore {
 }
 ```
 
-Records are identity plus a display name: no state, terminal, token or observation. They are private local data (paths, account profile ids) and must go through the private storage of Issue #9, never GitHub or workspace settings. `initialize()` restores them as `unknown`; a snapshot that cannot be read is rejected as a whole and the manager starts empty. A failing `save` never breaks a session; it is reported without details. The extension passes no store yet, so sessions live only while the window is open.
+**Loading is fail closed.** `initialize()` runs once, before any session exists, and `start`/`reopen` wait for it. If `load()` throws, or its content cannot be read (wrong shape, damaged, duplicate ids, a newer format), the manager starts empty and **saving stays off** for the rest of the window: `save` is never called, so the unreadable data is not overwritten, and the user is told once (`onPersistenceBlocked`). Saving is also off when `initialize()` was never run. Names are validated with the same rule as new ones (trimmed, at most 80 characters, no control characters); an invalid stored name falls back to `<provider> session` and never reaches a terminal title.
+
+Records are identity plus a display name: no state, terminal, token or observation. They are private local data (paths, account profile ids) and must go through the private storage of Issue #9, never GitHub or workspace settings. `initialize()` restores them as `unknown`; a snapshot that cannot be read is rejected as a whole and the manager starts empty. A failing `save` never breaks a session; it is reported without details. `start` also refuses a folder that does not exist (`worktree-missing`). The extension passes no store yet, so sessions live only while the window is open.
+
+The `sessions.start|focus|stop|reopen` commands are internal: they are not in the Command Palette, only run in a trusted workspace, and `start` accepts only a known provider executable. Any extension can still call them with an arbitrary folder; this is a known, limited exposure.
 
 ### Not verified
 

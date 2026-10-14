@@ -19,8 +19,10 @@ const MESSAGES: Record<string, string> = {
   'session-not-found': 'That session no longer exists.',
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
-  'worktree-missing': 'The session folder no longer exists, so it cannot be reopened.',
-  'invalid-snapshot': 'Saved sessions could not be read and were ignored.'
+  'worktree-missing': 'The folder does not exist, so no terminal was started there.',
+  'invalid-snapshot': 'Saved sessions could not be read. They were left untouched and nothing will be saved in this window.',
+  'store-unavailable': 'Saved sessions could not be loaded. They were left untouched and nothing will be saved in this window.',
+  'confirm-unknown-reopen': 'This session\'s earlier terminal may still be running in that folder. Confirm to open a new one anyway.'
 };
 
 export interface SessionCommandOptions {
@@ -31,6 +33,8 @@ export interface SessionCommandOptions {
   cwd?: string;
   /** false opens only the shell and types nothing (used by the Extension Host smoke test). */
   launch?: boolean;
+  /** Needed to reopen a session whose earlier terminal this window cannot see. */
+  acknowledgeUnknown?: boolean;
 }
 
 export type SessionOutcome =
@@ -72,10 +76,18 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     },
     providers: Object.fromEntries(PROVIDERS.map((provider) => [provider.executable, provider.executable])),
     resolveProject,
-    pathExists: (target) => fs.existsSync(target),
+    directoryExists: (target) => {
+      try {
+        return fs.statSync(target).isDirectory();
+      } catch {
+        return false;
+      }
+    },
     terminalTitle,
     // No private storage exists yet (#9), so sessions live only while this window is open.
-    onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved.')
+    onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved.'),
+    onPersistenceBlocked: () =>
+      void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
   });
 
   const options = (value: unknown): SessionCommandOptions =>
@@ -133,8 +145,24 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
         id = picked.id;
       }
-      const session =
-        action === 'focus' ? manager.focus(id) : action === 'stop' ? manager.stop(id) : await manager.reopen(id, { launch: input.launch });
+      let session: SessionView;
+      if (action === 'focus') session = manager.focus(id);
+      else if (action === 'stop') session = manager.stop(id);
+      else {
+        try {
+          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown });
+        } catch (error) {
+          // The earlier terminal may still be running in the folder: ask before starting a second one.
+          if (!interactive || (error as { code?: string })?.code !== 'confirm-unknown-reopen') throw error;
+          const answer = await vscode.window.showWarningMessage(
+            'A terminal from before this window started may still be running in the same folder.',
+            { modal: true, detail: 'Opening another one could mean two agents writing to the same files. Check the terminals first.' },
+            'Open Anyway'
+          );
+          if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true });
+        }
+      }
       return { ok: true, session };
     } catch (error) {
       return failure(error, interactive);

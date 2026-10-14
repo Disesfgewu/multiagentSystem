@@ -64,7 +64,7 @@ function rig(overrides: Partial<ManagerDeps<FakeTerminal>> = {}, store = new Mem
     },
     providers: { claude: 'claude', codex: 'codex' },
     resolveProject: async () => ({ repoId: 'repo-1' }),
-    pathExists: (target) => existing.has(target),
+    directoryExists: (target) => existing.has(target),
     store,
     newId: () => `session-${(counter += 1)}`,
     newToken: () => `token-${counter}-${Math.random()}`,
@@ -256,6 +256,7 @@ test('a failure while registering disposes the terminal that was just created', 
 
 test('sessions are saved as identity and name only: no state, token, terminal or observation', async () => {
   const r = rig();
+  await r.manager.initialize();
   const session = await start(r, { accountProfileId: 'account-a' });
   r.manager.observeCli(session.id, { provider: 'claude', accountProfileId: 'account-a', source: 'provider-event' });
   r.manager.stop((await start(r, { name: 'Two' })).id);
@@ -266,6 +267,7 @@ test('sessions are saved as identity and name only: no state, token, terminal or
 
 test('after a restart every restored session is unknown, with no terminal and nothing to act on', async () => {
   const before = rig();
+  await before.manager.initialize();
   const a = await start(before, { accountProfileId: 'account-a' });
   const b = await start(before, { name: 'Worker 2', provider: 'codex', accountProfileId: 'account-b' });
   before.manager.observeCli(a.id, { provider: 'claude', accountProfileId: 'account-a', source: 'provider-event' });
@@ -291,7 +293,9 @@ test('after a restart every restored session is unknown, with no terminal and no
   for (const view of after.manager.list()) assert.ok(!['launch-requested', 'cli-observed', 'terminal-open'].includes(view.state));
 
   // Reopening gives a fresh session with the same account; the restored one stays unknown.
-  const reopened = await after.manager.reopen(a.id);
+  await rejectsWithCode(after.manager.reopen(a.id), 'confirm-unknown-reopen');
+  assert.equal(after.terminals.length, 0, 'nothing is opened without the acknowledgement');
+  const reopened = await after.manager.reopen(a.id, { acknowledgeUnknown: true });
   assert.equal(reopened.accountProfileId, 'account-a');
   assert.equal(after.manager.get(a.id)?.state, 'unknown');
   assert.equal(after.store.saved?.length, 3);
@@ -315,6 +319,7 @@ test('a failing store never breaks a session and reports without details', async
   const store = new MemoryStore();
   store.failing = true;
   const r = rig({}, store);
+  await r.manager.initialize();
   const session = await start(r);
   assert.equal(session.state, 'launch-requested');
   assert.equal(r.persistErrors, 1);
@@ -336,4 +341,159 @@ test('list can be filtered by repository', async () => {
   await start(r, { cwd: '/synthetic/other', name: 'Other' });
   assert.deepEqual(r.manager.list('repo-2').map((s) => s.name), ['Other']);
   assert.equal(r.manager.list().length, 2);
+});
+
+// ---- review fixes: loading, fail-closed saving, initialisation order ----------------------
+
+interface Deferred<T> { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+const identityRecord = (id: string, name = 'Old'): SessionRecord => ({ id, repoId: 'repo-1', roleGroupId: UNASSIGNED, provider: 'claude', accountProfileId: 'account-a', worktree: '/synthetic/project', name });
+
+test('a load that throws blocks saving: the unread snapshot is never overwritten, and sessions still work in memory', async () => {
+  const store = new MemoryStore();
+  store.saved = [identityRecord('keep-me')];
+  store.load = async () => { throw new Error('transient read failure at /private/synthetic'); };
+  let blocked = 0;
+  const r = rig({ onPersistenceBlocked: () => { blocked += 1; } }, store);
+  await assert.rejects(r.manager.initialize(), (error: { code?: string }) => error.code === 'store-unavailable');
+  const session = await start(r);
+  await start(r, { name: 'Second' });
+  assert.equal(session.state, 'launch-requested', 'the session itself works');
+  assert.equal(store.saves, 0, 'save() was never called');
+  assert.deepEqual(store.saved?.map((record) => record.id), ['keep-me'], 'the stored data is untouched');
+  assert.equal(blocked, 1, 'the user is told once');
+});
+
+test('content that cannot be read also blocks saving (newer format, damaged data, duplicate ids)', async () => {
+  const bad: unknown[] = ['text', { sessions: [] }, [{ id: 'x' }], [identityRecord('dup'), identityRecord('dup')]];
+  for (const content of bad) {
+    const store = new MemoryStore();
+    store.load = async () => content;
+    let blocked = 0;
+    const r = rig({ onPersistenceBlocked: () => { blocked += 1; } }, store);
+    await assert.rejects(r.manager.initialize(), (error: { code?: string }) => error.code === 'invalid-snapshot');
+    await start(r);
+    assert.equal(store.saves, 0);
+    assert.equal(blocked, 1);
+  }
+});
+
+test('saving works after a successful load, and after a load that found nothing', async () => {
+  const empty = rig();
+  await empty.manager.initialize();
+  await start(empty);
+  assert.equal(empty.store.saves, 1);
+});
+
+test('without initialize a configured store is never written, and a later initialize is refused', async () => {
+  let blocked = 0;
+  const r = rig({ onPersistenceBlocked: () => { blocked += 1; } });
+  await start(r);
+  assert.equal(r.store.saves, 0, 'nothing was read, so nothing may be written');
+  assert.equal(blocked, 1);
+  await assert.rejects(r.manager.initialize(), (error: { code?: string }) => error.code === 'sessions-exist');
+  await start(r, { name: 'Another' });
+  assert.equal(r.store.saves, 0);
+});
+
+test('initialize runs once', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  await assert.rejects(r.manager.initialize(), (error: { code?: string }) => error.code === 'already-initialized');
+  const concurrent = rig();
+  const first = concurrent.manager.initialize();
+  await assert.rejects(concurrent.manager.initialize(), (error: { code?: string }) => error.code === 'already-initialized');
+  await first;
+});
+
+test('a session started while the snapshot is still loading waits for it: nothing is replaced and no terminal is orphaned', async () => {
+  const store = new MemoryStore();
+  store.saved = [identityRecord('old-1', 'Old')];
+  const gate = deferred<unknown>();
+  store.load = () => gate.promise;
+  const r = rig({ newId: () => 'new-1' }, store);
+  const initializing = r.manager.initialize();
+  const starting = start(r, { name: 'New' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(r.terminals.length, 0, 'start waits; no terminal exists before the load finished');
+
+  gate.resolve(JSON.parse(JSON.stringify(store.saved)));
+  await initializing;
+  const created = await starting;
+  assert.deepEqual(r.manager.list().map((s) => [s.id, s.name, s.state]).sort(), [['new-1', 'New', 'launch-requested'], ['old-1', 'Old', 'unknown']]);
+  assert.equal(r.manager.focus(created.id).terminalOpen, true, 'the new terminal is still managed');
+  assert.equal(r.manager.stop(created.id).state, 'terminal-closed');
+  assert.deepEqual(store.saved?.map((record) => record.id).sort(), ['new-1', 'old-1'], 'saved together with the restored one');
+});
+
+test('reopen also waits for a running load', async () => {
+  const store = new MemoryStore();
+  store.saved = [identityRecord('old-1')];
+  const gate = deferred<unknown>();
+  store.load = () => gate.promise;
+  const r = rig({ newId: () => 'new-2' }, store);
+  const initializing = r.manager.initialize();
+  const reopening = r.manager.reopen('old-1', { acknowledgeUnknown: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  gate.resolve(JSON.parse(JSON.stringify(store.saved)));
+  await initializing;
+  assert.equal((await reopening).accountProfileId, 'account-a');
+});
+
+test('reopening an unknown session needs an explicit acknowledgement; a closed one does not', async () => {
+  const before = rig();
+  await before.manager.initialize();
+  const gone = await start(before);
+  before.manager.stop(gone.id);
+  assert.ok((await before.manager.reopen(gone.id)).id, 'closed: no acknowledgement needed');
+
+  const after = rig({ newId: () => 'later' }, before.store);
+  await after.manager.initialize();
+  const unknownId = after.manager.list()[0].id;
+  assert.equal(after.manager.get(unknownId)?.state, 'unknown');
+  await rejectsWithCode(after.manager.reopen(unknownId), 'confirm-unknown-reopen');
+  await rejectsWithCode(after.manager.reopen(unknownId, { acknowledgeUnknown: false }), 'confirm-unknown-reopen');
+  assert.equal(after.terminals.length, 0);
+  assert.equal((await after.manager.reopen(unknownId, { acknowledgeUnknown: true })).state, 'launch-requested');
+});
+
+test('start refuses a folder that does not exist and creates nothing', async () => {
+  const r = rig();
+  await rejectsWithCode(start(r, { cwd: '/synthetic/does-not-exist' }), 'worktree-missing');
+  await rejectsWithCode(start(r, { cwd: '' }), 'worktree-missing');
+  assert.equal(r.terminals.length, 0);
+  assert.deepEqual(r.manager.list(), []);
+});
+
+test('names follow one rule: typed or restored, trimmed, at most 80 characters, no control characters', async () => {
+  const r = rig();
+  await rejectsWithCode(start(r, { name: 'a'.repeat(81) }), 'invalid-name');
+  await rejectsWithCode(start(r, { name: 'bad\nname' }), 'invalid-name');
+  assert.equal((await start(r, { name: '  ok  ' })).name, 'ok');
+
+  const store = new MemoryStore();
+  store.saved = [identityRecord('r1', 'x'.repeat(200)), identityRecord('r2', 'line\nbreak'), identityRecord('r3', '  fine  ')];
+  const restored = rig({}, store);
+  await restored.manager.initialize();
+  assert.deepEqual(restored.manager.list().map((s) => s.name), ['claude session', 'claude session', 'fine']);
+  restored.manager.list().forEach((s) => assert.ok(s.name.length <= 80));
+  const reopened = await restored.manager.reopen('r1', { acknowledgeUnknown: true });
+  assert.equal(restored.terminals[0].name, 'Multiagent: claude session', 'a bad stored name never reaches a terminal title');
+  assert.ok(reopened.id);
+});
+
+test('stop releases the terminal even if recording the state throws', async () => {
+  const r = rig();
+  const session = await start(r);
+  const internal = r.manager as unknown as { registry: { terminalClosed: () => never } };
+  internal.registry.terminalClosed = () => { throw new Error('synthetic failure'); };
+  assert.throws(() => r.manager.stop(session.id), /synthetic failure/);
+  assert.equal(r.terminals[0].disposed, 1, 'the terminal was still disposed');
+  assert.throws(() => r.manager.focus(session.id), { code: 'terminal-not-open' });
 });
