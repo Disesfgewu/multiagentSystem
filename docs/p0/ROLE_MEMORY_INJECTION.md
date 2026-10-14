@@ -27,12 +27,13 @@
 | 身份組 `RoleGroup` | `id`、`name`、`role` | 規則與記憶的歸屬單位。 |
 | 規則 `Rule` | `id`、`layer`、`type`（`forbid`／`require`／`instruction`）、`key` 或 `text`、`version`、`replaces?` | 由五個層級組成。 |
 | 記憶 `MemoryItem` | `repoId`、`roleGroupId`、`privacyDomain`、`content`、`source{kind,ref,digest}`、`createdAt`、`verifiedAt`、`ttlMs`、`status`、`approvedBy`、`version` | 檢索的範圍鍵是 `(repoId, roleGroupId, privacyDomain)`。 |
-| 注入計畫 `InjectionPlan` | `provider`、`method`、`files`、`argv`、`cleanup` | 內容只在 `files`；`argv` 只含檔案路徑或 profile 名稱。 |
+| 注入計畫 `InjectionPlan` | `provider`、`method`、`files`、`argv`、`root`、`repoRoot`、`exclusiveDir`、`created` | 內容只在 `files`；`argv` 只含檔案路徑或 profile 名稱；`created` 記錄 `writePlan` 實際建立的項目，清理只處理這些。 |
 
 **規則層級（由強到弱）**：平台 → 使用者 → 專案 → 身份組 → 任務。
 
 - 弱層級只能**新增**限制與指示，不能取代或移除強層級的規則；嘗試取代時該規則被忽略並記錄衝突（`cannot-replace-stronger-layer`）。
-- 強層級可以用 `replaces` 取代較弱層級的規則。
+- 強層級可以用 `replaces` 取代同層或較弱層級的規則。取代由強到弱依序套用，**只有仍然有效的規則能取代別人**：被取代或被忽略的規則不會再移除任何東西。
+- **規則 ID 必須唯一。** 多條規則共用同一個 ID 時，保留最強層級者（同層級依 `forbid` ＞ `require` ＞ `instruction`，再以內容決定），其餘記錄為 `duplicate-id`；結果與輸入順序無關，因此較弱規則不能靠重用平台規則的 ID 來移除限制。
 - 同一個 `key` 的 `forbid` 與 `require` 衝突時，強層級勝出；同層級時**禁止優先**（fail-closed）。
 - 解析結果包含套用規則的來源與版本，作為「有效設定」預覽的資料來源。
 
@@ -82,8 +83,10 @@
 ### 3.3 共通限制
 
 - 命令列曝光是作業系統行程模型的一般性質，**本實驗未針對各平台逐一驗證**；設計上直接避開，不依賴它。
-- 私人檔案在 POSIX 上以 `0600`（目錄 `0700`）建立並已有測試；**Windows 的存取控制未驗證**，目前只能依賴使用者設定檔目錄的預設權限。
-- 任何 session 檔案在結束後都應刪除（`cleanupPlan`）。CLI 非預期結束時是否殘留，需要 P1 的 session 管理處理，本 Issue 未實作。
+- **寫入在實際檔案層級檢查**（`writePlan`）：自私人根目錄逐層往下，不存在的目錄由本次呼叫逐一建立並記錄；已存在的目錄若是符號連結／junction、不是目錄或（POSIX）不屬於目前使用者就拒絕；最終解析後的位置必須在 repo 之外且仍在私人根目錄之內。因此頂層在 repo 外、但 `sessions` 是指向 repo 的連結時，不會寫進 repo。
+- **排他建立**：session 目錄必須是新建立的，檔案以 `wx` 建立，不覆寫既有檔案，也不信任既有檔案的權限；重複的 session token 會被拒絕，且不影響原本的內容。檔案 `0600`、目錄 `0700` 在 POSIX 已有測試；**Windows 的存取控制與擁有權檢查未驗證**，目前只能依賴使用者設定檔目錄的預設權限。
+- **清理只處理本次建立的項目**（`cleanupPlan`）：逐項移除自己建立的檔案與空目錄，不做遞迴刪除；之後出現在同一目錄的其他檔案會被保留。CLI 非預期結束時是否殘留，需要 P1 的 session 管理處理，本 Issue 未實作。
+- 路徑解析只把 `ENOENT` 視為「尚未建立」；權限錯誤、迴圈、`ENOTDIR` 與無錯誤碼的失敗一律拒絕（`private-root-unresolvable`），不會通過檢查。
 - 無法使用上述路徑的 CLI 或版本，退回**手動方案**：產品把內容寫到私人檔案，由使用者開啟後貼入 terminal。不會產生任何可被 Git 追蹤的檔案。
 
 ## 4. 記憶候選與採納流程
@@ -99,19 +102,24 @@
 - **範圍**：檢索要求 `repoId`、`roleGroupId`、`privacyDomain` 三者完全相符；回傳結果不含其他範圍是否存在記憶的任何資訊。跨身份組或跨專案共享需另行設定（本 Issue 未實作）。
 - **新鮮度**：來源檔案的摘要改變或消失時 `revalidate` 把記憶標為 `stale`；超過 `ttlMs`（預設 30 天，暫定值）後不再檢索。
 - **預算與相關性**：只取與任務文字有詞彙重疊的項目，依分數排序並受字元預算限制；中文以雙字詞比對。這是基線方法，沒有向量檢索（符合計劃書）。
-- **儲存**：JSON 檔案、原子寫入（暫存檔後 rename）、`0600`；目錄若位於 repo 內或包含 repo，建立時即拒絕。
+- **長度**：攤平（去掉空白與標點）後少於 6 個字元的項目在 `propose` 就被拒絕（`too-short`），因為無法在外送文字中可靠比對。
+- **儲存與並行**：JSON 檔案，`0600`；目錄若位於 repo 內或包含 repo，建立時即拒絕。每次寫入都先取得目錄內的鎖檔（排他建立），**在鎖內重新讀取**檔案再套用變更，最後以暫存檔加 rename 原子替換，所以兩個實例或行程不會互相覆蓋對方的更新（4 個行程各 5 筆的測試全數保留，拿掉鎖後該測試穩定失敗）。鎖是建議性的、只作用於同一目錄，不涵蓋忽略它的行程或網路檔案系統；超過 30 秒的鎖視為過期並回收。取不到鎖時回傳 `locked`。
+- **損壞與版本不符**：JSON 無法解析、`schemaVersion` 不符或結構不對時，儲存庫回報 `corrupt`／`unsupported-schema`，所有寫入回傳 `store-unavailable`，**原檔一位元組都不改**；讀取回傳空結果並在 `select` 的 `unavailable` 欄位說明原因，讓呼叫端分得出「沒有記憶」與「讀不到」。
 
 ## 5. 發布前私人片段檢查
 
 `findPrivateFragments` 對外送文字（Issue、PR、留言、commit 訊息）做兩種檢查：
 
-1. 與已採納記憶及私人規則的**逐字或輕度改寫**重疊（忽略大小寫、空白與標點，連續 20 個字元的視窗）。
+1. 與已採納記憶及私人規則的**逐字或輕度改寫**重疊（忽略大小寫、空白與標點）。依私人文字攤平後的長度：
+   - 20 個字元以上：任一連續 20 個字元出現在外送文字即命中。
+   - 6 到 19 個字元：整段出現在外送文字即命中（例如已知的短暗號）。
+   - 少於 6 個字元：無法在不誤判一般詞彙的情況下比對，列在回傳的 `unmatchable`，**不會被靜默忽略**；記憶庫本身不收這麼短的項目。
 2. 常見密鑰與身份形態（同第 4 節的掃描）。
 
 限制（需寫入任何對外宣稱）：
 
 - 語意改寫、翻譯、摘要**偵測不到**；計劃書第 3.5 節已說明，外部發布仍需人類審核。
-- 少於 20 個字元的記憶不會被片段檢查比對到（依賴形態掃描）。
+- 6 到 19 個字元的短片段以整段比對，常見詞彙形態的短項目可能造成誤判（fail-closed），需人工處理。
 - UUID 與 email 形態採 fail-closed，可能誤判公開內容，需人工處理。
 - 這是**偵測器**，不是權限邊界；直接 `git`、`gh` 或 HTTP 寫入不經過它，仍屬 #4 的範圍。
 
@@ -135,7 +143,7 @@ node scripts/p0/check-memory-injection.js [--repo <路徑>] [--live-claude [--mo
 
 含 `--live-claude` 的完整執行共 20 項檢查：20 項通過、0 項跳過、0 項失敗；不加旗標時 Claude 的即時請求檢查標為跳過。
 
-單元測試：`node --test "test/memory/*.test.js"`（35 項，合成資料；涵蓋規則優先順序、記憶庫、注入計畫、路徑規則、密鑰形態與發布檢查）。
+單元測試：`node --test "test/memory/*.test.js"`（50 項，合成資料；涵蓋規則優先順序與重複 ID、記憶庫的並行與損壞處理、注入計畫的連結／排他建立／清理、路徑規則、密鑰形態與發布檢查，其中包含 4 個行程的並行寫入測試）。
 
 ## 7. 資料來源：可用的用量欄位
 
@@ -180,7 +188,7 @@ node scripts/p0/check-memory-injection.js [--repo <路徑>] [--live-claude [--mo
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試（規則、記憶庫、注入計畫、路徑、發布檢查） | 本機與 CI 通過 | CI 的 `windows-latest` runner 通過（35 項、0 跳過，含真實檔案系統的寫入、rename、清除）；GitHub 託管環境，僅邏輯層，不含 CLI，**不是**正式支援矩陣內的實機驗收 |
+| 單元測試（規則、記憶庫、注入計畫、路徑、發布檢查） | 本機與 CI 通過 | CI 的 `windows-latest` runner 通過（見 PR 的最新 CI 結果，含真實檔案系統的寫入、rename、鎖與清除）；GitHub 託管環境，僅邏輯層，不含 CLI，**不是**正式支援矩陣內的實機驗收 |
 | Codex profile／全域指示注入 | 已驗證（`prompt-input`） | **未驗證**（無設備） |
 | Claude 檔案注入、SessionStart hook | 已驗證（`-p`） | **未驗證**（無設備） |
 | 私人檔案權限 | `0600` 已測試 | **未驗證**（需確認 ACL） |
@@ -197,9 +205,13 @@ node scripts/p0/check-memory-injection.js [--repo <路徑>] [--live-claude [--mo
 | 記憶 A/B 成本與品質 | 需要任務集與重複執行（第 8 節） |
 | 身份組／記憶的編輯介面、有效設定預覽、與 session 儲存的整合 | 不在本 Issue 範圍（P2、P3） |
 
-## 10. 需要 PM 決策
+## 10. PM 決策紀錄
 
-1. **記憶預設 TTL**：暫定 30 天。
-2. **UUID／email 形態是否一律拒絕**：目前 fail-closed，會要求人工改寫候選內容。
-3. **Codex 的每 session profile 檔案**：會在帳號的 `CODEX_HOME` 留下暫存檔，須由 session 管理負責清除；替代方案是只用帳號層級的全域 `AGENTS.md`，但無法依角色區分。
-4. **SessionStart hook 是否納入第一版**：它適合動態挑選片段，但依賴互動模式下的行為驗證與 `--settings` 的 hook 支援；另一個選擇是第一版只用 `--append-system-prompt-file`。
+以下為 PM 在 review 中確認的決策（#30 的 review，2026-10-14）：
+
+1. 30 天 TTL 為可調整的原型預設。
+2. 維持拒絕含身份或秘密形態的候選。
+3. Codex 的暫存 profile 必須有 session 擁有權與安全清理（本版以排他建立、逐項記錄與只清理自己建立的項目實作；session 結束與崩潰後的回收仍屬 P1 的 session 管理）。
+4. 第一版先採已確認能力的檔案注入（`--append-system-prompt-file`、Codex profile 檔案）；SessionStart hook 保留研究，不覆寫使用者的設定。
+5. #5 保留開放，直到兩平台的互動模式與 `--resume` 注入驗收完成；總成本 A/B 由 #22 接續。
+6. 目前 GitHub 發布與 review 使用同一個 actor，上述 review 是獨立程式檢查的 review 留言，不代表 GitHub 正式 `APPROVE`／`REQUEST_CHANGES` 流程已驗證。

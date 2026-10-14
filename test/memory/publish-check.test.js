@@ -24,7 +24,7 @@ test('rule text is checked separately from memory', () => {
 
 test('unrelated public text passes', () => {
   const body = 'This change adds validation for configuration directories and tests for path handling.';
-  assert.deepEqual(findPrivateFragments(body, { memories, rules }), { blocked: false, findings: [] });
+  assert.deepEqual(findPrivateFragments(body, { memories, rules }), { blocked: false, findings: [], unmatchable: [] });
 });
 
 test('secret-shaped text is reported by code only', () => {
@@ -34,7 +34,19 @@ test('secret-shaped text is reported by code only', () => {
   assert.equal(JSON.stringify(result).includes('synthetic'), false);
 });
 
-test('text shorter than the fragment window is not matched by fragment (known limit)', () => {
-  const result = findPrivateFragments('Short note', { memories });
+test('a known short private fragment is matched as a whole, not silently ignored', () => {
+  const short = [{ id: 'mem_s', content: '內部暗號甲乙' }];
+  const result = findPrivateFragments('審查備註：內部暗號甲乙，請勿外傳。', { memories: short });
+  assert.equal(result.blocked, true);
+  assert.deepEqual(result.findings, [{ code: 'memory-fragment', id: 'mem_s' }]);
+  assert.deepEqual(result.unmatchable, []);
+  assert.equal(findPrivateFragments('Short note', { memories }).blocked, true);
+});
+
+test('private text too short to match reliably is reported, not skipped quietly', () => {
+  const tiny = [{ id: 'mem_t', content: 'abc' }];
+  const rule = [{ id: 'r_t', text: 'OK!' }];
+  const result = findPrivateFragments('abc OK!', { memories: tiny, rules: rule });
   assert.equal(result.blocked, false);
+  assert.deepEqual(result.unmatchable, ['mem_t', 'r_t']);
 });

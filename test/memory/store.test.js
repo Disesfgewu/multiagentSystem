@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { MemoryStore } = require('../../src/memory/store');
 
 function setup(t, nowRef = { value: Date.parse('2026-01-01T00:00:00Z') }) {
@@ -64,6 +65,7 @@ test('missing scope fields, empty and oversized content are rejected', (t) => {
   assert.equal(store.propose(note({ source: {} })).reason, 'missing-fields');
   assert.equal(store.propose(note({ content: '   ' })).reason, 'invalid-length');
   assert.equal(store.propose(note({ content: 'x'.repeat(2001) })).reason, 'invalid-length');
+  assert.equal(store.propose(note({ content: ' abc! ' })).reason, 'too-short');
 });
 
 test('duplicates within one scope are refused, other scopes are independent', (t) => {
@@ -82,7 +84,7 @@ test('retrieval is limited to the exact repo, role group and privacy domain', (t
   assert.equal(store.select({ ...scopeA, task }).items.length, 1);
   for (const other of [{ roleGroupId: 'review' }, { repoId: 'repo-2' }, { privacyDomain: 'domain-2' }]) {
     const result = store.select({ ...scopeA, ...other, task });
-    assert.deepEqual(result, { items: [], usedChars: 0, truncated: false });
+    assert.deepEqual(result, { items: [], usedChars: 0, truncated: false, unavailable: null });
   }
 });
 
@@ -147,4 +149,73 @@ test('data persists across instances, with owner-only permissions where supporte
   assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
   assert.deepEqual(reopened.remove(id), { ok: true });
   assert.deepEqual(new MemoryStore({ dir, repoRoot }).list(), []);
+});
+
+test('two instances opened before either wrote do not lose each other\'s updates', (t) => {
+  const { dir, repoRoot, store } = setup(t);
+  const other = new MemoryStore({ dir, repoRoot });
+  const first = store.propose(note({ content: 'First instance records how the release is cut.' }));
+  const second = other.propose(note({ content: 'Second instance records where fixtures are kept.' }));
+  assert.equal(first.ok && second.ok, true);
+  const contents = store.list().map((item) => item.content).sort();
+  assert.equal(contents.length, 2);
+  assert.deepEqual(other.list().map((item) => item.id).sort(), store.list().map((item) => item.id).sort());
+});
+
+test('concurrent processes all land their writes', async (t) => {
+  const { dir, repoRoot } = setup(t);
+  const worker = path.join(__dirname, 'fixtures', 'propose-worker.js');
+  const run = (tag) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [worker, dir, repoRoot, tag, '5'], { stdio: 'ignore' });
+    child.on('exit', (code) => resolve(code));
+  });
+  const codes = await Promise.all(['a', 'b', 'c', 'd'].map(run));
+  assert.deepEqual(codes, [0, 0, 0, 0]);
+  const items = new MemoryStore({ dir, repoRoot }).list();
+  assert.equal(items.length, 20);
+  assert.equal(new Set(items.map((item) => item.id)).size, 20);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['memory.json']);
+});
+
+test('a corrupt or unsupported file is preserved, reported and never overwritten', (t) => {
+  for (const bytes of ['{ not json', '', JSON.stringify({ schemaVersion: 99, items: [{ id: 'x' }] }),
+    JSON.stringify([1, 2, 3])]) {
+    const { dir, repoRoot, store } = setup(t);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'memory.json');
+    fs.writeFileSync(file, bytes);
+
+    const status = store.status();
+    assert.equal(status.ok, false);
+    assert.match(status.reason, /^(corrupt|unsupported-schema)$/);
+
+    const result = store.propose(note());
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'store-unavailable');
+    assert.equal(store.adopt('mem_x', human).reason, 'store-unavailable');
+    assert.equal(store.remove('x').reason, 'store-unavailable');
+    assert.equal(fs.readFileSync(file, 'utf8'), bytes, 'file is byte-for-byte unchanged');
+    assert.deepEqual(store.list(), []);
+    assert.equal(store.select({ ...scopeA, task: 'anything' }).unavailable, status.reason);
+    assert.equal(fs.existsSync(path.join(dir, 'memory.lock')), false, 'lock is released');
+    assert.equal(new MemoryStore({ dir, repoRoot }).status().ok, false);
+  }
+});
+
+test('a held lock makes writes fail with a reason; a stale lock is recovered', (t) => {
+  const { dir, repoRoot } = setup(t);
+  fs.mkdirSync(dir, { recursive: true });
+  const lock = path.join(dir, 'memory.lock');
+  const quick = { retries: 2, waitMs: 1, staleMs: 60000 };
+
+  fs.writeFileSync(lock, 'someone else\n');
+  const held = new MemoryStore({ dir, repoRoot, lock: quick });
+  assert.deepEqual(held.propose(note()), { ok: false, reason: 'locked' });
+  assert.equal(fs.existsSync(lock), true, 'a live lock is not removed');
+
+  const old = new Date(Date.now() - 120000);
+  fs.utimesSync(lock, old, old);
+  const recovered = new MemoryStore({ dir, repoRoot, lock: quick });
+  assert.equal(recovered.propose(note()).ok, true);
+  assert.equal(fs.existsSync(lock), false);
 });

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { checkPrivateRoot } = require('../../src/memory/paths');
 
 const identity = (value) => value;
+const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code });
 
 test('POSIX: accepts directories outside the repo and rejects inside or containing', () => {
   const ctx = { platform: 'darwin', realpath: identity };
@@ -31,8 +32,27 @@ test('follows a link that leads into the repo through a missing directory', () =
   const realpath = (value) => {
     if (value === '/data/link') return '/work/repo/inner';
     if (['/data', '/work/repo', '/'].includes(value)) return value;
-    throw new Error('ENOENT');
+    throw failure('ENOENT');
   };
   const result = checkPrivateRoot('/data/link/new', '/work/repo', { platform: 'darwin', realpath });
   assert.deepEqual(result.problems, ['private-root-inside-repo']);
+});
+
+test('errors other than ENOENT fail closed instead of looking like a missing directory', () => {
+  for (const make of [() => failure('EACCES'), () => failure('ELOOP'), () => failure('ENOTDIR'), () => new Error('no code')]) {
+    const realpath = (value) => {
+      if (value === '/data/opaque') throw make();
+      if (['/data', '/work/repo', '/'].includes(value)) return value;
+      throw failure('ENOENT');
+    };
+    const ctx = { platform: 'darwin', realpath };
+    assert.deepEqual(checkPrivateRoot('/data/opaque/new', '/work/repo', ctx),
+      { ok: false, problems: ['private-root-unresolvable'] });
+  }
+  const repoDenied = (value) => {
+    if (value === '/work/repo') throw failure('EACCES');
+    throw failure('ENOENT');
+  };
+  assert.deepEqual(checkPrivateRoot('/data/private', '/work/repo', { platform: 'darwin', realpath: repoDenied }),
+    { ok: false, problems: ['repo-root-unresolvable'] });
 });

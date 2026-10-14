@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { renderContext, planInjection, writePlan, cleanupPlan } = require('../../src/memory/injection');
 
+const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code });
+
 const roleGroup = { id: 'impl', name: 'Implementation' };
 const rules = {
   forbids: [{ id: 'p1', layer: 'platform', key: 'git.merge' }],
@@ -112,4 +114,77 @@ test('files are written owner-only and cleanup removes them', (t) => {
   }
   cleanupPlan(plan);
   assert.equal(fs.existsSync(plan.files[0].path), false);
+});
+
+const claudeOptions = (p, extra) => base(p, {
+  provider: 'claude', capabilities: { appendSystemPromptFile: true }, ...extra
+});
+
+test('a link below the private root that points into the repository is refused and nothing is written', (t) => {
+  const p = paths(t);
+  fs.mkdirSync(p.privateDir);
+  try {
+    fs.symlinkSync(p.repoRoot, path.join(p.privateDir, 'sessions'), 'junction');
+  } catch (error) {
+    t.skip(`cannot create a directory link here: ${error.code}`);
+    return;
+  }
+  const plan = planInjection(claudeOptions(p));
+  assert.throws(() => writePlan(plan), /private-path-not-a-directory/);
+  assert.deepEqual(fs.readdirSync(p.repoRoot), []);
+  assert.equal(plan.created, undefined);
+});
+
+test('a session directory that already exists is never reused, overwritten or cleaned up', (t) => {
+  const p = paths(t);
+  const first = planInjection(claudeOptions(p));
+  writePlan(first);
+  const filePath = first.files[0].path;
+  const before = fs.readFileSync(filePath, 'utf8');
+  fs.writeFileSync(path.join(path.dirname(filePath), 'unrelated.txt'), 'keep me');
+
+  const second = planInjection(claudeOptions(p, { memories: [] }));
+  assert.throws(() => writePlan(second), /private-path-exists/);
+  cleanupPlan(second);
+
+  assert.equal(fs.readFileSync(filePath, 'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(path.dirname(filePath), 'unrelated.txt'), 'utf8'), 'keep me');
+
+  cleanupPlan(first);
+  assert.equal(fs.existsSync(filePath), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(filePath), 'unrelated.txt')), true,
+    'cleanup removes only what the plan created');
+});
+
+test('an existing Codex profile file is not overwritten and its mode is not trusted', (t) => {
+  const p = paths(t);
+  fs.mkdirSync(p.codexHome);
+  const target = path.join(p.codexHome, 'mas-abcdef123456.config.toml');
+  fs.writeFileSync(target, 'existing = true\n', { mode: 0o644 });
+  const plan = planInjection(base(p, { provider: 'codex', codexHome: p.codexHome, capabilities: { profileFlag: true } }));
+  assert.throws(() => writePlan(plan), /EEXIST/);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'existing = true\n');
+  cleanupPlan(plan);
+  assert.equal(fs.existsSync(target), true);
+});
+
+test('only directories the plan created are removed, and a plan cannot be written twice', (t) => {
+  const p = paths(t);
+  const plan = planInjection(claudeOptions(p));
+  writePlan(plan);
+  assert.throws(() => writePlan(plan), /plan-already-written/);
+  assert.ok(fs.existsSync(path.join(p.privateDir, 'sessions')));
+  cleanupPlan(plan);
+  assert.equal(fs.existsSync(path.join(p.privateDir, 'sessions')), false, 'directories it made are removed');
+  assert.equal(fs.existsSync(p.privateDir), false);
+});
+
+test('unresolvable locations are rejected, not treated as missing', (t) => {
+  const p = paths(t);
+  const realpath = (value) => {
+    if (value === p.privateDir) throw failure('EACCES');
+    if (value === p.repoRoot) return value;
+    throw failure('ENOENT');
+  };
+  assert.throws(() => planInjection(claudeOptions(p, { context: { realpath } })), /private-root-unresolvable/);
 });

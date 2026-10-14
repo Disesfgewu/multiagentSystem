@@ -23,8 +23,18 @@ function isSameOrInside(p, platform, candidate, parent) {
   return !p.isAbsolute(rel);
 }
 
+// Raised when a path cannot be resolved for a reason other than "does not exist
+// yet". Only the error code is kept, never the path.
+class PathResolutionError extends Error {
+  constructor(code) {
+    super(`path-unresolvable:${code}`);
+    this.code = code;
+  }
+}
+
 // Follow links through the nearest existing ancestor so a directory that does
-// not exist yet cannot hide a link pointing back into the repository.
+// not exist yet cannot hide a link pointing back into the repository. Only
+// ENOENT means "not created yet"; every other failure fails closed.
 function canonicalize(target, p, realpath) {
   const resolved = p.resolve(target);
   const tail = [];
@@ -33,7 +43,10 @@ function canonicalize(target, p, realpath) {
     try {
       const real = realpath(current);
       return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
-    } catch {
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+      }
       const parent = p.dirname(current);
       if (parent === current) return resolved;
       tail.push(p.basename(current));
@@ -42,20 +55,47 @@ function canonicalize(target, p, realpath) {
   }
 }
 
+function contextOf(context = {}) {
+  return {
+    platform: context.platform || process.platform,
+    realpath: context.realpath || ((value) => fs.realpathSync.native(value))
+  };
+}
+
 // Private rules and memory must live outside the repository working tree.
-function checkPrivateRoot(dir, repoRoot, context = {}) {
-  const platform = context.platform || process.platform;
-  const realpath = context.realpath || ((value) => fs.realpathSync.native(value));
+function checkPrivateRoot(dir, repoRoot, context) {
+  const { platform, realpath } = contextOf(context);
   const p = pathFor(platform);
   if (typeof dir !== 'string' || !isStableAbsolute(p, platform, dir)) {
     return { ok: false, problems: ['private-root-not-absolute'] };
   }
-  const target = canonicalize(dir, p, realpath);
-  const repo = canonicalize(repoRoot, p, realpath);
   const problems = [];
-  if (isSameOrInside(p, platform, target, repo)) problems.push('private-root-inside-repo');
-  if (isSameOrInside(p, platform, repo, target)) problems.push('private-root-contains-repo');
+  let target;
+  let repo;
+  try {
+    target = canonicalize(dir, p, realpath);
+  } catch (error) {
+    if (!(error instanceof PathResolutionError)) throw error;
+    problems.push('private-root-unresolvable');
+  }
+  try {
+    repo = canonicalize(repoRoot, p, realpath);
+  } catch (error) {
+    if (!(error instanceof PathResolutionError)) throw error;
+    problems.push('repo-root-unresolvable');
+  }
+  if (target && repo) {
+    if (isSameOrInside(p, platform, target, repo)) problems.push('private-root-inside-repo');
+    if (isSameOrInside(p, platform, repo, target)) problems.push('private-root-contains-repo');
+  }
   return { ok: problems.length === 0, problems };
 }
 
-module.exports = { checkPrivateRoot };
+module.exports = {
+  PathResolutionError,
+  canonicalize,
+  checkPrivateRoot,
+  contextOf,
+  isSameOrInside,
+  pathFor
+};

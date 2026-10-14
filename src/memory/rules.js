@@ -5,9 +5,12 @@
 const LAYERS = Object.freeze(['platform', 'user', 'project', 'roleGroup', 'task']);
 const TYPES = Object.freeze(['forbid', 'require', 'instruction']);
 
+const TYPE_ORDER = Object.freeze({ forbid: 0, require: 1, instruction: 2 });
+
 function resolveRules(entries) {
   const conflicts = [];
   const accepted = [];
+  const strength = (entry) => LAYERS.indexOf(entry.layer);
 
   const valid = entries.filter((entry) => {
     const ok = entry && typeof entry.id === 'string' && LAYERS.includes(entry.layer) &&
@@ -17,14 +20,36 @@ function resolveRules(entries) {
     return ok;
   });
 
-  const strength = (entry) => LAYERS.indexOf(entry.layer);
-  const all = new Map(valid.map((entry) => [entry.id, entry]));
+  // Ids must be unique. When several rules share one, the strongest layer wins,
+  // then forbid over require over instruction, then a content-based tie-break,
+  // so the outcome never depends on input order and a weaker rule cannot hide
+  // behind a stronger rule's id.
+  const content = (entry) => JSON.stringify([entry.type, entry.key ?? '', entry.text ?? '', entry.replaces ?? '']);
+  const groups = new Map();
+  for (const entry of valid) {
+    if (!groups.has(entry.id)) groups.set(entry.id, []);
+    groups.get(entry.id).push(entry);
+  }
+  const unique = [];
+  for (const [id, group] of groups) {
+    group.sort((a, b) => strength(a) - strength(b) || TYPE_ORDER[a.type] - TYPE_ORDER[b.type] ||
+      content(a).localeCompare(content(b)));
+    unique.push(group[0]);
+    for (const dropped of group.slice(1)) {
+      conflicts.push({ code: 'duplicate-id', rule: id, layer: dropped.layer });
+    }
+  }
+
+  // Replacement is applied strongest layer first, and only by rules that are
+  // still in force: a rule that was itself replaced or ignored replaces nothing.
+  // A rule may replace one from its own or a weaker layer, never a stronger one.
+  const ordered = [...unique].sort((a, b) => strength(a) - strength(b) || a.id.localeCompare(b.id));
+  const byId = new Map(unique.map((entry) => [entry.id, entry]));
   const removed = new Set();
   const ignored = new Set();
-
-  // A rule may replace one from its own or a weaker layer, never a stronger one.
-  for (const entry of valid) {
-    const target = entry.replaces && all.get(entry.replaces);
+  for (const entry of ordered) {
+    if (removed.has(entry.id) || !entry.replaces || entry.replaces === entry.id) continue;
+    const target = byId.get(entry.replaces);
     if (!target) continue;
     if (strength(target) < strength(entry)) {
       conflicts.push({ code: 'cannot-replace-stronger-layer', rule: entry.id, target: target.id });
@@ -34,11 +59,8 @@ function resolveRules(entries) {
     }
   }
 
-  const ordered = valid
-    .filter((entry) => !removed.has(entry.id) && !ignored.has(entry.id))
-    .sort((a, b) => strength(a) - strength(b));
-
   for (const entry of ordered) {
+    if (removed.has(entry.id) || ignored.has(entry.id)) continue;
     const opposite = entry.type === 'forbid' ? 'require' : entry.type === 'require' ? 'forbid' : null;
     const clash = opposite && accepted.find((other) => other.type === opposite && other.key === entry.key);
     if (clash) {
@@ -50,7 +72,6 @@ function resolveRules(entries) {
       accepted.splice(accepted.indexOf(clash), 1);
       conflicts.push({ code: `${clash.type}-vs-${entry.type}`, rule: clash.id, target: entry.id });
     }
-
     accepted.push(entry);
   }
 
