@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { LAYERS, resolveRules } = require('../memory/rules');
+const { LAYERS, byCodeUnit, resolveRules } = require('../memory/rules');
 const { isPlainObject, label, validateRuleList } = require('./rule-input');
 const { TOOLS, validateRoleGroup } = require('./role-group');
 
@@ -88,8 +88,8 @@ function previewEffectiveRules({ roleGroup, layers } = {}) {
 }
 
 function compose(group, entries) {
-  // Sorted, so the result and its digest never depend on the order things were given.
-  entries.sort((a, b) => strength(a.layer) - strength(b.layer) || a.id.localeCompare(b.id));
+  // `resolveRules` orders its input by layer and then by id (by code unit), so the result
+  // and its digest do not depend on the order the rules were given.
   const resolved = resolveRules(entries);
   if (resolved.conflicts.some((conflict) => conflict.code === 'invalid-rule' || conflict.code === 'duplicate-id')) {
     return { ok: false, problems: [{ code: 'resolver-rejected-rule', path: '' }] };
@@ -197,7 +197,7 @@ function formatPreview(preview) {
     ...rules.forbids.map((rule) => ({ rule, text: `forbid ${rule.key}` })),
     ...rules.requires.map((rule) => ({ rule, text: `require ${rule.key}` })),
     ...rules.instructions.map((rule) => ({ rule, text: `instruction: ${rule.text}` }))
-  ].sort((a, b) => strength(a.rule.layer) - strength(b.rule.layer) || a.rule.id.localeCompare(b.rule.id));
+  ].sort((a, b) => strength(a.rule.layer) - strength(b.rule.layer) || byCodeUnit(a.rule.id, b.rule.id));
   if (described.length === 0) lines.push('  (none)');
   for (const { rule, text } of described) lines.push(`  - ${text}  [${source(sourceOf.get(rule.id))}; ${rule.id}]`);
 

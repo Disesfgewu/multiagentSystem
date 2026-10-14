@@ -12,9 +12,17 @@ const RULE_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const RESERVED_ID_PREFIX = 'rg:';
 const ALLOWED_FIELDS = Object.freeze(['id', 'type', 'key', 'text', 'version', 'replaces', 'layer']);
 
-// Control characters other than newline and tab, and the bidirectional overrides
-// that make text read differently from how it is stored.
-const UNSAFE_TEXT = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/;
+// Characters that make text look different from how it is stored, or that cannot be seen:
+// control characters other than newline and tab, the bidirectional overrides and isolates,
+// zero-width and invisible formatting characters, and line or paragraph separators. The
+// joiners U+200C and U+200D are allowed because scripts such as Persian and Indic need them.
+// Written as code points so no invisible character has to appear in this file.
+function isUnsafeCode(code) {
+  return (code < 0x20 && code !== 0x0a && code !== 0x09) || code === 0x7f || (code >= 0x80 && code <= 0x9f) ||
+    code === 0xad || code === 0x61c || code === 0x200b || code === 0x200e || code === 0x200f ||
+    code === 0x2028 || code === 0x2029 || (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x2064) || (code >= 0x2066 && code <= 0x2069) || code === 0xfeff;
+}
 
 const isPlainObject = (value) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -28,7 +36,8 @@ const isPlainObject = (value) => {
 const SETTING_NAME = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
 const label = (name) => (SETTING_NAME.test(String(name)) ? String(name) : 'field');
 
-const safeText = (value, max) => typeof value === 'string' && value.length >= 1 && value.length <= max && !UNSAFE_TEXT.test(value);
+const safeText = (value, max) => typeof value === 'string' && value.length >= 1 && value.length <= max &&
+  ![...value].some((char) => isUnsafeCode(char.codePointAt(0)));
 
 // Checks one rule written by a person. Returns the problems found (codes and
 // paths only, never the rule's text) and, when there are none, a clean copy.
@@ -97,6 +106,7 @@ module.exports = {
   MAX_TEXT_CHARS,
   RESERVED_ID_PREFIX,
   isPlainObject,
+  isUnsafeCode,
   label,
   safeText,
   validateRule,

@@ -164,3 +164,32 @@ test('a replacement stays reported when the replacing rule is itself replaced la
   assert.deepEqual(result.instructions.map((entry) => entry.id), ['C']);
   assert.deepEqual(result.replaced, [{ rule: 'B', target: 'A' }, { rule: 'C', target: 'B' }]);
 });
+
+test('the outcome does not depend on the machine\'s language: ids and tie-breaks compare by code unit', (t) => {
+  const run = () => {
+    const entries = [
+      rule('B', 'project', 'instruction', { text: 'B' }),
+      rule('a', 'project', 'instruction', { text: 'a' }),
+      rule('a-1', 'project', 'instruction', { text: 'a-1' }),
+      rule('a_1', 'project', 'instruction', { text: 'a_1' }),
+      rule('A', 'project', 'instruction', { text: 'A' }),
+      // Same id, same layer, same type: only the content tie-break can choose.
+      rule('dup', 'user', 'instruction', { text: 'b text' }),
+      rule('dup', 'user', 'instruction', { text: 'B text' }),
+      // The order ids are visited in decides which replacement applies first.
+      rule('c1', 'project', 'instruction', { text: 'c1', replaces: 'c2' }),
+      rule('c2', 'project', 'instruction', { text: 'c2', replaces: 'c1' })
+    ];
+    return resolveRules(entries);
+  };
+  const baseline = run();
+  assert.deepEqual(baseline.instructions.filter((entry) => entry.layer === 'project').map((entry) => entry.id), ['A', 'B', 'a', 'a-1', 'a_1', 'c1']);
+  assert.equal(baseline.instructions.find((entry) => entry.id === 'dup').text, 'B text', 'code unit order: upper case before lower case');
+
+  const original = String.prototype.localeCompare;
+  // Stands in for another machine's language by giving the opposite answer.
+  String.prototype.localeCompare = function reversed(other) { return original.call(String(other), String(this)); };
+  t.after(() => { String.prototype.localeCompare = original; });
+  assert.equal('a'.localeCompare('B') > 0, true, 'the stand-in is in effect');
+  assert.deepEqual(run(), baseline);
+});

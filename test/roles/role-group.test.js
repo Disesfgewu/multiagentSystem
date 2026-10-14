@@ -134,3 +134,70 @@ test('problems carry codes and paths only, never the value that was wrong', () =
   const text = JSON.stringify(result);
   assert.equal(text.includes('MUST-NOT-APPEAR'), false);
 });
+
+const withPaths = (...paths) => validateRoleGroup(pmGroup({ allowedScope: { repositories: [], paths } }));
+
+test('path scopes refuse glob characters, Windows-reserved characters and anything that reads as a pattern', () => {
+  for (const path of ['src/*', 'src/**', '*', 'src/a?b', 'src/a<b', 'src/a>b', 'src/a|b', 'src/"x', 'src/{a,b}x/*', 'src/a:b']) {
+    // `{`, `,` and `}` are ordinary characters; only the entries with a refused character must fail.
+    const refused = /[*?<>|":]/.test(path);
+    assert.equal(withPaths(path).ok, !refused, path);
+  }
+  assert.equal(withPaths('src/{a,b}x').ok, true, 'braces and commas are plain characters, not refused');
+});
+
+test('path scopes refuse control and Unicode format characters, which would show a different path than is stored', () => {
+  const hidden = [
+    'src/\u202etxt.exe',     // right-to-left override
+    'src/a\u200bb',          // zero-width space
+    'src/a\u200cb',          // zero-width non-joiner
+    'src/a\u200db',          // zero-width joiner
+    'src/a\u2060b',          // word joiner
+    'src/a\ufeffb',          // byte order mark
+    'src/a\u00adb',          // soft hyphen
+    'src/\u2066x\u2069',     // isolates
+    'src/a\u0085b',          // C1 control
+    'src/a\u007fb'           // delete
+  ];
+  for (const path of hidden) {
+    assert.deepEqual(codes(withPaths(path)), ['invalid-path@allowedScope.paths[0]'], JSON.stringify(path));
+  }
+});
+
+test('path scopes must be in NFC, and two spellings of one name are one entry', () => {
+  const composed = 'src/é';          // e with acute, one code point
+  const decomposed = 'src/é';       // e followed by a combining acute
+  assert.equal(composed.normalize('NFC'), composed);
+  assert.equal(withPaths(composed).ok, true);
+  assert.deepEqual(codes(withPaths(decomposed)), ['invalid-path@allowedScope.paths[0]'], 'not NFC: refused, not repaired');
+  assert.deepEqual(codes(withPaths(composed, 'SRC/É')), ['duplicate-entry@allowedScope.paths[1]'], 'the same name in another letter case');
+  assert.deepEqual(withPaths(composed).group.allowedScope.paths, [composed], 'what is stored is exactly what was given');
+});
+
+test('path scopes refuse any .git segment, in any letter case and in its Windows short name', () => {
+  for (const path of ['.git', '.GIT', '.Git', '.git/hooks', 'src/.git', 'src/.git/hooks/pre-commit', 'GIT~1', 'git~2/hooks', '.git.', '.git ']) {
+    assert.deepEqual(codes(withPaths(path)), ['invalid-path@allowedScope.paths[0]'], path);
+  }
+  for (const path of ['.github', '.gitignore', 'src/.gitkeep', 'gitops', 'git', 'src/git~x', 'my.git.d']) {
+    assert.equal(withPaths(path).ok, true, `${path} is an ordinary name`);
+  }
+});
+
+test('names and rule text refuse zero-width and invisible characters, but keep joiners that some scripts need', () => {
+  const hidden = ['a\u200bb', 'a\u200eb', 'a\u2060b', 'a\ufeffb', 'a\u00adb', 'a\u0085b', 'a\u2028b', 'a\u2029b', 'a\u202eb', 'a\u2066b'];
+  for (const text of hidden) {
+    assert.deepEqual(codes(validateRoleGroup(pmGroup({ name: text }))), ['invalid-name@name'], `name ${JSON.stringify(text)}`);
+    assert.deepEqual(codes(validateRoleGroup(pmGroup({ rules: [{ id: 'r1', type: 'instruction', text }] }))),
+      ['invalid-text@rules[0].text'], `text ${JSON.stringify(text)}`);
+  }
+  // Built from code points so this file never has to contain the characters themselves.
+  for (const code of [0x061c, 0x200e, 0x200f, 0x2062, 0x2064]) {
+    const text = `a${String.fromCodePoint(code)}b`;
+    assert.deepEqual(codes(validateRoleGroup(pmGroup({ name: text }))), ['invalid-name@name'], `name U+${code.toString(16)}`);
+    assert.deepEqual(codes(validateRoleGroup(pmGroup({ rules: [{ id: 'r1', type: 'instruction', text }] }))),
+      ['invalid-text@rules[0].text'], `text U+${code.toString(16)}`);
+  }
+  const persian = 'می\u200cخواهم'; // contains a zero-width non-joiner
+  assert.equal(validateRoleGroup(pmGroup({ name: persian })).ok, true);
+  assert.equal(validateRoleGroup(pmGroup({ rules: [{ id: 'r1', type: 'instruction', text: `${persian}\nsecond line\twith a tab` }] })).ok, true);
+});

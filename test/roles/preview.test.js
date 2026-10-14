@@ -324,3 +324,48 @@ test('the source has no invisible or direction-changing characters that could hi
     }
   }
 });
+
+// A comparison that depends on the machine's language would order the same rules differently
+// elsewhere and change the digest. These ids sort differently by locale and by code unit.
+const TRICKY_IDS = ['B', 'a', 'a-1', 'a_1', 'A', 'a.1', 'Z', 'z', 'a:1', 'b'];
+
+function withReversedLocaleCompare(t) {
+  const original = String.prototype.localeCompare;
+  // Stands in for another machine's language: the opposite order, and a throw would be too loud
+  // for code that never calls it, so it simply gives a different answer.
+  String.prototype.localeCompare = function reversed(other) { return original.call(String(other), String(this)); };
+  t.after(() => { String.prototype.localeCompare = original; });
+}
+
+const trickyLayers = () => ({ project: TRICKY_IDS.map((id) => ({ id, type: 'instruction', text: `text ${id}`, version: 1 })) });
+
+test('rule order is by code unit, the same on every machine', () => {
+  const result = preview(workerGroup(), trickyLayers());
+  assert.equal(result.ok, true, JSON.stringify(result.problems));
+  const projectIds = result.rules.instructions.filter((rule) => rule.layer === 'project').map((rule) => rule.id);
+  assert.deepEqual(projectIds, ['A', 'B', 'Z', 'a', 'a-1', 'a.1', 'a:1', 'a_1', 'b', 'z']);
+  const listed = formatPreview(result).split('\n').filter((line) => /^ {2}- instruction: text /.test(line) && line.includes('[project'));
+  assert.deepEqual(listed.map((line) => line.match(/; ([^\]]+)\]$/)[1]), projectIds, 'the readable view uses the same order');
+});
+
+test('the digest and the order do not depend on the machine\'s language', (t) => {
+  const baseline = preview(workerGroup(), trickyLayers());
+  const baselineText = formatPreview(baseline);
+  withReversedLocaleCompare(t);
+  assert.equal('a'.localeCompare('B') > 0, true, 'the stand-in is in effect: it reverses the machine\'s own order');
+  const other = preview(workerGroup(), trickyLayers());
+  assert.deepEqual(other, baseline);
+  assert.equal(other.digest, baseline.digest);
+  assert.equal(formatPreview(other), baselineText);
+  // And in a different process with another language setting, where the platform allows it.
+  const { spawnSync } = require('node:child_process');
+  const script = `const { previewEffectiveRules } = require(${JSON.stringify(require.resolve('../../src/roles'))});
+    const { workerGroup } = require(${JSON.stringify(require.resolve('./fixtures'))});
+    const ids = ${JSON.stringify(TRICKY_IDS)};
+    process.stdout.write(previewEffectiveRules({ roleGroup: workerGroup(), layers: { project: ids.map((id) => ({ id, type: 'instruction', text: 'text ' + id, version: 1 })) } }).digest);`;
+  for (const locale of ['en_US.UTF-8', 'sv_SE.UTF-8', 'zh_TW.UTF-8', 'C']) {
+    const run = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, LC_ALL: locale, LANG: locale }, encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, baseline.digest, `digest under ${locale}`);
+  }
+});

@@ -7,6 +7,11 @@ const TYPES = Object.freeze(['forbid', 'require', 'instruction']);
 
 const TYPE_ORDER = Object.freeze({ forbid: 0, require: 1, instruction: 2 });
 
+// Compares by UTF-16 code unit. `localeCompare` depends on the machine's language and
+// ICU version, which would let the same rules resolve in a different order, and give a
+// different result, on another machine or Node version.
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 function resolveRules(entries) {
   const conflicts = [];
   const accepted = [];
@@ -33,7 +38,7 @@ function resolveRules(entries) {
   const unique = [];
   for (const [id, group] of groups) {
     group.sort((a, b) => strength(a) - strength(b) || TYPE_ORDER[a.type] - TYPE_ORDER[b.type] ||
-      content(a).localeCompare(content(b)));
+      byCodeUnit(content(a), content(b)));
     unique.push(group[0]);
     for (const dropped of group.slice(1)) {
       conflicts.push({ code: 'duplicate-id', rule: id, layer: dropped.layer });
@@ -43,7 +48,7 @@ function resolveRules(entries) {
   // Replacement is applied strongest layer first, and only by rules that are
   // still in force: a rule that was itself replaced or ignored replaces nothing.
   // A rule may replace one from its own or a weaker layer, never a stronger one.
-  const ordered = [...unique].sort((a, b) => strength(a) - strength(b) || a.id.localeCompare(b.id));
+  const ordered = [...unique].sort((a, b) => strength(a) - strength(b) || byCodeUnit(a.id, b.id));
   const byId = new Map(unique.map((entry) => [entry.id, entry]));
   const removed = new Set();
   const ignored = new Set();
@@ -92,4 +97,4 @@ function resolveRules(entries) {
   };
 }
 
-module.exports = { LAYERS, TYPES, resolveRules };
+module.exports = { LAYERS, TYPES, resolveRules, byCodeUnit };

@@ -23,16 +23,28 @@ const MAX_SCOPE_ENTRIES = 100;
 const MAX_PATH_CHARS = 200;
 // Names Windows treats as devices, with or without an extension.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+// `.git`, and the short name Windows may give it (GIT~1), in any letter case.
+const GIT_DIRECTORY = /^(?:\.git|git~\d+)$/i;
 
-// A path prefix inside a repository, written with forward slashes and already in
-// its simplest form. Anything that could point elsewhere, or that Windows would
-// read differently from macOS, is refused instead of being cleaned up.
+// A path prefix inside a repository, written with forward slashes and already in its
+// simplest form. Anything that could be read as a pattern, point elsewhere, be shown
+// differently from what it is, or that Windows would treat differently from macOS, is
+// refused instead of being cleaned up. The allowed scope is data that a later component
+// enforces, so it must not be open to interpretation.
+//
+//   * glob and Windows-reserved characters: * ? < > | " : and backslash
+//   * control and Unicode format characters (\p{Cc}, \p{Cf}): bidirectional overrides,
+//     zero-width characters and the like
+//   * anything that is not already in NFC, so one name has one spelling
+//   * any `.git` segment (and its Windows short name), whose hooks are executable
 function validRelativePath(value) {
   if (typeof value !== 'string' || value.length < 1 || value.length > MAX_PATH_CHARS) return false;
-  if (/[\\\u0000-\u001f\u007f:]/.test(value)) return false;
+  if (/[\\*?<>|":\p{Cc}\p{Cf}]/u.test(value)) return false;
+  if (value.normalize('NFC') !== value) return false;
   if (value.startsWith('/') || value.startsWith('~') || value.endsWith('/')) return false;
   if (nodePath.posix.normalize(value) !== value) return false;
-  return value.split('/').every((part) => part !== '..' && !/[. ]$/.test(part === '.' ? 'x' : part) && !WINDOWS_DEVICE.test(part));
+  return value.split('/').every((part) => part !== '..' && !/[. ]$/.test(part === '.' ? 'x' : part) &&
+    !WINDOWS_DEVICE.test(part) && !GIT_DIRECTORY.test(part));
 }
 
 function validRepository(value) {
@@ -42,7 +54,7 @@ function validRepository(value) {
 
 // Case-insensitive on both platforms we support, so two spellings of one name
 // are one entry.
-function uniqueList(list, valid, max, problems, path, code) {
+function uniqueList(list, valid, max, problems, path, code, fold = (value) => value.toLowerCase()) {
   if (!Array.isArray(list) || list.length > max) {
     problems.push({ code: 'invalid-scope', path });
     return null;
@@ -54,7 +66,7 @@ function uniqueList(list, valid, max, problems, path, code) {
       problems.push({ code, path: `${path}[${index}]` });
       return;
     }
-    const folded = value.toLowerCase();
+    const folded = fold(value);
     if (seen.has(folded)) {
       problems.push({ code: 'duplicate-entry', path: `${path}[${index}]` });
       return;
@@ -102,8 +114,9 @@ function validateRoleGroup(input) {
     }
     const repositories = uniqueList(input.allowedScope.repositories, validRepository, MAX_SCOPE_ENTRIES, problems,
       'allowedScope.repositories', 'invalid-repository');
+    // Valid paths are already NFC, so folding the case is enough to find two spellings of one name.
     const paths = uniqueList(input.allowedScope.paths, validRelativePath, MAX_SCOPE_ENTRIES, problems,
-      'allowedScope.paths', 'invalid-path');
+      'allowedScope.paths', 'invalid-path', (value) => value.normalize('NFC').toLowerCase());
     if (repositories && paths) allowedScope = { repositories, paths };
   }
 

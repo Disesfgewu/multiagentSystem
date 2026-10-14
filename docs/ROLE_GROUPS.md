@@ -23,18 +23,18 @@
 | 欄位 | 規則 |
 | --- | --- |
 | `id` | 必填；英數、底線、連字號，最長 64 |
-| `name` | 必填；1–80 字元、單行、不含控制字元與雙向覆寫字元 |
+| `name` | 必填；1–80 字元、單行；拒絕控制字元（含 C1）、雙向覆寫與隔離字元、零寬與其他不可見字元（零寬空格、字詞連接符、位元組順序標記、軟連字號、行／段分隔符、阿拉伯字母標記等）。零寬非連接符與連接符（U+200C、U+200D）允許，因為波斯文、印度系文字需要它們 |
 | `role` | 必填；小寫英數與連字號，最長 32（例如 `pm`、`worker`；目前只是標籤，發布權限仍由 `src/publish-policy.js` 決定） |
 | `provider` | 必填；`claude` 或 `codex` |
 | `version` | 必填；正整數；每條衍生規則與預覽都帶這個版本 |
 | `defaultAccountProfileId` | 選填；帳號設定的本機 ID 或 `null`（建立 agent 時再選）。只放 ID，不放標籤或 email |
 | `allowedScope.repositories` | 必填；`owner/name` 清單，不分大小寫去重。**空清單代表不允許任何 repo**，不是「全部」 |
-| `allowedScope.paths` | 必填；repo 內相對路徑前綴，以 `/` 分隔且已是最簡形式（`.` 代表整個 repo）。**空清單代表不允許任何路徑**。拒絕：絕對路徑、`..`、`./`、`//`、結尾斜線、反斜線、`:`（磁碟機與 NTFS 資料流）、控制字元、Windows 裝置名稱（`CON`、`NUL`、`COM1` 等，含副檔名）、以點或空白結尾的片段；兩種拼法只差大小寫視為重複 |
+| `allowedScope.paths` | 必填；repo 內相對路徑前綴，以 `/` 分隔且已是最簡形式（`.` 代表整個 repo）。**空清單代表不允許任何路徑**。這份資料日後由 broker／隔離去執行，所以不留解讀空間，一律拒絕而不是修正：絕對路徑、`~`、`..`、`./`、`//`、結尾斜線；看起來像 glob 或 Windows 保留的字元 `* ? < > | " :` 與反斜線（`src/*` 若被當成 glob 會比字面前綴寬）；Unicode 控制與格式字元（`\p{Cc}`、`\p{Cf}`，含雙向覆寫與零寬字元，它們會讓預覽顯示的路徑與實際不同）；不是 NFC 的寫法（一個名稱只有一種拼法）；任何 `.git` 片段（不分大小寫，含 Windows 短名 `GIT~1`；其中的 hooks 是會被執行的程式）；Windows 裝置名稱（`CON`、`NUL`、`COM1` 等，含副檔名）；以點或空白結尾的片段。以 NFC 加小寫比對重複 |
 | `toolPermissions` | 選填；`shell`、`fileWrite`、`network`、`githubRead`、`githubWrite`、`merge` 各為 `deny`／`ask`／`allow`。**沒寫的工具視為 `deny`**；未知工具名稱拒絕 |
 | `memoryScope` | 選填；`{ mode: 'role-group' }` 或 `{ mode: 'off' }`；沒寫視為 `off`。跨 repo、跨身份組分享需要明確設計，這裡不接受 |
 | `rules` | 選填；身份組自己的規則，最多 200 條 |
 
-規則（任何一層）可有 `id`、`type`（`forbid`／`require`／`instruction`）、`key`（forbid／require）或 `text`（instruction，最長 2000 字元）、`version`、`replaces`。其他欄位拒絕；forbid／require 不得帶 `text`，instruction 不得帶 `key`。`rg:` 開頭的 id 保留給由工具權限產生的規則，手寫的不能使用。
+規則（任何一層）可有 `id`（僅 ASCII）、`type`（`forbid`／`require`／`instruction`）、`key`（forbid／require）或 `text`（instruction，最長 2000 字元，同樣拒絕控制、雙向與不可見字元，但允許換行與 Tab）、`version`、`replaces`。其他欄位拒絕；forbid／require 不得帶 `text`，instruction 不得帶 `key`。`rg:` 開頭的 id 保留給由工具權限產生的規則，手寫的不能使用。
 
 ## 3. 層級語意
 
@@ -67,7 +67,7 @@
 | `rules` | 與 `resolveRules` 同形：`forbids`、`requires`、`instructions`、`sources`（每條含來源層級與版本）、`conflicts`（每項含來源與被擋下對象的層級與版本）。可直接交給 `src/memory/injection.js` 的 `renderContext` |
 | `replaced` | 哪條規則（層級、版本）取代了哪條 |
 | `permissions` | 每個工具的宣告值、有效值、`limitedBy`、`relaxationBlocked` 與「未強制」標示 |
-| `digest` | `sha256:` 開頭，涵蓋身份組、有效規則（含來源與版本）與有效權限；輸入順序不影響結果。用來記錄「這個 session 拿到的是哪一套設定」。內含規則文字的雜湊，同樣屬本機私人資料 |
+| `digest` | `sha256:` 開頭，涵蓋身份組、有效規則（含來源與版本）與有效權限；輸入順序與機器的系統語系都不影響結果：id 一律以 UTF-16 碼位比較，不用 `localeCompare`（它會隨語系與 ICU 版本改變順序，進而改變摘要）。用來記錄「這個 session 拿到的是哪一套設定」。內含規則文字的雜湊，同樣屬本機私人資料 |
 
 **輸入有任何問題就不給預覽**（`{ ok: false, problems }`，沒有 `rules`）：無效的規則、層級冒充、未知的層級名稱、重複 id、超出數量上限。理由：默默丟掉一條無效的平台 `forbid` 會讓 agent 以較弱的限制啟動。合成器若與驗證對「什麼是有效規則」的看法不一致，或合成途中出現未預期的錯誤，同樣不給預覽（`resolver-rejected-rule`、`internal-error`，不含錯誤訊息）。
 
