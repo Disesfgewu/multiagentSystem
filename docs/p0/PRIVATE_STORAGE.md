@@ -90,7 +90,7 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 
 | 項目 | macOS | 原生 Windows |
 | --- | --- | --- |
-| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過 | 見 PR 的最新 CI 結果；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
+| 單元測試、檢查腳本（真實檔案系統、含空白與 Unicode 路徑、junction、鎖、rename 重試、4 行程並行、真實 git repo） | 本機與 CI 通過（41 項、0 跳過） | CI 的 `windows-latest` runner 通過（41 項中 40 項通過、1 項跳過：目錄不可寫的 POSIX 專用案例；檢查腳本 10 項通過）；GitHub 託管環境，**不是**正式支援矩陣內的實機驗收 |
 | 檔案權限（檔案 `0600`、目錄 `0700`） | 已測試 | **未驗證**：Windows 沒有同樣的權限位元，ACL 的實際效果未檢查，只能依賴使用者設定檔目錄的預設權限 |
 | 資料目錄擁有者檢查 | 每次取鎖時檢查目錄存在、是目錄且屬於目前使用者（`not-owned` 則拒絕）；已有測試 | 不適用（沒有 uid）；ACL 未驗證 |
 | fsync 的實際耐久性 | 呼叫但未驗證斷電情境 | 同左；目錄 fsync 在 Windows 上被略過 |
