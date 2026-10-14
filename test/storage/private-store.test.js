@@ -272,12 +272,14 @@ test('a store file that is a link or not a regular file is not followed', (t) =>
 test('concurrent processes all land their writes', async (t) => {
   const s = sandbox(t);
   const worker = path.join(__dirname, 'fixtures', 'put-worker.js');
+  const reasons = [];
   const run = (tag) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [worker, s.dir, s.repoRoot, tag, '5'], { stdio: 'ignore' });
+    const child = spawn(process.execPath, [worker, s.dir, s.repoRoot, tag, '5'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.on('data', (chunk) => reasons.push(String(chunk).trim()));
     child.on('exit', (code) => resolve(code));
   });
   const codes = await Promise.all(['a', 'b', 'c', 'd'].map(run));
-  assert.deepEqual(codes, [0, 0, 0, 0]);
+  assert.deepEqual(codes, [0, 0, 0, 0], reasons.join('; '));
   const items = open(s).list('sessions').items;
   assert.equal(items.length, 20);
   assert.deepEqual(listing(s.dir), ['store.json']);
