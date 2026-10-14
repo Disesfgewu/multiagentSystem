@@ -37,7 +37,7 @@ const snapshot = await reader.getPullRequestSnapshot(7, { signal });
 | `ok` | 完整讀到資料（`data`、`fetchedAt`、`source: network｜cache｜revalidated`）。 |
 | `empty` | 伺服器**確認**沒有項目（例如 200 加 `[]`）。 |
 | `partial` | 部分獨立來源讀不到（`unavailable` 列出哪些）。資料只是下限，不能當完整結論。 |
-| `truncated` | 達到頁數上限；已讀部分在 `partialData`。 |
+| `truncated` | 達到頁數上限；已讀部分在 `partialData`、頁數在 `pagesFetched`。合併多個來源的讀取（checks、branch requirements）若全部截斷也維持此 kind，並以 `components` 列出各來源狀態。 |
 | `not_found` | 404／410。GitHub 對無權限查看的資源也回 404，因此帶 `possiblyHidden`。 |
 | `denied` | 401／403（`reason`：`bad_credentials`、`forbidden`、`sso_required`…）。 |
 | `rate_limited` | 主要或次要限流，含 `resetAt`／`retryAfterMs`；不自動重試。 |

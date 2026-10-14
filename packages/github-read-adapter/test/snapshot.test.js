@@ -6,9 +6,9 @@ const { createGitHubReadAdapter } = require('../src');
 const { json, createFakeTransport, sequence, createClock, createFakeSleep, TOKEN } = require('./helpers/fake');
 const fx = require('./helpers/fixtures');
 
-function setup() {
+function setup(extra = {}) {
   const transport = createFakeTransport();
-  const adapter = createGitHubReadAdapter({ transport, getToken: () => TOKEN, now: createClock(), sleep: createFakeSleep() });
+  const adapter = createGitHubReadAdapter({ transport, getToken: () => TOKEN, now: createClock(), sleep: createFakeSleep(), ...extra });
   return { transport, reader: adapter.useRepository(fx.REPO) };
 }
 
@@ -183,4 +183,45 @@ test('switching repository mid-snapshot cancels it', async () => {
   const snapshot = await reader.getPullRequestSnapshot(7);
   assert.equal(snapshot.kind, 'cancelled');
   assert.equal(snapshot.reason, 'repository_changed');
+});
+
+const nextLink = (path) => ({ link: `<https://api.github.com${path}?per_page=100&page=2>; rel="next"` });
+
+test('truncated checks (both sources over the page limit) are never treated as complete CI evidence', async () => {
+  const { transport, reader } = setup({ maxPages: 1 });
+  const runsPath = `${fx.BASE}/commits/${fx.SHA_A}/check-runs`;
+  const statusPath = `${fx.BASE}/commits/${fx.SHA_A}/status`;
+  stub(transport, {
+    pullResponses: [json(200, fx.pull(7))],
+    reviews: json(200, [fx.review('pm-user', 'APPROVED', fx.SHA_A, '2026-10-14T10:00:00Z')]),
+    // every page reports success, so a naive reading of the first page would say "passing"
+    checks: json(200, { total_count: 500, check_runs: [fx.checkRun('build', 'completed', 'success')] }, nextLink(runsPath)),
+    statuses: json(200, { state: 'success', total_count: 500, statuses: [fx.commitStatus('ci', 'success')] }, nextLink(statusPath)),
+    threads: json(200, fx.threadsResponse([])),
+    rules: rulesetRequiringOneApproval,
+    protection: unprotected
+  });
+  const snapshot = await reader.getPullRequestSnapshot(7);
+  assert.equal(snapshot.checks.kind, 'truncated');
+  assert.equal(snapshot.checksSummary.state, 'unknown');
+  assert.equal(snapshot.checksSummary.requiredState, 'unknown');
+  assert.equal(snapshot.checksSummary.reason, 'checks_truncated');
+  assert.equal(snapshot.status, 'partial');
+});
+
+test('truncated reviews make approval unknown rather than judging a partial list', async () => {
+  const { transport, reader } = setup({ maxPages: 1 });
+  stub(transport, {
+    pullResponses: [json(200, fx.pull(7))],
+    reviews: json(200, [fx.review('pm-user', 'APPROVED', fx.SHA_A, '2026-10-14T10:00:00Z')], nextLink(`${fx.BASE}/pulls/7/reviews`)),
+    ...green(),
+    threads: json(200, fx.threadsResponse([])),
+    rules: rulesetRequiringOneApproval,
+    protection: unprotected
+  });
+  const snapshot = await reader.getPullRequestSnapshot(7);
+  assert.equal(snapshot.reviews.kind, 'truncated');
+  assert.equal(snapshot.approval.status, 'unknown');
+  assert.equal(snapshot.approval.reason, 'reviews_truncated');
+  assert.equal(snapshot.status, 'partial');
 });

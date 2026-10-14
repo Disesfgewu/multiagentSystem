@@ -134,6 +134,25 @@ function createGitHubReadAdapter(options) {
       return (items) => items.map(convertItem);
     }
 
+    /**
+     * No source produced a usable answer. Reports the most severe failure; when every source
+     * was merely truncated there is no failure to report, so the result stays `truncated`
+     * (with what was read) instead of losing its kind.
+     */
+    function unusable(parts, components, assemblePartial) {
+      const failure = mostSevereFailure(parts);
+      if (failure) return { ...failure, components };
+      const pagesFetched = parts.reduce((total, part) => total + (part.pagesFetched || 0), 0);
+      const partialData = assemblePartial ? assemblePartial() : undefined;
+      return client.failure('truncated', {
+        reason: 'page_limit',
+        pageLimit: maxPages,
+        components,
+        pagesFetched,
+        ...(partialData === undefined ? {} : { partialData })
+      });
+    }
+
     const paginated = (path, signal, opts, extra = {}) =>
       client.getPaginated(path, { signal, ...cacheOptions(opts), ...extra });
 
@@ -255,7 +274,11 @@ function createGitHubReadAdapter(options) {
             return Object.values(parts).find((part) => part.kind === 'cancelled');
           }
           if (okParts.length === 0) {
-            return { ...mostSevereFailure(Object.values(parts)), components: { checkRuns: runs.kind, statuses: statuses.kind } };
+            return unusable(Object.values(parts), { checkRuns: runs.kind, statuses: statuses.kind }, () => ({
+              headSha: head,
+              checkRuns: runs.partialData || [],
+              statuses: statuses.partialData || []
+            }));
           }
           const data = {
             headSha: head,
@@ -386,7 +409,7 @@ function createGitHubReadAdapter(options) {
           if (cancelled) return cancelled;
           const okParts = parts.filter(isSuccess);
           if (okParts.length === 0) {
-            return { ...mostSevereFailure(parts), components: { rules: rules.kind, protection: protection.kind } };
+            return unusable(parts, { rules: rules.kind, protection: protection.kind });
           }
           const data = mergeBranchRequirements({ rules, protection });
           const meta = { fetchedAt: oldestFetchedAt(okParts), source: sourceOf(okParts), pages: okParts.length };

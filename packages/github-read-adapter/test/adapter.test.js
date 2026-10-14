@@ -329,3 +329,47 @@ test('every request the adapter makes is a GET, except fixed GraphQL queries', a
   }
   assert.ok(transport.calls.length >= 8);
 });
+
+function pagedForever(path) {
+  return (call) => {
+    const page = Number(call.query.page || 1);
+    return json(200, { total_count: 99, check_runs: [fx.checkRun(`job-${page}`, 'completed', 'success')], statuses: [fx.commitStatus(`ctx-${page}`, 'success')] }, { link: linkTo(path, page + 1) });
+  };
+}
+
+test('checks: when both sources exceed the page limit the result is truncated, with partial data and page counts', async () => {
+  const { transport, reader } = setup({ maxPages: 2 });
+  transport.get(`${fx.BASE}/commits/${fx.SHA_A}/check-runs`, pagedForever(`${fx.BASE}/commits/${fx.SHA_A}/check-runs`));
+  transport.get(`${fx.BASE}/commits/${fx.SHA_A}/status`, pagedForever(`${fx.BASE}/commits/${fx.SHA_A}/status`));
+  const result = await reader.getChecks(fx.SHA_A);
+  assert.equal(result.kind, 'truncated');
+  assert.equal(result.reason, 'page_limit');
+  assert.deepEqual(result.components, { checkRuns: 'truncated', statuses: 'truncated' });
+  assert.equal(result.pagesFetched, 4);
+  assert.equal(result.partialData.headSha, fx.SHA_A);
+  assert.equal(result.partialData.checkRuns.length, 2);
+  assert.equal(result.partialData.statuses.length, 2);
+  assert.equal(result.data, undefined, 'truncated data must not look complete');
+});
+
+test('checks: one source truncated and the other failing reports the failure, never an kindless object', async () => {
+  const { transport, reader } = setup({ maxPages: 2 });
+  transport.get(`${fx.BASE}/commits/${fx.SHA_A}/check-runs`, pagedForever(`${fx.BASE}/commits/${fx.SHA_A}/check-runs`));
+  transport.get(`${fx.BASE}/commits/${fx.SHA_A}/status`, json(403, { message: 'nope' }));
+  const result = await reader.getChecks(fx.SHA_A);
+  assert.equal(result.kind, 'denied');
+  assert.deepEqual(result.components, { checkRuns: 'truncated', statuses: 'denied' });
+});
+
+test('every result of every read has a known kind', async () => {
+  const known = new Set(['ok', 'empty', 'partial', 'truncated', 'not_found', 'denied', 'rate_limited', 'transient', 'offline', 'cancelled', 'invalid']);
+  const { transport, reader } = setup({ maxPages: 1 });
+  const path = `${fx.BASE}/commits/${fx.SHA_A}/check-runs`;
+  transport.get(path, pagedForever(path));
+  transport.get(`${fx.BASE}/commits/${fx.SHA_A}/status`, pagedForever(`${fx.BASE}/commits/${fx.SHA_A}/status`));
+  transport.get(`${fx.BASE}/rules/branches/main`, (call) => json(200, [{ type: 'pull_request', parameters: {} }], { link: linkTo(`${fx.BASE}/rules/branches/main`, 2) }));
+  transport.get(`${fx.BASE}/branches/main/protection`, json(404, { message: 'Branch not protected' }));
+  for (const result of [await reader.getChecks(fx.SHA_A), await reader.getBranchRequirements('main'), await reader.getBranchRules('main')]) {
+    assert.ok(known.has(result.kind), `unexpected kind ${result.kind}`);
+  }
+});

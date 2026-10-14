@@ -49,6 +49,7 @@ function isFailure(result) {
 // When several reads are combined, report the failure that most needs the user's attention.
 const SEVERITY = ['cancelled', 'rate_limited', 'offline', 'denied', 'transient', 'not_found', 'invalid'];
 
+/** @returns the most severe failure among `results`, or undefined when none of them failed. */
 function mostSevereFailure(results) {
   let worst;
   for (const result of results) {
