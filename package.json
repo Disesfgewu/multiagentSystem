@@ -11,7 +11,10 @@
   "main": "./out/src/extension.js",
   "activationEvents": [
     "onCommand:multiagentSystem.openTerminalGroup",
-    "onCommand:multiagentSystem.launchAgent"
+    "onCommand:multiagentSystem.launchAgent",
+    "onCommand:multiagentSystem.worktrees.list",
+    "onCommand:multiagentSystem.worktrees.create",
+    "onCommand:multiagentSystem.worktrees.remove"
   ],
   "contributes": {
     "commands": [
@@ -22,6 +25,18 @@
       {
         "command": "multiagentSystem.launchAgent",
         "title": "Multiagent: Launch CLI Agent in Native Terminal"
+      },
+      {
+        "command": "multiagentSystem.worktrees.list",
+        "title": "Multiagent: List and Open Worktrees"
+      },
+      {
+        "command": "multiagentSystem.worktrees.create",
+        "title": "Multiagent: Create Worktree"
+      },
+      {
+        "command": "multiagentSystem.worktrees.remove",
+        "title": "Multiagent: Release Worktree"
       }
     ]
   },
@@ -38,5 +53,11 @@
     "@types/vscode": "1.95.0",
     "@vscode/test-electron": "3.1.0",
     "typescript": "7.0.2"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "The worktree commands run Git and stay disabled until the workspace is trusted."
+    }
   }
 }
