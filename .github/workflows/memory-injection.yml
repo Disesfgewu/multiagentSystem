@@ -43,7 +43,7 @@ jobs:
       # Four processes contend for one lock in the cross-process write test. It once failed
       # intermittently on a Windows runner, so it is repeated: a flaky lock shows up as a red
       # job here, with the reason, instead of as a rare surprise later.
-      - name: Repeat the cross-process write test 40 times (baseline: lock without the fix)
+      - name: Repeat the cross-process write test 40 times (baseline, lock without the fix)
         shell: bash
         run: |
           failed=0
