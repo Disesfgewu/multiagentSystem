@@ -1,0 +1,40 @@
+name: Account isolation
+
+on:
+  pull_request:
+    paths:
+      - src/accounts/**
+      - test/accounts/**
+      - scripts/p0/check-account-isolation.js
+      - .github/workflows/account-isolation.yml
+  push:
+    branches: [main]
+    paths:
+      - src/accounts/**
+      - test/accounts/**
+      - scripts/p0/check-account-isolation.js
+      - .github/workflows/account-isolation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  accounts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: node --check src/accounts/profile.js
+      - run: node --check src/accounts/observation.js
+      - run: node --check src/accounts/readiness.js
+      - run: node --check scripts/p0/check-account-isolation.js
+      - run: node --test "test/accounts/*.test.js"
