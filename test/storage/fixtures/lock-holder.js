@@ -2,7 +2,7 @@
 
 // Used by lock.test.js: takes the lock in a separate process, tells the parent
 // it holds it, then either releases after `holdMs` or exits without releasing.
-const { DirectoryLock } = require('../../../src/storage/lock');
+const { DirectoryLock } = require('../../../src/shared/lock');
 
 const [lockFile, mode, holdMs] = process.argv.slice(2);
 const lock = new DirectoryLock(lockFile, { retries: 0 });

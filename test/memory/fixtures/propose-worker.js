@@ -15,6 +15,10 @@ for (let i = 0; i < Number(count); i += 1) {
     content: `Worker ${tag} recorded note number ${i} about the build pipeline.`,
     source: { kind: 'task', ref: `${tag}-${i}` }
   });
-  if (!result.ok) failures += 1;
+  if (!result.ok) {
+    failures += 1;
+    // Only the reason and code, so a failing run says why without any path.
+    process.stderr.write(`propose ${tag}-${i} failed: ${result.reason}${result.detail ? `:${result.detail}` : ''}\n`);
+  }
 }
 process.exit(failures === 0 ? 0 : 1);

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const nodePath = require('node:path');
 const crypto = require('node:crypto');
 const { checkPrivateRoot, isSameOrInside, pathFor, resolvers } = require('./paths');
-const { DirectoryLock, LockIoError } = require('./lock');
+const { DirectoryLock, LockIoError } = require('../shared/lock');
 const { findSecrets } = require('./sensitive');
 
 const FORMAT = 'multiagent-private-store';
@@ -438,7 +438,7 @@ class PrivateStore {
 
   // ---- locking and writing --------------------------------------------------
 
-  // The single-writer lock is advisory and per directory (see lock.js). It is
+  // The single-writer lock is advisory and per directory (see src/shared/lock.js). It is
   // never taken from a writer that might still be running: a held lock makes the
   // call return `locked` with who seems to hold it, and a person (or the product,
   // on request) clears a dead holder with `recoverLock`.
