@@ -24,6 +24,14 @@
     "onCommand:multiagentSystem.github.refreshView",
     "onCommand:multiagentSystem.github.openInEditor",
     "onView:multiagentSystem.githubView",
+    "onCommand:multiagentSystem.accounts.refresh",
+    "onCommand:multiagentSystem.accounts.create",
+    "onCommand:multiagentSystem.accounts.details",
+    "onCommand:multiagentSystem.accounts.edit",
+    "onCommand:multiagentSystem.accounts.remove",
+    "onCommand:multiagentSystem.accounts.login",
+    "onCommand:multiagentSystem.accounts.launch",
+    "onView:multiagentSystem.accountsView",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
@@ -33,7 +41,8 @@
         {
           "id": "multiagentSystem.githubView",
           "name": "Multiagent GitHub"
-        }
+        },
+        { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" }
       ]
     },
     "commands": [
@@ -90,6 +99,13 @@
         "command": "multiagentSystem.github.openInEditor",
         "title": "Multiagent: Open GitHub Item in Editor"
       },
+      { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
+      { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details" },
+      { "command": "multiagentSystem.accounts.edit", "title": "Multiagent: Edit Account Profile" },
+      { "command": "multiagentSystem.accounts.remove", "title": "Multiagent: Remove Account Profile" },
+      { "command": "multiagentSystem.accounts.login", "title": "Multiagent: Sign In to Account" },
+      { "command": "multiagentSystem.accounts.launch", "title": "Multiagent: Start Session with Account" },
       {
         "command": "multiagentSystem.storage.status",
         "title": "Multiagent: Show Private Storage Status"
@@ -105,7 +121,15 @@
           "command": "multiagentSystem.github.refreshView",
           "when": "view == multiagentSystem.githubView",
           "group": "navigation"
-        }
+        },
+        { "command": "multiagentSystem.accounts.create", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
+        { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "multiagentSystem.accounts.login", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline" },
+        { "command": "multiagentSystem.accounts.launch", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline@2" },
+        { "command": "multiagentSystem.accounts.edit", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
+        { "command": "multiagentSystem.accounts.remove", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" }
       ]
     }
   },

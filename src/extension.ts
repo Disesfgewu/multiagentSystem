@@ -3,6 +3,7 @@ import { registerSessionCommands, SessionCommands } from './sessions/sessionComm
 import { registerWorktreeCommands } from './projects/worktreeCommands';
 import { registerGitHubCommands } from './github/githubCommands';
 import { registerStorageCommands } from './storage/storageCommands';
+import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
 import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
 
@@ -61,14 +62,15 @@ async function launchAgent(): Promise<void> {
 let sessions: SessionCommands | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  registerStorageCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)
   );
   sessions = registerSessionCommands(context);
+  registerAccountCommands(context, sessions);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
-  registerStorageCommands(context);
 }
 
 export function deactivate(): void {}

@@ -4,6 +4,8 @@ import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
+import { ACCOUNT_COMMANDS, accountTreeForTests } from '../../../src/accounts/accountCommands';
+import { accountService } from '../../../src/accounts/accountRuntime';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -15,7 +17,9 @@ const COMMANDS = [
   'multiagentSystem.sessions.reopen',
   'multiagentSystem.worktrees.list',
   'multiagentSystem.worktrees.create',
-  'multiagentSystem.worktrees.remove'
+  'multiagentSystem.worktrees.remove',
+  ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details,
+  ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
 
@@ -98,6 +102,43 @@ async function waitForAsync<T>(probe: () => Promise<T | undefined>, timeoutMs: n
     if (Date.now() > deadline) throw new Error('timed out waiting for a session state');
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+}
+
+async function accountFlow(workspace: string): Promise<void> {
+  const accountDir = path.join(path.dirname(workspace), 'synthetic-account-config');
+  fs.mkdirSync(accountDir, { recursive: true });
+  const accounts = await accountService(() => []);
+  assert.equal(accounts.ok, true, 'account profiles use the extension private store');
+  if (!accounts.ok) return;
+  const created = accounts.service.create({ provider: 'claude', label: 'Host Work Account', configDir: accountDir });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  if (!created.ok) return;
+
+  const tree = accountTreeForTests();
+  const entries = await tree.getChildren();
+  assert.ok(entries);
+  if (!entries) return;
+  const item = entries.find((entry) => entry.label === 'Host Work Account');
+  assert.ok(item, 'the persistent account view lists the created profile');
+  assert.match(String(item?.description ?? ''), /Claude Code · identity unknown/);
+  await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
+  assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
+  assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
+
+  const wrongProvider = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'codex', name: 'Wrong Account Provider', cwd: workspace,
+    accountProfileId: created.profile.id, launch: false
+  });
+  assert.deepEqual([wrongProvider.ok, wrongProvider.code], [false, 'provider-mismatch']);
+
+  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string } }>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'claude', name: 'Account Bound Session', cwd: workspace,
+    accountProfileId: created.profile.id, launch: false
+  });
+  assert.equal(started.ok, true);
+  assert.equal(started.session?.accountProfileId, created.profile.id);
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
+  console.log('host smoke: account profile appears with unknown identity, mismatched provider is refused, and a new native session keeps its selected profile');
 }
 
 interface Outcome {
@@ -213,6 +254,7 @@ export async function run(): Promise<void> {
   }
 
   await sessionFlow(workspace);
+  await accountFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
   assert.ok(worktreeTarget, 'the worktree test folder is provided');
