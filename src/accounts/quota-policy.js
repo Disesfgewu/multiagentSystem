@@ -62,7 +62,7 @@ function summarizeQuota(observations, now) {
   const list = Array.isArray(observations) ? observations : [];
   return [...windowsOf(list)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([window, item]) => {
     const reset = list.find((other) => isPlain(other) && other.field === RESETS(window));
-    const usable = item.value !== null && item.value !== undefined && item.confidence !== CONFIDENCE.UNKNOWN;
+    const usable = item.unit === 'percent' && percent(item.value) && item.confidence !== CONFIDENCE.UNKNOWN;
     return {
       window,
       usedPercent: usable ? item.value : null,
@@ -109,7 +109,7 @@ function decideDispatch({ policy, observations, now, running = 0, approval } = {
   const windows = windowsOf(observations);
   let gated = 0;
   for (const [window, item] of [...windows].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (!isGateEligible(item, at)) {
+    if (item.unit !== 'percent' || !isGateEligible(item, at)) {
       // An estimate, an expired reading or a missing value is shown, never used as a gate.
       if (item.value !== null && item.value !== undefined && percent(item.value) && rules.warnAtPercent !== undefined && item.value >= rules.warnAtPercent) {
         raise('warn', { code: 'unverified-reading-over-warning', window, confidence: item.confidence });

@@ -141,6 +141,18 @@ test('summary shows window, source, read time, trust, freshness and reset time, 
   assert.deepEqual([unread[0].usedPercent, unread[0].confidence, unread[0].gateEligible], [null, 'unknown', false]);
 });
 
+test('quota thresholds and summaries require an explicit percent unit', () => {
+  for (const unit of [undefined, null, 'tokens']) {
+    const malformed = reading('five_hour', 99, { unit });
+    const result = decide({ observations: [malformed], approval: 'override' });
+    assert.ok(codes(result).includes('window-unverified') || codes(result).includes('unverified-reading-over-warning'), `unit ${String(unit)} cannot gate`);
+    assert.equal(codes(result).includes('quota-block-threshold'), false);
+    const [row] = summarizeQuota([malformed], NOW);
+    assert.equal(row.usedPercent, null);
+    assert.equal(row.gateEligible, false);
+  }
+});
+
 test('double dispatch: two requests for the last slot cannot both succeed; a release frees it once', () => {
   const dispatcher = new QuotaDispatcher();
   const request = { accountKey: 'real-1', policy: policy({ maxConcurrent: 1 }), observations: [reading('w', 10)], now: NOW };
