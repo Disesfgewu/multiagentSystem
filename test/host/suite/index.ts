@@ -10,6 +10,8 @@ import { accountService, launchEnvironment } from '../../../src/accounts/account
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
+import { builtIn } from '../../../src/providers/registry';
+import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -268,7 +270,48 @@ async function roleFlow(workspace: string): Promise<void> {
   } finally {
     for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name === 'Multiagent: Role Session' || candidate.name === 'Multiagent: Started From Role')) terminal.dispose();
   }
+  assert.equal(privateHandle.store.put('roleGroups', 'broken', { group: { id: 'broken' }, layers: {} }).ok, true);
+  try {
+    await assert.rejects(pickRoleForLaunch('agy'), (error: { code?: string }) => error.code === 'role-group-unreadable',
+      'a malformed private role is not treated as an empty list');
+  } finally {
+    privateHandle.store.delete('roleGroups', 'broken');
+  }
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
+}
+
+async function agyFlow(workspace: string): Promise<void> {
+  const capabilities = builtIn.get('agy')?.capabilities;
+  assert.ok(capabilities);
+  assert.equal(capabilities.terminalLaunch, 'unverified');
+  for (const [name, state] of Object.entries(capabilities)) {
+    if (name !== 'terminalLaunch') assert.equal(state, 'unknown', `${name} must stay unknown`);
+  }
+  const sentinel = process.env.MULTIAGENT_TEST_AGY_SENTINEL;
+  assert.ok(sentinel);
+  const command = (name: string): Thenable<SessionOutcome> => vscode.commands.executeCommand('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy', name, cwd: workspace, launch: true
+  });
+  const started = await command('Agy Fake');
+  assert.equal(started.ok, true);
+  assert.equal(started.session?.state, 'launch-requested', 'typing a CLI command is not proof it is working');
+  assert.equal(started.session?.provider, 'agy');
+  await waitFor(() => fs.existsSync(sentinel) ? true : undefined, 20000);
+  assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'synthetic');
+  if (started.session?.id) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session.id });
+
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = path.join(path.dirname(sentinel), 'missing-cli-bin');
+    const missing = await command('Agy Missing');
+    assert.equal(missing.ok, false);
+    assert.equal(missing.code, 'executable-not-found');
+    assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Agy Missing'), false, 'missing agy opens no terminal');
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+  console.log('host smoke: synthetic agy starts in a native terminal; capabilities remain unknown; missing executable is actionable');
 }
 
 interface Outcome {
@@ -387,6 +430,7 @@ export async function run(): Promise<void> {
   await sessionFlow(workspace);
   await accountFlow(workspace);
   await roleFlow(workspace);
+  await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
   assert.ok(worktreeTarget, 'the worktree test folder is provided');

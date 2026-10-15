@@ -29,18 +29,42 @@ async function main(): Promise<void> {
   git('add', 'file.txt');
   git('commit', '-m', 'initial');
   const worktreeTarget = path.join(sandbox, 'worktrees 空白', 'feature-host');
+  const fakeBin = path.join(sandbox, 'fake-cli-bin');
+  const agySentinel = path.join(sandbox, 'agy-started.txt');
+  fs.mkdirSync(fakeBin);
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(fakeBin, 'agy.cmd'), '@echo off\r\necho synthetic > "%MULTIAGENT_TEST_AGY_SENTINEL%"\r\n');
+  } else {
+    fs.writeFileSync(path.join(fakeBin, 'agy'), '#!/bin/sh\nprintf synthetic > "$MULTIAGENT_TEST_AGY_SENTINEL"\n', { mode: 0o700 });
+  }
+  const testPath = `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`;
+  const userData = path.join(sandbox, 'ud');
+  fs.mkdirSync(path.join(userData, 'User'), { recursive: true });
+  fs.writeFileSync(path.join(userData, 'User', 'settings.json'), JSON.stringify(process.platform === 'win32' ? {
+    'terminal.integrated.defaultProfile.windows': 'Command Prompt',
+    'terminal.integrated.env.windows': { Path: testPath }
+  } : {
+    'terminal.integrated.profiles.osx': { 'Test shell': { path: '/bin/sh', args: [] } },
+    'terminal.integrated.defaultProfile.osx': 'Test shell',
+    'terminal.integrated.env.osx': { PATH: testPath }
+  }));
 
   try {
     await runTests({
       version: process.env.VSCODE_VERSION || '1.95.0',
       extensionDevelopmentPath,
       extensionTestsPath,
-      extensionTestsEnv: { MULTIAGENT_TEST_WORKSPACE: workspace, MULTIAGENT_TEST_WORKTREE: worktreeTarget },
+      extensionTestsEnv: {
+        MULTIAGENT_TEST_WORKSPACE: workspace,
+        MULTIAGENT_TEST_WORKTREE: worktreeTarget,
+        MULTIAGENT_TEST_AGY_SENTINEL: agySentinel,
+        PATH: testPath
+      },
       launchArgs: [
         workspace,
         '--disable-extensions',
         '--disable-workspace-trust',
-        `--user-data-dir=${path.join(sandbox, 'ud')}`,
+        `--user-data-dir=${userData}`,
         `--extensions-dir=${path.join(sandbox, 'ext')}`
       ]
     });
