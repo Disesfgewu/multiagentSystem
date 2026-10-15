@@ -39,9 +39,11 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
     assert.match(tooltip, /CI: unknown/);
     assert.ok(rows.some((row) => row.label === 'Agents'), 'the agents section is labelled');
 
-    // the guide steps follow the real state: a session exists now, so the "start an agent" step is done
+    // the guide steps follow the real state: this session has no account assigned, so it is a record of
+    // a terminal, not a running agent with an account, and the "start an agent" step is NOT ticked
     const step = rows.find((row) => row.label === 'Start an agent with an account');
-    if (step) assert.equal(step.description, 'done');
+    assert.ok(step, 'the guide is still shown');
+    assert.notEqual(step?.description, 'done', 'a session without an account does not complete the step');
   } finally {
     for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name === 'Multiagent: Overview Session')) terminal.dispose();
   }
