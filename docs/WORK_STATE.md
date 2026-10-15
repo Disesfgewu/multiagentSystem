@@ -41,7 +41,7 @@
 
 1. 角色只有 worker 或 PM；不符時**連 Issue 都不讀**。
 2. 先查本機：同一個 issue 已有記錄（`already-claimed-locally`，或未決的 `needs-reconcile`）、同一個 session 已有別的 issue（`session-busy`，一個 agent 一個當前 issue）。同一行程內同時進行的兩個領取只放行一個（`claim-in-progress`）。
-3. **重讀遠端**（強制重新整理）。issue 必須明確是自由的：開啟、不是 PR、沒有 `blocked` 與 `in-progress` 標籤、沒有 assignee、有 `ready` 標籤、有可比對的版本（`updatedAt`）。**讀不到（找不到、無權限、限流、暫時失敗、離線、無效）、回應不完整、欄位缺漏都不當成可領取**。「不完整」的條件在領取與重啟恢復中**完全相同**（一份共用的讀取）：`state` 不是 `open`／`closed`，或 `labels`、`assignees` 不是字串陣列。標籤名稱以**不分大小寫**的同一個正規化比對（GitHub 的標籤不分大小寫，`Blocked`、`In-Progress`、`READY` 與小寫相同）。
+3. **重讀遠端**（強制重新整理）。回應中的 issue 編號必須與請求一致；issue 必須明確是自由的：開啟、不是 PR、沒有 `blocked` 與 `in-progress` 標籤、沒有 assignee、有 `ready` 標籤、有可比對的版本（`updatedAt`）。**讀不到（找不到、無權限、限流、暫時失敗、離線、無效）、回應不完整、欄位缺漏或編號不符都不當成可領取**。「不完整」的條件在領取與重啟恢復中**完全相同**（一份共用的讀取）：`number` 不是所要求的正整數，`state` 不是 `open`／`closed`，或 `labels`、`assignees` 不是字串陣列。標籤名稱以**去除前後空白且不分大小寫**的同一個正規化比對（GitHub 的標籤不分大小寫，`Blocked`、`In-Progress`、`READY` 與小寫相同）。
 4. 寫入前先記下「意圖」（`sync: claiming`），再呼叫 writer，帶上讀到的版本；writer 必須在 issue 已變更時回 `conflict`。
 5. `conflict`：撤回意圖、**重新讀取再決定**（已被別人領取就拒絕），最多重試 `maxSyncRetries` 次（預設 2），用完回 `conflict` 與 `syncRequired: true`，**絕不無限重試**。
 6. 結果**未知**（逾時、斷線、writer 丟出例外）：**不重試**，意圖留在記錄中（`outcome-unknown`），由 `reconcile` 查明。

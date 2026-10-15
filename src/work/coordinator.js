@@ -57,15 +57,17 @@ const inFlight = new Set();
 // GitHub label names are not case sensitive (a repository cannot hold both `blocked` and
 // `Blocked`), so a name is compared in one folded form everywhere, on both sides. Configured
 // names are already lower case (see labels.js); what GitHub reports may not be.
-const fold = (text) => text.normalize('NFC').toLowerCase();
+const fold = (text) => text.normalize('NFC').trim().toLowerCase();
 
 /**
  * What an issue says, read once and strictly, for every decision that depends on it. If a piece
  * the decision needs is missing or of the wrong type the answer is "not ok", never a guess: a
  * missing label list is not an empty one, and a missing state is not "closed".
  */
-function readFacts(issue) {
+function readFacts(issue, expectedNumber) {
   if (!issue || typeof issue !== 'object' || Array.isArray(issue)) return { ok: false };
+  if (!Number.isSafeInteger(issue.number) || issue.number < 1) return { ok: false };
+  if (expectedNumber !== undefined && issue.number !== expectedNumber) return { ok: false };
   if (issue.state !== 'open' && issue.state !== 'closed') return { ok: false };
   if (!Array.isArray(issue.labels) || !issue.labels.every((name) => typeof name === 'string')) return { ok: false };
   if (!Array.isArray(issue.assignees) || !issue.assignees.every((login) => typeof login === 'string')) return { ok: false };
@@ -80,8 +82,8 @@ function readFacts(issue) {
 }
 
 /** Is this issue free to claim? Anything not clearly free is refused with the reason. */
-function assessAvailability(issue, labels) {
-  const facts = readFacts(issue);
+function assessAvailability(issue, labels, expectedNumber) {
+  const facts = readFacts(issue, expectedNumber);
   if (!facts.ok) return refuse('cannot-verify');
   if (!facts.open) return refuse('closed');
   if (facts.isPullRequest) return refuse('is-pull-request');
@@ -93,12 +95,15 @@ function assessAvailability(issue, labels) {
 }
 
 /** After a claim was written: does what the remote now shows look like one claim? */
-function verifyClaim(before, after, labels) {
-  const facts = readFacts(after);
-  if (!facts.ok || !facts.open || facts.isPullRequest) return false;
+function verifyClaim(before, after, labels, expectedNumber = before && before.number) {
+  const prior = readFacts(before, expectedNumber);
+  const facts = readFacts(after, expectedNumber);
+  if (!prior.ok || !facts.ok || !facts.open || facts.isPullRequest) return false;
   if (!facts.labels.has(fold(labels.claimed)) || facts.labels.has(fold(labels.blocked))) return false;
   if (facts.assignees.length > 1) return false;
-  if (typeof facts.updatedAt !== 'string' || Date.parse(facts.updatedAt) < Date.parse(before.updatedAt)) return false;
+  const beforeTime = typeof prior.updatedAt === 'string' ? Date.parse(prior.updatedAt) : Number.NaN;
+  const afterTime = typeof facts.updatedAt === 'string' ? Date.parse(facts.updatedAt) : Number.NaN;
+  if (Number.isNaN(beforeTime) || Number.isNaN(afterTime) || afterTime < beforeTime) return false;
   return true;
 }
 
@@ -157,7 +162,7 @@ async function claimIssue(options) {
       if (signal && signal.aborted) return refuse('cancelled');
       const read = await safeRead(reader, issueNumber, { signal, forceRefresh: true });
       if (!read || read.kind !== 'ok') return readFailure(read);
-      const available = assessAvailability(read.data, labels);
+      const available = assessAvailability(read.data, labels, issueNumber);
       if (!available.ok) return available;
 
       // The intent is written before the remote is changed, so a crash in between is visible later.
@@ -195,7 +200,7 @@ async function claimIssue(options) {
         await store.save(unverified);
         return refuse('claim-unverified', { kind: after && after.kind });
       }
-      if (!verifyClaim(read.data, after.data, labels)) {
+      if (!verifyClaim(read.data, after.data, labels, issueNumber)) {
         await store.save({ ...checked.link, sync: 'conflict' });
         return refuse('conflict-detected');
       }
@@ -242,7 +247,7 @@ async function reconcile({ reader, store, labels: labelOptions, repo, now, signa
     // The same strict reading as for a claim: an answer that is missing what the decision needs is
     // "could not read", and the only local record of the claim is kept. It is never taken to mean
     // "closed" or "handed back".
-    const facts = readFacts(read.data);
+    const facts = readFacts(read.data, link.issueNumber);
     if (!facts.ok) {
       await store.save({ ...link, sync: link.sync === 'claiming' ? 'claiming' : 'unverified' });
       results.push({ ...entry, outcome: 'could-not-read', kind: 'incomplete' });
@@ -310,8 +315,11 @@ async function advance(options) {
   const after = publicLabelFor(moved.state, labels);
   if (after !== null && after !== before) {
     const read = await safeRead(reader, issueNumber, { forceRefresh: true });
-    if (!read || read.kind !== 'ok' || typeof read.data.updatedAt !== 'string') return refuse('cannot-verify', { kind: read && read.kind });
-    const written = await safeWrite(() => writer.setLabel(writePayload(repo, issueNumber, after, read.data.updatedAt)));
+    const facts = read && read.kind === 'ok' ? readFacts(read.data, issueNumber) : { ok: false };
+    if (!read || read.kind !== 'ok' || !facts.ok || typeof facts.updatedAt !== 'string' || Number.isNaN(Date.parse(facts.updatedAt))) {
+      return refuse('cannot-verify', { kind: read && read.kind });
+    }
+    const written = await safeWrite(() => writer.setLabel(writePayload(repo, issueNumber, after, facts.updatedAt)));
     if (!written || written.ok !== true) {
       if (written && written.reason === 'conflict') return refuse('conflict', { syncRequired: true });
       if (written && WRITE_FAILURES[written.reason]) return refuse(WRITE_FAILURES[written.reason]);

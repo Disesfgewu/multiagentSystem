@@ -66,6 +66,21 @@ test('an issue that is not clearly free is never claimed, and the reason says wh
   }
 });
 
+test('a reader response must identify the issue that was requested', async () => {
+  const before = fresh();
+  before.remote.onRead = () => ({ kind: 'ok', data: issue({ number: 8 }) });
+  assert.equal((await claim(before.remote, before.store)).reason, 'cannot-verify');
+  assert.equal(before.remote.writes.length, 0, 'another issue is never used as the basis for a write');
+  assert.deepEqual(await before.store.list(), []);
+
+  const after = fresh();
+  after.remote.onRead = (number, call) => call === 1
+    ? undefined
+    : { kind: 'ok', data: issue({ number: 8, labels: ['in-progress'], assignees: ['x'], updatedAt: '2026-10-14T12:00:05.000Z' }) };
+  assert.equal((await claim(after.remote, after.store)).reason, 'conflict-detected', 'a mismatched confirmation cannot confirm the write');
+  assert.deepEqual((await after.store.list()).map((link) => link.sync), ['conflict']);
+});
+
 test('an issue that cannot be read is not treated as claimable, whatever the reason', async () => {
   const cases = [
     [{ kind: 'not_found', possiblyHidden: true }, 'issue-not-found'],
@@ -314,7 +329,9 @@ test('GitHub does not distinguish label case, so neither does the decision: Bloc
     ['BLOCKED', { labels: ['READY', 'BLOCKED'] }, 'blocked'],
     ['In-Progress', { labels: ['ready', 'In-Progress'] }, 'already-claimed'],
     ['IN-PROGRESS only', { labels: ['IN-PROGRESS'] }, 'already-claimed'],
-    ['Ready is the only label but with a claim', { labels: ['Ready', 'in-PROGRESS'] }, 'already-claimed']
+    ['Ready is the only label but with a claim', { labels: ['Ready', 'in-PROGRESS'] }, 'already-claimed'],
+    ['spaces around Blocked', { labels: ['ready', ' Blocked '] }, 'blocked'],
+    ['spaces around In-Progress', { labels: ['ready', ' In-Progress '] }, 'already-claimed']
   ];
   for (const [name, change, reason] of refusals) {
     const { remote, store } = fresh({ 7: change });
@@ -322,7 +339,7 @@ test('GitHub does not distinguish label case, so neither does the decision: Bloc
     assert.deepEqual([result.ok, result.reason], [false, reason], name);
     assert.equal(remote.writes.length, 0, `${name}: no write`);
   }
-  for (const spelling of ['READY', 'Ready', 'rEaDy']) {
+  for (const spelling of ['READY', 'Ready', 'rEaDy', ' ready ']) {
     const { remote, store } = fresh({ 7: { labels: [spelling] } });
     const result = await claim(remote, store);
     assert.equal(result.ok, true, `${spelling} is the ready label`);

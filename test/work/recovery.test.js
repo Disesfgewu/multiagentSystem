@@ -212,6 +212,16 @@ test('an intent being resolved is not resolved by an incomplete answer either', 
   assert.equal((await sync(remote, after)).results[0].outcome, 'needs-confirmation', 'decided once it can be read');
 });
 
+test('a response for another issue never removes or confirms this issue\'s local record', async () => {
+  const { remote, store } = await claimed();
+  const after = restart(store);
+  remote.onRead = () => ({ kind: 'ok', data: { number: 8, state: 'closed', labels: [], assignees: [], updatedAt: '2026-10-14T12:00:09.000Z' } });
+  const report = await sync(remote, after);
+  assert.deepEqual([report.results[0].outcome, report.results[0].kind], ['could-not-read', 'incomplete']);
+  const [link] = await after.list();
+  assert.deepEqual([link.issueNumber, link.state, link.sync], [7, 'claimed', 'unverified']);
+});
+
 test('label case does not change what reconcile concludes: a claim shown as In-Progress is a claim, Blocked is a block', async () => {
   const { remote, store } = await claimed();
   remote.touch(7, { labels: ['In-Progress'] });
@@ -227,6 +237,9 @@ test('label case does not change what reconcile concludes: a claim shown as In-P
   remote.touch(7, { labels: ['IN-PROGRESS', 'Blocked'] });
   assert.equal((await sync(remote, after)).results[0].outcome, 'remote-blocked');
   assert.equal((await after.list())[0].state, 'blocked');
+
+  remote.touch(7, { labels: [' IN-PROGRESS ', ' Blocked '] });
+  assert.equal((await sync(remote, after)).results[0].outcome, 'confirmed', 'surrounding spaces do not hide either status label');
 
   // And an intent that finds a claim shown in capitals still waits for a person.
   const crashed = createRemote({ 7: {} });

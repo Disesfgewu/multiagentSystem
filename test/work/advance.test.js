@@ -97,6 +97,9 @@ test('a change that needs the remote is refused when the remote cannot be read',
   assert.equal(remote.writes.length, 1, 'no label was written');
   remote.onRead = () => ({ kind: 'ok', data: { updatedAt: 7 } });
   assert.equal((await step('release', 'worker')).reason, 'cannot-verify', 'without a usable version');
+  remote.onRead = () => ({ kind: 'ok', data: { ...remote.issues.get(7), number: 8 } });
+  assert.equal((await step('release', 'worker')).reason, 'cannot-verify', 'a version from another issue is not used');
+  assert.equal(remote.writes.length, 1, 'the mismatched response caused no write');
 });
 
 test('only the worker that holds an issue can move it, and a record that is not confirmed cannot be moved by anyone but the PM or a person', async () => {
