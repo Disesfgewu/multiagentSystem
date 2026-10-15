@@ -13,7 +13,7 @@ export interface TerminalHandle {
 }
 
 export interface TerminalHost<T extends TerminalHandle = TerminalHandle> {
-  create(options: { name: string; cwd: string }): T;
+  create(options: { name: string; cwd: string; env?: Record<string, string | null> }): T;
 }
 
 /** Fixed when a session is created; never changed afterwards (an account switch is a new session). */
@@ -272,6 +272,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     cwd: string;
     roleGroupId?: string;
     accountProfileId?: string;
+    env?: Record<string, string | null>;
     launch?: boolean;
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
@@ -290,7 +291,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: input.accountProfileId ?? UNASSIGNED,
         worktree: input.cwd
       };
-      const view = this.open(identity, name, executable, input.launch !== false);
+      const view = this.open(identity, name, executable, input.launch !== false, input.env);
       await this.persist();
       return view;
     } finally {
@@ -298,9 +299,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
   }
 
-  private open(identity: SessionIdentity, name: string, executable: string, launch: boolean): SessionView {
+  private open(identity: SessionIdentity, name: string, executable: string, launch: boolean, env?: Record<string, string | null>): SessionView {
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
-    const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree });
+    const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();
     try {
       this.registry.create(identity);
@@ -366,7 +367,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    * directory. The old session is kept as history and is never reused. The account cannot be
    * changed here: use `start` with another account for that.
    */
-  async reopen(id: string, options: { launch?: boolean; acknowledgeUnknown?: boolean } = {}): Promise<SessionView> {
+  async reopen(id: string, options: { launch?: boolean; acknowledgeUnknown?: boolean; env?: Record<string, string | null> } = {}): Promise<SessionView> {
     await this.ready();
     this.inFlight += 1;
     try {
@@ -386,7 +387,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: old.accountProfileId,
         worktree: old.worktree
       };
-      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false);
+      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env);
       await this.persist();
       return view;
     } finally {

@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
 import { SessionManager, SessionView } from './manager';
+import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -35,6 +36,7 @@ export interface SessionCommandOptions {
   launch?: boolean;
   /** Needed to reopen a session whose earlier terminal this window cannot see. */
   acknowledgeUnknown?: boolean;
+  accountProfileId?: string;
 }
 
 export type SessionOutcome =
@@ -43,6 +45,9 @@ export type SessionOutcome =
 
 export interface SessionCommands {
   launch(options: SessionCommandOptions): Promise<SessionOutcome>;
+  launchWithAccount(options: SessionCommandOptions): Promise<SessionOutcome>;
+  list(): SessionView[];
+  onDidChange(listener: () => void): vscode.Disposable;
 }
 
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -70,9 +75,11 @@ function workspaceFolder(): string | undefined {
 }
 
 export function registerSessionCommands(context: vscode.ExtensionContext): SessionCommands {
+  const changed = new vscode.EventEmitter<void>();
+  context.subscriptions.push(changed);
   const manager = new SessionManager<vscode.Terminal>({
     terminals: {
-      create: ({ name, cwd }) => vscode.window.createTerminal({ name, cwd, location: vscode.TerminalLocation.Editor })
+      create: ({ name, cwd, env }) => vscode.window.createTerminal({ name, cwd, env, location: vscode.TerminalLocation.Editor })
     },
     providers: Object.fromEntries(PROVIDERS.map((provider) => [provider.executable, provider.executable])),
     resolveProject,
@@ -98,19 +105,63 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
-      const session = await manager.start({
-        provider: input.provider ?? '',
-        name: input.name ?? '',
-        cwd,
-        launch: input.launch
-      });
-      return { ok: true, session };
+      let accountProfileId = input.accountProfileId;
+      const provider = input.provider ?? '';
+      if (!accountProfileId && interactive && (provider === 'claude' || provider === 'codex')) {
+        const available = await accountService(() => manager.list());
+        if (!available.ok) return failure(Object.assign(new Error(available.message), { code: available.code }), true);
+        const listed = available.service.list();
+        if (!listed.ok) return failure(Object.assign(new Error(listed.message), { code: listed.code }), true);
+        const profiles = listed.profiles.filter((profile: { provider: string }) => profile.provider === provider);
+        const choice = await vscode.window.showQuickPick([
+          { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: 'unassigned' },
+          ...profiles.map((profile: { id: string; label: string }) => ({ label: profile.label, description: 'Account identity: unknown until observed', id: profile.id }))
+        ], { placeHolder: 'Choose an account for this new session' });
+        if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        accountProfileId = choice.id === 'unassigned' ? undefined : choice.id;
+      }
+      return await startWithAccount({ ...input, provider, cwd, accountProfileId });
     } catch (error) {
       if ((error as { code?: string })?.code === 'no-folder') {
         const message = 'Open a single project folder first.';
         if (interactive) void vscode.window.showErrorMessage(message);
         return { ok: false, code: 'no-folder', message };
       }
+      return failure(error, interactive);
+    }
+  }
+
+  async function startWithAccount(input: SessionCommandOptions): Promise<SessionOutcome> {
+    const interactive = input.interactive !== false;
+    try {
+      const cwd = input.cwd ?? workspaceFolder();
+      if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
+      const provider = input.provider ?? '';
+      let env: Record<string, string | null> | undefined;
+      if (input.accountProfileId) {
+        const prepared = await launchEnvironment(input.accountProfileId, provider, () => manager.list());
+        if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
+        if (interactive) {
+          const answer = await vscode.window.showWarningMessage(
+            'Account isolation is not verified for this CLI on this machine.',
+            { modal: true, detail: 'The extension sets the provider configuration directory for this new terminal and removes inherited credential overrides. Confirm the CLI uses that directory before entering sensitive work.' },
+            'Continue'
+          );
+          if (answer !== 'Continue') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        }
+        env = prepared.env;
+      }
+      const session = await manager.start({
+        provider,
+        name: input.name ?? '',
+        cwd,
+        accountProfileId: input.accountProfileId,
+        env,
+        launch: input.launch
+      });
+      changed.fire();
+      return { ok: true, session };
+    } catch (error) {
       return failure(error, interactive);
     }
   }
@@ -149,8 +200,23 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (action === 'focus') session = manager.focus(id);
       else if (action === 'stop') session = manager.stop(id);
       else {
+        const prior = manager.list().find((entry) => entry.id === id);
+        let env: Record<string, string | null> | undefined;
+        if (prior && prior.accountProfileId !== 'unassigned') {
+          const prepared = await launchEnvironment(prior.accountProfileId, prior.provider, () => manager.list());
+          if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
+          if (interactive) {
+            const answer = await vscode.window.showWarningMessage(
+              'Account isolation is not verified for this CLI on this machine.',
+              { modal: true, detail: 'The profile will be revalidated and its configuration directory applied to the new terminal.' },
+              'Continue'
+            );
+            if (answer !== 'Continue') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          }
+          env = prepared.env;
+        }
         try {
-          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown });
+          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown, env });
         } catch (error) {
           // The earlier terminal may still be running in the folder: ask before starting a second one.
           if (!interactive || (error as { code?: string })?.code !== 'confirm-unknown-reopen') throw error;
@@ -160,9 +226,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             'Open Anyway'
           );
           if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true });
+          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true, env });
         }
       }
+      changed.fire();
       return { ok: true, session };
     } catch (error) {
       return failure(error, interactive);
@@ -183,7 +250,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   }
 
   context.subscriptions.push(
-    vscode.window.onDidCloseTerminal((terminal) => manager.handleTerminalClosed(terminal)),
+    vscode.window.onDidCloseTerminal((terminal) => { manager.handleTerminalClosed(terminal); changed.fire(); }),
     vscode.commands.registerCommand(SESSION_COMMANDS.list, (value?: unknown) => list(value)),
     vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(options(value))),
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
@@ -192,5 +259,5 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   );
 
   void manager.initialize().catch((error) => failure(error, true));
-  return { launch };
+  return { launch, launchWithAccount: startWithAccount, list: () => manager.list(), onDidChange: (listener) => changed.event(listener) };
 }

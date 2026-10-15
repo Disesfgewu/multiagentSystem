@@ -14,7 +14,7 @@ class FakeTerminal implements TerminalHandle {
   sent: Array<{ text: string; newline: boolean | undefined }> = [];
   shown: Array<boolean | undefined> = [];
   disposed = 0;
-  constructor(readonly name: string, readonly cwd: string) {}
+  constructor(readonly name: string, readonly cwd: string, readonly env?: Record<string, string | null>) {}
   show(preserveFocus?: boolean): void {
     this.shown.push(preserveFocus);
   }
@@ -56,8 +56,8 @@ function rig(overrides: Partial<ManagerDeps<FakeTerminal>> = {}, store = new Mem
   const state = { persistErrors: 0 };
   const deps: ManagerDeps<FakeTerminal> = {
     terminals: {
-      create: ({ name, cwd }) => {
-        const terminal = new FakeTerminal(name, cwd);
+      create: ({ name, cwd, env }) => {
+        const terminal = new FakeTerminal(name, cwd, env);
         terminals.push(terminal);
         return terminal;
       }
@@ -117,6 +117,17 @@ test('a shell that merely exists is never reported as the CLI working', async ()
   assert.deepEqual(r.terminals[0].sent, [], 'nothing is typed when launch is false');
   for (const view of r.manager.list()) assert.notEqual(view.state, 'cli-observed');
   assert.equal(describeState('terminal-open'), 'Shell open, CLI not started');
+});
+
+test('the selected account environment reaches its terminal and can be rebuilt for a reopened session', async () => {
+  const r = rig();
+  const env = { CLAUDE_CONFIG_DIR: '/private/accounts/work', ANTHROPIC_API_KEY: null };
+  const first = await start(r, { accountProfileId: 'account-work', env });
+  assert.deepEqual(r.terminals[0].env, env);
+  r.manager.handleTerminalClosed(r.terminals[0]);
+  const reopened = await r.manager.reopen(first.id, { env });
+  assert.equal(reopened.accountProfileId, 'account-work');
+  assert.deepEqual(r.terminals[1].env, env);
 });
 
 test('only a verified provider event for the same provider and account confirms the CLI', async () => {
