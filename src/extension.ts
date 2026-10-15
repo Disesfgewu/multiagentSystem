@@ -3,7 +3,8 @@ import { registerSessionCommands, SessionCommands } from './sessions/sessionComm
 import { registerWorktreeCommands } from './projects/worktreeCommands';
 import { registerGitHubCommands } from './github/githubCommands';
 import { registerStorageCommands } from './storage/storageCommands';
-import { GROUP_NAMES, PROVIDERS, CliProvider, errorMessage, terminalTitle, validateTerminalName } from './agents';
+import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
+import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
@@ -23,21 +24,8 @@ async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
 async function openTerminalGroup(): Promise<void> {
   const cwd = await workspaceDirectory();
   if (!cwd) return;
-
-  let first: vscode.Terminal | undefined;
   try {
-    for (const name of GROUP_NAMES) {
-      const terminal = vscode.window.createTerminal({
-        name: terminalTitle(name),
-        cwd,
-        location: first
-          ? { parentTerminal: first }
-          : vscode.TerminalLocation.Editor
-      });
-      first = first ?? terminal;
-      terminal.show(true);
-    }
-    first?.show();
+    await openFourTerminalGroup(cwd);
   } catch (error) {
     void vscode.window.showErrorMessage(`Could not create native terminals: ${errorMessage(error)}`);
   }

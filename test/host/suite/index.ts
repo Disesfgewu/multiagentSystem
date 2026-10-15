@@ -167,6 +167,8 @@ export async function run(): Promise<void> {
   console.log(await runStorageChecks(registered, workspace));
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
+  const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));
+  await vscode.window.showTextDocument(visibleFile, vscode.ViewColumn.One);
   const before = new Set(vscode.window.terminals);
   await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
   const created = await waitFor(() => {
@@ -176,13 +178,35 @@ export async function run(): Promise<void> {
 
   try {
     assert.deepEqual(created.map((terminal) => terminal.name).sort(), [...EXPECTED_TITLES].sort());
+    const columns = new Map<number, string>();
     for (const terminal of created) {
       const options = terminal.creationOptions as vscode.TerminalOptions;
       const cwd = options.cwd instanceof vscode.Uri ? options.cwd.fsPath : options.cwd;
       assert.ok(cwd, `${terminal.name} has a working directory`);
       assert.ok(sameDirectory(cwd, workspace), `${terminal.name} starts in the project directory`);
       assert.equal('pty' in terminal.creationOptions, false, 'a native shell, not a custom pseudoterminal');
+      const location = options.location as vscode.TerminalEditorLocationOptions;
+      columns.set(location.viewColumn, terminal.name);
     }
+    assert.deepEqual([...columns.entries()].sort(([a], [b]) => a - b), EXPECTED_TITLES.map((title, index) => [index + 1, title]));
+    const groups = await waitFor(() => {
+      const current = vscode.window.tabGroups.all;
+      return current.filter((group) => group.tabs.some((tab) => tab.input instanceof vscode.TabInputTerminal)).length === 4 ? current : undefined;
+    }, 10000);
+    const terminalGroups = groups.filter((group) => group.tabs.some((tab) => tab.input instanceof vscode.TabInputTerminal));
+    assert.equal(terminalGroups.length, 4, 'the 2×2 layout has four editor groups with terminals');
+    for (const group of terminalGroups) {
+      const terminalTabs = group.tabs.filter((tab) => tab.input instanceof vscode.TabInputTerminal);
+      assert.equal(terminalTabs.length, 1, `view column ${group.viewColumn} has one terminal tab`);
+    }
+    assert.ok(groups.some((group) => group.tabs.some((tab) => tab.label === 'file.txt')), 'the previously open project file remains in an editor group');
+
+    const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
+    await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
+    const countBeforeRepeat = vscode.window.terminals.length;
+    await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    assert.equal(vscode.window.terminals.length, countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
+    assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
   } finally {
     for (const terminal of created) terminal.dispose();
