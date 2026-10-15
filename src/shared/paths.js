@@ -37,7 +37,15 @@ class PathResolutionError extends Error {
 // example a drive letter that is not mounted), because nothing was verified.
 // The nearest existing ancestor must be a directory: Windows reports ENOENT
 // for a path below a regular file, which must not pass as "not created yet".
+//
+// A `..` segment is refused before anything is resolved. `p.resolve` removes it as text, but
+// the operating system applies it after following links: `link/..` is the parent of the link's
+// target. The check would then see one place while any I/O on the original string lands in
+// another, possibly inside the repository.
 function canonicalize(target, p, realpath, isDirectory, lstat = (value) => fs.lstatSync(value)) {
+  if (typeof target === 'string' && target.split(p === nodePath.win32 ? /[\\/]/ : '/').includes('..')) {
+    throw new PathResolutionError('EDOTDOT');
+  }
   const resolved = p.resolve(target);
   const tail = [];
   let current = resolved;
