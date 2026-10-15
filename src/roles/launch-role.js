@@ -1,6 +1,7 @@
 'use strict';
 
 const { validateRoleGroup } = require('./role-group');
+const { validRecord } = require('./role-store');
 
 // Whether a role group may be assigned to a session that is about to start. The assignment is a fact
 // about a new session: it names the group and nothing else. It does not change a running session
@@ -25,7 +26,9 @@ function checkRoleForLaunch({ id, provider, record }) {
   if (typeof id !== 'string' || !ID.test(id) || id === UNASSIGNED) return { ok: false, code: 'invalid-role-group', message: REASONS['invalid-role-group'] };
   if (record === null || record === undefined) return { ok: false, code: 'role-group-not-found', message: REASONS['role-group-not-found'] };
   const checked = validateRoleGroup(record && typeof record === 'object' ? record.group : undefined);
-  if (!checked.ok || checked.group.id !== id) return { ok: false, code: 'role-group-unreadable', message: REASONS['role-group-unreadable'] };
+  if (!checked.ok || checked.group.id !== id || !validRecord(record, id)) {
+    return { ok: false, code: 'role-group-unreadable', message: REASONS['role-group-unreadable'] };
+  }
   if (checked.group.provider !== provider) return { ok: false, code: 'role-group-provider-mismatch', message: REASONS['role-group-provider-mismatch'] };
   return { ok: true, group: checked.group };
 }

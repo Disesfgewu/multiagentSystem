@@ -24,6 +24,9 @@ test('every refusal has a code and a plain message', () => {
     [{ id: 'role-a', provider: 'claude', record: 'text' }, 'role-group-unreadable'],
     [{ id: 'role-a', provider: 'claude', record: {} }, 'role-group-unreadable'],
     [{ id: 'role-a', provider: 'claude', record: { group: { ...group(), extra: 1 } } }, 'role-group-unreadable'],
+    [{ id: 'role-a', provider: 'claude', record: { group: group(), layers: { task: [{ id: 'bad', type: 'instruction', text: '' }] } } }, 'role-group-unreadable'],
+    [{ id: 'role-a', provider: 'claude', record: { group: group(), layers: 'invalid' } }, 'role-group-unreadable'],
+    [{ id: 'role-a', provider: 'claude', record: { group: group(), layers: {}, revision: 0 } }, 'role-group-unreadable'],
     ...['', '../x', 'a b', UNASSIGNED, 'x'.repeat(65), undefined, null, 5, {}, '__proto__x/'].map((id) => [{ id, provider: 'claude', record: record() }, 'invalid-role-group'])
   ];
   for (const [input, code] of cases) {
