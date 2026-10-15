@@ -165,6 +165,7 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 - **沒有開啟任何資料夾**時沒有 repo 可言，所以可以使用；此時以擴充套件自己的資料夾作為「比較用的 repo 路徑」，只用來讓儲存核心有路徑可比，**不會在那裡存任何東西**。
 - **命令** `Multiagent: Show Private Storage Status`（`multiagentSystem.storage.status`）：回報可用與否、儲存核心自己的狀態（例如 `corrupt`）；只有代碼，不含路徑或內容。傳入 `{ probeSecrets: true }` 才會對編輯器的秘密儲存做一次合成值的寫入、讀取、刪除（會有逾時，不會無限等待，也不會留下值），因為真實後端可能詢問使用者授權；預設不探測。每次探測用自己的 key（隨機後綴），兩個視窗同時探測不會互相刪除。
 - **Extension Host 測試**（`test/host/suite/storage.ts`，VS Code 1.95.0 與 stable，macOS 與 Windows）：真實的 `globalStorageUri` 在專案之外；寫入、讀取、清除；真實 `SecretStorage` 的合成值往返；憑證不在資料檔；資料夾被視為在專案內時回報原因且專案內沒有新增任何東西；結束時刪除所有合成資料。
+- **觀察到的後端行為（不要假設刪除立即一致）**：CI 的 Windows（VS Code stable）上曾有一次，對真實 `SecretStorage` 呼叫 `delete` 之後**立刻** `get` 仍回舊值（同一個 job 在之前兩個 head 都沒有發生，所以是間歇性的）。Extension Host 測試因此改為在有上限的時間（5 秒）內等待值消失，並**回報花了多久**；超過上限才失敗。程式碼不得假設「刪除之後立刻讀不到」；`SecretVault.remove` 目前也沒有確認這一點（是否要在 `remove` 內等待並確認，請 PM 決定）。這個延遲的大小與原因沒有查明。
 - **未驗證**：後端的保護與持久性（見第 8 節）；真實使用者授權提示；`SecretStorage` 在登入鎖定、跨重新啟動、多個 VS Code 視窗同時使用時的行為；Windows 實機與 ACL；多根工作區之外的真實專案。
 
 **需要知道的一件事（發現於 Extension Host 測試）**：編輯器的儲存資料夾名稱是 `<publisher>.<name>`。目前 `package.json` 沒有 `publisher`，資料夾叫 `undefined_publisher.multiagentsystem`。日後 #29 補上 `publisher` 時資料夾名稱會改變，已存的私人資料會「找不到」（資料仍在舊資料夾，但不會被讀到）。這需要在加上 `publisher` 之前決定：先設定 `publisher`，或提供遷移。

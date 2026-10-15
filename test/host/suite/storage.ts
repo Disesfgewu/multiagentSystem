@@ -40,6 +40,23 @@ function real(value: string): string {
   }
 }
 
+// The editor's secret storage is a real backend. Seen once in CI (Windows, VS Code stable): a read
+// straight after `delete` still returned the old value. So a removal is checked by waiting, for a
+// bounded time, until the value is gone, and how long that took is reported; it is not assumed to
+// be immediate, and a value that never goes away fails the test.
+const REMOVAL_WAIT_MS = 5000;
+async function untilGone(read: () => PromiseLike<unknown>): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const value = await within('SecretStorage get', read());
+    if (value === null || value === undefined) return Date.now() - started;
+    if (Date.now() - started > REMOVAL_WAIT_MS) {
+      throw new Error(`a removed secret was still readable ${REMOVAL_WAIT_MS} ms after it was deleted`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 function relation(parent: string, child: string): boolean {
   const fold = (text: string): string => (process.platform === 'win32' ? text.toLowerCase() : text);
   const rel = path.relative(fold(real(parent)), fold(real(child)));
@@ -56,6 +73,7 @@ export async function runStorageChecks(registered: string[], workspace: string):
   const dataFolder = path.join(storageFolder, 'private');
   // The project may already hold files (a Git repository, for one); what matters is that storage adds nothing to it.
   const projectBefore = fs.readdirSync(workspace).sort();
+  let removalLagMs = -1;
   try {
     // 1. The status command reports availability with codes only.
     const status = await vscode.commands.executeCommand<StorageStatus>(STORAGE_COMMANDS.status, { interactive: false });
@@ -91,7 +109,7 @@ export async function runStorageChecks(registered: string[], workspace: string):
 
     // 4. Removing the secret and clearing the data leave nothing behind.
     await within('SecretStorage delete', used.vault.remove(saved.secretRef));
-    assert.equal(await within('SecretStorage get', used.vault.read(saved.secretRef)), null);
+    removalLagMs = await untilGone(() => used.vault.read(saved.secretRef));
     const cleared = used.store.clear({ confirm: CONFIRM_CLEAR } as never) as { ok: boolean };
     assert.equal(cleared.ok, true);
     assert.equal(fs.existsSync(file), false);
@@ -111,5 +129,5 @@ export async function runStorageChecks(registered: string[], workspace: string):
     try { await within('SecretStorage cleanup', context.secrets.delete('multiagentSystem/default/host-test-1')); } catch { /* nothing to remove */ }
     fs.rmSync(dataFolder, { recursive: true, force: true });
   }
-  return 'storage host smoke: the editor\'s own storage folder is outside the project; the store reads, writes and clears there; SecretStorage round-trips a synthetic value; an unusable folder is reported and nothing is stored elsewhere';
+  return `storage host smoke: the editor's own storage folder is outside the project; the store reads, writes and clears there; SecretStorage round-trips a synthetic value; an unusable folder is reported and nothing is stored elsewhere; a removed secret was unreadable after ${removalLagMs} ms`;
 }
