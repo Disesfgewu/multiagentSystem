@@ -8,15 +8,35 @@
 const REF_PATTERN = /^secret:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const NAMESPACE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const KEY_PREFIX = 'multiagentSystem';
+const DEFAULT_REMOVE_TIMEOUT_MS = 5000;
+const DEFAULT_REMOVE_POLL_MS = 25;
+
+async function withinTimeout(operation, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeoutMs); })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 class SecretVault {
   // `backend` has the shape of VS Code's SecretStorage: async get/store/delete.
-  constructor(backend, namespace) {
+  constructor(backend, namespace, options = {}) {
     const ok = backend && ['get', 'store', 'delete'].every((name) => typeof backend[name] === 'function');
     if (!ok) throw new TypeError('secret backend must provide get, store and delete');
     if (!NAMESPACE.test(namespace || '')) throw new TypeError('invalid namespace');
+    const timeout = options.removeTimeoutMs === undefined ? DEFAULT_REMOVE_TIMEOUT_MS : options.removeTimeoutMs;
+    const poll = options.removePollMs === undefined ? DEFAULT_REMOVE_POLL_MS : options.removePollMs;
+    if (!Number.isFinite(timeout) || timeout < 0) throw new TypeError('removeTimeoutMs must be a non-negative finite number');
+    if (!Number.isFinite(poll) || poll <= 0) throw new TypeError('removePollMs must be a positive finite number');
     this.backend = backend;
     this.namespace = namespace;
+    this.removeTimeoutMs = timeout;
+    this.removePollMs = poll;
   }
 
   refFor(id) {
@@ -45,8 +65,25 @@ class SecretVault {
   }
 
   async remove(ref) {
-    await this.backend.delete(this.#key(ref));
-    return { ok: true };
+    const key = this.#key(ref);
+    const deadline = Date.now() + this.removeTimeoutMs;
+    try {
+      await withinTimeout(this.backend.delete(key), Math.max(0, deadline - Date.now()));
+    } catch {
+      return { ok: false, reason: 'remove-unconfirmed' };
+    }
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { ok: false, reason: 'remove-unconfirmed' };
+      try {
+        if ((await withinTimeout(this.backend.get(key), remaining)) === undefined) return { ok: true };
+      } catch {
+        return { ok: false, reason: 'remove-unconfirmed' };
+      }
+      const remainingAfterRead = deadline - Date.now();
+      if (remainingAfterRead <= 0) return { ok: false, reason: 'remove-unconfirmed' };
+      await new Promise((resolve) => setTimeout(resolve, Math.min(this.removePollMs, remainingAfterRead)));
+    }
   }
 }
 

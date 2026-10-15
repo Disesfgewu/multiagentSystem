@@ -133,8 +133,8 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 
 | 項目 | 原因 |
 | --- | --- |
-| 與 VS Code `globalStorageUri`／`SecretStorage` 的整合 | 需要 #8 合併後在 Extension Host 驗證；`fromExtensionContext` 只以假物件測試，介面與 VS Code 的 `SecretStorage` 形狀一致，**未**在真實 Extension Host 執行 |
-| SecretStorage 的實際後端（macOS Keychain、Windows 憑證管理員）行為與錯誤 | 同上 |
+| 與 VS Code `globalStorageUri`／`SecretStorage` 的整合 | **部分完成**：已在真實 Extension Host（VS Code 1.95.0 與 stable）以真實的 `globalStorageUri` 與 `SecretStorage` 做合成值的往返驗證，見第 10 節。尚未驗證的部分見該節末 |
+| SecretStorage 的實際後端（macOS Keychain、Windows 憑證管理員）行為與錯誤 | Extension Host 測試只證明 API 往返成功，**不證明**後端的保護強度、跨重新啟動的持久性、使用者拒絕授權、後端鎖定或損壞時的行為；CI 的 runner 是 GitHub 託管環境 |
 | Windows 實機與 ACL | 沒有設備 |
 | 以終止行程測試「寫到一半」的崩潰復原 | 尚未做（持鎖後崩潰已有真實行程的測試） |
 | 網路檔案系統、雲端同步資料夾 | 明確不支援，未測 |
@@ -149,3 +149,23 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 3. **單一檔案 vs 每集合一檔**：目前單檔，以便跨集合的交易保持原子；代價是整體大小上限 8 MiB 與每次寫入重寫整個檔案。記憶庫（#21）資料量大時是否另用獨立的儲存。
 4. **崩潰後的自動復原**：目前一律需要明確呼叫 `recoverLock`（持有者已死亡時不需 `force`）。介面是否在偵測到 `owner-dead` 時直接提示一鍵復原，或由使用者在設定頁操作。
 5. **鎖等待上限**：預設約 2 秒；過期時間（30 秒）現在只是 `force` 的前提。是否需要調整。
+
+## 10. 在擴充套件內的整合（Issue #9 的後續切片）
+
+實作在 `src/storage/extensionStorage.ts`（不 import `vscode`，以真實暫存資料夾測試）與 `src/storage/storageCommands.ts`（編輯器綁定）。其他模組（例如 #12 的 `AccountProfileService`）以 `privateStorage()` 取得，再呼叫 `use()`。
+
+- **位置**：私人資料只放在編輯器給這個擴充套件的儲存資料夾（`context.globalStorageUri`）下的 `private/`；憑證只放在編輯器的 `context.secrets`，記錄只存不透明的 `secretRef`（命名空間 `default`）。集合為 `profiles`、`roleGroups`、`sessions`、`policies`，schema 版本 1。
+- **每次 `use()` 都重新檢查**資料資料夾與**每一個目前開啟的工作區資料夾**，以及這些資料夾**所有祖先目錄中含有 `.git` 的目錄**：資料夾在 repo 內、或 repo 在資料資料夾內、或連結指向 repo，都回報 `unavailable`／`directory-rejected`。檢查在**任何目錄被建立之前**完成。所以工作區在啟動之後才加入資料夾、或啟動之後才出現的 repo，都會在下一次 `use()` 被發現，不需重新啟動。
+- **不執行 Git。** 找 repo 只讀檔案系統：從資料夾（以給定的路徑與其真實位置各走一次）一路向上，凡是有 `.git` 項目（目錄，或 linked worktree／submodule 的檔案）的目錄都算一個 repo 根目錄，**不是只取最近的一個**；`.git` 檔案會被跟隨到擁有它的主要 checkout 與 Git 目錄，所以 linked worktree 的主要 checkout、submodule 的上層 repo 都會被檢查。原因：Git 可能不存在、失敗、逾時或在未信任的工作區不能執行，這些都會看起來像「不在 repo 內」，私人資料就會寫進 repo；檔案系統的走訪不會有「沒有回答」。（上一版用 Git 查詢，Git 無法回答時第一次 `use()` 回傳可用，照回傳的 `store` 寫入會在 repo 內建立 `.editor-data/private/store.json`；這是 PM 在 PR 審查中重現的缺陷。）
+- **走訪無法判斷就拒絕**：`.git` 項目的檢查遇到「不存在」或「不是目錄」以外的錯誤（`EACCES`、`EPERM`、`EIO`、`ELOOP`…）、已發現的 `.git` 檔案讀不到／格式錯誤、`gitdir` 或 `commondir` 目標不存在或無法解析、連結的真實位置解析不出來、路徑深到 256 層以上，一律回報 `directory-rejected`／`repo-root-unresolvable`，不當成「不在 repo 內」。工作區資料夾本身不存在（例如被刪除）則只以給定路徑走訪。
+- **呼叫端必須每次操作都呼叫 `use()`，不要保存它回傳的 `store`**：`PrivateStore` 只會對它建立時的那一個資料夾比對，之後才開啟的資料夾只有下一次 `use()` 才會被發現（接上 #12 等模組時要確認）。
+- **結果會說明檢查了什麼**（`coverage`，狀態命令也會回報）：`ancestors-checked`＝每個開啟的資料夾與它的所有祖先目錄都找過 `.git`（附找到的 repo 數）；`no-folder-open`＝沒有開啟任何資料夾。**仍然看不到的**：工作樹裡沒有 `.git` 項目的 repo（以 `core.worktree` 設定的）。
+- **已知的誤判代價（PM 已決定維持 fail closed）**：任何祖先含 `.git` 就算 repo，包括使用者家目錄下的「dotfiles repo」（`~/.git`）：編輯器的儲存資料夾通常在家目錄之下，這種機器上私人儲存會回報不可用（`private-root-inside-repo`），而且**永遠**如此，直到使用者移除或改用不在工作樹內的 Git 目錄。本輪沒有覆寫機制；若 #27 日後提供例外，必須由使用者明確設定、寫入診斷，且不能由工作區檔案觸發。
+- **不可用時不退路**：沒有備用位置——不是 repo 內的資料夾、不是家目錄、暫存資料夾或工作目錄。回報的原因只有代碼（`context-incomplete`、`directory-rejected` 與 `private-root-inside-repo` 等），不含路徑；測試以遞迴快照確認被拒絕之後整個暫存樹沒有新增任何東西。編輯器沒有提供儲存資料夾或 `secrets` 時回報 `context-incomplete`，不丟例外。
+- **沒有開啟任何資料夾**時沒有 repo 可言，所以可以使用；此時以擴充套件自己的資料夾作為「比較用的 repo 路徑」，只用來讓儲存核心有路徑可比，**不會在那裡存任何東西**。
+- **命令** `Multiagent: Show Private Storage Status`（`multiagentSystem.storage.status`）：回報可用與否、儲存核心自己的狀態（例如 `corrupt`）；只有代碼，不含路徑或內容。傳入 `{ probeSecrets: true }` 才會對編輯器的秘密儲存做一次合成值的寫入、讀取、刪除（會有逾時，不會無限等待，也不會留下值），因為真實後端可能詢問使用者授權；預設不探測。每次探測用自己的 key（隨機後綴），兩個視窗同時探測不會互相刪除。
+- **Extension Host 測試**（`test/host/suite/storage.ts`，VS Code 1.95.0 與 stable，macOS 與 Windows）：真實的 `globalStorageUri` 在專案之外；寫入、讀取、清除；真實 `SecretStorage` 的合成值往返；憑證不在資料檔；資料夾被視為在專案內時回報原因且專案內沒有新增任何東西；結束時刪除所有合成資料。
+- **刪除要確認**：CI 的 Windows（VS Code stable）上曾有一次，對真實 `SecretStorage` 呼叫 `delete` 之後立即 `get` 仍回舊值。`SecretVault.remove` 因此會在有上限的 5 秒內反覆讀取，只有確認值已不存在才回 `{ ok: true }`；逾時或無法讀取回 `{ ok: false, reason: 'remove-unconfirmed' }`，不會默認刪除成功。Extension Host 以真實 SecretStorage 驗證這條路徑並回報耗時；延遲的大小與原因仍未查明。
+- **未驗證**：後端的保護與持久性（見第 8 節）；真實使用者授權提示；`SecretStorage` 在登入鎖定、跨重新啟動、多個 VS Code 視窗同時使用時的行為；Windows 實機與 ACL；多根工作區之外的真實專案。
+
+**需要知道的一件事（發現於 Extension Host 測試）**：編輯器的儲存資料夾名稱是 `<publisher>.<name>`。目前 `package.json` 沒有 `publisher`，資料夾叫 `undefined_publisher.multiagentsystem`。日後 #29 補上 `publisher` 時資料夾名稱會改變，已存的私人資料會「找不到」（資料仍在舊資料夾，但不會被讀到）。這需要在加上 `publisher` 之前決定：先設定 `publisher`，或提供遷移。

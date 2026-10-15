@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { runGitHubChecks } from './github';
+import { runStorageChecks } from './storage';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -163,6 +164,7 @@ export async function run(): Promise<void> {
 
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
   assert.ok(workspace, 'the test workspace path is provided');
+  console.log(await runStorageChecks(registered, workspace));
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
   const before = new Set(vscode.window.terminals);

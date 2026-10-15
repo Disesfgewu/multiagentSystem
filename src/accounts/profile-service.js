@@ -322,8 +322,9 @@ class AccountProfileService {
     const ref = outcome.value.removed.secretRef;
     if (ref && this.vault) {
       try {
-        await this.vault.remove(ref);
-        result.secretRemoved = true;
+        const removed = await this.vault.remove(ref);
+        if (removed && removed.ok === true) result.secretRemoved = true;
+        else result.secretCleanupFailed = true;
       } catch {
         // The record is already gone; report that the secret may remain, without details.
         result.secretCleanupFailed = true;
