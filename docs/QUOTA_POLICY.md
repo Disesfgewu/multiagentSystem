@@ -1,0 +1,29 @@
+# 額度門檻與分派政策
+
+`src/accounts/quota-policy.js` 決定「一個新任務是否可以在某個帳號上開始」。它不會把執行中的 agent 換到另一個帳號，也不會自己挑選帳號。這是純模組：輸入是注入的政策、該帳號的觀測（`src/accounts/observation.js` 的輸出）與目前時間，不讀檔、不執行 CLI、不連網。
+
+## 政策（每個帳號設定一份）
+
+| 欄位 | 說明 |
+| --- | --- |
+| `warnAtPercent` | 任一有可信資料的時間窗已用百分比達此值時警示（仍可分派）。 |
+| `blockAtPercent` | 達此值時暫停新任務；使用者可明確覆寫（`approval: 'override'`）。須不小於 `warnAtPercent`。 |
+| `maxConcurrent` | 同一**實際帳號**同時運行的 agent 上限（1–64）。達上限即阻擋，**覆寫不能解除**，要改上限。 |
+| `unknownQuota` | 沒有任何可信額度資料時：`require-confirmation`（預設，需明確確認）或 `block`（禁止新任務，使用者可明確覆寫）。 |
+
+沒有設定的欄位代表沒有該限制。政策存在私人儲存的 `policies` 集合，一個帳號一筆（`savePolicy`／`loadPolicy`）；儲存中的資料無效時回報錯誤，不會退回預設。
+
+## 什麼資料能成為硬性門檻
+
+只有「服務端回報、仍在有效期限內、不是未來時間」的讀數（`isGateEligible`）。估算值、已過期（含已過重置時間）、缺漏或超出範圍的讀數只能提示（`window-unverified`、`unverified-reading-over-warning`），不能阻擋，也不能因此判定額度充足。所有時間窗都沒有可信資料時，額度為未知，依 `unknownQuota` 處理。尚無已驗證用量來源的 provider（目前如 `agy`，見 [Provider 登錄](PROVIDERS.md)）因此一律走「額度未知」，不做估算。
+
+## 並行分派
+
+`QuotaDispatcher.reserve` 在同一個同步步驟內判斷並佔用名額，兩個同時要最後一個名額的請求不會都成功；`release` 可重複呼叫，重複釋放不影響結果。名額以呼叫端給的 `accountKey`（實際帳號）計算，指向同一實際帳號的多個設定檔應使用同一個 key，不得重複計算額度；`externalRunning` 讓呼叫端加上不在這個 dispatcher 內的執行中 agent。
+
+## 限制（請勿過度宣稱）
+
+- 服務端額度會在兩次讀取之間變動，這個政策**不能保證阻止所有超額請求**。
+- 目前只有純邏輯與合成資料的測試；真實額度來源與真實帳號屬 #3 的未驗證項目。
+- 名額只存在記憶體；Extension Host 重啟後由呼叫端依實際執行中的 session 重新計算。
+- 總覽畫面與覆寫操作的 UI 尚未做；`summarizeQuota` 只提供顯示所需的資料（時間窗、來源、讀取時間、可信度、是否仍有效、可取得的重置時間）。
