@@ -1,16 +1,14 @@
 'use strict';
 
+// One locale-independent comparator for all of src/memory (re-exported below for src/roles).
+const { byCodeUnit } = require('./order');
+
 // Strongest first. A rule from a later layer may add restrictions but can never
 // weaken or remove one from an earlier layer.
 const LAYERS = Object.freeze(['platform', 'user', 'project', 'roleGroup', 'task']);
 const TYPES = Object.freeze(['forbid', 'require', 'instruction']);
 
 const TYPE_ORDER = Object.freeze({ forbid: 0, require: 1, instruction: 2 });
-
-// Compares by UTF-16 code unit. `localeCompare` depends on the machine's language and
-// ICU version, which would let the same rules resolve in a different order, and give a
-// different result, on another machine or Node version.
-const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 function resolveRules(entries) {
   const conflicts = [];
