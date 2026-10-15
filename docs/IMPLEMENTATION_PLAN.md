@@ -3,7 +3,7 @@
 狀態：計劃草案，可作為第一版實作與驗收依據
 
 更新：2026-10-14
-目標環境：macOS 與 Windows 的 VS Code Desktop、以 GitHub 為來源的專案、Codex CLI 與 Claude Code CLI
+目標環境：macOS 與 Windows 的 VS Code Desktop、以 GitHub 為來源的專案、Codex CLI、Claude Code CLI 與 agy（內建 provider 範圍見 [Provider 登錄](PROVIDERS.md)）
 
 ## 1. 問題與產品邊界
 
@@ -28,7 +28,7 @@
 | R09 | 第一版在 macOS 與 Windows 都能完成相同核心流程。 | R01–R08、R10–R13 的驗收情境分別在兩平台執行；任何一平台缺少必要能力時不得宣稱第一版完成。 |
 | R10 | 以 GitHub Issues／PRs 對話與交付：只有 PM 定義 issue；coding agent 領取 issue、提交 PR；PM 持續 code review 至通過。 | 權限測試證明 worker 無法建立／改寫 issue 需求；一個 issue 經領取、PR、要求修改、再次提交、PM 通過的完整循環均可在 GitHub 查閱。 |
 | R11 | Merge 決策可設定為「人工」或「PM」，預設人工。 | 人工模式中 PM 只能標記可合併，不能觸發 merge；PM 模式中只有指定 PM 可在最新 review 通過且必要檢查成功後執行 merge。 |
-| R12 | 同一 provider 可同時登入多個帳號，使用者可替每個 agent 指定帳號。 | 兩個 Claude Code 帳號及兩個 Codex 帳號分別啟動同時運行的 agent；所選設定目錄、登入狀態、session 與本機資料不串用；實際帳號無法由服務核實時明確標示。 |
+| R12 | 同一 provider 可同時登入多個帳號，使用者可替每個 agent 指定帳號。第一階段內建 provider 為 Claude Code、Codex CLI、agy；agy 在官方文件與實機驗證前只有終端啟動，帳號隔離、身份核實與額度一律標示未知。 | 兩個 Claude Code 帳號及兩個 Codex 帳號分別啟動同時運行的 agent；所選設定目錄、登入狀態、session 與本機資料不串用；實際帳號無法由服務核實時明確標示。 |
 | R13 | 逐帳號查看可取得的配額與用量，並依設定控制工作分派。 | 額度視圖列出來源、時間窗、已用量／剩餘量或未知、重置時間；超過使用者設定門檻時警示、阻擋新任務或要求確認，不默默改用另一個帳號。 |
 
 ## 2. 核心使用流程
