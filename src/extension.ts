@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { registerSessionCommands, SessionCommands } from './sessions/sessionCommands';
 import { registerWorktreeCommands } from './projects/worktreeCommands';
+import { registerGitHubCommands } from './github/githubCommands';
 import { GROUP_NAMES, PROVIDERS, CliProvider, errorMessage, terminalTitle, validateTerminalName } from './agents';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
@@ -77,6 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   sessions = registerSessionCommands(context);
   registerWorktreeCommands(context);
+  registerGitHubCommands(context);
 }
 
 export function deactivate(): void {}

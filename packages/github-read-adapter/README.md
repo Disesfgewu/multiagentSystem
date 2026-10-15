@@ -1,6 +1,6 @@
 # GitHub 讀取 adapter
 
-對應 Issue #15：以**唯讀**方式讀取 GitHub Issue、PR、head SHA、review、CI checks、對話與 branch rules，供專案總覽使用。這個套件獨立於 VS Code Extension：HTTP transport 與 token 由呼叫端注入，之後由 #8 的 Extension Host 接上。
+對應 Issue #15：以**唯讀**方式讀取 GitHub Issue、PR、head SHA、review、CI checks、對話與 branch rules，供專案總覽使用。這個套件獨立於 VS Code Extension：HTTP transport 與 token 由呼叫端注入；擴充套件端的接法見 `docs/GITHUB_READ_INTEGRATION.md`（`src/github/`）。
 
 沒有第三方相依（不使用 Octokit），不需要安裝步驟。`npm test`（Node ≥ 20）使用合成資料與假 transport，不連網、不需要 token、不寫入 GitHub。
 
@@ -64,7 +64,7 @@ const snapshot = await reader.getPullRequestSnapshot(7, { signal });
 
 ## 尚未完成／未驗證
 
-- **Extension 整合**（等 #8 合併）：提供 `fetch`、從 SecretStorage 取 token、總覽 UI。這裡的測試**全部使用合成資料與假 transport，不能視為對真實 GitHub 的整合驗收**。
+- **Extension 整合**：已在 `src/github/` 以 VS Code 官方驗證 API（不是 SecretStorage）接上，提供導向 GitHub 頁面的入口，見 `docs/GITHUB_READ_INTEGRATION.md`；總覽畫面仍屬 #13。這裡與那邊的測試**全部使用合成資料與假 transport，不能視為對真實 GitHub 的整合驗收**。
 - 尚未對真實 GitHub 或 GitHub Enterprise 驗證：branch 名稱含 `/` 的路徑編碼、`rules/branches` 與 `branches/{branch}/protection` 在不同權限下的實際回應、GraphQL 欄位、各種 token 類型（fine-grained／GitHub App）所需權限。
 - Windows 只由 CI 驗證，未在實機驗證。
 - 不推導「Ready to merge」：這裡只提供證據與摘要；合併條件判定與 broker 屬後續 Issue。

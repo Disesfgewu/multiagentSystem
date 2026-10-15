@@ -15,6 +15,12 @@
     "onCommand:multiagentSystem.worktrees.list",
     "onCommand:multiagentSystem.worktrees.create",
     "onCommand:multiagentSystem.worktrees.remove",
+    "onCommand:multiagentSystem.github.browse",
+    "onCommand:multiagentSystem.github.openIssue",
+    "onCommand:multiagentSystem.github.openPullRequest",
+    "onCommand:multiagentSystem.github.openChecks",
+    "onCommand:multiagentSystem.github.pullRequestStatus",
+    "onCommand:multiagentSystem.github.signIn",
     "onCommand:multiagentSystem.sessions.list"
   ],
   "contributes": {
@@ -38,6 +44,30 @@
       {
         "command": "multiagentSystem.worktrees.remove",
         "title": "Multiagent: Release Worktree"
+      },
+      {
+        "command": "multiagentSystem.github.browse",
+        "title": "Multiagent: Browse GitHub Issues and Pull Requests"
+      },
+      {
+        "command": "multiagentSystem.github.openIssue",
+        "title": "Multiagent: Open GitHub Issue"
+      },
+      {
+        "command": "multiagentSystem.github.openPullRequest",
+        "title": "Multiagent: Open GitHub Pull Request"
+      },
+      {
+        "command": "multiagentSystem.github.openChecks",
+        "title": "Multiagent: Open GitHub Pull Request Checks"
+      },
+      {
+        "command": "multiagentSystem.github.pullRequestStatus",
+        "title": "Multiagent: Show GitHub Pull Request Review and CI Status"
+      },
+      {
+        "command": "multiagentSystem.github.signIn",
+        "title": "Multiagent: Sign In to GitHub"
       },
       {
         "command": "multiagentSystem.sessions.list",
