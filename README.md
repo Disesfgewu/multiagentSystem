@@ -6,7 +6,7 @@
 
 第一階段內建三個 CLI provider：Claude Code、Codex CLI 與 agy（見 [Provider 登錄](docs/PROVIDERS.md)）。啟動選單與身份組現在都使用登錄；agy 可選擇在原生 terminal 啟動，規則與記憶以手動方式注入，其餘能力一律未知；使用者自訂 provider 尚未支援。
 
-目前已有 P0 原生 terminal 雛形。需求、技術選型、開源參考、風險、里程碑與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)。
+目前已有 P0 原生 terminal 雛形，但套件內的 GitHub 清單、帳號／額度控制、身份組與 MCP 權限、共享記憶流程尚未完成，不能視為可用的管理平台。整體交付追蹤見 [Issue #76](https://github.com/Disesfgewu/multiagentSystem/issues/76)；需求與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)。PM 工作規則見 [PM system prompt](docs/PM_SYSTEM_PROMPT.md)。
 
 ## 試用 P0 雛形
 

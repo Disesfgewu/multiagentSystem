@@ -5,6 +5,12 @@
 更新：2026-10-14
 目標環境：macOS 與 Windows 的 VS Code Desktop、以 GitHub 為來源的專案、Codex CLI、Claude Code CLI 與 agy（內建 provider 範圍見 [Provider 登錄](PROVIDERS.md)）
 
+## 交付順序修正（2026-10-15）
+
+使用者已確認：只有 terminal 與底層模型的套件還無法管理專案。即日起以 [#76 套件內控管流程](https://github.com/Disesfgewu/multiagentSystem/issues/76) 作為整體交付驗收；PM 依 [工作規則](PM_SYSTEM_PROMPT.md) 追蹤可操作成果與時間。先把既有 GitHub 讀取、帳號、身份組和額度模組接成 VS Code 內持續可見的操作介面，再整合權限、MCP、記憶與寫入流程。基礎模組合併只記為階段進度，不能將對應的產品要求標成完成。
+
+第一個可展示檢查點：不輸入編號、不開瀏覽器，使用者可在套件內看到同 repo 的 Issues／PRs 清單、打開內容、查看 review／CI 與返回清單；錯誤和無權限狀態要清楚。下一個檢查點：在相同介面建立／選擇帳號與身份組，預覽有效指令、MCP／記憶範圍及額度 gate，然後啟動對應真 CLI terminal。每個檢查點都要有實際 Extension Host 演示；雙平台真機驗收另記證據。
+
 ## 1. 問題與產品邊界
 
 使用者目前在 VS Code 手動開多個 terminal，自己命名、切換與拼裝各個 CLI coding agent。這讓同一專案的工作狀態、任務歸屬、實際使用的服務帳戶與用量難以集中判斷。使用者也需要替 agent 指定身份組、工作規則與任務，以 GitHub Issues／PRs 協作，並保證執行階段的 agent 資訊不會進入 GitHub 的 commit、PR、issue 等內容。
