@@ -108,7 +108,7 @@ export async function runStorageChecks(registered: string[], workspace: string):
     assert.equal(probed.secrets, 'reachable');
 
     // 4. Removing the secret and clearing the data leave nothing behind.
-    await within('SecretStorage delete', used.vault.remove(saved.secretRef));
+    assert.deepEqual(await within('SecretStorage delete', used.vault.remove(saved.secretRef)), { ok: true });
     removalLagMs = await untilGone(() => used.vault.read(saved.secretRef));
     const cleared = used.store.clear({ confirm: CONFIRM_CLEAR } as never) as { ok: boolean };
     assert.equal(cleared.ok, true);

@@ -241,7 +241,7 @@ test('removing a profile in use is refused; earlier sessions need explicit confi
 
 test('removal deletes the secret too; a failing vault is reported without hiding that the record is gone', async (t) => {
   const removed = [];
-  const vault = { remove: async (ref) => { removed.push(ref); } };
+  const vault = { remove: async (ref) => { removed.push(ref); return { ok: true }; } };
   const s = setup(t, { vault });
   const { profile } = claude(s, 'Keyed', { secretRef: 'secret:accounts/key-1' });
   const ok = await s.service.remove(profile.id);
@@ -255,6 +255,12 @@ test('removal deletes the secret too; a failing vault is reported without hiding
   assert.equal(result.secretCleanupFailed, true);
   assert.doesNotMatch(JSON.stringify(result), /keychain|private/);
   assert.equal(broken.service.get(second.profile.id).code, 'profile-not-found');
+
+  const unconfirmed = setup(t, { vault: { remove: async () => ({ ok: false, reason: 'remove-unconfirmed' }) } });
+  const third = claude(unconfirmed, 'Keyed3', { secretRef: 'secret:accounts/key-3' });
+  const uncertain = await unconfirmed.service.remove(third.profile.id);
+  assert.deepEqual([uncertain.secretRemoved, uncertain.secretCleanupFailed], [false, true]);
+  assert.doesNotMatch(JSON.stringify(uncertain), /remove-unconfirmed/, 'the public result does not expose backend details');
 });
 
 test('assignment: the session choice beats the role group default; nothing is guessed', (t) => {

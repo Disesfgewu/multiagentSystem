@@ -25,8 +25,40 @@ test('secrets round-trip through the backend and the caller only gets an opaque 
   assert.equal(await vault.read(saved.secretRef), 'synthetic-value-1');
   assert.equal(JSON.stringify(saved).includes('synthetic'), false);
   assert.deepEqual([...backend.map.keys()], ['multiagentSystem/accounts/profile-1']);
-  await vault.remove(saved.secretRef);
+  assert.deepEqual(await vault.remove(saved.secretRef), { ok: true });
   assert.equal(await vault.read(saved.secretRef), null);
+});
+
+test('remove waits a bounded time for the backend to stop returning the old value', async () => {
+  const backend = memoryBackend();
+  let deleting = false;
+  let readsAfterDelete = 0;
+  backend.delete = async () => { deleting = true; };
+  backend.get = async (key) => {
+    if (deleting && ++readsAfterDelete === 3) backend.map.delete(key);
+    return backend.map.get(key);
+  };
+  const vault = new SecretVault(backend, 'accounts', { removeTimeoutMs: 100, removePollMs: 1 });
+  const saved = await vault.save('profile-1', 'synthetic-value-1');
+  assert.deepEqual(await vault.remove(saved.secretRef), { ok: true });
+  assert.equal(readsAfterDelete, 3, 'success was returned only after a read confirmed absence');
+});
+
+test('remove reports remove-unconfirmed when the value remains or confirmation cannot be read', async () => {
+  const lingering = memoryBackend();
+  lingering.delete = async () => {};
+  const vault = new SecretVault(lingering, 'accounts', { removeTimeoutMs: 5, removePollMs: 1 });
+  const saved = await vault.save('profile-1', 'synthetic-value-1');
+  const started = Date.now();
+  assert.deepEqual(await vault.remove(saved.secretRef), { ok: false, reason: 'remove-unconfirmed' });
+  assert.ok(Date.now() - started < 250, 'the retry budget is bounded');
+
+  const unreadable = memoryBackend();
+  const second = new SecretVault(unreadable, 'accounts', { removeTimeoutMs: 100, removePollMs: 1 });
+  const savedSecond = await second.save('profile-2', 'synthetic-value-2');
+  unreadable.delete = async () => {};
+  unreadable.get = async () => { throw new Error('synthetic backend failure'); };
+  assert.deepEqual(await second.remove(savedSecond.secretRef), { ok: false, reason: 'remove-unconfirmed' });
 });
 
 test('references outside the namespace, malformed references and empty values are refused', async () => {
@@ -40,6 +72,8 @@ test('references outside the namespace, malformed references and empty values ar
   await assert.rejects(() => vault.save('ok', 5), TypeError);
   assert.throws(() => new SecretVault({}, 'accounts'), TypeError);
   assert.throws(() => new SecretVault(memoryBackend(), '../x'), TypeError);
+  assert.throws(() => new SecretVault(memoryBackend(), 'accounts', { removeTimeoutMs: -1 }), TypeError);
+  assert.throws(() => new SecretVault(memoryBackend(), 'accounts', { removePollMs: 0 }), TypeError);
 });
 
 test('error messages never contain the secret value', async () => {

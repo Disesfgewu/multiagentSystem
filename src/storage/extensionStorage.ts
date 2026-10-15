@@ -217,21 +217,24 @@ export async function probeSecretVault(vault: SecretVaultInstance, timeoutMs = S
   const value = `probe-${unique}`;
   const attempt = (async (): Promise<boolean> => {
     let ref: string | undefined;
+    let matched = false;
+    let removed = false;
     try {
       const saved = await vault.save(`storage-probe-${unique}`, value) as { secretRef: string };
       ref = saved.secretRef;
-      return (await vault.read(ref)) === value;
+      matched = (await vault.read(ref)) === value;
     } catch {
       return false;
     } finally {
       if (ref !== undefined) {
         try {
-          await vault.remove(ref);
+          removed = ((await vault.remove(ref)) as { ok?: boolean }).ok === true;
         } catch {
           // Nothing more can be done; the value is synthetic.
         }
       }
     }
+    return matched && removed;
   })();
   // The timer is cleared as soon as the probe settles, so it never outlives the call.
   let timer: NodeJS.Timeout | undefined;

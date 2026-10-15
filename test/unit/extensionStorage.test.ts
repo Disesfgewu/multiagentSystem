@@ -405,6 +405,12 @@ test('the secret probe fails cleanly when the backend fails or never answers, an
   const started = Date.now();
   assert.equal(hanging.ok && (await probeSecretVault(hanging.vault, 60)), false);
   assert.ok(Date.now() - started < 5000, 'it does not wait without end');
+  const removalUnconfirmed = {
+    save: async () => ({ secretRef: 'secret:default/probe' }),
+    read: async () => 'synthetic-value',
+    remove: async () => ({ ok: false, reason: 'remove-unconfirmed' })
+  };
+  assert.equal(await probeSecretVault(removalUnconfirmed as never), false, 'a probe is not reachable when cleanup cannot be confirmed');
   const report = await describeStorage(createStorageHandle({ context: { ...s.context, secrets: broken }, workspaceFolders: () => [s.repo] }), { probeSecrets: true });
   assert.equal(report.secrets, 'unreachable');
 });
