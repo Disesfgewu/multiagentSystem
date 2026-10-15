@@ -15,7 +15,7 @@
 
 ## 規則
 
-- **建立／編輯**：provider 必須支援且不可更改；標籤 1–80 字元、無控制字元，**同 provider 內不可重複**（忽略大小寫與全形）；設定資料夾經既有路徑驗證（絕對路徑、不在 repo 內、不是 provider 預設資料夾、可解析），且**不可與其他 profile 相同或巢狀**（含經由連結指向同一資料夾）；最多 50 個。編輯只重驗有變動的部分：只改標籤不會因為資料夾暫時無法解析而被擋。
+- **建立／編輯**：provider 必須支援且不可更改；標籤 1–80 字元、無控制字元，**同 provider 內不可重複**（忽略大小寫與全形）；設定資料夾經既有路徑驗證（絕對路徑、不含 `..` 片段、不在 repo 內、不是 provider 預設資料夾、可解析），且**不可與其他 profile 相同或巢狀**（含經由連結指向同一資料夾）；最多 50 個。保存前會正規化路徑字串；受管啟動環境只會在再次驗證路徑後使用其解析結果。編輯只重驗有變動的部分：只改標籤不會因為資料夾暫時無法解析而被擋。
 - **樂觀並行**：`update(id, changes, { expectedRevision })`，版本不符回 `stale-revision`。
 - **指派**：`assign({ provider, sessionOverride, roleGroupDefault })`：session 的選擇優先於身份組預設；profile 必須存在且與 session 的 provider 相同；沒有任何選擇是 `no-account-assigned`（不猜；空字串與 `null` 都視為「沒有選擇」，改用身份組預設）；過期的覆寫回 `override-profile-missing`，**不會靜默改用預設**。session 啟動時以 `resolveForLaunch(id)` 取得 profile 並把 id 固定在 session（#11 的 `SessionManager`），之後修改 profile 不會改變已存在 session 的帳號。
 - **啟動前閘門**：`resolveForLaunch` **每次**都重驗，而不只在建立／編輯時：該 profile 的資料夾必須仍通過 `validateProfile`（不在 repo 內或包含 repo、不是 provider 預設資料夾、可解析）、與目前所有 profile 都沒有相同或巢狀（資料夾事後被換成指向 repo 或另一個 profile 的連結時，兩邊都拒絕）、存在時必須是目錄（被換成檔案、權限錯誤都拒絕；尚未建立則允許，登入會建立它）。任何問題回 `config-dir-rejected`，附 `problems`（與 `conflictsWith`），**不回傳 profile**。`assign` 也經過同一道閘門，失敗時保留 `source`；因此 `resolveForLaunch`／`assign` 是啟動前的閘門，`get`／`list` 只讀取記錄、不重驗。顯示層（`describeAccounts`）同樣每次重驗。

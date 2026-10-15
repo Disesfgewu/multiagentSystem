@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const { PROVIDERS, validateProfile, findConfigDirConflicts } = require('./profile');
+const { PROVIDERS, validateProfile, findConfigDirConflicts, normalizeProfileConfigDir } = require('./profile');
 const { REF_PATTERN } = require('../storage/secrets');
 
 // AccountProfile records live in the private store's `profiles` collection. A record holds
@@ -145,6 +145,13 @@ class AccountProfileService {
     if (only.path) {
       const validation = validateProfile(candidate, this.context);
       if (!validation.ok) return fail('invalid-config-dir', { problems: validation.problems });
+      try {
+        candidate.configDir = normalizeProfileConfigDir(candidate.configDir, this.context);
+      } catch {
+        return fail('invalid-config-dir', { problems: ['config-dir-unresolvable'] });
+      }
+    } else if (typeof candidate.configDir === 'string' && candidate.configDir.split((this.context.platform || process.platform) === 'win32' ? /[\\/]/ : '/').includes('..')) {
+      return fail('invalid-config-dir', { problems: ['config-dir-unresolvable'] });
     }
     if (only.label) {
       const wanted = labelKey(candidate.label);
@@ -197,10 +204,12 @@ class AccountProfileService {
     if (!validation.ok) problems.push(...validation.problems);
     // A folder that does not exist yet is fine (the login creates it); one that exists must be a directory.
     const isDirectory = this.context.isDirectory || ((target) => fs.statSync(target).isDirectory());
-    try {
-      if (!isDirectory(profile.configDir)) problems.push('config-dir-not-a-directory');
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') problems.push('config-dir-unreadable');
+    if (validation.ok || validation.problems.includes('config-dir-not-directory')) {
+      try {
+        if (!isDirectory(profile.configDir)) problems.push('config-dir-not-a-directory');
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') problems.push('config-dir-unreadable');
+      }
     }
     const conflicts = findConfigDirConflicts(all.profiles, this.context).filter((entry) => entry.a === id || entry.b === id);
     for (const entry of conflicts) problems.push(`config-dir-conflict:${entry.kind}`);
@@ -232,7 +241,7 @@ class AccountProfileService {
       const record = {
         provider,
         label: fields.label,
-        configDir: fields.configDir,
+        configDir: candidate.configDir,
         expectedAuthMethod: fields.expectedAuthMethod,
         secretRef: fields.secretRef,
         revision: 1,
@@ -282,12 +291,14 @@ class AccountProfileService {
       const unchanged = keys.every((key) => next[key] === current[key]);
       if (unchanged) return { rejected: fail('nothing-to-change') };
       const others = tx.list(COLLECTION).filter((item) => item.id !== id).map((item) => ({ id: item.id, ...item.value }));
+      const candidate = { id, provider: current.provider, label: next.label, configDir: next.configDir };
       const rejected = this.#checkAgainstOthers(
-        { id, provider: current.provider, label: next.label, configDir: next.configDir },
+        candidate,
         others,
         { path: next.configDir !== current.configDir, label: next.label !== current.label }
       );
       if (rejected) return { rejected };
+      next.configDir = candidate.configDir;
       next.revision = current.revision + 1;
       next.updatedAt = this.#stamp();
       tx.put(COLLECTION, id, next);

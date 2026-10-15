@@ -69,6 +69,21 @@ function tryCanonicalize(target, p, realpath, isDirectory, lstat) {
   }
 }
 
+function canonicalProfileConfigDir(configDir, context) {
+  const ctx = defaultContext(context);
+  const p = pathFor(ctx.platform);
+  return canonicalize(configDir, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
+}
+
+function normalizeProfileConfigDir(configDir, context) {
+  const ctx = defaultContext(context);
+  const p = pathFor(ctx.platform);
+  if (typeof configDir !== 'string' || configDir.split(ctx.platform === 'win32' ? /[\\/]/ : '/').includes('..')) {
+    throw new PathResolutionError('EDOTDOT');
+  }
+  return p.resolve(configDir);
+}
+
 function existingConfigDirProblem(configDir, ctx) {
   try {
     ctx.lstat(configDir);
@@ -173,9 +188,22 @@ function findEnvKey(env, name, platform) {
 // start instead of silently running under a different account.
 function buildLaunchEnv(profile, baseEnv, context) {
   const ctx = defaultContext(context);
-  const spec = PROVIDERS[profile.provider];
   const env = { ...baseEnv };
   const blockers = [];
+  const spec = profile && PROVIDERS[profile.provider];
+  if (!spec) {
+    return { env, blockers: [{ code: 'config-dir-rejected' }] };
+  }
+  let configDir;
+  try {
+    configDir = canonicalProfileConfigDir(profile.configDir, ctx);
+  } catch (error) {
+    if (!(error instanceof PathResolutionError)) throw error;
+    return { env, blockers: [{ code: 'config-dir-rejected' }] };
+  }
+  if (!validateProfile(profile, ctx).ok) {
+    return { env, blockers: [{ code: 'config-dir-rejected' }] };
+  }
 
   for (const name of spec.credentialOverrideVars) {
     const key = findEnvKey(env, name, ctx.platform);
@@ -186,7 +214,7 @@ function buildLaunchEnv(profile, baseEnv, context) {
 
   const existing = findEnvKey(env, spec.configEnvVar, ctx.platform);
   if (existing !== undefined && existing !== spec.configEnvVar) delete env[existing];
-  env[spec.configEnvVar] = profile.configDir;
+  env[spec.configEnvVar] = configDir;
 
   return { env, blockers };
 }
@@ -196,5 +224,7 @@ module.exports = {
   sameDirectory,
   validateProfile,
   findConfigDirConflicts,
-  buildLaunchEnv
+  buildLaunchEnv,
+  canonicalProfileConfigDir,
+  normalizeProfileConfigDir
 };

@@ -44,14 +44,14 @@ const rewrite = (file, change) => {
 test('a memory that is switched off is kept but never read, and switching it on restores it exactly', (t) => {
   const { store } = setup(t);
   const id = adopt(store);
-  const before = store.list()[0];
+  const before = store.list().items[0];
   assert.deepEqual(store.disable(id), { ok: true });
   assert.deepEqual(read(store).items, []);
-  assert.equal(store.list()[0].status, 'adopted', 'its status did not change');
+  assert.equal(store.list().items[0].status, 'adopted', 'its status did not change');
   assert.deepEqual(store.disable(id), { ok: false, reason: 'already-disabled' });
   assert.deepEqual(store.enable(id), { ok: true });
   assert.deepEqual(read(store).items.map((item) => item.id), [id]);
-  const after = store.list()[0];
+  const after = store.list().items[0];
   assert.deepEqual({ ...after, version: before.version, disabled: undefined }, { ...before, disabled: undefined }, 'only the version moved');
   assert.equal(after.version, before.version + 2);
   assert.deepEqual(store.enable(id), { ok: false, reason: 'not-disabled' });
@@ -73,7 +73,7 @@ test('a memory whose source changed can be read again only after a named person 
   const { store, nowRef } = setup(t);
   const id = adopt(store);
   assert.deepEqual(store.revalidate({ 'docs/RELEASE.md': 'd2' }), [id]);
-  assert.equal(store.list()[0].status, 'stale');
+  assert.equal(store.list().items[0].status, 'stale');
   assert.deepEqual(read(store).items, []);
 
   nowRef.value += 3 * DAY;
@@ -86,7 +86,7 @@ test('a memory whose source changed can be read again only after a named person 
   assert.deepEqual(read(store).items, [], 'nothing was re-adopted by those attempts');
 
   assert.deepEqual(store.reverify(id, human, { digest: 'd2' }), { ok: true });
-  const item = store.list()[0];
+  const item = store.list().items[0];
   assert.deepEqual([item.status, item.source.digest, item.approvedBy], ['adopted', 'd2', { kind: 'human', id: 'reviewer' }]);
   assert.equal(item.verifiedAt, new Date(nowRef.value).toISOString(), 'its time to live starts again from now');
   assert.deepEqual(read(store).items.map((entry) => entry.id), [id]);
@@ -126,8 +126,8 @@ test('deleting a scope needs all three parts and an explicit confirmation, and t
   assert.equal(fs.readFileSync(path.join(store.dir, 'memory.json'), 'utf8'), before, 'nothing was changed by a refused request');
 
   assert.deepEqual(store.removeScope(scope(), { confirm: CONFIRM_DELETE_SCOPE }), { ok: true, removed: 1 });
-  assert.deepEqual(store.list().map((item) => item.id).sort(), [otherDomain, otherRepo, otherRole].sort());
-  assert.equal(store.list().some((item) => item.id === mine), false);
+  assert.deepEqual(store.list().items.map((item) => item.id).sort(), [otherDomain, otherRepo, otherRole].sort());
+  assert.equal(store.list().items.some((item) => item.id === mine), false);
   assert.deepEqual(store.removeScope(scope(), { confirm: CONFIRM_DELETE_SCOPE }), { ok: true, removed: 0 });
 });
 
@@ -155,7 +155,7 @@ test('a rebuild takes out of use what no longer passes today\'s rules, and never
   assert.deepEqual(byId.mem_broken, ['invalid-record']);
   assert.equal(JSON.stringify(result).includes('syntheticsynthetic'), false, 'the report holds codes, never the content');
 
-  const items = Object.fromEntries(store.list().map((item) => [item.id, item]));
+  const items = Object.fromEntries(store.list().items.map((item) => [item.id, item]));
   assert.equal(items[secretish].content, '', 'a value that is now recognised as secret is blanked, not kept');
   assert.deepEqual([items[secretish].status, items.mem_transcript.status, items.mem_broken.status], ['quarantined', 'quarantined', 'quarantined']);
   assert.equal(fs.readFileSync(file, 'utf8').includes('ghp_synthetic'), false, 'and is gone from the file');
@@ -175,7 +175,7 @@ test('a rebuild folds duplicates in one scope into the earliest, and leaves othe
   });
   const result = store.rebuild();
   assert.deepEqual(result.duplicatesRejected, ['mem_later_copy']);
-  const items = Object.fromEntries(store.list().map((item) => [item.id, item]));
+  const items = Object.fromEntries(store.list().items.map((item) => [item.id, item]));
   assert.deepEqual([items.mem_later_copy.status, items.mem_later_copy.duplicateOf], ['rejected', first]);
   assert.equal(items[first].status, 'adopted');
   assert.equal(items[copy].status, 'adopted', 'the same text in another domain is not a duplicate');
@@ -311,7 +311,7 @@ test('the budget is bounded: a larger request is capped and says so, an invalid 
   for (let n = 0; n < 40; n += 1) {
     big.store.propose({ ...scope(), content: `Packaging script release note ${n}: ${'detail '.repeat(60)}`, source: { kind: 'file', ref: `docs/${n}.md`, digest: `d${n}` } });
   }
-  for (const item of big.store.list()) big.store.adopt(item.id, human);
+  for (const item of big.store.list().items) big.store.adopt(item.id, human);
   const result = big.store.select({ ...scope(), task: TASK, budgetChars: 1e9 });
   assert.ok(result.usedChars <= MAX_BUDGET_CHARS, `${result.usedChars} chars`);
   assert.ok(result.omitted.count > 0);
@@ -396,7 +396,7 @@ test('a rebuild never puts anything into use: candidate, stale, switched off and
   store.disable(off);
   store.reject(rejected);
 
-  const status = () => Object.fromEntries(store.list().map((item) => [item.id, [item.status, item.disabled === true]]));
+  const status = () => Object.fromEntries(store.list().items.map((item) => [item.id, [item.status, item.disabled === true]]));
   const before = status();
   assert.deepEqual(before, { [candidate]: ['candidate', false], [stale]: ['stale', false], [off]: ['adopted', true], [rejected]: ['rejected', false], [ready]: ['adopted', false] });
   assert.deepEqual(read(store).items.map((item) => item.id), [ready]);
@@ -472,7 +472,7 @@ test('folding duplicates keeps the copy that can be read, and the earliest among
     });
     return root;
   };
-  const outcomes = (root) => Object.fromEntries(root.store.list().map((item) => [item.id, item.status === 'rejected' ? `rejected(${item.duplicateOf})` : item.status]));
+  const outcomes = (root) => Object.fromEntries(root.store.list().items.map((item) => [item.id, item.status === 'rejected' ? `rejected(${item.duplicateOf})` : item.status]));
   // The earliest is stale and a later one is adopted: the readable one stays.
   let root = seed([{ status: 'stale' }, { status: 'adopted' }]);
   root.store.rebuild();

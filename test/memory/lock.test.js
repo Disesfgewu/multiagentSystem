@@ -46,7 +46,7 @@ test('a lock held by a live process is never taken, however old it is', (t) => {
   assert.deepEqual(store.propose(note()), { ok: false, reason: 'locked', detail: 'owner-alive' });
   assert.equal(store.inspectLock().stale, true, 'it is old, and still not taken');
   assert.equal(JSON.parse(fs.readFileSync(lockPath(s), 'utf8')).token, 'someone-elses-token');
-  assert.deepEqual(store.list(), [], 'nothing was written');
+  assert.deepEqual(store.list().items, [], 'nothing was written');
 });
 
 test('a live holder in another process keeps the lock through the stale age; writes resume when it releases', async (t) => {

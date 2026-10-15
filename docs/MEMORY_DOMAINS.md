@@ -39,7 +39,7 @@
 
 檢索沿用既有的本機基線：Latin 以字詞、CJK 以相鄰兩字（bigram）比對重疊，依分數與 id（以 UTF-16 碼位）排序；沒有新增任何套件。
 
-- **模型與注入入口只能使用 `select()`**：它會強制分區、生命週期與預算規則；scope 缺漏或型別不合法時回傳空結果。`list()` 會列出所有隱私域及所有狀態的內容，只供本機管理畫面使用，不得用於注入或任何送給模型的路徑。
+- **模型與注入入口只能使用 `select()`**：它會強制分區、生命週期與預算規則；scope 缺漏或型別不合法時回傳空結果。`list()` 成功時回 `{ ok: true, items }`，會列出所有隱私域及所有狀態的內容，只供本機管理畫面使用，不得用於注入或任何送給模型的路徑。讀取失敗回 `{ ok: false, reason, items: [] }`，呼叫端必須保留錯誤狀態，不能把它當作「沒有記憶」。
 
 - **預算有上限**：`budgetChars` 預設 2000，**最大 8000**；超過時照上限處理並回報 `budgetClamped: 8000`；無效的值（負數、`NaN`、文字、`null`）改用預設，不會變成無限。這是**字元**預算，是 token 的粗略替代，沒有用分詞器量測，實際 token 數屬 #22 的評測。
 - **被預算省略的會說明，不是默默截斷**：`select` 在有省略時回傳 `omitted: { count, chars, reason: 'budget' }`（沒有省略時沒有這個欄位）；`renderContext`／`planInjection` 接受 `omitted`，在注入文字中加上一行 `(N more reviewed notes were left out to stay within the size limit.)`，讓模型知道清單是不完整的。

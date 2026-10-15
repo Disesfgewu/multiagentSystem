@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService, MAX_PROFILES } = require('../../src/accounts/profile-service');
-const { sandbox, COLLECTIONS } = require('../storage/helpers');
+const { buildLaunchEnv } = require('../../src/accounts/profile');
+const { sandbox, COLLECTIONS, watchRawPathIo } = require('../storage/helpers');
 
 // Real private store and real temporary folders; synthetic data only.
 function setup(t, options = {}) {
@@ -359,6 +360,53 @@ test('resolveForLaunch refuses a folder that was later replaced by a link into t
   assert.equal(result.code, 'config-dir-rejected');
   assert.ok(result.problems.includes('config-dir-inside-repo') || result.problems.includes('config-dir-contains-repo'), JSON.stringify(result.problems));
   assert.equal(result.profile, undefined, 'the profile is not handed out');
+});
+
+test('account create, update and launch reject raw link/.. config paths without storing or using them', (t) => {
+  const s = setup(t);
+  const sub = path.join(s.repoRoot, 'sub');
+  fs.mkdirSync(sub);
+  const link = path.join(s.root, 'repo-sub-link');
+  if (process.platform !== 'win32') {
+    try { fs.symlinkSync(sub, link, 'dir'); } catch (error) { t.skip(`cannot create a directory link here: ${error.code}`); return; }
+  }
+  const raw = `${link}${path.sep}..${path.sep}account-data`;
+  const calls = watchRawPathIo(t, fs);
+
+  const created = s.service.create({ provider: 'claude', label: 'Unsafe', configDir: raw });
+  assert.equal(created.code, 'invalid-config-dir');
+  assert.ok(created.problems.includes('config-dir-unresolvable'));
+  assert.equal(s.service.list().profiles.length, 0);
+
+  const { profile } = claude(s, 'Safe');
+  const moved = s.service.update(profile.id, { configDir: raw });
+  assert.equal(moved.code, 'invalid-config-dir');
+  assert.equal(s.service.get(profile.id).profile.configDir, profile.configDir);
+
+  const record = { ...profile };
+  delete record.id;
+  record.configDir = raw;
+  assert.equal(s.store.put('profiles', profile.id, record).ok, true, 'simulate an older or hand-edited record');
+  const resolved = s.service.resolveForLaunch(profile.id);
+  assert.equal(resolved.code, 'config-dir-rejected');
+  assert.equal(resolved.profile, undefined);
+  const launch = buildLaunchEnv({ ...profile, configDir: raw }, {}, { platform: process.platform, homeDir: os.homedir(), repoRoot: s.repoRoot });
+  assert.deepEqual(launch.blockers, [{ code: 'config-dir-rejected' }]);
+  assert.equal('CLAUDE_CONFIG_DIR' in launch.env, false);
+  assert.deepEqual(calls, [], 'no file operation receives the raw link/.. path');
+  assert.equal(fs.existsSync(path.join(s.repoRoot, 'account-data')), false, 'the repository remains untouched');
+});
+
+test('saved account paths are normalized before persistence', (t) => {
+  const s = setup(t);
+  const target = s.dir('canonical-target');
+  const link = path.join(s.root, 'accounts', 'canonical-link');
+  try { fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { t.skip(`cannot create a directory link here: ${error.code}`); return; }
+  const result = s.service.create({ provider: 'claude', label: 'Canonical', configDir: link });
+  assert.equal(result.ok, true, result.code);
+  assert.equal(result.profile.configDir, path.resolve(link));
+  assert.equal(s.service.get(result.profile.id).profile.configDir, path.resolve(link));
 });
 
 test('resolveForLaunch refuses a folder that was later replaced by a link to another profile\'s folder', (t) => {

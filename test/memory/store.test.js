@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { MemoryStore } = require('../../src/memory/store');
+const { MemoryStore, CONFIRM_DELETE_SCOPE } = require('../../src/memory/store');
+const { DirectoryLock } = require('../../src/shared/lock');
+const { watchRawPathIo } = require('../storage/helpers');
 
 function setup(t, nowRef = { value: Date.parse('2026-01-01T00:00:00Z') }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-memory-'));
@@ -56,7 +58,7 @@ test('secret-shaped content is refused and nothing is written', (t) => {
   assert.equal(result.reason, 'sensitive-content');
   assert.equal(JSON.stringify(result).includes('synthetic'), false);
   assert.equal(fs.existsSync(path.join(dir, 'memory.json')), false);
-  assert.deepEqual(store.list(), []);
+  assert.deepEqual(store.list().items, []);
 });
 
 test('missing scope fields, empty and oversized content are rejected', (t) => {
@@ -94,7 +96,7 @@ test('a changed or missing source marks adopted memory stale and stops retrieval
   store.adopt(id, human);
   assert.deepEqual(store.revalidate({ 'docs/RELEASE.md': 'd1' }), []);
   assert.deepEqual(store.revalidate({ 'docs/RELEASE.md': 'd2' }), [id]);
-  assert.equal(store.list()[0].status, 'stale');
+  assert.equal(store.list().items[0].status, 'stale');
   assert.deepEqual(store.select({ ...scopeA, task: 'release packaging script' }).items, []);
 });
 
@@ -142,13 +144,13 @@ test('data persists across instances, with owner-only permissions where supporte
   const id = store.propose(note()).id;
   store.adopt(id, human);
   const reopened = new MemoryStore({ dir, repoRoot, now: () => nowRef.value });
-  assert.equal(reopened.list()[0].status, 'adopted');
+  assert.equal(reopened.list().items[0].status, 'adopted');
   if (process.platform !== 'win32') {
     assert.equal(fs.statSync(path.join(dir, 'memory.json')).mode & 0o777, 0o600);
   }
   assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
   assert.deepEqual(reopened.remove(id), { ok: true });
-  assert.deepEqual(new MemoryStore({ dir, repoRoot }).list(), []);
+  assert.deepEqual(new MemoryStore({ dir, repoRoot }).list().items, []);
 });
 
 test('two instances opened before either wrote do not lose each other\'s updates', (t) => {
@@ -157,9 +159,9 @@ test('two instances opened before either wrote do not lose each other\'s updates
   const first = store.propose(note({ content: 'First instance records how the release is cut.' }));
   const second = other.propose(note({ content: 'Second instance records where fixtures are kept.' }));
   assert.equal(first.ok && second.ok, true);
-  const contents = store.list().map((item) => item.content).sort();
+  const contents = store.list().items.map((item) => item.content).sort();
   assert.equal(contents.length, 2);
-  assert.deepEqual(other.list().map((item) => item.id).sort(), store.list().map((item) => item.id).sort());
+  assert.deepEqual(other.list().items.map((item) => item.id).sort(), store.list().items.map((item) => item.id).sort());
 });
 
 test('concurrent processes all land their writes', async (t) => {
@@ -173,7 +175,7 @@ test('concurrent processes all land their writes', async (t) => {
   });
   const codes = await Promise.all(['a', 'b', 'c', 'd'].map(run));
   assert.deepEqual(codes, [0, 0, 0, 0], reasons.join('; '));
-  const items = new MemoryStore({ dir, repoRoot }).list();
+  const items = new MemoryStore({ dir, repoRoot }).list().items;
   assert.equal(items.length, 20);
   assert.equal(new Set(items.map((item) => item.id)).size, 20);
   assert.deepEqual(fs.readdirSync(dir).sort(), ['memory.json']);
@@ -197,7 +199,7 @@ test('a corrupt or unsupported file is preserved, reported and never overwritten
     assert.equal(store.adopt('mem_x', human).reason, 'store-unavailable');
     assert.equal(store.remove('x').reason, 'store-unavailable');
     assert.equal(fs.readFileSync(file, 'utf8'), bytes, 'file is byte-for-byte unchanged');
-    assert.deepEqual(store.list(), []);
+    assert.deepEqual(store.list(), { ok: false, reason: status.reason, items: [] });
     assert.equal(store.select({ ...scopeA, task: 'anything' }).unavailable, status.reason);
     assert.equal(fs.existsSync(path.join(dir, 'memory.lock')), false, 'lock is released');
     assert.equal(new MemoryStore({ dir, repoRoot }).status().ok, false);
@@ -229,8 +231,42 @@ test('a directory replaced by a link into the repository after construction is r
   assert.deepEqual(fs.readdirSync(repoRoot), [], 'nothing was written into the repository');
   assert.equal(store.adopt('mem_x', human).reason, 'directory-rejected');
   assert.equal(store.status().reason, 'unsafe-path');
-  assert.deepEqual(store.list(), []);
+  assert.deepEqual(store.list(), { ok: false, reason: 'unsafe-path', items: [] });
   assert.equal(store.select({ ...scopeA, task: 'release packaging' }).unavailable, 'unsafe-path');
+});
+
+test('every memory I/O entry rejects a raw link/.. directory and reports an unavailable list', (t) => {
+  const s = setup(t);
+  assert.equal(s.store.propose(note()).ok, true);
+  const sub = path.join(s.repoRoot, 'sub');
+  fs.mkdirSync(sub);
+  const link = path.join(s.root, 'repo-sub-link');
+  if (process.platform !== 'win32') {
+    try { fs.symlinkSync(sub, link, 'dir'); } catch (error) { t.skip(`cannot create a directory link here: ${error.code}`); return; }
+  }
+  const raw = `${link}${path.sep}..${path.sep}memory-data`;
+  s.store.dir = raw;
+  s.store.file = `${raw}${path.sep}memory.json`;
+  s.store.lock = new DirectoryLock(`${raw}${path.sep}memory.lock`);
+  const rawIo = watchRawPathIo(t, fs);
+  const bad = { ok: false, reason: 'directory-rejected' };
+
+  for (const result of [
+    s.store.propose(note({ content: 'Another private note about release packaging and versioning.' })),
+    s.store.adopt('mem_missing', human), s.store.reject('mem_missing'), s.store.remove('mem_missing'),
+    s.store.revalidate({}), s.store.disable('mem_missing'), s.store.enable('mem_missing'),
+    s.store.reverify('mem_missing', human, { digest: 'd1' }), s.store.removeScope({ ...scopeA }, { confirm: CONFIRM_DELETE_SCOPE }),
+    s.store.rebuild(), s.store.inspectLock(), s.store.recoverLock({ confirm: 'recover-stale-lock' })
+  ]) {
+    assert.equal(result.ok, bad.ok, JSON.stringify(result));
+    assert.equal(result.reason, bad.reason);
+  }
+  assert.equal(s.store.status().reason, 'unsafe-path');
+  assert.deepEqual(s.store.list(), { ok: false, reason: 'unsafe-path', items: [] });
+  assert.equal(s.store.select({ ...scopeA, task: 'release packaging' }).unavailable, 'unsafe-path');
+  assert.deepEqual(s.store.exportMasked(), { ok: false, reason: 'unsafe-path' });
+  assert.deepEqual(rawIo, [], 'no filesystem operation receives the raw path');
+  assert.equal(fs.existsSync(`${s.repoRoot}${path.sep}memory-data`), false, 'the repository remains untouched');
 });
 
 test('a link swapped in above a directory that did not exist yet creates nothing in the repository', (t) => {
