@@ -160,3 +160,80 @@ test('reconciling takes a reader and a store, and says so when they are missing'
   await assert.rejects(() => reconcile({ reader: {}, store: createMemoryLinkStore() }), TypeError);
   await assert.rejects(() => reconcile({ reader: createRemote().reader }), TypeError);
 });
+
+// ---- reconcile reads an answer as strictly as a claim does -------------------
+
+const GOOD_DATA = (change) => ({ state: 'open', labels: ['in-progress'], assignees: ['shared-account'], updatedAt: '2026-10-14T12:00:09.000Z', ...change });
+
+test('an answer reported as ok but missing what is needed never deletes the only local record', async () => {
+  const incomplete = [
+    ['no data', undefined],
+    ['null data', null],
+    ['data is a list', []],
+    ['data is text', 'closed'],
+    ['empty data', {}],
+    ['no state', { labels: ['in-progress'], assignees: [] }],
+    ['unknown state', GOOD_DATA({ state: 'archived' })],
+    ['no labels', { state: 'open', assignees: ['x'] }],
+    ['labels null', GOOD_DATA({ labels: null })],
+    ['labels an object', GOOD_DATA({ labels: {} })],
+    ['labels are objects', GOOD_DATA({ labels: [{ name: 'in-progress' }] })],
+    ['a label that is not text', GOOD_DATA({ labels: ['in-progress', 5] })],
+    ['no assignees', { state: 'open', labels: ['in-progress'] }],
+    ['assignees null', GOOD_DATA({ assignees: null })],
+    ['an assignee that is not text', GOOD_DATA({ assignees: [{}] })]
+  ];
+  for (const [name, data] of incomplete) {
+    const { remote, store } = await claimed();
+    remote.onRead = () => ({ kind: 'ok', data });
+    const after = restart(store);
+    const writes = remote.writes.length;
+    const report = await sync(remote, after);
+    assert.deepEqual([report.results[0].outcome, report.results[0].kind], ['could-not-read', 'incomplete'], name);
+    const [link] = await after.list();
+    assert.ok(link, `${name}: the record is still there`);
+    assert.deepEqual([link.state, link.sync, link.sessionId, link.worktree, link.branch],
+      ['claimed', 'unverified', PRIVATE.sessionId, PRIVATE.worktree, PRIVATE.branch], `${name}: kept, as it was, marked unverified`);
+    assert.equal(remote.writes.length, writes, `${name}: still only reads`);
+  }
+});
+
+test('an intent being resolved is not resolved by an incomplete answer either', async () => {
+  const remote = createRemote({ 7: {} });
+  const store = createMemoryLinkStore();
+  const apply = remote.writer.claim;
+  remote.writer.claim = async (payload) => { await apply(payload); throw new Error('process died after the write'); };
+  assert.equal((await claim(remote, store)).reason, 'outcome-unknown');
+  const after = restart(store);
+  remote.onRead = () => ({ kind: 'ok', data: {} });
+  assert.equal((await sync(remote, after)).results[0].outcome, 'could-not-read');
+  assert.deepEqual((await after.list()).map((link) => link.sync), ['claiming'], 'still an intent: nothing was decided');
+  remote.onRead = null;
+  assert.equal((await sync(remote, after)).results[0].outcome, 'needs-confirmation', 'decided once it can be read');
+});
+
+test('label case does not change what reconcile concludes: a claim shown as In-Progress is a claim, Blocked is a block', async () => {
+  const { remote, store } = await claimed();
+  remote.touch(7, { labels: ['In-Progress'] });
+  const after = restart(store);
+  assert.equal((await sync(remote, after)).results[0].outcome, 'confirmed', 'not "claim-lost"');
+  assert.equal((await after.list()).length, 1);
+
+  // The label alone shows the claim: no assignee, so only the label can say it is still held.
+  remote.touch(7, { labels: ['In-Progress'], assignees: [] });
+  assert.equal((await sync(remote, after)).results[0].outcome, 'confirmed', 'a claim shown by its label alone, in capitals');
+  assert.equal((await after.list()).length, 1);
+
+  remote.touch(7, { labels: ['IN-PROGRESS', 'Blocked'] });
+  assert.equal((await sync(remote, after)).results[0].outcome, 'remote-blocked');
+  assert.equal((await after.list())[0].state, 'blocked');
+
+  // And an intent that finds a claim shown in capitals still waits for a person.
+  const crashed = createRemote({ 7: {} });
+  const intent = createMemoryLinkStore();
+  const apply = crashed.writer.claim;
+  crashed.writer.claim = async (payload) => { await apply(payload); throw new Error('died'); };
+  await claim(crashed, intent);
+  crashed.touch(7, { labels: ['In-Progress'] });
+  assert.equal((await sync(crashed, intent)).results[0].outcome, 'needs-confirmation');
+});

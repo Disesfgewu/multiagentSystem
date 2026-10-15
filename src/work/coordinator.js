@@ -54,28 +54,51 @@ const nowIso = (clock) => new Date(clock()).toISOString();
 // callers cannot both read "free" and both write before either has recorded anything.
 const inFlight = new Set();
 
+// GitHub label names are not case sensitive (a repository cannot hold both `blocked` and
+// `Blocked`), so a name is compared in one folded form everywhere, on both sides. Configured
+// names are already lower case (see labels.js); what GitHub reports may not be.
+const fold = (text) => text.normalize('NFC').toLowerCase();
+
+/**
+ * What an issue says, read once and strictly, for every decision that depends on it. If a piece
+ * the decision needs is missing or of the wrong type the answer is "not ok", never a guess: a
+ * missing label list is not an empty one, and a missing state is not "closed".
+ */
+function readFacts(issue) {
+  if (!issue || typeof issue !== 'object' || Array.isArray(issue)) return { ok: false };
+  if (issue.state !== 'open' && issue.state !== 'closed') return { ok: false };
+  if (!Array.isArray(issue.labels) || !issue.labels.every((name) => typeof name === 'string')) return { ok: false };
+  if (!Array.isArray(issue.assignees) || !issue.assignees.every((login) => typeof login === 'string')) return { ok: false };
+  return {
+    ok: true,
+    open: issue.state === 'open',
+    isPullRequest: issue.isPullRequest === true,
+    labels: new Set(issue.labels.map(fold)),
+    assignees: issue.assignees,
+    updatedAt: issue.updatedAt
+  };
+}
+
 /** Is this issue free to claim? Anything not clearly free is refused with the reason. */
 function assessAvailability(issue, labels) {
-  if (!issue || typeof issue !== 'object') return refuse('cannot-verify');
-  if (issue.state !== 'open') return refuse('closed');
-  if (issue.isPullRequest === true) return refuse('is-pull-request');
-  const names = Array.isArray(issue.labels) ? issue.labels : null;
-  const assignees = Array.isArray(issue.assignees) ? issue.assignees : null;
-  if (names === null || assignees === null) return refuse('cannot-verify');
-  if (names.includes(labels.blocked)) return refuse('blocked');
-  if (names.includes(labels.claimed) || assignees.length > 0) return refuse('already-claimed');
-  if (!names.includes(labels.ready)) return refuse('not-ready');
-  if (typeof issue.updatedAt !== 'string' || Number.isNaN(Date.parse(issue.updatedAt))) return refuse('no-version');
-  return { ok: true, updatedAt: issue.updatedAt };
+  const facts = readFacts(issue);
+  if (!facts.ok) return refuse('cannot-verify');
+  if (!facts.open) return refuse('closed');
+  if (facts.isPullRequest) return refuse('is-pull-request');
+  if (facts.labels.has(fold(labels.blocked))) return refuse('blocked');
+  if (facts.labels.has(fold(labels.claimed)) || facts.assignees.length > 0) return refuse('already-claimed');
+  if (!facts.labels.has(fold(labels.ready))) return refuse('not-ready');
+  if (typeof facts.updatedAt !== 'string' || Number.isNaN(Date.parse(facts.updatedAt))) return refuse('no-version');
+  return { ok: true, updatedAt: facts.updatedAt };
 }
 
 /** After a claim was written: does what the remote now shows look like one claim? */
 function verifyClaim(before, after, labels) {
-  if (!after || after.state !== 'open' || after.isPullRequest === true) return false;
-  if (!Array.isArray(after.labels) || !Array.isArray(after.assignees)) return false;
-  if (!after.labels.includes(labels.claimed) || after.labels.includes(labels.blocked)) return false;
-  if (after.assignees.length > 1) return false;
-  if (typeof after.updatedAt !== 'string' || Date.parse(after.updatedAt) < Date.parse(before.updatedAt)) return false;
+  const facts = readFacts(after);
+  if (!facts.ok || !facts.open || facts.isPullRequest) return false;
+  if (!facts.labels.has(fold(labels.claimed)) || facts.labels.has(fold(labels.blocked))) return false;
+  if (facts.assignees.length > 1) return false;
+  if (typeof facts.updatedAt !== 'string' || Date.parse(facts.updatedAt) < Date.parse(before.updatedAt)) return false;
   return true;
 }
 
@@ -216,13 +239,21 @@ async function reconcile({ reader, store, labels: labelOptions, repo, now, signa
       continue;
     }
 
-    const issue = read.data;
-    const names = Array.isArray(issue.labels) ? issue.labels : [];
-    const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
-    const remoteClaimed = names.includes(labels.claimed) || assignees.length > 0;
+    // The same strict reading as for a claim: an answer that is missing what the decision needs is
+    // "could not read", and the only local record of the claim is kept. It is never taken to mean
+    // "closed" or "handed back".
+    const facts = readFacts(read.data);
+    if (!facts.ok) {
+      await store.save({ ...link, sync: link.sync === 'claiming' ? 'claiming' : 'unverified' });
+      results.push({ ...entry, outcome: 'could-not-read', kind: 'incomplete' });
+      continue;
+    }
+    const names = facts.labels;
+    const assignees = facts.assignees;
+    const remoteClaimed = names.has(fold(labels.claimed)) || assignees.length > 0;
     const stamp = nowIso(clock);
 
-    if (issue.state !== 'open') {
+    if (!facts.open) {
       await store.remove(where, link.issueNumber);
       results.push({ ...entry, outcome: 'closed-remotely' });
     } else if (assignees.length > 1) {
@@ -241,7 +272,7 @@ async function reconcile({ reader, store, labels: labelOptions, repo, now, signa
       // The remote no longer shows a claim (released, or handed back to the PM).
       await store.remove(where, link.issueNumber);
       results.push({ ...entry, outcome: 'claim-lost' });
-    } else if (names.includes(labels.blocked) && link.state !== 'blocked') {
+    } else if (names.has(fold(labels.blocked)) && link.state !== 'blocked') {
       const moved = transition(link, 'block', { role: 'pm' });
       await store.save({ ...link, state: moved.ok ? moved.state : link.state, sync: 'confirmed', lastSyncedAt: stamp });
       results.push({ ...entry, outcome: 'remote-blocked' });

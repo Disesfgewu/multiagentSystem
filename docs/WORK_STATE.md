@@ -41,7 +41,7 @@
 
 1. 角色只有 worker 或 PM；不符時**連 Issue 都不讀**。
 2. 先查本機：同一個 issue 已有記錄（`already-claimed-locally`，或未決的 `needs-reconcile`）、同一個 session 已有別的 issue（`session-busy`，一個 agent 一個當前 issue）。同一行程內同時進行的兩個領取只放行一個（`claim-in-progress`）。
-3. **重讀遠端**（強制重新整理）。issue 必須明確是自由的：開啟、不是 PR、沒有 `blocked` 與 `in-progress` 標籤、沒有 assignee、有 `ready` 標籤、有可比對的版本（`updatedAt`）。**讀不到（找不到、無權限、限流、暫時失敗、離線、無效）、回應不完整、欄位缺漏都不當成可領取**。
+3. **重讀遠端**（強制重新整理）。issue 必須明確是自由的：開啟、不是 PR、沒有 `blocked` 與 `in-progress` 標籤、沒有 assignee、有 `ready` 標籤、有可比對的版本（`updatedAt`）。**讀不到（找不到、無權限、限流、暫時失敗、離線、無效）、回應不完整、欄位缺漏都不當成可領取**。「不完整」的條件在領取與重啟恢復中**完全相同**（一份共用的讀取）：`state` 不是 `open`／`closed`，或 `labels`、`assignees` 不是字串陣列。標籤名稱以**不分大小寫**的同一個正規化比對（GitHub 的標籤不分大小寫，`Blocked`、`In-Progress`、`READY` 與小寫相同）。
 4. 寫入前先記下「意圖」（`sync: claiming`），再呼叫 writer，帶上讀到的版本；writer 必須在 issue 已變更時回 `conflict`。
 5. `conflict`：撤回意圖、**重新讀取再決定**（已被別人領取就拒絕），最多重試 `maxSyncRetries` 次（預設 2），用完回 `conflict` 與 `syncRequired: true`，**絕不無限重試**。
 6. 結果**未知**（逾時、斷線、writer 丟出例外）：**不重試**，意圖留在記錄中（`outcome-unknown`），由 `reconcile` 查明。
@@ -62,11 +62,14 @@
 | 已確認 | 被設為 blocked | `remote-blocked`：記錄轉為 `blocked` |
 | 任何 | issue 已關閉 | `closed-remotely`：移除記錄 |
 | 任何 | 多於一個 assignee | `conflict-detected`：標記衝突，**不會因為再看一次而自動解除** |
-| 任何 | 讀不到 | `could-not-read`：保留記錄並標為 `unverified`，什麼都不假設 |
+| 任何 | 讀不到，或回報 ok 但缺少判斷所需的欄位 | `could-not-read`：保留記錄並標為 `unverified`（意圖維持 `claiming`），什麼都不假設；**缺漏的欄位不會被補成空值**，所以不會被當成「已關閉」或「已被交還」而刪掉唯一的本機對應 |
 
 `advance` 推進狀態：用狀態機檢查，狀態改變會改變對外的中性標籤時**先寫遠端、成功後才改本機**，所以不會出現本機說「已釋放」而 GitHub 仍顯示「已領取」；寫入被拒絕，本機維持原狀；結果未知，記錄標為 `unverified`。只有持有該 issue 的 worker 能推進它（`not-owner`）；記錄不是 `confirmed` 時，只有 PM 或人工能用 `release`／`close` 處理。
 
 ## 5. 未驗證與限制（不宣稱通過）
+
+- **角色只是呼叫端傳入的參數，這個核心不驗證「呼叫者真的是 worker 或 PM」。** 事件表限制了某個角色能做什麼，但沒有任何機制確認傳進來的 `role` 是真的；要強制必須靠 #14（身份組與工具權限）與 #24（broker 只對對的身份放行寫入）。不要把這裡的「角色不符就拒絕」讀成已經強制。
+- **同一個 GitHub 帳號重新領取偵測不到。** 本機記錄為 `confirmed` 的領取，如果在遠端被交還後，又被**別的客戶端以同一個 GitHub 帳號**重新領取，而兩次 `reconcile` 之間沒有觀察到釋放，本機仍會顯示 `confirmed`（遠端的標籤與 assignee 看起來完全一樣）。這是同帳號固有的限制，不是這個核心能解決的，屬於 #4 的未驗證範圍。
 
 - **跨客戶端互斥沒有被證明。** 這個核心用版本檢查與寫入後讀取來偵測**看得見**的衝突並停止分派；兩個客戶端若同時寫入同樣的標籤與 assignee，從 GitHub 看不出差別，**偵測不到**。真實 GitHub 上的雙客戶端領取競態（#4）**未驗證**，不得宣稱已防住。writer（#24 的 broker）必須提供「issue 自讀取後已變更就拒絕」的語意；本模組只依賴它，沒有驗證任何真實 writer。
 - 沒有任何對 GitHub 的寫入實作，也沒有持久化的 `store`（只有記憶體實作）；真實儲存與 `sessions` 之外是否新增集合，留給整合時決定。

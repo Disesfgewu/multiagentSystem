@@ -305,3 +305,68 @@ test('a programming mistake is an exception; anything that can happen is a resul
   }
   assert.equal(remote.reads.length, 0);
 });
+
+// ---- label names are compared without regard to case ------------------------
+
+test('GitHub does not distinguish label case, so neither does the decision: Blocked, In-Progress and READY', async () => {
+  const refusals = [
+    ['Blocked', { labels: ['ready', 'Blocked'] }, 'blocked'],
+    ['BLOCKED', { labels: ['READY', 'BLOCKED'] }, 'blocked'],
+    ['In-Progress', { labels: ['ready', 'In-Progress'] }, 'already-claimed'],
+    ['IN-PROGRESS only', { labels: ['IN-PROGRESS'] }, 'already-claimed'],
+    ['Ready is the only label but with a claim', { labels: ['Ready', 'in-PROGRESS'] }, 'already-claimed']
+  ];
+  for (const [name, change, reason] of refusals) {
+    const { remote, store } = fresh({ 7: change });
+    const result = await claim(remote, store);
+    assert.deepEqual([result.ok, result.reason], [false, reason], name);
+    assert.equal(remote.writes.length, 0, `${name}: no write`);
+  }
+  for (const spelling of ['READY', 'Ready', 'rEaDy']) {
+    const { remote, store } = fresh({ 7: { labels: [spelling] } });
+    const result = await claim(remote, store);
+    assert.equal(result.ok, true, `${spelling} is the ready label`);
+  }
+  // The configured names are folded too, so a repository can write them as it likes in its own docs.
+  const { remote, store } = fresh({ 7: { labels: ['Ready'] } });
+  assert.equal((await claim(remote, store, { labels: { ready: 'ready', claimed: 'doing', blocked: 'stuck' } })).ok, true);
+});
+
+test('what is read back after a write is judged the same way: a claim shown as In-Progress is a claim', async () => {
+  const before = issue();
+  const after = (change) => issue({ labels: ['In-Progress'], assignees: ['x'], updatedAt: '2026-10-14T12:00:05.000Z', ...change });
+  assert.equal(verifyClaim(before, after(), DEFAULT_LABELS), true);
+  assert.equal(verifyClaim(before, after({ labels: ['IN-PROGRESS', 'Blocked'] }), DEFAULT_LABELS), false, 'and a block shown in capitals is still a block');
+  assert.equal(verifyClaim(before, after({ labels: ['ready'] }), DEFAULT_LABELS), false);
+});
+
+// ---- an answer that is missing what the decision needs is not read ----------
+
+test('an answer reported as ok but missing what is needed is not a free issue, and the reason is that it could not be verified', async () => {
+  const incomplete = [
+    ['no data', undefined],
+    ['null data', null],
+    ['data is a list', []],
+    ['data is a string', 'open'],
+    ['empty data', {}],
+    ['no state', { labels: ['ready'], assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['unknown state', { state: 'merged', labels: ['ready'], assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['upper-case state', { state: 'OPEN', labels: ['ready'], assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['no labels', { state: 'open', assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['labels null', { state: 'open', labels: null, assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['labels an object', { state: 'open', labels: { ready: true }, assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['labels are objects', { state: 'open', labels: [{ name: 'ready' }], assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['a label that is not text', { state: 'open', labels: ['ready', 7], assignees: [], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['no assignees', { state: 'open', labels: ['ready'], updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['assignees null', { state: 'open', labels: ['ready'], assignees: null, updatedAt: '2026-10-14T12:00:00.000Z' }],
+    ['an assignee that is not text', { state: 'open', labels: ['ready'], assignees: [null], updatedAt: '2026-10-14T12:00:00.000Z' }]
+  ];
+  for (const [name, data] of incomplete) {
+    const { remote, store } = fresh();
+    remote.onRead = () => ({ kind: 'ok', data });
+    const result = await claim(remote, store);
+    assert.deepEqual([result.ok, result.reason], [false, 'cannot-verify'], name);
+    assert.equal(remote.writes.length, 0, `${name}: no write`);
+    assert.deepEqual(await store.list(), [], `${name}: nothing recorded`);
+  }
+});
