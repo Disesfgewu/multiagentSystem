@@ -1,0 +1,43 @@
+name: Session observation
+
+on:
+  pull_request:
+    paths:
+      - src/observations/**
+      - src/accounts/observation.js
+      - test/observations/**
+      - test/accounts/observation.test.js
+      - .github/workflows/session-observation.yml
+  push:
+    branches: [main]
+    paths:
+      - src/observations/**
+      - src/accounts/observation.js
+      - test/observations/**
+      - test/accounts/observation.test.js
+      - .github/workflows/session-observation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  session-observation:
+    name: session observation (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        node: ['20', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --check src/observations/session.js
+      - run: node --check src/observations/claude.js
+      - run: node --test test/observations/*.test.js test/accounts/observation.test.js
+        shell: bash
