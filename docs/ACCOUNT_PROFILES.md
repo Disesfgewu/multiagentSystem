@@ -48,3 +48,16 @@
 - **真實驗證**：真實 CLI 的 `claude auth status`／Codex `account/read`、兩個真實帳號並行與額度來源、Windows 實機與 ACL，仍屬 #3 的未驗證項目。本 PR 只用合成資料，**不得視為已驗證**。
 - **身份組預設**：`roleGroupDefault` 由呼叫端傳入，來源屬 #14。
 - 未實作受管啟動的阻擋（`buildLaunchEnv` 的 blockers 在啟動流程接上之前不會阻擋任何東西）。
+
+## 登入後的身份檢查（`Check Account Sign-in`）
+
+`src/accounts/identity-check.js` 在使用者完成登入後，以**該帳號設定資料夾的環境**執行 provider 自己的狀態命令，並把結果還原成帳號畫面已經理解的觀測（8 碼不可逆指紋、登入方式、健康、可選的方案）。
+
+- 只有 Claude Code 有檢查：`claude auth status --json`（命令固定，不由設定、標籤或工作區決定；可執行檔名取自 provider 登錄）。Codex 的檢查需要 app-server 協定工作階段，agy 沒有已驗證的檢查，兩者目前一律回「未知：此 provider 尚無檢查」，不猜測。
+- 以 `execFile` 的參數陣列執行（不經 shell）、10 秒逾時、輸出上限 64 KB；環境以 `launchEnvironment` 為準（設定資料夾套用、繼承的憑證覆蓋變數移除）。只解析 stdout 的 JSON；stderr 不讀入任何值。
+- **原始輸出（含 email）不被保留、顯示、記錄或放進錯誤訊息。** 結果只含指紋、登入方式、方案（僅在 CLI 回報、且是簡短單純文字時）、異常旗標、檢查時間與來源。
+- 任何失敗（找不到 CLI、逾時、輸出過大、非 JSON、欄位不符、非零結束碼、設定資料夾不再通過檢查）都是「未知」加原因與白話說明，不會顯示 ready。
+- 登入 terminal 關閉時自動檢查一次，也可按「我已完成登入，立即檢查」或用 `Check Account Sign-in`；確認身分後提供「以此帳號啟動 session」。
+- 結果只存在這個視窗的記憶體中；重新載入視窗後需再檢查。
+- 訂閱方案欄位名稱（`subscriptionType`）沿用既有解析器，**未對真實 CLI 輸出驗證**；CLI 沒回報就顯示「未知」。
+- 限制：Windows 上若 CLI 是 `.cmd` 轉接檔，`execFile` 找不到它，會顯示「找不到 CLI」；未在原生 Windows 實機驗證。

@@ -151,6 +151,30 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.equal(started.ok, true);
   assert.equal(started.session?.accountProfileId, created.profile.id);
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
+
+  // The sign-in check with no CLI available: the identity stays unknown, with a reason, and nothing is shown as ready.
+  const emptyPath = fs.mkdtempSync(path.join(path.dirname(workspace), 'multiagent-empty-path-'));
+  const savedPath = process.env.PATH;
+  process.env.PATH = emptyPath;
+  try {
+    const checked = await vscode.commands.executeCommand<{ ok: boolean; state: string; reason: string; identity: unknown }>(ACCOUNT_COMMANDS.check, { id: created.profile.id, interactive: false });
+    assert.deepEqual([checked.ok, checked.state, checked.reason, checked.identity], [false, 'unknown', 'cli-not-found', null]);
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(emptyPath, { recursive: true, force: true });
+  }
+  const afterCheck = (await accountTreeForTests().getChildren()) ?? [];
+  const checkedItem = afterCheck.find((entry) => entry.label === 'Host Work Account');
+  assert.match(String(checkedItem?.description ?? ''), /identity unknown/);
+  assert.doesNotMatch(String(checkedItem?.description ?? ''), /ready/);
+  assert.match(String(checkedItem?.tooltip ?? ''), /could not confirm the sign-in/);
+  await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
+  const detailText = vscode.window.activeTextEditor?.document.getText() ?? '';
+  assert.match(detailText, /Subscription plan: unknown/);
+  assert.match(detailText, /Last check .* could not confirm the sign-in/);
+  assert.match(detailText, /Configuration folder: passes the safety checks/);
+  assert.doesNotMatch(detailText, /@/, 'no email-like text in the details');
+  assert.equal(detailText.includes(accountDir), false, 'the details do not show the full folder path');
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
