@@ -26,7 +26,7 @@
 
 - **刪除**：`remove(id)`（既有）；新增 `removeScope(scope, { confirm: 'delete-memory-scope' })`：要**三個部分都給**（不能是萬用字元）加上明確確認，只刪那個範圍；被拒絕的請求不改動檔案。
 - **停用／啟用**：`disable(id)`／`enable(id)`。停用的記憶保留但不被讀取，啟用後原樣恢復（只有版本號增加）；停用與採納互不影響。
-- **重建**：`rebuild()` 以**今天的規則**重新檢查所有儲存的記憶，例如敏感內容的樣式變寬之後。不再通過的被**隔離**：內容清空、狀態 `quarantined`、永不讀取（理由只記代碼，例如 `sensitive:github-token`、`transcript-like`、`invalid-record`、`too-short`、`invalid-length`）；同一範圍內的重複折成最早的一筆（其餘 `rejected`，記下 `duplicateOf`）；不是記錄的項目被丟棄。**重建只會把記憶移出使用，絕不會讓任何記憶進入使用**；沒有發現問題時不寫檔。
+- **重建**：`rebuild()` 以**今天的規則**重新檢查所有儲存的記憶，例如敏感內容的樣式變寬之後。不再通過的被**隔離**：內容清空、狀態 `quarantined`、永不讀取（理由只記代碼，例如 `sensitive:github-token`、`transcript-like`、`invalid-record`、`too-short`、`invalid-length`）；同一範圍內的重複優先保留目前可讀的一筆，同狀態時保留最早建立者（其餘 `rejected`，記下 `duplicateOf`），避免較早但停用或待複核的副本讓整則記憶變得不可讀；不是記錄的項目被丟棄。**重建不會改變保留項目的狀態，也不會讓原本不可讀的記憶進入使用**；沒有發現問題時不寫檔。
 - **遮罩匯出**：`exportMasked()` 給診斷用，不是備份：依狀態（`ready`／`candidate`／`stale`／`expired`／`disabled`／`rejected`／`quarantined`）與範圍的**計數**，範圍只以固定順序的別名（`scope#1`…）表示。**沒有內容、id、來源、也沒有 repo／身份組／域的名稱**；相同資料不論寫入順序，輸出相同。
 
 ## 4. 寫入什麼
@@ -38,6 +38,8 @@
 ## 5. 檢索與預算
 
 檢索沿用既有的本機基線：Latin 以字詞、CJK 以相鄰兩字（bigram）比對重疊，依分數與 id（以 UTF-16 碼位）排序；沒有新增任何套件。
+
+- **模型與注入入口只能使用 `select()`**：它會強制分區、生命週期與預算規則；scope 缺漏或型別不合法時回傳空結果。`list()` 會列出所有隱私域及所有狀態的內容，只供本機管理畫面使用，不得用於注入或任何送給模型的路徑。
 
 - **預算有上限**：`budgetChars` 預設 2000，**最大 8000**；超過時照上限處理並回報 `budgetClamped: 8000`；無效的值（負數、`NaN`、文字、`null`）改用預設，不會變成無限。這是**字元**預算，是 token 的粗略替代，沒有用分詞器量測，實際 token 數屬 #22 的評測。
 - **被預算省略的會說明，不是默默截斷**：`select` 在有省略時回傳 `omitted: { count, chars, reason: 'budget' }`（沒有省略時沒有這個欄位）；`renderContext`／`planInjection` 接受 `omitted`，在注入文字中加上一行 `(N more reviewed notes were left out to stay within the size limit.)`，讓模型知道清單是不完整的。

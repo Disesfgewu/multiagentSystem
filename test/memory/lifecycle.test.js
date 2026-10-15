@@ -379,3 +379,137 @@ test('a memory is a short note: text shaped like a conversation is refused, and 
   for (const text of fine) assert.equal(looksLikeTranscript(text), false, text.slice(0, 30));
   assert.equal(store.propose({ ...scope(), content: fine[1], source: { ref: 'docs/R.md' } }).ok, true, 'two labelled lines are a note, not a conversation');
 });
+
+// ---- follow-ups from the review of the privacy-domain PR --------------------
+
+test('a rebuild never puts anything into use: candidate, stale, switched off and rejected all stay unreadable', (t) => {
+  const { store } = setup(t);
+  const base = { source: { kind: 'file', digest: 'd' } };
+  const make = (n, text) => store.propose({ ...scope(), ...base, content: `${text} note number ${n} about the packaging script and release.`, source: { kind: 'file', ref: `docs/${n}.md`, digest: `d${n}` } });
+  const candidate = make(1, 'Candidate').id;
+  const stale = make(2, 'Stale').id;
+  const off = make(3, 'Switched off').id;
+  const rejected = make(4, 'Rejected').id;
+  const ready = make(5, 'Ready').id;
+  for (const id of [stale, off, ready]) assert.equal(store.adopt(id, human).ok, true);
+  store.revalidate({ 'docs/1.md': 'd1', 'docs/2.md': 'changed', 'docs/3.md': 'd3', 'docs/4.md': 'd4', 'docs/5.md': 'd5' });
+  store.disable(off);
+  store.reject(rejected);
+
+  const status = () => Object.fromEntries(store.list().map((item) => [item.id, [item.status, item.disabled === true]]));
+  const before = status();
+  assert.deepEqual(before, { [candidate]: ['candidate', false], [stale]: ['stale', false], [off]: ['adopted', true], [rejected]: ['rejected', false], [ready]: ['adopted', false] });
+  assert.deepEqual(read(store).items.map((item) => item.id), [ready]);
+
+  assert.equal(store.rebuild().ok, true);
+  assert.deepEqual(status(), before, 'no state moved towards use');
+  assert.deepEqual(read(store, { budgetChars: 8000 }).items.map((item) => item.id), [ready], 'and only the ready one is read');
+});
+
+test('a scope that was not given or is not valid reads nothing, even where a record with a missing field would match', (t) => {
+  const { store, file } = setup(t);
+  const id = adopt(store);
+  // Records as a hand-edited or damaged file could hold them: one is missing its repository, one its
+  // role group, one both. Each would match a request that leaves the same field out.
+  rewrite(file, (data) => {
+    const original = data.items.find((item) => item.id === id);
+    const variant = (name, drop) => {
+      const copy = { ...original, id: name, content: `A note for the packaging script and release builds, record ${name}.` };
+      for (const field of drop) delete copy[field];
+      data.items.push(copy);
+    };
+    variant('mem_no_repo', ['repoId']);
+    variant('mem_no_role', ['roleGroupId']);
+    variant('mem_no_scope', ['repoId', 'roleGroupId']);
+  });
+  const empty = { items: [], usedChars: 0, truncated: false, unavailable: null };
+  for (const bad of [
+    {}, null, '', [], { repoId: undefined },
+    { ...scope(), repoId: undefined },
+    { ...scope(), roleGroupId: undefined },
+    { ...scope(), repoId: undefined, roleGroupId: undefined },
+    { ...scope(), privacyDomain: undefined },
+    { ...scope(), repoId: '' }, { ...scope(), roleGroupId: 'a\nb' }, { ...scope(), privacyDomain: 'Bad Domain' },
+    { ...scope(), repoId: 7 }, { ...scope(), roleGroupId: null }
+  ]) {
+    assert.deepEqual(store.select({ ...bad, task: TASK }), empty, JSON.stringify(bad));
+  }
+  assert.deepEqual(store.select(), empty, 'no argument at all');
+  assert.deepEqual(read(store).items.map((item) => item.id), [id], 'a valid scope reads only the record that has that scope');
+  // The reason the store cannot be read is still reported for an invalid scope.
+  fs.writeFileSync(file, '{ truncated');
+  assert.equal(store.select({ task: TASK }).unavailable, 'corrupt');
+});
+
+test('a switch that is not exactly true or false counts as switched off, and enable puts it right', (t) => {
+  const { store, file } = setup(t);
+  const id = adopt(store);
+  for (const odd of ['true', 'false', null, 1, 0, {}, [], 'yes']) {
+    rewrite(file, (data) => { data.items.find((item) => item.id === id).disabled = odd; });
+    assert.deepEqual(read(store).items, [], `disabled: ${JSON.stringify(odd)}`);
+    assert.equal(store.exportMasked().export.totals.disabled, 1, `counted as switched off: ${JSON.stringify(odd)}`);
+    assert.deepEqual(store.disable(id), { ok: false, reason: 'already-disabled' });
+    assert.deepEqual(store.enable(id), { ok: true }, 'and a person can switch it on properly');
+    assert.deepEqual(read(store).items.map((item) => item.id), [id]);
+  }
+  rewrite(file, (data) => { delete data.items.find((item) => item.id === id).disabled; });
+  assert.equal(read(store).items.length, 1, 'absent means on');
+  rewrite(file, (data) => { data.items.find((item) => item.id === id).disabled = false; });
+  assert.equal(read(store).items.length, 1, 'false means on');
+});
+
+test('folding duplicates keeps the copy that can be read, and the earliest among equals', (t) => {
+  const { nowRef } = setup(t);
+  const text = 'The release is built with the packaging script from the scripts directory.';
+  // The copies are written to the file directly, as an older store could have written them.
+  const seed = (copies) => {
+    const root = setup(t, nowRef);
+    const id = (() => { const proposed = root.store.propose({ ...scope(), content: text, source: { kind: 'file', ref: 'docs/R.md', digest: 'd1' } }); root.store.adopt(proposed.id, human); return proposed.id; })();
+    rewrite(root.file, (data) => {
+      const original = data.items.find((item) => item.id === id);
+      data.items.length = 0;
+      copies.forEach((copy, index) => data.items.push({ ...original, id: `mem_copy_${index}`, createdAt: `2026-01-0${index + 1}T00:00:00.000Z`, ...copy }));
+    });
+    return root;
+  };
+  const outcomes = (root) => Object.fromEntries(root.store.list().map((item) => [item.id, item.status === 'rejected' ? `rejected(${item.duplicateOf})` : item.status]));
+  // The earliest is stale and a later one is adopted: the readable one stays.
+  let root = seed([{ status: 'stale' }, { status: 'adopted' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'rejected(mem_copy_1)', mem_copy_1: 'adopted' });
+  assert.equal(read(root.store).items.length, 1, 'the note is still readable as a whole');
+
+  // The earliest is switched off, a later one is on.
+  root = seed([{ status: 'adopted', disabled: true }, { status: 'adopted' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'rejected(mem_copy_1)', mem_copy_1: 'adopted' });
+
+  // The earliest is a candidate that nobody adopted, a later one is adopted.
+  root = seed([{ status: 'candidate', verifiedAt: null }, { status: 'adopted' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'rejected(mem_copy_1)', mem_copy_1: 'adopted' });
+
+  // Both can be read: the earliest stays.
+  root = seed([{ status: 'adopted' }, { status: 'adopted' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'adopted', mem_copy_1: 'rejected(mem_copy_0)' });
+
+  // None can be read: the one closest to use stays (switched off, then stale, then a candidate),
+  // and nothing becomes readable by it.
+  root = seed([{ status: 'stale' }, { status: 'candidate', verifiedAt: null }, { status: 'adopted', disabled: true }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'rejected(mem_copy_2)', mem_copy_1: 'rejected(mem_copy_2)', mem_copy_2: 'adopted' });
+  assert.deepEqual(read(root.store).items, [], 'it is still switched off');
+  assert.equal(root.store.enable('mem_copy_2').ok, true, 'and a person can switch it on');
+  assert.equal(read(root.store).items.length, 1);
+
+  // Equal in rank: the earliest stays.
+  root = seed([{ status: 'stale' }, { status: 'stale' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'stale', mem_copy_1: 'rejected(mem_copy_0)' });
+
+  // Another scope is never a duplicate.
+  root = seed([{ status: 'adopted' }, { status: 'adopted', privacyDomain: 'domain-2' }]);
+  root.store.rebuild();
+  assert.deepEqual(outcomes(root), { mem_copy_0: 'adopted', mem_copy_1: 'adopted' });
+});

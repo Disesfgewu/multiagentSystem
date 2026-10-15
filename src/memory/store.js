@@ -60,14 +60,19 @@ const isExpired = (item, now) => {
   return !(Date.parse(item.verifiedAt) + item.ttlMs >= now);
 };
 
+// "Switched on" is the one case where the flag is absent or exactly false. Anything else, such as
+// the text "true" or null in a file that was edited by hand, counts as switched off: a value that
+// is not understood must not open a door.
+const isSwitchedOn = (item) => item.disabled === undefined || item.disabled === false;
+
 // What may be read: adopted, switched on, and inside its time to live.
-const isReadable = (item, now) => item.status === 'adopted' && item.disabled !== true && !isExpired(item, now);
+const isReadable = (item, now) => item.status === 'adopted' && isSwitchedOn(item) && !isExpired(item, now);
 
 // The state an item is in for a person looking at counts: the first that applies.
 function effectiveState(item, now) {
   if (item.status === 'quarantined') return 'quarantined';
   if (item.status === 'rejected') return 'rejected';
-  if (item.disabled === true) return 'disabled';
+  if (!isSwitchedOn(item)) return 'disabled';
   if (item.status === 'candidate') return 'candidate';
   if (item.status === 'stale') return 'stale';
   return isExpired(item, now) ? 'expired' : 'ready';
@@ -366,9 +371,18 @@ class MemoryStore {
   // other scopes hold anything. An unreadable store yields nothing and says why, so the caller
   // can tell "no memory" from "no access". Only adopted, switched-on, unexpired memory is read.
   // What the budget leaves out is reported (`omitted`), not silently dropped.
-  select({ repoId, roleGroupId, privacyDomain, task, budgetChars }) {
+  select(request = {}) {
+    const { repoId, roleGroupId, privacyDomain, task, budgetChars } = request && typeof request === 'object' && !Array.isArray(request)
+      ? request
+      : {};
     const current = this.#read();
     const unavailable = current.state === 'ok' ? null : current.state;
+    // The scope that is asked for is checked like the scope that is written. A caller whose
+    // repository detection failed passes `undefined`, and must get nothing, not whatever a
+    // record with a missing field would match.
+    if (!scopeText(repoId) || !scopeText(roleGroupId) || !validDomain(privacyDomain)) {
+      return { items: [], usedChars: 0, truncated: false, unavailable };
+    }
     const wanted = tokens(task || '');
     const now = this.now();
     const readable = this.#readableDomains(privacyDomain);
@@ -415,7 +429,7 @@ class MemoryStore {
     return this.#mutate((items) => {
       const item = items.find((entry) => entry.id === id);
       if (!item) return { changed: false, result: { ok: false, reason: 'not-found' } };
-      if (item.disabled === true) return { changed: false, result: { ok: false, reason: 'already-disabled' } };
+      if (!isSwitchedOn(item)) return { changed: false, result: { ok: false, reason: 'already-disabled' } };
       item.disabled = true;
       item.version += 1;
       return { changed: true, result: { ok: true } };
@@ -426,7 +440,7 @@ class MemoryStore {
     return this.#mutate((items) => {
       const item = items.find((entry) => entry.id === id);
       if (!item) return { changed: false, result: { ok: false, reason: 'not-found' } };
-      if (item.disabled !== true) return { changed: false, result: { ok: false, reason: 'not-disabled' } };
+      if (isSwitchedOn(item)) return { changed: false, result: { ok: false, reason: 'not-disabled' } };
       item.disabled = false;
       item.version += 1;
       return { changed: true, result: { ok: true } };
@@ -511,8 +525,18 @@ class MemoryStore {
         if (reasons.length > 0) quarantine(item, reasons);
       }
 
+      // Of several copies the one that can be read is kept, so folding duplicates never makes a note
+      // unreadable as a whole; among equals the earliest is kept. Folding only ever rejects copies,
+      // so it cannot put anything into use that was not in use already.
+      const now = this.now();
+      const rank = (item) => {
+        if (isReadable(item, now)) return 0;
+        if (item.status === 'adopted') return 1;   // switched off or expired
+        if (item.status === 'stale') return 2;
+        return 3;                                   // candidate
+      };
       const ordered = items.filter((item) => item.status !== 'quarantined' && item.status !== 'rejected')
-        .sort((a, b) => byCodeUnit(String(a.createdAt), String(b.createdAt)) || byCodeUnit(a.id, b.id));
+        .sort((a, b) => rank(a) - rank(b) || byCodeUnit(String(a.createdAt), String(b.createdAt)) || byCodeUnit(a.id, b.id));
       const seen = new Map();
       for (const item of ordered) {
         const key = JSON.stringify([item.repoId, item.roleGroupId, item.privacyDomain, normalize(item.content)]);
