@@ -83,11 +83,15 @@ test('executables are bare names: no path, shell character, whitespace or contro
   assert.equal(codeOf(() => describeProvider(valid({ executable: 'tool.exe' }))), null);
 });
 
-test('arguments are a short list of plain tokens', () => {
-  for (const args of ['x', {}, null, [1], [''], ['a b'], ['a;b'], ['a\nb'], ['$(x)'], ['`x`'], ['a|b'], ["a'b"], ['a"b'], ['a\\b'], ['a\0'], [`a${cp(0x202e)}`], ['x'.repeat(257)], new Array(33).fill('x')]) {
+test('arguments are a dense short list of plain data tokens', () => {
+  for (const args of ['x', {}, null, [1], [''], ['a b'], ['a;b'], ['a\nb'], ['$(x)'], ['`x`'], ['a|b'], ["a'b"], ['a"b'], ['a\\b'], ['a\0'], [`a${cp(0x202e)}`], ['x'.repeat(257)], new Array(1), new Array(33).fill('x')]) {
     assert.equal(codeOf(() => describeProvider(valid({ args }))), 'provider-invalid-args', JSON.stringify(args));
   }
   assert.equal(codeOf(() => describeProvider(valid({ args: new Array(32).fill('x') }))), null);
+  const accessor = [];
+  Object.defineProperty(accessor, '0', { enumerable: true, get() { throw new Error('must not execute'); } });
+  accessor.length = 1;
+  assert.equal(codeOf(() => describeProvider(valid({ args: accessor }))), 'provider-invalid-args');
 });
 
 test('labels are printable, bounded text', () => {

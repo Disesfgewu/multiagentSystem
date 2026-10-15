@@ -60,7 +60,13 @@ function describeProvider(input) {
   if (typeof input.label !== 'string' || input.label.trim() === '' || input.label.length > MAX_LABEL || UNSAFE_TEXT.test(input.label)) reject('provider-invalid-label');
   if (typeof input.executable !== 'string' || !EXECUTABLE.test(input.executable)) reject('provider-invalid-executable');
   const args = input.args === undefined ? [] : input.args;
-  if (!Array.isArray(args) || args.length > MAX_ARGUMENTS || args.some((arg) => typeof arg !== 'string' || !ARGUMENT.test(arg))) reject('provider-invalid-args');
+  if (!Array.isArray(args) || args.length > MAX_ARGUMENTS) reject('provider-invalid-args');
+  const checkedArgs = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(args, String(index));
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'string' || !ARGUMENT.test(descriptor.value)) reject('provider-invalid-args');
+    checkedArgs.push(descriptor.value);
+  }
   if (!SUPPORT.includes(input.support)) reject('provider-invalid-support');
 
   const given = input.capabilities === undefined ? {} : input.capabilities;
@@ -83,7 +89,7 @@ function describeProvider(input) {
     id: input.id,
     label: input.label.trim(),
     executable: input.executable,
-    args: Object.freeze([...args]),
+    args: Object.freeze(checkedArgs),
     support: input.support,
     capabilities: Object.freeze(capabilities)
   });
