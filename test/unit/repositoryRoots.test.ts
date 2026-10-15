@@ -64,7 +64,7 @@ test('"not there" and "not a directory" mean there is no repository; any other f
 test('a .git file is followed to the Git directory, and to the checkout that owns it', () => {
   const gitDirectory = at('main', '.git', 'worktrees', 'linked');
   const probe = probeOf(
-    { [at('linked', '.git')]: 'file' },
+    { [at('linked', '.git')]: 'file', [gitDirectory]: 'dir', [at('main', '.git')]: 'dir' },
     { [at('linked', '.git')]: `gitdir: ${gitDirectory}\n`, [nodePath.join(gitDirectory, 'commondir')]: '../..\n' }
   );
   const found = findRepositoryRoots(at('linked', 'pkg'), probe);
@@ -74,29 +74,34 @@ test('a .git file is followed to the Git directory, and to the checkout that own
 
 test('a relative gitdir is resolved against the directory that holds the .git file', () => {
   const probe = probeOf(
-    { [at('parent', 'vendor', 'sub', '.git')]: 'file' },
+    { [at('parent', 'vendor', 'sub', '.git')]: 'file', [at('parent', '.git', 'modules', 'sub')]: 'dir' },
     { [at('parent', 'vendor', 'sub', '.git')]: 'gitdir: ../../.git/modules/sub\n' }
   );
   const found = findRepositoryRoots(at('parent', 'vendor', 'sub'), probe);
   assert.deepEqual(sorted(found.roots), sorted([at('parent', 'vendor', 'sub'), at('parent', '.git', 'modules', 'sub')]));
 });
 
-test('a .git file that cannot be read, or whose commondir cannot be read, is a failure; one that is dangling or odd is not', () => {
+test('a .git file that cannot be read or resolved, or whose commondir cannot be resolved, is a failure', () => {
   const pointer = at('main', '.git', 'worktrees', 'linked');
-  const entries: Record<string, Entry> = { [at('linked', '.git')]: 'file' };
+  const entries: Record<string, Entry> = { [at('linked', '.git')]: 'file', [pointer]: 'dir', [at('main', '.git')]: 'dir' };
   const gitFile = at('linked', '.git');
   const commondir = nodePath.join(pointer, 'commondir');
   assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: { code: 'EACCES' } })), { roots: [], problem: 'repo-root-unresolvable' });
   assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: `gitdir: ${pointer}`, [commondir]: { code: 'EACCES' } })),
     { roots: [], problem: 'repo-root-unresolvable' });
 
-  // The file vanished between looking at it and reading it, or says nothing useful: the folder is still a root.
-  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, {})), { roots: [at('linked')], problem: null });
-  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: 'not a pointer at all' })), { roots: [at('linked')], problem: null });
-  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: 'gitdir:' })), { roots: [at('linked')], problem: null });
+  // The .git entry was observed before the read failed, so its target cannot be ignored.
+  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, {})), { roots: [], problem: 'repo-root-unresolvable' });
+  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: 'not a pointer at all' })), { roots: [], problem: 'repo-root-unresolvable' });
+  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: 'gitdir:' })), { roots: [], problem: 'repo-root-unresolvable' });
+  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf({ [at('linked', '.git')]: 'file' }, { [gitFile]: `gitdir: ${pointer}` })),
+    { roots: [], problem: 'repo-root-unresolvable' }, 'a dangling gitdir is unresolved');
+  const danglingCommon = nodePath.join(pointer, 'commondir');
+  assert.deepEqual(findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: `gitdir: ${pointer}`, [danglingCommon]: '../missing/.git\n' })),
+    { roots: [], problem: 'repo-root-unresolvable' }, 'a dangling commondir is unresolved');
   // A Git directory that is not under a `.git` name (bare or separate) is itself the place.
   const bare = at('bare.git', 'worktrees', 'w');
-  const odd = findRepositoryRoots(at('linked'), probeOf(entries, { [gitFile]: `gitdir: ${bare}`, [nodePath.join(bare, 'commondir')]: '../..' }));
+  const odd = findRepositoryRoots(at('linked'), probeOf({ ...entries, [bare]: 'dir', [at('bare.git')]: 'dir' }, { [gitFile]: `gitdir: ${bare}`, [nodePath.join(bare, 'commondir')]: '../..' }));
   assert.deepEqual(sorted(odd.roots), sorted([at('linked'), at('bare.git')]));
 });
 

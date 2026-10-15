@@ -63,19 +63,36 @@ function linkedRoots(directory: string, probe: FileProbe): string[] {
   try {
     text = probe.readText(nodePath.join(directory, '.git'), MAX_GIT_FILE_BYTES);
   } catch (error) {
-    if (isAbsent(error)) return [];
+    // walk() already observed this entry. If it disappears or cannot be read now, its
+    // target cannot safely be excluded from the storage check.
     throw new Unresolvable();
   }
-  const match = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(text);
-  if (!match) return [];
+  const match = /^gitdir:[ \t]*([^\r\n]+?)[ \t]*\r?\n?$/.exec(text);
+  if (!match) throw new Unresolvable();
   const gitDirectory = nodePath.resolve(directory, match[1]);
-
-  let common = gitDirectory;
+  let realGitDirectory: string;
   try {
-    const pointer = probe.readText(nodePath.join(gitDirectory, 'commondir'), MAX_GIT_FILE_BYTES).trim();
-    if (pointer !== '') common = nodePath.resolve(gitDirectory, pointer);
+    realGitDirectory = probe.realpath(gitDirectory);
+    if (!probe.lstat(realGitDirectory).isDirectory()) throw new Unresolvable();
+  } catch {
+    throw new Unresolvable();
+  }
+
+  let common = realGitDirectory;
+  let pointer: string | null = null;
+  try {
+    pointer = probe.readText(nodePath.join(realGitDirectory, 'commondir'), MAX_GIT_FILE_BYTES).trim();
   } catch (error) {
     if (!isAbsent(error)) throw new Unresolvable();
+  }
+  if (pointer !== null) {
+    if (pointer === '') throw new Unresolvable();
+    try {
+      common = probe.realpath(nodePath.resolve(realGitDirectory, pointer));
+      if (!probe.lstat(common).isDirectory()) throw new Unresolvable();
+    } catch {
+      throw new Unresolvable();
+    }
   }
   // A normal checkout keeps its Git directory in `<root>/.git`; a bare repository or a
   // separate Git directory is a place in its own right.
