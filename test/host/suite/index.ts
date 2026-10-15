@@ -4,8 +4,8 @@ import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
-import { ACCOUNT_COMMANDS, accountTreeForTests } from '../../../src/accounts/accountCommands';
-import { accountService } from '../../../src/accounts/accountRuntime';
+import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
+import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -125,6 +125,16 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
 
+  const login = await launchEnvironment(created.profile.id, 'claude', () => []);
+  assert.equal(login.ok, true, 'login uses the same current profile validation as a coding session');
+  if (!login.ok) return;
+  const loginTerminal = openLoginTerminal('claude', login.profile, login.env, false);
+  assert.equal(loginTerminal.command, 'claude auth login');
+  const loginOptions = loginTerminal.terminal.creationOptions as vscode.TerminalOptions;
+  assert.ok(sameDirectory(typeof loginOptions.cwd === 'string' ? loginOptions.cwd : loginOptions.cwd?.fsPath ?? '', accountDir));
+  assert.ok(sameDirectory(loginOptions.env?.CLAUDE_CONFIG_DIR ?? '', accountDir));
+  loginTerminal.terminal.dispose();
+
   const wrongProvider = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.sessions.start', {
     interactive: false, provider: 'codex', name: 'Wrong Account Provider', cwd: workspace,
     accountProfileId: created.profile.id, launch: false
@@ -138,7 +148,7 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.equal(started.ok, true);
   assert.equal(started.session?.accountProfileId, created.profile.id);
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
-  console.log('host smoke: account profile appears with unknown identity, mismatched provider is refused, and a new native session keeps its selected profile');
+  console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
 interface Outcome {

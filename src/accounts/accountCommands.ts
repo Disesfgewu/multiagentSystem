@@ -2,7 +2,7 @@ import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
-import { accountService } from './accountRuntime';
+import { accountService, launchEnvironment } from './accountRuntime';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
 const { describeAccounts } = require('./profile-view') as { describeAccounts(input: { profiles: any[]; context: { repoRoot: string } }): any[] };
@@ -17,6 +17,26 @@ export const ACCOUNT_COMMANDS = {
   login: 'multiagentSystem.accounts.login',
   launch: 'multiagentSystem.accounts.launch'
 } as const;
+
+const LOGIN_COMMANDS: Record<string, string> = {
+  claude: 'claude auth login',
+  codex: 'codex login'
+};
+
+/** Start a native login terminal. The caller must supply a freshly validated profile environment. */
+export function openLoginTerminal(provider: string, profile: Record<string, any>, env: Record<string, string | null>, execute = true): { terminal: vscode.Terminal; command: string } {
+  const command = LOGIN_COMMANDS[provider];
+  if (!command) throw new Error('provider-login-unsupported');
+  const terminal = vscode.window.createTerminal({
+    name: `Multiagent: ${profile.label} sign-in`,
+    cwd: profile.configDir,
+    env,
+    location: vscode.TerminalLocation.Editor
+  });
+  terminal.show();
+  if (execute) terminal.sendText(command);
+  return { terminal, command };
+}
 
 class AccountItem extends vscode.TreeItem {
   constructor(override readonly id: string, label: string, provider: string, health: string, identity: string, issues: string[]) {
@@ -245,13 +265,15 @@ async function login(value: unknown): Promise<void> {
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }
   const loaded = result.service.get(selected.id);
   if (!loaded.ok) { void vscode.window.showErrorMessage(errorFor(loaded)); return; }
-  await sessions.launchWithAccount({
-    interactive: true,
-    provider: loaded.profile.provider,
-    name: `${loaded.profile.label} sign-in`,
-    cwd: loaded.profile.configDir,
-    accountProfileId: loaded.profile.id
-  });
+  const prepared = await launchEnvironment(loaded.profile.id, loaded.profile.provider, () => sessions?.list() ?? []);
+  if (!prepared.ok) { void vscode.window.showErrorMessage(prepared.message); return; }
+  const answer = await vscode.window.showWarningMessage(
+    `Sign in to ${loaded.profile.provider} for “${loaded.profile.label}”?`,
+    { modal: true, detail: 'A native terminal will run the provider login command with this profile configuration folder. Account isolation is not verified for this CLI.' },
+    'Open Login Terminal'
+  );
+  if (answer !== 'Open Login Terminal') return;
+  openLoginTerminal(loaded.profile.provider, loaded.profile, prepared.env);
 }
 
 async function launch(value: unknown): Promise<void> {
