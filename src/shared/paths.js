@@ -41,6 +41,7 @@ function canonicalize(target, p, realpath, isDirectory, lstat = (value) => fs.ls
   const resolved = p.resolve(target);
   const tail = [];
   let current = resolved;
+  let retriedExisting = false;
   for (;;) {
     try {
       const real = realpath(current);
@@ -59,11 +60,16 @@ function canonicalize(target, p, realpath, isDirectory, lstat = (value) => fs.ls
       if (!error || error.code !== 'ENOENT') {
         throw new PathResolutionError(error && error.code ? error.code : 'unknown');
       }
-      // A broken symlink also makes realpath report ENOENT. It is an existing path whose
-      // destination cannot be verified, not a directory that has yet to be created.
+      // A broken link also makes realpath report ENOENT. A regular path can appear
+      // between realpath and lstat when another process creates the directory.
+      // Retry that case once; keep links and persistent resolution failures closed.
       try {
-        lstat(current);
-        throw new PathResolutionError('EUNRESOLVED');
+        const entry = lstat(current);
+        if (retriedExisting || !entry || typeof entry.isSymbolicLink !== 'function' || entry.isSymbolicLink()) {
+          throw new PathResolutionError('EUNRESOLVED');
+        }
+        retriedExisting = true;
+        continue;
       } catch (probeError) {
         if (probeError instanceof PathResolutionError) throw probeError;
         if (!probeError || probeError.code !== 'ENOENT') {
@@ -74,6 +80,7 @@ function canonicalize(target, p, realpath, isDirectory, lstat = (value) => fs.ls
       if (parent === current) throw new PathResolutionError('ENOROOT');
       tail.push(p.basename(current));
       current = parent;
+      retriedExisting = false;
     }
   }
 }

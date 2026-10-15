@@ -36,3 +36,26 @@ test('a dangling private root link fails closed for memory and storage', (t) => 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a directory created between realpath and lstat is rechecked once', () => {
+  const failure = Object.assign(new Error('not present yet'), { code: 'ENOENT' });
+  let calls = 0;
+  const context = {
+    platform: 'win32',
+    realpath(value) {
+      if (value.toLowerCase() === 'c:\\private') {
+        calls += 1;
+        if (calls === 1) throw failure;
+      }
+      return value;
+    },
+    isDirectory: () => true,
+    lstat: () => ({ isSymbolicLink: () => false })
+  };
+  assert.equal(shared.checkPrivateRoot('C:\\private', 'C:\\repo', context).ok, true);
+  assert.equal(calls, 2);
+
+  const unresolved = { ...context, realpath: () => { throw failure; } };
+  assert.deepEqual(shared.checkPrivateRoot('C:\\private', 'C:\\repo', unresolved).problems,
+    ['private-root-unresolvable', 'repo-root-unresolvable']);
+});
