@@ -252,7 +252,9 @@ class MemoryStore {
   }
 
   list() {
-    return this.#read().items.map((item) => ({ ...item }));
+    const loaded = this.#read();
+    if (loaded.state !== 'ok') return { ok: false, reason: loaded.state, items: [] };
+    return { ok: true, items: loaded.items.map((item) => ({ ...item })) };
   }
 
   // New items always start as unreviewed candidates. Anything matching a secret

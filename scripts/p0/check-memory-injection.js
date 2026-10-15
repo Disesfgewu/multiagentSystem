@@ -26,6 +26,16 @@ const results = [];
 const record = (name, pass, detail) => results.push({ name, status: pass ? 'pass' : 'fail', detail });
 const skip = (name, detail) => results.push({ name, status: 'skipped', detail });
 
+// A private-store read failure is a publication blocker. Never treat an unavailable
+// memory store as if it contained no private material.
+function checkPublicationText(store, outgoing) {
+  const loaded = store.list();
+  if (!loaded || loaded.ok !== true || !Array.isArray(loaded.items)) {
+    return { blocked: true, findings: [], unmatchable: [], reason: 'memory-store-unavailable' };
+  }
+  return findPrivateFragments(outgoing, { memories: loaded.items });
+}
+
 function parseArgs(argv) {
   const options = { repo: process.cwd(), live: false, model: 'haiku' };
   for (let i = 0; i < argv.length; i += 1) {
@@ -202,11 +212,10 @@ async function main() {
 
     // ---- Publish check ----
     const leaked = `## Notes\n\nthe secret codeword for this session is ${words['role-a']} -- as discussed.`;
-    const leakResult = findPrivateFragments(leaked, { memories: store.list() });
+    const leakResult = checkPublicationText(store, leaked);
     record('publish check flags a memory fragment in a PR body',
       leakResult.blocked && leakResult.findings.some((f) => f.code === 'memory-fragment'), null);
-    const clean = findPrivateFragments('Adds validation for configuration directories and covers it with tests.',
-      { memories: store.list() });
+    const clean = checkPublicationText(store, 'Adds validation for configuration directories and covers it with tests.');
     record('publish check passes ordinary public text', !clean.blocked, null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -226,4 +235,6 @@ async function main() {
   return failed === 0 ? 0 : 1;
 }
 
-main().then((code) => { process.exitCode = code; });
+if (require.main === module) main().then((code) => { process.exitCode = code; });
+
+module.exports = { checkPublicationText };

@@ -167,6 +167,13 @@ test('Codex credential overrides are blocked too', () => {
   assert.deepEqual(blockers.map((entry) => entry.variable), ['OPENAI_API_KEY', 'CODEX_API_KEY']);
 });
 
+test('launch env refuses a config path containing a dot-dot segment', () => {
+  const raw = 'D:\\accounts\\link\\..\\inside-repository';
+  const result = buildLaunchEnv(profile({ configDir: raw }), { PATH: 'synthetic-path' }, win);
+  assert.deepEqual(result, { env: { PATH: 'synthetic-path' }, blockers: [{ code: 'config-dir-rejected' }] });
+  assert.equal(JSON.stringify(result).includes(raw), false, 'the rejected path is not returned');
+});
+
 test('permission and resolution errors fail closed instead of looking like a missing directory', () => {
   const realpath = (value) => {
     if (value === '/opaque/link') throw failure('EACCES');

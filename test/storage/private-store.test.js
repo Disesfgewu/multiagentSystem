@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { PrivateStore, CONFIRM_CLEAR } = require('../../src/storage/private-store');
-const { sandbox, COLLECTIONS, failure } = require('./helpers');
+const { DirectoryLock } = require('../../src/shared/lock');
+const { sandbox, COLLECTIONS, failure, watchRawPathIo } = require('./helpers');
 
 const open = (s, extra) => new PrivateStore({ dir: s.dir, repoRoot: s.repoRoot, collections: COLLECTIONS, ...extra });
 const profile = (extra) => ({ provider: 'claude', label: 'Synthetic work account', ...extra });
@@ -460,6 +461,38 @@ test('every read refuses a data directory that was swapped for a link into the r
   assert.equal(store.migrate().reason, 'directory-rejected');
   assert.equal(store.clear({ confirm: CONFIRM_CLEAR }).reason, 'directory-rejected');
   assert.equal(fs.existsSync(path.join(s.repoRoot, 'store.json')), true, 'nothing in the repository was removed');
+});
+
+test('every storage I/O entry rejects a raw link/.. directory before touching it', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  assert.equal(store.put('profiles', 'p1', profile()).ok, true);
+  const sub = path.join(s.repoRoot, 'sub');
+  fs.mkdirSync(sub);
+  const link = path.join(s.root, 'repo-sub-link');
+  if (process.platform !== 'win32') {
+    try { fs.symlinkSync(sub, link, 'dir'); } catch (error) { t.skip(`cannot create a directory link here: ${error.code}`); return; }
+  }
+  const raw = `${link}${path.sep}..${path.sep}private-data`;
+  // The POSIX symlink makes the OS target repo/private-data; the Win32 case still checks that
+  // textual dot-dot paths are rejected before an operation sees them.
+  store.dir = raw;
+  store.file = `${raw}${path.sep}store.json`;
+  store.backupDir = `${raw}${path.sep}backups`;
+  store.lock = new DirectoryLock(`${raw}${path.sep}store.lock`);
+  const rawIo = watchRawPathIo(t, fs);
+
+  for (const result of [
+    store.get('profiles', 'p1'), store.list('profiles'), store.status(), store.exportMasked(),
+    store.inspectLock(), store.recoverLock({ confirm: 'recover-stale-lock' }),
+    store.transact((tx) => tx.put('profiles', 'p2', profile())), store.put('profiles', 'p2', profile()),
+    store.delete('profiles', 'p1'), store.migrate(), store.clear({ confirm: CONFIRM_CLEAR })
+  ]) {
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.reason, 'directory-rejected');
+  }
+  assert.deepEqual(rawIo, [], 'no filesystem operation receives the raw path');
+  assert.equal(fs.existsSync(`${s.repoRoot}${path.sep}private-data`), false, 'the repository remains untouched');
 });
 
 test('lock inspection and recovery do not follow a link into the repository', (t) => {

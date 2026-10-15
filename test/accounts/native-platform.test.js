@@ -64,11 +64,12 @@ test('native: different spellings of one directory are reported as the same', (t
   ]);
 });
 
-test('native: environment variable names follow the host platform case rules', () => {
+test('native: environment variable names follow the host platform case rules', (t) => {
+  const { repoRoot } = fixture(t);
   const { env, blockers } = buildLaunchEnv(
     profile(path.join(os.tmpdir(), 'unused')),
     { Anthropic_Api_Key: 'synthetic', claude_config_dir: 'stale' },
-    {}
+    { repoRoot }
   );
   const configKeys = Object.keys(env).filter((key) => key.toUpperCase() === 'CLAUDE_CONFIG_DIR');
   if (process.platform === 'win32') {

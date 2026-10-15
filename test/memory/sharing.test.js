@@ -142,5 +142,5 @@ test('a domain that is not a plain label cannot be written either', (t) => {
     const result = store.propose({ ...scope('domain-a'), [field]: value, content: 'Release builds are produced with the packaging script.', source: { ref: 'docs/R.md' } });
     assert.deepEqual([result.ok, result.reason, result.fields], [false, 'invalid-scope', [field]], `${field}`);
   }
-  assert.deepEqual(store.list(), []);
+  assert.deepEqual(store.list().items, []);
 });
