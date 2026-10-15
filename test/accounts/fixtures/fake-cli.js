@@ -6,6 +6,8 @@ const EMAIL = 'person@example.test';
 const out = (value) => process.stdout.write(typeof value === 'string' ? value : JSON.stringify(value));
 const base = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: EMAIL, orgId: 'org-synthetic', subscriptionType: 'max' };
 
+if (process.env.FAKE_PIDFILE) require('node:fs').writeFileSync(process.env.FAKE_PIDFILE, String(process.pid));
+
 switch (mode) {
   case 'ok': out(base); break;
   case 'ok-with-folder': out({ ...base, configDirectory: process.env.CLAUDE_CONFIG_DIR }); break;
@@ -27,6 +29,7 @@ switch (mode) {
   case 'exit1': out(base); process.exitCode = 1; break;
   case 'exit2-stderr': process.stderr.write(`failed for ${EMAIL}\n`); process.exitCode = 2; break;
   case 'stderr-ok': process.stderr.write(`warning for ${EMAIL}\n`); out(base); break;
+  case 'ignore-sigterm': process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); break;
   case 'crash': throw new Error(`crashed with ${EMAIL}`);
   default: process.exitCode = 9;
 }

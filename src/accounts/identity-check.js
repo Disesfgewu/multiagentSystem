@@ -12,8 +12,13 @@ const { validateProfile } = require('./profile');
 // "unknown" with a reason, never "ready".
 
 const TIMEOUT_MS = 10_000;
+// The runner is expected to stop a command at TIMEOUT_MS. If it does not answer at all, the check gives up
+// at this hard limit and reports a timeout, so a runner that never returns cannot hold the screen.
+const HARD_LIMIT_MS = TIMEOUT_MS + 5_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const PLAN_TEXT = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}$/;
+// Plan names that are shown. Anything else the CLI reports is dropped (unknown) rather than shown: the text
+// comes from outside and could say anything. The list is a guess at current names, not a verified one.
+const PLAN_NAMES = Object.freeze(['free', 'pro', 'max', 'team', 'enterprise']);
 
 // The status command for each provider that has one. A provider not listed here cannot be checked and
 // says so; no command is guessed. Codex needs a protocol session (app-server), which is not run here.
@@ -43,10 +48,11 @@ const unknownResult = (reason, checkedAt, source) => ({ ok: false, state: 'unkno
  *   runner: (file: string, args: string[], options: { env: object, timeoutMs: number, maxOutputBytes: number }) => Promise<{ code: number|null, stdout: string, timedOut?: boolean, truncated?: boolean, errorCode?: string }>,
  *   env?: object,
  *   context?: object,
- *   now?: () => Date
+ *   now?: () => Date,
+ *   hardLimitMs?: number
  * }} input `env` is the full environment for the child, already built for this profile
  */
-async function checkAccountIdentity({ profile, runner, env = {}, context, now = () => new Date() } = {}) {
+async function checkAccountIdentity({ profile, runner, env = {}, context, now = () => new Date(), hardLimitMs = HARD_LIMIT_MS } = {}) {
   const checkedAt = now().toISOString();
   const spec = isPlain(profile) && typeof profile.provider === 'string' && Object.hasOwn(CHECKS, profile.provider) ? CHECKS[profile.provider] : null;
   if (!spec) return unknownResult('provider-not-supported', checkedAt, null);
@@ -55,10 +61,14 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   if (!validateProfile(profile, context).ok) return unknownResult('profile-rejected', checkedAt, spec.source);
 
   let outcome;
+  let timer;
   try {
-    outcome = await runner(executable, [...spec.args], { env, timeoutMs: TIMEOUT_MS, maxOutputBytes: MAX_OUTPUT_BYTES });
+    const limit = new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), hardLimitMs); });
+    outcome = await Promise.race([runner(executable, [...spec.args], { env, timeoutMs: TIMEOUT_MS, maxOutputBytes: MAX_OUTPUT_BYTES }), limit]);
   } catch {
     return unknownResult('run-failed', checkedAt, spec.source);
+  } finally {
+    clearTimeout(timer);
   }
   if (!isPlain(outcome)) return unknownResult('run-failed', checkedAt, spec.source);
   if (outcome.errorCode === 'ENOENT') return unknownResult('cli-not-found', checkedAt, spec.source);
@@ -76,11 +86,29 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   if (!isPlain(status) || typeof status.loggedIn !== 'boolean') return unknownResult('unexpected-shape', checkedAt, spec.source);
 
   const identity = claudeIdentityFromAuthStatus(status, { profile, observedAt: checkedAt, context });
-  // Only a short, plain plan name is passed on; anything else is dropped rather than shown.
-  if (identity.plan && identity.plan.value !== null && !(typeof identity.plan.value === 'string' && PLAN_TEXT.test(identity.plan.value))) {
+  // Only a plan name from the list above is passed on, in lower case; anything else is dropped rather than shown.
+  if (identity.plan && identity.plan.value !== null) {
+    const name = typeof identity.plan.value === 'string' ? identity.plan.value.trim().toLowerCase() : '';
+    if (PLAN_NAMES.includes(name)) identity.plan = { ...identity.plan, value: name };
+  }
+  if (identity.plan && identity.plan.value !== null && !(typeof identity.plan.value === 'string' && PLAN_NAMES.includes(identity.plan.value))) {
     identity.plan = unknown('plan', { source: spec.source, observedAt: checkedAt, reason: 'unusable-value' });
   }
   return { ok: true, state: 'checked', reason: 'checked', checkedAt, source: spec.source, identity };
+}
+
+// Two different things the account view can say about the configuration folder: whether it passes this
+// extension's own safety checks, and whether the CLI confirmed that it is using that folder. A CLI that
+// could not be asked has not confirmed anything, which says nothing against the folder itself.
+const CLI_CONFIRMATION_CODES = Object.freeze(['config-dir-mismatch', 'config-dir-unverified']);
+function splitFolderIssues(issues) {
+  const folder = [];
+  const confirmation = [];
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    if (!issue || typeof issue.code !== 'string' || !issue.code.startsWith('config-dir')) continue;
+    (CLI_CONFIRMATION_CODES.includes(issue.code) ? confirmation : folder).push(typeof issue.hint === 'string' ? issue.hint : 'Needs attention.');
+  }
+  return { folder, confirmation };
 }
 
 /** Words for a person. Never includes the CLI's output. */
@@ -95,4 +123,4 @@ function describeCheck(result) {
   return { summary: 'Signed in, but the CLI did not confirm who the account is.', hint: 'The identity stays unknown, so this account cannot be used for a managed launch.' };
 }
 
-module.exports = { checkAccountIdentity, describeCheck, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES };
+module.exports = { checkAccountIdentity, describeCheck, splitFolderIssues, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES, HARD_LIMIT_MS };

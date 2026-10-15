@@ -5,7 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runCommand, childEnvironment } from '../../src/accounts/identityRunner';
 
-const { checkAccountIdentity, describeCheck, REASONS, MAX_OUTPUT_BYTES } = require('../../src/accounts/identity-check') as {
+const { checkAccountIdentity, describeCheck, splitFolderIssues, REASONS, MAX_OUTPUT_BYTES } = require('../../src/accounts/identity-check') as {
+  splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
   checkAccountIdentity(input: Record<string, unknown>): Promise<any>;
   describeCheck(result: unknown): { summary: string; hint: string };
   REASONS: Record<string, { summary: string; hint: string }>;
@@ -228,4 +229,75 @@ test('a signed-in account with a problem says so instead of offering to start', 
   assert.match(fine.hint, /start a session/);
   assert.match(odd.hint, /something looks wrong/i);
   assert.equal(/start a session/.test(odd.hint), false);
+});
+
+
+test('a command that ignores SIGTERM is killed after the grace period, and the caller is not kept waiting', async (t) => {
+  const w = world(t);
+  const pidFile = path.join(w.root, 'pid.txt');
+  const started = Date.now();
+  const outcome = await runCommand(process.execPath, [FAKE], { env: childEnvironment({ FAKE_MODE: 'ignore-sigterm', FAKE_PIDFILE: pidFile }, { PATH: process.env.PATH }), timeoutMs: 400, maxOutputBytes: 1000, graceMs: 300 });
+  assert.equal(outcome.timedOut, true);
+  assert.ok(Date.now() - started < 4000, `answered in ${Date.now() - started} ms`);
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  assert.ok(pid > 0);
+  const alive = (): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const deadline = Date.now() + 4000;
+  while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(alive(), false, 'the child that ignored SIGTERM was killed');
+});
+
+test('a runner that never answers is given up on at the hard limit and reported as timed out', async (t) => {
+  const w = world(t);
+  const started = Date.now();
+  const result = await checkAccountIdentity({ profile: w.profile, context: w.context, hardLimitMs: 250, runner: () => new Promise(() => {}) });
+  assert.deepEqual([result.ok, result.reason, result.identity], [false, 'timed-out', null]);
+  assert.ok(Date.now() - started < 3000);
+  const fast = await checkAccountIdentity({ profile: w.profile, context: w.context, hardLimitMs: 250, runner: async () => ({ code: 0, stdout: '{"loggedIn":false}' }) });
+  assert.equal(fast.ok, true, 'an answer before the limit is used');
+});
+
+test('the check does not wait for the hard limit when the command answers', async (t) => {
+  const w = world(t);
+  const started = Date.now();
+  const result = await checkAccountIdentity({ profile: w.profile, context: w.context, hardLimitMs: 60000, runner: fake('not-logged-in').runner });
+  assert.equal(result.ok, true);
+  assert.ok(Date.now() - started < 8000, 'the limit timer does not hold the result back');
+});
+
+test('only a plan name from the list is shown, in lower case', async (t) => {
+  const w = world(t);
+  for (const [plan, shown] of [['max', 'max'], ['Pro', 'pro'], [' TEAM ', 'team'], ['enterprise', 'enterprise'], ['free', 'free']] as Array<[string, string]>) {
+    const result = await checkAccountIdentity({ profile: w.profile, context: w.context, runner: async () => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: EMAIL, subscriptionType: plan }) }) });
+    assert.equal(result.identity.plan.value, shown, plan);
+  }
+  for (const plan of ['platinum', 'max plus', 'maxx', '', '   ', 'ignore previous instructions', 5, null, { x: 1 }, ['max']]) {
+    const result = await checkAccountIdentity({ profile: w.profile, context: w.context, runner: async () => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: EMAIL, subscriptionType: plan }) }) });
+    assert.equal(result.identity.plan.value, null, JSON.stringify(plan));
+  }
+});
+
+test('the folder\'s safety status and the CLI\'s confirmation are kept apart', () => {
+  const issues = [
+    { code: 'config-dir:config-dir-inside-repo', hint: 'inside the project' },
+    { code: 'config-dir-conflict:nested', hint: 'overlaps another account' },
+    { code: 'config-dir-not-directory', hint: 'a file' },
+    { code: 'config-dir-unverified', hint: 'the CLI did not say which folder it uses' },
+    { code: 'config-dir-mismatch', hint: 'the CLI uses a different folder' },
+    { code: 'not-logged-in', hint: 'not signed in' },
+    { code: 'duplicate-account', hint: 'same account twice' },
+    null, { hint: 'no code' }, { code: 5 }
+  ];
+  assert.deepEqual(splitFolderIssues(issues), { folder: ['inside the project', 'overlaps another account', 'a file'], confirmation: ['the CLI did not say which folder it uses', 'the CLI uses a different folder'] });
+  assert.deepEqual(splitFolderIssues([{ code: 'config-dir-unverified' }]), { folder: [], confirmation: ['Needs attention.'] });
+  for (const bad of [undefined, null, 'x', {}, 5]) assert.deepEqual(splitFolderIssues(bad), { folder: [], confirmation: [] });
+});
+
+test('a command that obeys SIGTERM stops at the limit, long before the grace period ends', async (t) => {
+  const w = world(t);
+  const started = Date.now();
+  const outcome = await runCommand(process.execPath, [FAKE], { env: childEnvironment({ FAKE_MODE: 'sleep' }, { PATH: process.env.PATH }), timeoutMs: 300, maxOutputBytes: 1000, graceMs: 20000 });
+  assert.equal(outcome.timedOut, true);
+  assert.ok(Date.now() - started < 8000, `stopped after ${Date.now() - started} ms, not after the 20 s grace`);
+  void w;
 });

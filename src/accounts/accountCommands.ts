@@ -8,7 +8,8 @@ import { runCommand, childEnvironment } from './identityRunner';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
-const { checkAccountIdentity, describeCheck } = require('./identity-check') as {
+const { checkAccountIdentity, describeCheck, splitFolderIssues } = require('./identity-check') as {
+  splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
   checkAccountIdentity(input: Record<string, unknown>): Promise<{ ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any }>;
   describeCheck(result: unknown): { summary: string; hint: string };
 };
@@ -264,11 +265,12 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     ? `Service identity: confirmed by the CLI, fingerprint ${described.verifiedIdentity.fingerprint}`
     : `Service identity: unknown${checked && !checked.ok ? ` (${describeCheck(checked).summary})` : checked?.identity && !checked.identity.loggedIn ? ' (the CLI says it is not signed in)' : ' (not checked yet, or the CLI did not confirm it)'}`;
   const plan = checked?.ok && checked.identity?.plan?.value ? String(checked.identity.plan.value) : null;
-  const folderProblems = described.issues.filter((issue: { code: string }) => issue.code.startsWith('config-dir')).map((issue: { hint: string }) => issue.hint);
+  const { folder: folderProblems, confirmation } = splitFolderIssues(described.issues);
   const lines = [
     `Account profile: ${profile.label}`,
     `Provider: ${provider?.label ?? profile.provider}`,
     `Configuration folder: ${folderProblems.length === 0 ? 'passes the safety checks' : `rejected: ${folderProblems.join(' ')}`}`,
+    `CLI confirmation of this folder: ${confirmation.length === 0 ? (checked?.ok && checked.identity?.configDirMatches === true ? 'confirmed' : 'unverified (the CLI has not said which folder it uses)') : `unverified: ${confirmation.join(' ')}`}`,
     identityLine,
     `Login method: ${described.loginMethod.state === 'reported' ? described.loginMethod.value : 'unknown'}`,
     `Subscription plan: ${plan ?? 'unknown (the CLI did not report one)'}`,

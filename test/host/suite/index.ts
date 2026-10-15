@@ -173,6 +173,8 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.match(detailText, /Subscription plan: unknown/);
   assert.match(detailText, /Last check .* could not confirm the sign-in/);
   assert.match(detailText, /Configuration folder: passes the safety checks/);
+  assert.match(detailText, /CLI confirmation of this folder: unverified/);
+  assert.doesNotMatch(detailText, /Configuration folder: rejected/, 'a CLI that could not be started does not make the folder "rejected"');
   assert.doesNotMatch(detailText, /@/, 'no email-like text in the details');
   assert.equal(detailText.includes(accountDir), false, 'the details do not show the full folder path');
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
