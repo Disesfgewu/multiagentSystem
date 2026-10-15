@@ -105,6 +105,23 @@ test('capabilities: unknown names and statuses are rejected', () => {
   assert.equal(codeOf(() => describeProvider(valid({ capabilities: null }))), 'provider-invalid-capabilities');
 });
 
+test('capabilities validate every own key and copy only checked data properties', () => {
+  const hiddenStatus = {};
+  Object.defineProperty(hiddenStatus, 'resume', { value: 'invalid', enumerable: false });
+  assert.equal(codeOf(() => describeProvider(valid({ capabilities: hiddenStatus }))), 'provider-invalid-capability-status');
+
+  const hiddenUnknown = {};
+  Object.defineProperty(hiddenUnknown, 'secret', { value: 'verified', enumerable: false });
+  assert.equal(codeOf(() => describeProvider(valid({ capabilities: hiddenUnknown }))), 'provider-unknown-capability');
+
+  const symbolKey = { [Symbol('hidden')]: 'verified' };
+  assert.equal(codeOf(() => describeProvider(valid({ capabilities: symbolKey }))), 'provider-unknown-capability');
+
+  const accessor = {};
+  Object.defineProperty(accessor, 'resume', { enumerable: true, get() { throw new Error('must not execute'); } });
+  assert.equal(codeOf(() => describeProvider(valid({ capabilities: accessor }))), 'provider-invalid-capability-status');
+});
+
 test('a registry rejects duplicates and non-lists, and orders by id without locale', () => {
   assert.equal(codeOf(() => createRegistry([valid(), valid()])), 'registry-duplicate-id');
   assert.equal(codeOf(() => createRegistry({})), 'registry-not-list');

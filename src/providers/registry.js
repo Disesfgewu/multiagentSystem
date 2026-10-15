@@ -65,11 +65,19 @@ function describeProvider(input) {
 
   const given = input.capabilities === undefined ? {} : input.capabilities;
   if (!isPlain(given)) reject('provider-invalid-capabilities');
-  for (const [name, status] of Object.entries(given)) {
+  const suppliedCapabilities = new Map();
+  for (const name of Reflect.ownKeys(given)) {
+    if (typeof name !== 'string' || !CAPABILITIES.includes(name)) reject('provider-unknown-capability');
+    const descriptor = Object.getOwnPropertyDescriptor(given, name);
+    // Only enumerable data properties are accepted. This avoids silently copying an unchecked
+    // hidden property or invoking a caller-supplied getter while building the frozen description.
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) reject('provider-invalid-capability-status');
+    const status = descriptor.value;
     if (!CAPABILITIES.includes(name)) reject('provider-unknown-capability');
     if (!STATUSES.includes(status)) reject('provider-invalid-capability-status');
+    suppliedCapabilities.set(name, status);
   }
-  const capabilities = Object.fromEntries(CAPABILITIES.map((name) => [name, Object.hasOwn(given, name) ? given[name] : 'unknown']));
+  const capabilities = Object.fromEntries(CAPABILITIES.map((name) => [name, suppliedCapabilities.has(name) ? suppliedCapabilities.get(name) : 'unknown']));
 
   return Object.freeze({
     id: input.id,
