@@ -15,7 +15,6 @@ const hasOnly = (value, keys) => isPlain(value) && Object.keys(value).every(key 
 
 function deriveState(status) {
   if (!isPlain(status) || typeof status.type !== 'string') return null;
-  if (status.type === 'idle' && Object.keys(status).length === 1) return 'completed';
   if (status.type !== 'active' || Object.keys(status).some(key => !['type', 'activeFlags'].includes(key)) ||
       !Array.isArray(status.activeFlags)) return null;
 

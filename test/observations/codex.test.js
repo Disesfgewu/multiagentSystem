@@ -50,14 +50,14 @@ test('official waiting fixture derives waiting and keeps usage unknown', () => {
   assert.equal(value.usage.every(item => item.confidence === 'unknown'), true);
 });
 
-test('documented active and idle states derive working and completed', () => {
+test('active derives working; idle cannot establish task completion', () => {
   const { core, adapter } = setup();
   assert.equal(adapter.accept(evidence('thread-a', { type: 'active', activeFlags: [] })).reason, 'accepted');
   assert.equal(core.snapshot('session-a', START).status.value, 'working');
   assert.equal(adapter.accept(evidence('thread-a', { type: 'idle' }, {
     eventId: 'event-2', sequence: 2
-  })).reason, 'accepted');
-  assert.equal(core.snapshot('session-a', START).status.value, 'completed');
+  })).reason, 'codex-state-unknown');
+  assert.equal(core.snapshot('session-a', START).status.value, 'working');
 });
 
 test('both versioned waiting flags derive waiting', () => {

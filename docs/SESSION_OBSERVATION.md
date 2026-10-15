@@ -32,7 +32,7 @@
 
 `src/observations/codex.js` 只接受 Codex app-server v2 的 `thread/status/changed` JSON RPC notification，並要求建立 adapter 時傳入的固定 thread id、session id 與 account profile id。官方 [Codex App Server 文件](https://developers.openai.com/codex/app-server) 說明 notification 格式、thread runtime status 與 `activeFlags`；fixture 逐字保存文件中的 `waitingOnApproval` 範例。另以 `codex-cli 0.162.1 app-server generate-json-schema` 產生的 v2 schema 核對 `waitingOnUserInput` 與狀態列舉，所以 adapter 固定要求這個 schema 版本；其他版本拒絕，不做相容猜測。
 
-狀態推導只有：沒有 active flag 的 `active` 是 `working`，`waitingOnApproval` 或 `waitingOnUserInput` 是 `waiting`，`idle` 是 `completed`。`systemError`、`notLoaded`、未知 flag、額外欄位及其他 notification 均拒絕，既有 observation 最多保留到 TTL，之後成為 unknown。`notLoaded` 與 `thread/closed` 只代表 app-server 卸載 thread，不能推導本機 session 已結束。
+狀態推導只有：沒有 active flag 的 `active` 是 `working`，`waitingOnApproval` 或 `waitingOnUserInput` 是 `waiting`。`idle`、`systemError`、`notLoaded`、未知 flag、額外欄位及其他 notification 均拒絕；特別是 `idle` 只代表 thread 當下閒置，不能證明工作完成。此 adapter 不消費 `turn/completed`，所以不會從這種 status notification 推導 `completed`。既有 observation 最多保留到 TTL，之後成為 unknown。`notLoaded` 與 `thread/closed` 只代表 app-server 卸載 thread，不能推導本機 session 已結束。
 
 app-server notification 沒有觀測時間、遞增 sequence 或 event id，這三個欄位由同一個本機 transport host 在收到訊息時產生；本切片不建立 transport。adapter 不接收 transcript、終端文字、token 或登入資料。雖然官方文件列出 `thread/tokenUsage/updated`，本輪未納入其 payload；所有 usage 與 cost 維持 unknown。
 
