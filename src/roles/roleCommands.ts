@@ -193,21 +193,23 @@ async function edit(value: unknown): Promise<void> {
   const record = await chooseRecord(value);
   if (!record) return;
   const expectedRevision = record.revision;
+  const help = (field: string): string | undefined => fieldHelp(field) ?? undefined;
   const action = await vscode.window.showQuickPick([
-    { label: 'Rename role group', value: 'rename' },
-    { label: 'Add instruction', value: 'add' },
-    { label: 'Edit instruction', value: 'edit' },
-    { label: 'Remove instruction', value: 'remove' },
-    { label: 'Use bundled PM system prompt', value: 'pm-template' },
-    { label: 'Set tool permission', value: 'tool' },
-    { label: 'Set default account profile', value: 'account' },
-    { label: 'Set allowed repositories', value: 'repositories' },
-    { label: 'Set allowed paths', value: 'paths' }
+    { label: 'Rename role group', detail: help('name'), value: 'rename' },
+    { label: 'Add instruction', detail: help('instructions'), value: 'add' },
+    { label: 'Edit instruction', detail: help('instructions'), value: 'edit' },
+    { label: 'Remove instruction', detail: help('instructions'), value: 'remove' },
+    { label: 'Use bundled PM system prompt', detail: 'Add the bundled PM instructions to this private role group.', value: 'pm-template' },
+    { label: 'Set tool permission', detail: `${fieldHelp('tools')} ${ENFORCEMENT_NOTE}`, value: 'tool' },
+    { label: 'Set default account profile', detail: help('defaultAccount'), value: 'account' },
+    { label: 'Set allowed repositories', detail: help('repositories'), value: 'repositories' },
+    { label: 'Set allowed paths', detail: help('paths'), value: 'paths' },
+    { label: 'Set memory scope', detail: help('memory'), value: 'memory' }
   ], { placeHolder: `Edit ${record.group.name}` });
   if (!action) return;
   let change: Record<string, unknown>;
   if (action.value === 'rename') {
-    const name = await vscode.window.showInputBox({ prompt: 'Role group name', value: record.group.name });
+    const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: record.group.name });
     if (!name) return;
     change = { kind: 'rename', name };
   } else if (action.value === 'tool') {
@@ -227,13 +229,20 @@ async function edit(value: unknown): Promise<void> {
       { label: 'No default account', id: null },
       ...listed.profiles.map((profile) => ({ label: profile.label, id: profile.id }))
     ];
-    const picked = await vscode.window.showQuickPick(choices, { placeHolder: 'Choose the account this role uses by default. Assigning a role to a running agent is not connected yet' });
+    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
     if (!picked) return;
     change = { kind: 'account', profileId: picked.id };
+  } else if (action.value === 'memory') {
+    const picked = await vscode.window.showQuickPick([
+      { label: 'Off', detail: 'Do not use saved project notes for this role.', mode: 'off' },
+      { label: 'Role group', detail: `${fieldHelp('memory')} ${ENFORCEMENT_NOTE}`, mode: 'role-group' }
+    ], { placeHolder: fieldHelp('memory') ?? 'Set memory scope', ignoreFocusOut: true });
+    if (!picked) return;
+    change = { kind: 'memory', mode: picked.mode };
   } else if (action.value === 'repositories' || action.value === 'paths') {
     const field = action.value;
     const input = await vscode.window.showInputBox({
-      prompt: field === 'repositories' ? 'Allowed owner/repository names, separated by commas' : 'Allowed repository-relative paths, separated by commas',
+      prompt: `${fieldHelp(field)} ${field === 'repositories' ? 'Enter owner/repository names' : 'Enter repository-relative paths'}, separated by commas.`,
       value: record.group.allowedScope[field].join(', ')
     });
     if (input === undefined) return;
@@ -250,7 +259,7 @@ async function edit(value: unknown): Promise<void> {
       { label: 'Project preview', value: 'project' as const },
       { label: 'Role group', value: 'roleGroup' as const },
       { label: 'Task preview', value: 'task' as const }
-    ], { placeHolder: 'Choose the instruction layer (preview only)' });
+    ], { placeHolder: `${fieldHelp('instructions')} Choose the source layer for the preview.` });
     if (!layer) return;
     const rules = layer.value === 'roleGroup' ? record.group.rules : (record.layers[layer.value] ?? []);
     let target: Rule | undefined;
@@ -263,7 +272,7 @@ async function edit(value: unknown): Promise<void> {
     }
     if (action.value === 'remove') change = { kind: 'remove', layer: layer.value, ruleId: target?.id };
     else {
-      const text = await vscode.window.showInputBox({ prompt: 'Instruction text', value: target?.text ?? '',
+      const text = await vscode.window.showInputBox({ prompt: `${fieldHelp('instructions')} ${ENFORCEMENT_NOTE}`, value: target?.text ?? '',
         validateInput: (input) => input.trim() ? undefined : 'Enter an instruction.' });
       if (!text) return;
       change = { kind: action.value, layer: layer.value, ruleId: target?.id, text };
