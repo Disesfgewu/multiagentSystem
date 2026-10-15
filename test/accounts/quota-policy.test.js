@@ -145,7 +145,8 @@ test('quota thresholds and summaries require an explicit percent unit', () => {
   for (const unit of [undefined, null, 'tokens']) {
     const malformed = reading('five_hour', 99, { unit });
     const result = decide({ observations: [malformed], approval: 'override' });
-    assert.ok(codes(result).includes('window-unverified') || codes(result).includes('unverified-reading-over-warning'), `unit ${String(unit)} cannot gate`);
+    assert.ok(codes(result).includes('window-unverified'), `unit ${String(unit)} remains unverified`);
+    assert.equal(codes(result).includes('unverified-reading-over-warning'), false);
     assert.equal(codes(result).includes('quota-block-threshold'), false);
     const [row] = summarizeQuota([malformed], NOW);
     assert.equal(row.usedPercent, null);

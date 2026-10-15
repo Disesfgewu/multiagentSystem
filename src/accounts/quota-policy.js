@@ -111,7 +111,7 @@ function decideDispatch({ policy, observations, now, running = 0, approval } = {
   for (const [window, item] of [...windows].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (item.unit !== 'percent' || !isGateEligible(item, at)) {
       // An estimate, an expired reading or a missing value is shown, never used as a gate.
-      if (item.value !== null && item.value !== undefined && percent(item.value) && rules.warnAtPercent !== undefined && item.value >= rules.warnAtPercent) {
+      if (item.unit === 'percent' && item.value !== null && item.value !== undefined && percent(item.value) && rules.warnAtPercent !== undefined && item.value >= rules.warnAtPercent) {
         raise('warn', { code: 'unverified-reading-over-warning', window, confidence: item.confidence });
       } else {
         raise('warn', { code: 'window-unverified', window });
