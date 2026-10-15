@@ -4,11 +4,15 @@ const { assertSha } = require('./validate');
 
 const DECISIVE = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
 
+// GitHub review ids only grow, so the id orders reviews; the time only breaks a tie. Input order
+// never matters. A decisive review whose id or time cannot be read cannot be placed, so the
+// whole assessment is unknown rather than silently ignoring it.
+const parsedTime = (review) => (typeof review.submittedAt === 'string' ? Date.parse(review.submittedAt) : NaN);
+const readableId = (review) => Number.isSafeInteger(review.id) && review.id > 0;
+
 function compareReviews(a, b) {
-  const timeA = a.submittedAt ? Date.parse(a.submittedAt) : 0;
-  const timeB = b.submittedAt ? Date.parse(b.submittedAt) : 0;
-  if (timeA !== timeB) return timeA - timeB;
-  return a.id - b.id;
+  if (a.id !== b.id) return a.id - b.id;
+  return parsedTime(a) - parsedTime(b);
 }
 
 function summarize(review) {
@@ -31,6 +35,7 @@ function summarize(review) {
  *   "dismiss stale approvals" setting is, so a push always requires a fresh approval.
  * - A reviewer whose latest decisive review was dismissed has no effective review; an
  *   earlier approval is not revived.
+ * - A decisive review without a readable id or submission time makes the result `unknown`.
  * - The PR author's own approval is ignored.
  * - Outstanding CHANGES_REQUESTED blocks until dismissed or replaced, on any commit.
  *
@@ -44,9 +49,13 @@ function assessApprovals(input) {
   const required = Math.max(1, Number.isInteger(input.requiredApprovals) ? input.requiredApprovals : 1);
   const author = typeof input.prAuthor === 'string' ? input.prAuthor.toLowerCase() : null;
 
+  const decisive = input.reviews.filter((review) => DECISIVE.has(review.state));
+  if (decisive.some((review) => !readableId(review) || Number.isNaN(parsedTime(review)))) {
+    return { status: 'unknown', reason: 'review_time_unreadable', headSha, required, currentApprovals: [], staleApprovals: [], changesRequested: [], selfApprovalsIgnored: [] };
+  }
+
   const latestByReviewer = new Map();
-  for (const review of [...input.reviews].sort(compareReviews)) {
-    if (!DECISIVE.has(review.state) || !review.submittedAt) continue;
+  for (const review of [...decisive].sort(compareReviews)) {
     const key = review.reviewer ? review.reviewer.toLowerCase() : `unattributed:${review.id}`;
     latestByReviewer.set(key, review);
   }
