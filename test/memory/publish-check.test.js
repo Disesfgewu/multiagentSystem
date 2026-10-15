@@ -2,7 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { findPrivateFragments } = require('../../src/memory/publish-check');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { MemoryStore } = require('../../src/memory/store');
+const { findPrivateFragments, scanMemoryStorePublication } = require('../../src/memory/publish-check');
 
 const memories = [
   { id: 'mem_1', content: 'The release gate for this repo is the Orion checklist, step nine requires two reviewers.' },
@@ -49,4 +53,34 @@ test('private text too short to match reliably is reported, not skipped quietly'
   const result = findPrivateFragments('abc OK!', { memories: tiny, rules: rule });
   assert.equal(result.blocked, false);
   assert.deepEqual(result.unmatchable, ['mem_t', 'r_t']);
+});
+
+test('publication checks the actual MemoryStore list result and blocks if the store becomes unreadable', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-publish-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repoRoot = path.join(root, 'repo');
+  fs.mkdirSync(repoRoot);
+  const dir = path.join(root, 'private');
+  const store = new MemoryStore({ dir, repoRoot });
+  const content = 'The private release gate requires two reviewers before the deployment.';
+  assert.equal(store.propose({
+    repoId: 'repo', roleGroupId: 'pm', privacyDomain: 'local', content,
+    source: { kind: 'file', ref: 'docs/RELEASE.md', digest: 'd1' }
+  }).ok, true);
+  const listed = store.list();
+  const items = Array.isArray(listed) ? listed : listed.items;
+  assert.deepEqual(scanMemoryStorePublication(`Notes: ${content}`, store).findings,
+    [{ code: 'memory-fragment', id: items[0].id }]);
+  assert.equal(scanMemoryStorePublication('A public change with no private text.', store).blocked, false);
+
+  fs.writeFileSync(path.join(dir, 'memory.json'), '{broken');
+  assert.equal(store.status().ok, false);
+  assert.deepEqual(scanMemoryStorePublication('A public change with no private text.', store), {
+    blocked: true, findings: [{ code: 'private-memory-unavailable', id: null }], unmatchable: []
+  });
+});
+
+test('publication rejects the new result shape when its memory read is unavailable', () => {
+  const store = { status: () => ({ ok: true }), list: () => ({ ok: false, reason: 'unsafe-path', items: [] }) };
+  assert.equal(scanMemoryStorePublication('Any text', store).blocked, true);
 });

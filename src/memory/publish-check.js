@@ -42,4 +42,24 @@ function findPrivateFragments(outgoing, { memories = [], rules = [] } = {}) {
   return { blocked: findings.length > 0, findings, unmatchable };
 }
 
-module.exports = { findPrivateFragments, WINDOW, MIN_MATCHABLE_CHARS };
+// Main still returns an array from list(); #62 changes that API to {ok, items}.
+// Check status around the read so neither version treats an unreadable store as empty.
+function scanMemoryStorePublication(outgoing, store, { rules = [] } = {}) {
+  const unavailable = () => ({
+    blocked: true,
+    findings: [{ code: 'private-memory-unavailable', id: null }],
+    unmatchable: []
+  });
+  if (!store || typeof store.status !== 'function' || typeof store.list !== 'function') return unavailable();
+  try {
+    if (store.status().ok !== true) return unavailable();
+    const listed = store.list();
+    const items = Array.isArray(listed) ? listed : listed && listed.ok === true ? listed.items : null;
+    if (!Array.isArray(items) || store.status().ok !== true) return unavailable();
+    return findPrivateFragments(outgoing, { memories: items, rules });
+  } catch {
+    return unavailable();
+  }
+}
+
+module.exports = { findPrivateFragments, scanMemoryStorePublication, WINDOW, MIN_MATCHABLE_CHARS };

@@ -18,7 +18,7 @@ const { spawnSync } = require('node:child_process');
 const { MemoryStore } = require('../../src/memory/store');
 const { resolveRules } = require('../../src/memory/rules');
 const { planInjection, writePlan, cleanupPlan } = require('../../src/memory/injection');
-const { findPrivateFragments } = require('../../src/memory/publish-check');
+const { scanMemoryStorePublication } = require('../../src/memory/publish-check');
 const { checkPrivateRoot } = require('../../src/memory/paths');
 
 const TIMEOUT_MS = 90000;
@@ -202,11 +202,12 @@ async function main() {
 
     // ---- Publish check ----
     const leaked = `## Notes\n\nthe secret codeword for this session is ${words['role-a']} -- as discussed.`;
-    const leakResult = findPrivateFragments(leaked, { memories: store.list() });
+    const leakResult = scanMemoryStorePublication(leaked, store);
+    record('publish check can read the private memory store',
+      !leakResult.findings.some((f) => f.code === 'private-memory-unavailable'), null);
     record('publish check flags a memory fragment in a PR body',
       leakResult.blocked && leakResult.findings.some((f) => f.code === 'memory-fragment'), null);
-    const clean = findPrivateFragments('Adds validation for configuration directories and covers it with tests.',
-      { memories: store.list() });
+    const clean = scanMemoryStorePublication('Adds validation for configuration directories and covers it with tests.', store);
     record('publish check passes ordinary public text', !clean.blocked, null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
