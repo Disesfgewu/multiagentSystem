@@ -22,6 +22,7 @@ const { previewEffectiveRules, formatPreview } = require('./preview') as {
   formatPreview(value: unknown, options?: { injection?: unknown }): string;
 };
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
+const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates') as {
   describeRoleGroup(record: RoleRecord): string;
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
@@ -166,9 +167,8 @@ async function create(): Promise<void> {
       validateInput: (text) => /^[a-z][a-z0-9-]{0,31}$/.test(text) ? undefined : 'Use a lowercase role id such as researcher.' });
     if (!roleId) return;
   }
-  const provider = await vscode.window.showQuickPick(builtIn.list().map((item: { id: string; label: string }) => ({
-    label: item.label, id: item.id, detail: injectionStatus({ provider: item.id }).label
-  })), { placeHolder: fieldHelp('provider') ?? 'Choose the CLI provider', ignoreFocusOut: true });
+  const provider = await vscode.window.showQuickPick(roleProviderChoices(),
+    { placeHolder: fieldHelp('provider') ?? 'Choose the CLI provider', ignoreFocusOut: true });
   if (!provider) return;
   const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: template.defaultName,
     validateInput: (text) => text.trim() ? undefined : 'Enter a name.' });
