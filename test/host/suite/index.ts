@@ -7,7 +7,7 @@ import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
-import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord } from '../../../src/roles/roleCommands';
+import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -169,10 +169,33 @@ async function roleFlow(): Promise<void> {
   assert.ok(items?.some((item) => item.label === 'Host PM' && String(item.description).includes('CLI not verified')));
   await vscode.commands.executeCommand(ROLE_COMMANDS.preview, 'host-pm');
   const text = vscode.window.activeTextEditor?.document.getText() ?? '';
-  assert.match(text, /CLI application: not verified/);
+  assert.match(text, /Rules in the CLI: Preview only: not sent to the CLI/);
+  assert.match(text, /<NOT sent to the CLI>/, 'every rule says it was not sent');
+  assert.match(text, /<told to the agent only, not enforced>/, 'every tool permission says it is not enforced');
   assert.match(text, /host-no-merge \(platform v2\)/);
   assert.match(text, /permission-relaxation-blocked/);
-  console.log('host smoke: private role group appears in Explorer and previews source, version, conflict, and unverified CLI status');
+  assert.match(text, /PRIVATE/);
+  assert.doesNotMatch(text, /applied|sent to the CLI \(evidence/i, 'nothing is claimed as applied');
+
+  // The preview is a virtual document: it has no file behind it, so it cannot be saved into a repository.
+  const shown = vscode.window.activeTextEditor?.document;
+  assert.equal(shown?.uri.scheme, PREVIEW_SCHEME);
+  assert.equal(shown?.isUntitled, false);
+  await assert.rejects(Promise.resolve(vscode.workspace.fs.writeFile(previewUri('host-pm'), Buffer.from('x'))), 'a virtual preview cannot be written');
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+  assert.equal(fs.existsSync(path.join(workspaceRoot, 'effective-rules.txt')), false, 'no preview file appears in the project');
+
+  // agy has no known way to receive rules: its preview must say they have to be given by hand.
+  const agy = await saveRoleRecord({
+    group: { id: 'host-agy', name: 'Host Agy', role: 'worker', provider: 'agy', version: 1, defaultAccountProfileId: null,
+      allowedScope: { repositories: [], paths: [] }, toolPermissions: {}, memoryScope: { mode: 'off' }, rules: [{ id: 'host-agy-rule', type: 'instruction', text: 'Stay small.', version: 1 }] },
+    layers: {}
+  } as Parameters<typeof saveRoleRecord>[0]);
+  assert.equal(agy.ok, true, agy.reason);
+  const agyText = (await vscode.workspace.openTextDocument(previewUri('host-agy'))).getText();
+  assert.match(agyText, /Not supported by this provider: give these rules to the agent by hand/);
+  assert.match(agyText, /<not supported: give by hand>/);
+  console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
 }
 
 interface Outcome {

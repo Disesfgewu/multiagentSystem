@@ -171,7 +171,11 @@ function compose(group, entries) {
 
 // A plain-text view for a person to read. It is shown locally and holds the text
 // of the instructions, so it must not be pasted into GitHub or logs.
-function formatPreview(preview) {
+//
+// `options.injection` is the result of `injectionStatus`. When it is given, every rule and every tool
+// permission is tagged with what happened to it, and the header says so. A rule is never shown as
+// applied unless the status says evidence was recorded.
+function formatPreview(preview, options = {}) {
   if (!preview || preview.ok !== true) {
     const lines = ['Effective configuration cannot be built:'];
     for (const problem of (preview && preview.problems) || []) {
@@ -183,6 +187,9 @@ function formatPreview(preview) {
   const list = (items) => (items.length > 0 ? items.join(', ') : 'none');
   const source = (entry) => `${entry.layer}${entry.version === null ? '' : ` v${entry.version}`}`;
   const sourceOf = new Map(rules.sources.map((entry) => [entry.id, entry]));
+  const injection = options && options.injection;
+  const short = { 'sent-to-cli': 'sent to the CLI', 'preview-only': 'NOT sent to the CLI', unsupported: 'not supported: give by hand' };
+  const tag = injection && Object.hasOwn(short, injection.state) ? `  <${short[injection.state]}>` : '';
 
   const lines = [
     `Role group: ${roleGroup.name} (${roleGroup.id}; role ${roleGroup.role}; ${roleGroup.provider}; version ${roleGroup.version})`,
@@ -190,6 +197,7 @@ function formatPreview(preview) {
     `Allowed repositories: ${list(roleGroup.allowedScope.repositories)}`,
     `Allowed paths: ${list(roleGroup.allowedScope.paths)}`,
     `Memory: ${roleGroup.memoryScope.mode}`,
+    ...(injection ? [`Rules in the CLI: ${injection.label}`] : []),
     '',
     'Effective rules:'
   ];
@@ -199,12 +207,12 @@ function formatPreview(preview) {
     ...rules.instructions.map((rule) => ({ rule, text: `instruction: ${rule.text}` }))
   ].sort((a, b) => strength(a.rule.layer) - strength(b.rule.layer) || byCodeUnit(a.rule.id, b.rule.id));
   if (described.length === 0) lines.push('  (none)');
-  for (const { rule, text } of described) lines.push(`  - ${text}  [${source(sourceOf.get(rule.id))}; ${rule.id}]`);
+  for (const { rule, text } of described) lines.push(`  - ${text}  [${source(sourceOf.get(rule.id))}; ${rule.id}]${tag}`);
 
   lines.push('', 'Tool permissions (declared -> effective; not enforced here, left to broker or isolation):');
   for (const entry of permissions) {
     const limited = entry.limitedBy.length > 0 ? ` limited by ${entry.limitedBy.map((s) => `${s.id} (${source(s)})`).join(', ')}` : '';
-    lines.push(`  - ${entry.tool}: ${entry.declared} -> ${entry.effective}${limited}`);
+    lines.push(`  - ${entry.tool}: ${entry.declared} -> ${entry.effective}${limited}${injection ? '  <told to the agent only, not enforced>' : ''}`);
   }
   if (replaced.length > 0) {
     lines.push('', 'Replaced rules:');
