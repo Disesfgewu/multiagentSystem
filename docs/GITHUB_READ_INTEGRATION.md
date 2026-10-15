@@ -41,7 +41,7 @@ repo 的決定順序：命令的 `repository` 選項 → 工作區資料夾的 G
 
 不重複 GitHub 回傳的訊息文字（避免遠端內容出現在介面上）。清單中的標題、標籤、登入名稱都來自遠端，一律當純文字顯示：控制字元、雙向覆寫與零寬字元以空白取代，壓成一行並限制長度。PR 清單**不顯示**審查或 CI 狀態（清單端點沒有），顯示為「review and CI: not loaded」；要看狀態須明確讀取，沒讀到的部分是「unknown」。
 
-只有 `https://github.com` 的頁面會交給瀏覽器（檢查協定、主機、連接埠與帳密）。
+只有 canonical 的 `https://github.com` 頁面會交給瀏覽器（檢查協定、主機、連接埠與帳密，拒絕反斜線、percent escape 及解析後會改寫的字串），避免 Node 與 VS Code URI parser 對同一段文字作出不同解讀。
 
 ## 4. 測試與驗證
 

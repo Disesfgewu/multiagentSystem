@@ -397,7 +397,9 @@ test('only https pages on github.com are ever handed to the browser', () => {
   for (const bad of [
     'http://github.com/a/b', 'https://github.com.evil.test/a/b', 'https://evil.test/github.com/a/b', 'https://github.com@evil.test/a/b',
     'https://user:pass@github.com/a/b', 'https://github.com:8443/a/b', 'javascript:alert(1)', 'file:///etc/passwd', 'vscode://x/y',
-    'https://gist.github.com/a', 'https://api.github.com/repos/a/b', '//github.com/a/b', 'github.com/a/b', '', null, undefined, 42
+    'https://gist.github.com/a', 'https://api.github.com/repos/a/b', '//github.com/a/b', 'github.com/a/b',
+    'https://github.com\\@evil.test/a/b', 'https://github.com/%5c@evil.test/a/b', 'https://github.com/a/%2fb',
+    'HTTPS://GITHUB.COM/a/b', ' https://github.com/a/b', 'https://github.com/a/b\n', '', null, undefined, 42
   ]) {
     assert.equal(isGitHubWebUrl(bad), false, String(bad));
   }

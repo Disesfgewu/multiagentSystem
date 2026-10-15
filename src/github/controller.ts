@@ -208,9 +208,13 @@ export function validateNumberInput(value: string): string | undefined {
 /** Only https pages on github.com are ever handed to the browser. */
 export function isGitHubWebUrl(value: unknown): boolean {
   if (typeof value !== 'string') return false;
+  // Node's WHATWG URL parser treats a backslash as a slash, while VS Code's URI parser can
+  // interpret the same text differently. Percent escapes have the same cross-parser risk. The
+  // extension only opens links built from GitHub identifiers, so neither form is needed here.
+  if (value.includes('\\') || value.includes('%')) return false;
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'github.com' && url.port === '' && !url.username && !url.password;
+    return url.href === value && url.protocol === 'https:' && url.hostname === 'github.com' && url.port === '' && !url.username && !url.password;
   } catch {
     return false;
   }
