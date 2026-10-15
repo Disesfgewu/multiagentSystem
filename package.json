@@ -14,7 +14,8 @@
     "onCommand:multiagentSystem.launchAgent",
     "onCommand:multiagentSystem.worktrees.list",
     "onCommand:multiagentSystem.worktrees.create",
-    "onCommand:multiagentSystem.worktrees.remove"
+    "onCommand:multiagentSystem.worktrees.remove",
+    "onCommand:multiagentSystem.sessions.list"
   ],
   "contributes": {
     "commands": [
@@ -37,6 +38,10 @@
       {
         "command": "multiagentSystem.worktrees.remove",
         "title": "Multiagent: Release Worktree"
+      },
+      {
+        "command": "multiagentSystem.sessions.list",
+        "title": "Multiagent: Sessions"
       }
     ]
   },

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerSessionCommands, SessionCommands } from './sessions/sessionCommands';
 import { registerWorktreeCommands } from './projects/worktreeCommands';
 import { GROUP_NAMES, PROVIDERS, CliProvider, errorMessage, terminalTitle, validateTerminalName } from './agents';
 
@@ -58,24 +59,23 @@ async function launchAgent(): Promise<void> {
   });
   if (!name) return;
 
-  try {
-    const terminal = vscode.window.createTerminal({
-      name: terminalTitle(name),
-      cwd,
-      location: vscode.TerminalLocation.Editor
-    });
-    terminal.show();
-    terminal.sendText(provider.executable, true);
-  } catch (error) {
-    void vscode.window.showErrorMessage(`Could not launch ${provider.label}: ${errorMessage(error)}`);
+  // The session is recorded, but the CLI is only *requested*: nothing here proves it is running.
+  // Failures are reported to the user by the session layer itself.
+  if (!sessions) {
+    void vscode.window.showErrorMessage(`Could not launch ${provider.label}: sessions are not ready.`);
+    return;
   }
+  await sessions.launch({ interactive: true, provider: provider.executable, name, cwd: cwd.fsPath });
 }
+
+let sessions: SessionCommands | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)
   );
+  sessions = registerSessionCommands(context);
   registerWorktreeCommands(context);
 }
 
