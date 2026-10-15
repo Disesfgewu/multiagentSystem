@@ -24,7 +24,7 @@ const result = await mergePullRequest({
   role: 'pm',
   actorId, authorId, pmLogin,     // 由可信 broker 建立，不接受 worker 自稱
   policyConfig: { pmActorId, mergeAuthority: 'pm' },
-  scanOptions
+  scanOptions: { memories, rules, knownValues } // optional extra private references for detection
 });
 ```
 
@@ -39,7 +39,7 @@ reader.getPullRequestPublication(number, expectedHeadSha, { forceRefresh: true }
 
 掃描單位由協調器自己組成：最新 snapshot 的 PR title、PR body，以及綁定該 head 的完整 unified diff。三者以既有 `scanPublication` 檢查後，才把同一個 head SHA 當成 `expectedHeadSha` 交給 writer。writer 必須在 GitHub 端原子核對該 SHA。衝突、拒絕、例外或格式不明的 writer 結果都不會自動重試；網路例外回 `merge-outcome-unknown`，避免把可能已成功的 merge 再送一次。
 
-結果只帶固定原因碼，不回傳 reader／writer 的錯誤文字。內容掃描結果也只暴露狀態與固定原因，不帶被掃描的文字。
+結果只帶固定原因碼，不回傳 reader／writer 的錯誤文字。內容掃描結果也只暴露狀態與固定原因，不帶被掃描的文字。呼叫端可提供額外的私人記憶／規則／已知值供掃描器檢查；預設偵測器不能被呼叫端替換，未知掃描選項會被忽略。
 
 ## 本切片未完成與未驗證
 

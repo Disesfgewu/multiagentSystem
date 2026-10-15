@@ -119,7 +119,6 @@ test('coordinator force-refreshes snapshot and bound content, then sends only th
   const reads = [];
   const contentReads = [];
   const writes = [];
-  const scanned = [];
   const reader = {
     getPullRequestSnapshot: async (...args) => { reads.push(args); return snapshot(); },
     getPullRequestPublication: async (...args) => {
@@ -130,16 +129,11 @@ test('coordinator force-refreshes snapshot and bound content, then sends only th
   const writer = { mergePullRequest: async payload => { writes.push(payload); return { ok: true }; } };
   const result = await mergePullRequest({
     reader, writer, repository: REPOSITORY, pullNumber: 7,
-    ...context(), scan: units => { scanned.push(units); return { status: 'clear', blocked: false }; }
+    ...context()
   });
   assert.deepEqual(result, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD });
   assert.deepEqual(reads, [[7, { forceRefresh: true }]]);
   assert.deepEqual(contentReads, [[7, HEAD, { forceRefresh: true }]]);
-  assert.deepEqual(scanned, [[
-    { kind: 'pr-title', text: 'Safe change' },
-    { kind: 'pr-body', text: 'Refs #17' },
-    { kind: 'diff', text: 'safe diff' }
-  ]]);
   assert.deepEqual(writes, [{ repository: REPOSITORY, number: 7, expectedHeadSha: HEAD }]);
 });
 
@@ -165,6 +159,19 @@ test('a secret in the current PR body is scanned even when the bound diff is ben
   assert.equal(writes.length, 0);
 });
 
+test('caller scan overrides cannot bypass the mandatory publication detectors', async () => {
+  let writes = 0;
+  const result = await mergePullRequest({
+    reader: readerFor(snapshot({ pr: { body: `accidental ghp_${'x'.repeat(36)}` } })),
+    writer: { mergePullRequest: async () => { writes += 1; return { ok: true }; } },
+    repository: REPOSITORY, pullNumber: 7, ...context(),
+    scan: () => ({ status: 'clear', blocked: false }),
+    scanOptions: { detectors: [] }
+  });
+  assert.deepEqual([result.ok, result.reason, result.scanStatus], [false, 'publication-blocked', 'blocked']);
+  assert.equal(writes, 0);
+});
+
 test('missing, partial, stale, or mismatched publication evidence fails closed', async () => {
   const cases = [
     { kind: 'partial', data: { complete: false, number: 7, headSha: HEAD, diff: 'safe' } },
@@ -186,7 +193,6 @@ test('missing, partial, stale, or mismatched publication evidence fails closed',
 });
 
 test('a failed policy decision never scans or writes', async () => {
-  let scans = 0;
   let writes = 0;
   let contentReads = 0;
   const result = await mergePullRequest({
@@ -195,11 +201,10 @@ test('a failed policy decision never scans or writes', async () => {
       getPullRequestPublication: async () => { contentReads += 1; return {}; }
     },
     writer: { mergePullRequest: async () => { writes += 1; return { ok: true }; } },
-    repository: REPOSITORY, pullNumber: 7, ...context({ role: 'worker', actorId: '20' }),
-    scan: () => { scans += 1; return { status: 'clear', blocked: false }; }
+    repository: REPOSITORY, pullNumber: 7, ...context({ role: 'worker', actorId: '20' })
   });
   assert.equal(result.reason, 'role-forbidden');
-  assert.deepEqual([contentReads, scans, writes], [0, 0, 0]);
+  assert.deepEqual([contentReads, writes], [0, 0]);
 });
 
 test('writer conflicts are returned and unknown outcomes are not retried', async () => {

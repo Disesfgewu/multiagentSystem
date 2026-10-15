@@ -148,14 +148,14 @@ function sameRepository(left, right) {
  */
 async function mergePullRequest({
   reader, writer, repository, pullNumber, role, actorId, authorId, pmLogin,
-  policyConfig = {}, scanOptions = {}, scan = scanPublication
+  policyConfig = {}, scanOptions = {}
 } = {}) {
   if (!reader || typeof reader.getPullRequestSnapshot !== 'function') throw new TypeError('reader.getPullRequestSnapshot is required');
   if (typeof reader.getPullRequestPublication !== 'function') throw new TypeError('reader.getPullRequestPublication is required');
   if (!writer || typeof writer.mergePullRequest !== 'function') throw new TypeError('writer.mergePullRequest is required');
   if (!isPlain(repository) || typeof repository.owner !== 'string' || typeof repository.name !== 'string') throw new TypeError('repository is required');
   if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) throw new TypeError('pullNumber must be a positive integer');
-  if (typeof scan !== 'function') throw new TypeError('scan must be a function');
+  if (!isPlain(scanOptions)) return refuse('publication-scan-failed');
 
   let snapshot;
   try {
@@ -192,7 +192,13 @@ async function mergePullRequest({
 
   let scanResult;
   try {
-    scanResult = scan(units, scanOptions);
+    // Keep the standard detectors mandatory. These options may add private reference material,
+    // but cannot replace the scanner's credential, path, and private-fragment detectors.
+    const safeScanOptions = {};
+    for (const key of ['memories', 'rules', 'knownValues']) {
+      if (Object.hasOwn(scanOptions, key)) safeScanOptions[key] = scanOptions[key];
+    }
+    scanResult = scanPublication(units, safeScanOptions);
   } catch {
     return refuse('publication-scan-failed');
   }
