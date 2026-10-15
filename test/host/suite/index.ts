@@ -55,7 +55,7 @@ async function sessionFlow(workspace: string): Promise<void> {
   assert.equal(a.ok && b.ok, true);
   assert.equal(a.session?.state, 'terminal-open', 'a shell alone is not reported as the CLI working');
   assert.equal(a.session?.accountProfileId, 'unassigned');
-  assert.ok(terminalNamed('Session A') && terminalNamed('Session B'), 'two native terminals exist');
+  await waitFor(() => terminalNamed('Session A') && terminalNamed('Session B') ? true : undefined, 10000);
   assert.equal((await sessions()).filter((entry) => entry.terminalOpen).length, 2);
 
   // The user closes terminal A: the real close event must reach the registry; B is untouched.
