@@ -31,6 +31,21 @@ test('what is left out fails closed: tools are denied, memory is off, empty scop
   assert.deepEqual(result.group.rules, []);
 });
 
+test('role groups accept every built-in provider from the registry, including agy', () => {
+  for (const provider of ['agy', 'claude', 'codex']) {
+    const result = validateRoleGroup({
+      id: 'group', name: 'Group', role: 'worker', provider, version: 1,
+      allowedScope: { repositories: [], paths: [] }
+    });
+    assert.equal(result.ok, true, provider);
+    assert.equal(result.group.provider, provider);
+  }
+  assert.equal(codes(validateRoleGroup({
+    id: 'group', name: 'Group', role: 'worker', provider: 'opencode', version: 1,
+    allowedScope: { repositories: [], paths: [] }
+  })).includes('invalid-provider@provider'), true);
+});
+
 test('unknown fields are refused at every level, not ignored', () => {
   assert.deepEqual(codes(validateRoleGroup(pmGroup({ admin: true }))), ['unknown-field@admin']);
   assert.deepEqual(codes(validateRoleGroup(pmGroup({ allowedScope: { repositories: [], paths: [], network: [] } }))),

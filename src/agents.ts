@@ -1,12 +1,13 @@
 export interface CliProvider {
+  readonly id: string;
   readonly label: string;
   readonly executable: string;
+  readonly args: readonly string[];
 }
 
-export const PROVIDERS: readonly CliProvider[] = [
-  { label: 'Claude Code', executable: 'claude' },
-  { label: 'Codex CLI', executable: 'codex' }
-];
+const { builtIn } = require('./providers/registry') as { builtIn: { list(): CliProvider[] } };
+
+export const PROVIDERS: readonly CliProvider[] = Object.freeze(builtIn.list());
 
 export const GROUP_NAMES: readonly string[] = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'];
 

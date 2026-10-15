@@ -81,6 +81,16 @@ test('Codex plan uses a per-session profile file in CODEX_HOME and only a name i
   assert.equal(JSON.parse(match[1]), renderContext({ roleGroup, rules, memories }));
 });
 
+test('agy gets an explicit manual injection plan with the complete context', (t) => {
+  const p = paths(t);
+  const plan = planInjection(base(p, { provider: 'agy' }));
+  assert.equal(plan.method, 'manual');
+  assert.deepEqual(plan.argv, []);
+  assert.match(plan.note, /paste it into the terminal/);
+  assert.match(plan.files[0].content, /Keep the change small\./);
+  assert.equal(plan.provider, 'agy');
+});
+
 test('TOML escaping covers quotes, newlines, backslashes and DEL', (t) => {
   const p = paths(t);
   const tricky = [{ ...memories[0], id: 'mem_x', content: 'Say "hi"\\now\u007f.' }];

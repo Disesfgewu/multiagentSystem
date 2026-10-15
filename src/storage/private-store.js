@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { checkPrivateRoot, isSameOrInside, pathFor, resolvers } = require('./paths');
 const { DirectoryLock, LockIoError } = require('../shared/lock');
 const { findSecrets } = require('./sensitive');
+const { builtIn } = require('../providers/registry');
 
 const FORMAT = 'multiagent-private-store';
 const STORE_FILE = 'store.json';
@@ -21,7 +22,7 @@ const MAX_STORE_BYTES = 8 * 1024 * 1024;
 // it is exactly one of the listed strings; nothing is kept because of its shape.
 const DEFAULT_PUBLIC_VALUES = Object.freeze({
   '*': Object.freeze({
-    provider: Object.freeze(['claude', 'codex']),
+    provider: Object.freeze(builtIn.ids()),
     status: Object.freeze(['preparing', 'running', 'waiting', 'completed', 'failed', 'unknown'])
   })
 });
