@@ -3,7 +3,8 @@ import * as fs from 'node:fs';
 const guidance = require('./folder-guidance') as {
   suggestFolder(input: { homeDir: string; provider: string; label: string }): { parent: string; dir: string; name: string };
   checkFolder(input: { provider: string; label: string; configDir: string; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; items: Explained[] };
-  createRecommendedFolder(input: { provider: string; label: string; suggestion: { parent: string; dir: string; name: string }; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; dir?: string; items?: Explained[] };
+  createRecommendedFolder(input: { provider: string; label: string; suggestion: { parent: string; dir: string; name: string }; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; dir?: string; madeFolders?: string[]; items?: Explained[] };
+  discardCreated(folders: string[]): string[];
 };
 
 export type Explained = { code: string; known: boolean; message: string; fix: string };
@@ -15,7 +16,7 @@ export interface ChooserUi {
   showProblems(summary: string, detail: string, offerRecommended: boolean): Promise<'recommended' | 'another' | undefined>;
 }
 
-export type ChosenFolder = { ok: true; dir: string; created: boolean } | { ok: false };
+export type ChosenFolder = { ok: true; dir: string; created: boolean; madeFolders: string[] } | { ok: false };
 
 export function describeProblems(items: Explained[]): string {
   return items.map((item) => `• ${item.message}\n  ${item.fix}`).join('\n\n');
@@ -43,7 +44,7 @@ export async function chooseConfigFolder(options: {
     // The suggestion is made again each time so a folder made a moment ago is not offered twice.
     const suggestion = guidance.suggestFolder({ homeDir, provider, label });
     const made = guidance.createRecommendedFolder({ provider, label, suggestion, profiles, context });
-    if (made.ok && made.dir) return { ok: true, dir: made.dir, created: true };
+    if (made.ok && made.dir) return { ok: true, dir: made.dir, created: true, madeFolders: made.madeFolders ?? [] };
     const items = made.items ?? [];
     const answer = await ui.showProblems('The recommended folder could not be created.', describeProblems(items), false);
     return answer === undefined ? { ok: false } : undefined;
@@ -62,7 +63,7 @@ export async function chooseConfigFolder(options: {
     const picked = await ui.openFolder(start);
     if (picked === undefined) continue;
     const checked = guidance.checkFolder({ provider, label, configDir: picked, profiles, context });
-    if (checked.ok) return { ok: true, dir: picked, created: false };
+    if (checked.ok) return { ok: true, dir: picked, created: false, madeFolders: [] };
     const answer = await ui.showProblems('That folder cannot be used for this account.', describeProblems(checked.items), true);
     if (answer === undefined) return { ok: false };
     if (answer === 'recommended') {
@@ -71,4 +72,13 @@ export async function chooseConfigFolder(options: {
     }
   }
   return { ok: false };
+}
+
+/**
+ * Call after the account was (or was not) saved. If the save failed, the folders this chooser made for it
+ * are removed again (only while empty), so a refused save does not leave folders piling up.
+ */
+export function settleChosenFolder(chosen: ChosenFolder, saved: { ok: boolean }): string[] {
+  if (!chosen.ok || saved.ok || chosen.madeFolders.length === 0) return [];
+  return guidance.discardCreated(chosen.madeFolders);
 }

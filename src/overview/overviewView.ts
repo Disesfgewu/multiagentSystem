@@ -5,7 +5,8 @@ import { accountService } from '../accounts/accountRuntime';
 import { privateStorage } from '../storage/storageCommands';
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
-const { presentAgent, onboardingSteps, guideVisible } = require('./presentation') as {
+const { presentAgent, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
+  countRunningAgents(sessions: unknown): number;
   presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean };
   onboardingSteps(counts: { accounts: number | null; roleGroups: number | null; sessions: number | null }): Array<{ id: string; title: string; done: boolean | 'unknown' | 'not-tracked'; command: string; button: string; missing: string }>;
   guideVisible(steps: unknown[]): boolean;
@@ -98,7 +99,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
     roleGroups: roleNames
   });
   const agents = overview.rows.map((row: any, index: number) => presentAgent(row, { name: live[index]?.name, providerLabel: builtIn.get(live[index]?.provider)?.label, terminalOpen: live[index]?.terminalOpen }));
-  const steps = onboardingSteps({ accounts: profiles ? profiles.length : null, roleGroups: roleGroups ? roleGroups.length : null, sessions: live.length });
+  const steps = onboardingSteps({ accounts: profiles ? profiles.length : null, roleGroups: roleGroups ? roleGroups.length : null, sessions: countRunningAgents(live) });
   return { steps, agents, problems: overview.problems, notes };
 }
 

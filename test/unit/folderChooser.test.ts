@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { chooseConfigFolder, ChooserUi } from '../../src/accounts/folderChooser';
+import { chooseConfigFolder, settleChosenFolder, ChooserUi } from '../../src/accounts/folderChooser';
 
 // Real temporary folders and a scripted person: the chooser runs the real checks and the real
 // folder creation, and only the three questions are answered by the test.
@@ -37,7 +37,7 @@ test('choosing the recommended folder creates it outside the project and returns
   const { fake } = ui({ actions: ['create'] });
   const before = tree(w.repoRoot);
   const chosen = await chooseConfigFolder(base(w, fake));
-  assert.deepEqual(chosen, { ok: true, dir: path.join(w.homeDir, 'multiagent-accounts', 'claude-work'), created: true });
+  assert.deepEqual(chosen, { ok: true, dir: path.join(w.homeDir, 'multiagent-accounts', 'claude-work'), created: true, madeFolders: [path.join(w.homeDir, 'multiagent-accounts'), path.join(w.homeDir, 'multiagent-accounts', 'claude-work')] });
   assert.ok(fs.statSync((chosen as { dir: string }).dir).isDirectory());
   assert.deepEqual(tree(w.repoRoot), before, 'nothing was made inside the project');
 });
@@ -84,7 +84,7 @@ test('the person is told at the moment of choosing: each refusal explains itself
   fs.mkdirSync(good);
   const { fake, log } = ui({ actions: ['choose', 'choose', 'choose', 'choose'], folders: [w.repoRoot, providerDefault, file, good], answers: ['another', 'another', 'another'] });
   const chosen = await chooseConfigFolder(base(w, fake));
-  assert.deepEqual(chosen, { ok: true, dir: good, created: false });
+  assert.deepEqual(chosen, { ok: true, dir: good, created: false, madeFolders: [] });
   assert.equal(log.problems.length, 3);
   assert.match(log.problems[0].detail, /contains your current project|inside your current project/);
   assert.match(log.problems[1].detail, /already uses for its own sign-in/);
@@ -147,7 +147,7 @@ test('closing the folder dialog returns to the question, and dismissing the prob
   const good = path.join(w.root, 'good');
   fs.mkdirSync(good);
   const closed = ui({ actions: ['choose', 'choose'], folders: [undefined, good] });
-  assert.deepEqual(await chooseConfigFolder(base(w, closed.fake)), { ok: true, dir: good, created: false }, 'closing the dialog asks again');
+  assert.deepEqual(await chooseConfigFolder(base(w, closed.fake)), { ok: true, dir: good, created: false, madeFolders: [] }, 'closing the dialog asks again');
   assert.equal(closed.log.openDefaults.length, 2);
 
   const dismissed = ui({ actions: ['choose', 'choose'], folders: [w.repoRoot, good], answers: [undefined] });
@@ -162,4 +162,37 @@ test('closing the folder dialog returns to the question, and dismissing the prob
   assert.equal(failedCreate.log.openDefaults.length, 0);
   const retry = ui({ actions: ['create', 'choose'], folders: [good], answers: ['another'] });
   assert.equal((await chooseConfigFolder(base(w, retry.fake, { profiles: nested }))).ok, true, 'Try again returns to the question');
+});
+
+
+test('a refused save removes the folders the chooser made for it, and an accepted one keeps them', async (t) => {
+  const w = world(t);
+  const chosen = await chooseConfigFolder(base(w, ui({ actions: ['create'] }).fake));
+  assert.equal(chosen.ok, true);
+  const dir = (chosen as { dir: string }).dir;
+  assert.deepEqual(settleChosenFolder(chosen, { ok: true }), []);
+  assert.equal(fs.existsSync(dir), true, 'a saved account keeps its folder');
+  assert.equal(settleChosenFolder(chosen, { ok: false }).length, 2);
+  assert.equal(fs.existsSync(dir), false, 'a refused save leaves no folder behind');
+  assert.equal(fs.existsSync(path.join(w.homeDir, 'multiagent-accounts')), false);
+});
+
+test('a refused save keeps a folder with content, a folder the person chose, and a root that was already there', async (t) => {
+  const w = world(t);
+  const mine = path.join(w.root, 'chosen');
+  fs.mkdirSync(mine);
+  const picked = await chooseConfigFolder(base(w, ui({ actions: ['choose'], folders: [mine] }).fake));
+  assert.deepEqual(settleChosenFolder(picked, { ok: false }), [], 'a folder the person chose is never removed');
+  assert.equal(fs.existsSync(mine), true);
+
+  const first = await chooseConfigFolder(base(w, ui({ actions: ['create'] }).fake));
+  const root = path.join(w.homeDir, 'multiagent-accounts');
+  const profiles = [{ id: 'acct-1', provider: 'claude', label: 'Work', configDir: (first as { dir: string }).dir }];
+  const second = await chooseConfigFolder(base(w, ui({ actions: ['create'] }).fake, { label: 'Personal', profiles }));
+  assert.deepEqual((second as { madeFolders: string[] }).madeFolders.length, 1, 'the root was already there');
+  fs.writeFileSync(path.join((second as { dir: string }).dir, 'login.json'), 'x');
+  assert.deepEqual(settleChosenFolder(second, { ok: false }), []);
+  assert.equal(fs.existsSync((second as { dir: string }).dir), true, 'content is never removed');
+  assert.equal(fs.existsSync(root), true);
+  assert.deepEqual(settleChosenFolder({ ok: false }, { ok: false }), []);
 });

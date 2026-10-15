@@ -131,4 +131,4 @@ function buildOverview({ sessions, accounts = [], roleGroups = {}, branches = {}
   };
 }
 
-module.exports = { buildOverview };
+module.exports = { buildOverview, cleanTitle };

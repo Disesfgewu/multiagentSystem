@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
-import { chooseConfigFolder, ChooserUi, Explained } from './folderChooser';
+import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
@@ -176,9 +176,8 @@ const folderUi: ChooserUi = {
   }
 };
 
-async function pickConfigFolder(provider: string, label: string, profiles: any[], repoRoot: string): Promise<string | undefined> {
-  const chosen = await chooseConfigFolder({ provider, label, profiles, repoRoot, homeDir: os.homedir(), ui: folderUi });
-  return chosen.ok ? chosen.dir : undefined;
+async function pickConfigFolder(provider: string, label: string, profiles: any[], repoRoot: string): Promise<ChosenFolder> {
+  return chooseConfigFolder({ provider, label, profiles, repoRoot, homeDir: os.homedir(), ui: folderUi });
 }
 
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
@@ -210,9 +209,10 @@ async function create(): Promise<void> {
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }
   const existing = result.service.list();
   if (!existing.ok) { void vscode.window.showErrorMessage(errorFor(existing)); return; }
-  const configDir = await pickConfigFolder(picked.id, label, existing.profiles, (result.store as { repoRoot: string }).repoRoot);
-  if (!configDir) return;
-  const created = result.service.create({ provider: picked.id, label, configDir });
+  const chosen = await pickConfigFolder(picked.id, label, existing.profiles, (result.store as { repoRoot: string }).repoRoot);
+  if (!chosen.ok) return;
+  const created = result.service.create({ provider: picked.id, label, configDir: chosen.dir });
+  settleChosenFolder(chosen, created);
   if (!created.ok) { void vscode.window.showErrorMessage(errorFor(created)); return; }
   void vscode.window.showInformationMessage(`Account profile “${created.profile.label}” was saved. Its service identity remains unknown until verified by the CLI.`);
   currentTree?.refresh();
@@ -255,6 +255,7 @@ async function edit(value: unknown, tree: AccountTree): Promise<void> {
   ], { placeHolder: `Edit ${current.profile.label}` });
   if (!fields) return;
   let changes: Record<string, unknown>;
+  let chosenFolder: ChosenFolder | undefined;
   if (fields.value === 'label') {
     const label = await vscode.window.showInputBox({ prompt: 'New account label', value: current.profile.label, validateInput: (text) => text.trim() ? undefined : 'Enter a label.' });
     if (!label) return;
@@ -263,11 +264,12 @@ async function edit(value: unknown, tree: AccountTree): Promise<void> {
     const all = result.service.list();
     if (!all.ok) { void vscode.window.showErrorMessage(errorFor(all)); return; }
     const others = all.profiles.filter((entry: any) => entry.id !== profileId);
-    const configDir = await pickConfigFolder(current.profile.provider, current.profile.label, others, (result.store as { repoRoot: string }).repoRoot);
-    if (!configDir) return;
-    changes = { configDir };
+    chosenFolder = await pickConfigFolder(current.profile.provider, current.profile.label, others, (result.store as { repoRoot: string }).repoRoot);
+    if (!chosenFolder.ok) return;
+    changes = { configDir: chosenFolder.dir };
   }
   const updated = result.service.update(profileId, changes, { expectedRevision: current.profile.revision });
+  if (chosenFolder) settleChosenFolder(chosenFolder, updated);
   if (!updated.ok) { void vscode.window.showErrorMessage(errorFor(updated)); return; }
   tree.refresh();
   void vscode.window.showInformationMessage(`Account profile “${updated.profile.label}” was updated.`);
