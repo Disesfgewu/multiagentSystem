@@ -23,7 +23,7 @@ const result = await mergePullRequest({
   pullNumber,
   role: 'pm',
   actorId, authorId, pmLogin,     // 由可信 broker 建立，不接受 worker 自稱
-  policyConfig: { pmActorId, mergeAuthority: 'pm' },
+  policyConfig: { pmActorId, pmLogin, mergeAuthority: 'pm' },
   scanOptions: { memories, rules, knownValues } // optional extra private references for detection
 });
 ```
@@ -38,6 +38,8 @@ reader.getPullRequestPublication(number, expectedHeadSha, { forceRefresh: true }
 這是給 #24 reader／broker 實作的 fail-closed 介面，本切片沒有 GitHub transport。結果必須明確表示完整，且 PR number 與 head SHA 都和剛讀到的 snapshot 相同；部分、過期、格式不明或讀取失敗一律回 `publication-unverified`。協調器不接受 caller 自由傳入的 publication units，以免乾淨的替代文字掩蓋實際 PR 內容。
 
 掃描單位由協調器自己組成：最新 snapshot 的 PR title、PR body，以及綁定該 head 的完整 unified diff。三者以既有 `scanPublication` 檢查後，才把同一個 head SHA 當成 `expectedHeadSha` 交給 writer。writer 必須在 GitHub 端原子核對該 SHA，並以 `commitTitle`、`commitMessage`（即已掃描的 PR 標題與內文）作為 merge commit 文字，不得讓 GitHub 在 merge 當下改用目前的標題與內文。
+
+空 diff 視為 publication evidence 不完整。PM login 必須與可信設定中的 `policyConfig.pmLogin` 相符；review、CI 摘要與 branch rule 欄位若缺漏、格式錯誤或互相矛盾，都會拒絕 merge。CI 的 passing 結論還需確認 failing、pending、missing required 清單及對應計數皆為空。
 
 掃描若沒有收到任何私人素材（`memories`、`rules`、`knownValues` 皆空或缺漏），結果的 `privateReference` 為 `none-supplied`；此時協調器回 `private-reference-unchecked`，除非呼叫端明確傳入 `privateReferencesChecked: true`，表示它已比對過私人素材且確實沒有可提供的內容。衝突、拒絕、例外或格式不明的 writer 結果都不會自動重試；網路例外回 `merge-outcome-unknown`，避免把可能已成功的 merge 再送一次。
 

@@ -38,7 +38,8 @@ function reviewProblem(snapshot, headSha, pmLogin) {
   if (!approval.currentApprovals.some(review => isPlain(review) && sameLogin(review.reviewer, pmLogin) && review.commitId === headSha)) {
     return 'current-pm-approval-required';
   }
-  if (Array.isArray(approval.changesRequested) && approval.changesRequested.length > 0) return 'changes-requested';
+  if (!Array.isArray(approval.changesRequested)) return 'approval-unknown';
+  if (approval.changesRequested.length > 0) return 'changes-requested';
   return null;
 }
 
@@ -47,10 +48,14 @@ function checksProblem(snapshot, headSha) {
   if (!isPlain(snapshot.checks.data) || snapshot.checks.data.headSha !== headSha) return 'ci-stale';
   const checks = snapshot.checksSummary;
   if (!isPlain(checks) || checks.headSha !== headSha) return 'ci-unknown';
+  if (!Array.isArray(checks.failing) || !Array.isArray(checks.pending) || !Array.isArray(checks.missingRequired) ||
+      !isPlain(checks.counts) || !['passing', 'failing', 'pending'].every(key => Number.isSafeInteger(checks.counts[key]) && checks.counts[key] >= 0)) return 'ci-unknown';
   if (checks.state === 'failing' || checks.requiredState === 'failing') return 'ci-failing';
   if (checks.state === 'pending' || checks.requiredState === 'pending') return 'ci-pending';
   if (checks.state === 'none') return 'ci-missing';
   if (checks.state !== 'passing' || !['passing', 'not_required'].includes(checks.requiredState)) return 'ci-unknown';
+  if (checks.failing.length > 0 || checks.pending.length > 0 || checks.missingRequired.length > 0 ||
+      checks.counts.failing > 0 || checks.counts.pending > 0) return 'ci-unknown';
   return null;
 }
 
@@ -68,6 +73,7 @@ function branchRulesProblem(snapshot) {
   if (!isSuccess(requirements) || !isPlain(requirements.data) || requirements.data.complete !== true) return 'branch-rules-unknown';
   const types = requirements.data.ruleTypes;
   if (!Array.isArray(types) || types.some(type => !SUPPORTED_BRANCH_RULES.has(type))) return 'branch-rules-unsupported';
+  if (!['requireCodeOwnerReview', 'requireLastPushApproval', 'strictStatusChecks'].every(key => typeof requirements.data[key] === 'boolean')) return 'branch-rules-unknown';
   // These requirements need evidence the current read adapter does not expose. Refuse until
   // that evidence is available instead of assuming GitHub will reject the writer later.
   if (requirements.data.requireCodeOwnerReview === true || requirements.data.requireLastPushApproval === true || requirements.data.strictStatusChecks === true) {
@@ -97,6 +103,7 @@ function assessMerge(snapshot, { role, actorId, authorId, pmLogin, policyConfig 
   if (pr.mergeable === false) return refuse('merge-conflict');
   if (pr.mergeable !== true) return refuse('mergeability-unknown');
   if (typeof pmLogin !== 'string' || pmLogin.length === 0) return refuse('pm-github-identity-unverified');
+  if (typeof policyConfig.pmLogin !== 'string' || !sameLogin(pmLogin, policyConfig.pmLogin)) return refuse('pm-github-identity-unverified');
   if (sameLogin(pr.author, pmLogin)) return refuse('github-identities-not-separated');
 
   const reviewReason = reviewProblem(snapshot, snapshot.headSha, pmLogin);
@@ -181,7 +188,7 @@ async function mergePullRequest({
   if (
     !isPlain(publication) || publication.kind !== 'ok' || !isPlain(publication.data) ||
     publication.data.complete !== true || publication.data.number !== pullNumber ||
-    publication.data.headSha !== decision.headSha || typeof publication.data.diff !== 'string'
+    publication.data.headSha !== decision.headSha || typeof publication.data.diff !== 'string' || publication.data.diff.length === 0
   ) {
     return refuse('publication-unverified');
   }

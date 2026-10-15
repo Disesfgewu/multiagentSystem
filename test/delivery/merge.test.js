@@ -7,7 +7,7 @@ const { assessMerge, mergePullRequest } = require('../../src/delivery/merge');
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const REPOSITORY = { owner: 'example', name: 'project' };
-const CONFIG = { pmActorId: '10', mergeAuthority: 'pm' };
+const CONFIG = { pmActorId: '10', pmLogin: 'pm-user', mergeAuthority: 'pm' };
 
 function snapshot(extra = {}) {
   const pr = {
@@ -28,7 +28,7 @@ function snapshot(extra = {}) {
       staleApprovals: [], changesRequested: [], selfApprovalsIgnored: []
     },
     checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{}], statuses: [] } },
-    checksSummary: { headSha: HEAD, state: 'passing', requiredState: 'passing' },
+    checksSummary: { headSha: HEAD, state: 'passing', requiredState: 'passing', counts: { passing: 1, failing: 0, pending: 0 }, failing: [], pending: [], missingRequired: [] },
     threads: { kind: 'empty', data: { headSha: HEAD, threads: [], unresolvedCount: 0 } },
     unresolvedThreads: 0,
     requirements: {
@@ -65,7 +65,7 @@ test('a complete current snapshot passes the pure merge decision', () => {
 
 test('worker merge and the default human mode are refused by the shared publication policy', () => {
   assert.equal(assessMerge(snapshot(), context({ role: 'worker', actorId: '20' })).reason, 'role-forbidden');
-  assert.equal(assessMerge(snapshot(), context({ policyConfig: { pmActorId: '10' } })).reason, 'human-merge-required');
+  assert.equal(assessMerge(snapshot(), context({ policyConfig: { ...CONFIG, mergeAuthority: 'human' } })).reason, 'human-merge-required');
 });
 
 test('only a formal PM approval bound to the latest head counts', () => {
@@ -78,21 +78,33 @@ test('only a formal PM approval bound to the latest head counts', () => {
   ];
   for (const [change, reason] of cases) assert.equal(assessMerge(snapshot(change), context()).reason, reason);
   assert.equal(assessMerge(snapshot({ reviews: { kind: 'partial', data: [] } }), context()).reason, 'approval-unknown');
+  assert.equal(assessMerge(snapshot({ approval: { ...snapshot().approval, changesRequested: null } }), context()).reason, 'approval-unknown');
+  assert.equal(assessMerge(snapshot({ approval: { ...snapshot().approval, changesRequested: [{ reviewer: 'someone' }] } }), context()).reason, 'changes-requested');
+  assert.equal(assessMerge(snapshot({ approval: { ...snapshot().approval, headSha: OLD } }), context()).reason, 'approval-stale');
 });
 
 test('a shared GitHub login cannot supply a formal PM review of its own PR', () => {
   assert.equal(assessMerge(snapshot({ pr: { author: 'PM-USER' } }), context()).reason, 'github-identities-not-separated');
+  assert.equal(assessMerge(snapshot(), context({ pmLogin: 'another-pm' })).reason, 'pm-github-identity-unverified');
 });
 
 test('missing, pending, failing, stale, and unreadable CI have distinct closed outcomes', () => {
   const cases = [
-    [{ checks: { kind: 'empty', data: { headSha: HEAD, checkRuns: [], statuses: [] } }, checksSummary: { headSha: HEAD, state: 'none', requiredState: 'not_required' } }, 'ci-missing'],
-    [{ checksSummary: { headSha: HEAD, state: 'pending', requiredState: 'pending' } }, 'ci-pending'],
-    [{ checksSummary: { headSha: HEAD, state: 'failing', requiredState: 'failing' } }, 'ci-failing'],
+    [{ checks: { kind: 'empty', data: { headSha: HEAD, checkRuns: [], statuses: [] } }, checksSummary: { ...snapshot().checksSummary, state: 'none', requiredState: 'not_required', counts: { passing: 0, failing: 0, pending: 0 } } }, 'ci-missing'],
+    [{ checksSummary: { ...snapshot().checksSummary, state: 'pending', requiredState: 'pending', pending: ['build'], counts: { passing: 0, failing: 0, pending: 1 } } }, 'ci-pending'],
+    [{ checksSummary: { ...snapshot().checksSummary, state: 'failing', requiredState: 'failing', failing: ['build'], counts: { passing: 0, failing: 1, pending: 0 } } }, 'ci-failing'],
+    [{ checksSummary: { headSha: HEAD, state: 'unknown', requiredState: 'unknown' } }, 'ci-unknown'],
+    [{ checksSummary: { headSha: OLD, state: 'passing', requiredState: 'passing' } }, 'ci-unknown'],
     [{ checks: { kind: 'ok', data: { headSha: OLD } } }, 'ci-stale'],
     [{ checks: { kind: 'partial', data: { headSha: HEAD } } }, 'ci-unknown']
   ];
   for (const [change, reason] of cases) assert.equal(assessMerge(snapshot(change), context()).reason, reason);
+  for (const checksSummary of [
+    { ...snapshot().checksSummary, failing: ['build'] },
+    { ...snapshot().checksSummary, pending: ['tests'] },
+    { ...snapshot().checksSummary, missingRequired: ['lint'] },
+    { ...snapshot().checksSummary, counts: { passing: 1, failing: 1, pending: 0 } }
+  ]) assert.equal(assessMerge(snapshot({ checksSummary }), context()).reason, 'ci-unknown');
 });
 
 test('unknown or unresolved conversations and branch rules block merge', () => {
@@ -107,6 +119,18 @@ test('unknown or unresolved conversations and branch rules block merge', () => {
   const unsupported = snapshot();
   unsupported.requirements.data.ruleTypes.push('required_signatures');
   assert.equal(assessMerge(unsupported, context()).reason, 'branch-rules-unsupported');
+  for (const key of ['requireCodeOwnerReview', 'requireLastPushApproval', 'strictStatusChecks']) {
+    const required = snapshot();
+    required.requirements.data[key] = true;
+    assert.equal(assessMerge(required, context()).reason, 'branch-rules-unsupported', `${key}=true`);
+    for (const invalid of [undefined, null, 'false']) {
+      const malformed = snapshot();
+      delete malformed.requirements.data[key];
+      if (invalid !== undefined) malformed.requirements.data[key] = invalid;
+      assert.equal(assessMerge(malformed, context()).reason, 'branch-rules-unknown', `${key}=${String(invalid)}`);
+    }
+  }
+  assert.equal(assessMerge(snapshot({ requirements: { kind: 'ok', data: { ...snapshot().requirements.data, complete: null } } }), context()).reason, 'branch-rules-unknown');
 });
 
 test('inconsistent snapshots, changed heads, and mismatched PR identities are rejected', () => {
@@ -178,7 +202,8 @@ test('missing, partial, stale, or mismatched publication evidence fails closed',
     { kind: 'ok', data: { complete: false, number: 7, headSha: HEAD, diff: 'safe' } },
     { kind: 'ok', data: { complete: true, number: 7, headSha: OLD, diff: 'safe' } },
     { kind: 'ok', data: { complete: true, number: 8, headSha: HEAD, diff: 'safe' } },
-    { kind: 'ok', data: { complete: true, number: 7, headSha: HEAD } }
+    { kind: 'ok', data: { complete: true, number: 7, headSha: HEAD } },
+    { kind: 'ok', data: { complete: true, number: 7, headSha: HEAD, diff: '' } }
   ];
   for (const publication of cases) {
     let writes = 0;
