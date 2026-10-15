@@ -25,6 +25,9 @@ function editRoleRecord(record, change, { newId = randomUUID } = {}) {
     case 'account':
       group.defaultAccountProfileId = change.profileId;
       break;
+    case 'memory':
+      group.memoryScope = { mode: change.mode };
+      break;
     case 'repositories':
     case 'paths':
       group.allowedScope[change.kind] = change.entries;

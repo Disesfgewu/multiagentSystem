@@ -14,10 +14,12 @@ const changed = (record, change) => {
   return result.record;
 };
 
-test('rename, tool permission, account default and both scopes each produce a validated new version', () => {
+test('rename, tool permission, account default, memory and both scopes each produce a validated new version', () => {
   assert.equal(changed(role(), { kind: 'rename', name: 'New name' }).group.name, 'New name');
   assert.equal(changed(role(), { kind: 'tool', tool: 'network', level: 'deny' }).group.toolPermissions.network, 'deny');
   assert.equal(changed(role(), { kind: 'account', profileId: 'acct-test' }).group.defaultAccountProfileId, 'acct-test');
+  assert.equal(changed(role(), { kind: 'memory', mode: 'role-group' }).group.memoryScope.mode, 'role-group');
+  assert.equal(changed(role(), { kind: 'memory', mode: 'off' }).group.memoryScope.mode, 'off');
   assert.equal(changed(role(), { kind: 'repositories', entries: ['owner/repo'] }).group.allowedScope.repositories[0], 'owner/repo');
   assert.equal(changed(role(), { kind: 'paths', entries: ['src'] }).group.allowedScope.paths[0], 'src');
 });
@@ -60,6 +62,7 @@ test('invalid input, missing target and unsafe values leave the original record 
     { kind: 'rename', name: 'bad\nname' },
     { kind: 'tool', tool: 'merge', level: 'permit' },
     { kind: 'account', profileId: '../bad' },
+    { kind: 'memory', mode: 'all' },
     { kind: 'paths', entries: ['../outside'] },
     { kind: 'repositories', entries: ['not-a-repository'] },
     { kind: 'add', layer: 'task', text: '' },
