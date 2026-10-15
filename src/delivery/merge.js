@@ -143,12 +143,15 @@ function sameRepository(left, right) {
 /**
  * Re-read immediately before merge, read content bound to that head, scan it, and invoke
  * an injected writer.
- * The writer contract is `mergePullRequest({ repository, number, expectedHeadSha })` and it
- * must enforce `expectedHeadSha` atomically at GitHub. Unknown outcomes are never retried.
+ * The writer contract is `mergePullRequest({ repository, number, expectedHeadSha, commitTitle,
+ * commitMessage })`. It must enforce `expectedHeadSha` atomically at GitHub and must merge with
+ * exactly `commitTitle` and `commitMessage`, which are the scanned PR title and body.
+ * `privateReferencesChecked: true` is the caller's statement that it compared against its private
+ * material and had none to supply; without it a scan that was given none is refused. Unknown outcomes are never retried.
  */
 async function mergePullRequest({
   reader, writer, repository, pullNumber, role, actorId, authorId, pmLogin,
-  policyConfig = {}, scanOptions = {}
+  policyConfig = {}, scanOptions = {}, privateReferencesChecked = false
 } = {}) {
   if (!reader || typeof reader.getPullRequestSnapshot !== 'function') throw new TypeError('reader.getPullRequestSnapshot is required');
   if (typeof reader.getPullRequestPublication !== 'function') throw new TypeError('reader.getPullRequestPublication is required');
@@ -209,12 +212,23 @@ async function mergePullRequest({
     });
   }
 
+  // A clear scan that had no private memory, rules or known values to compare against says
+  // nothing about private material. The caller must state that it checked and found none.
+  if (scanResult.privateReference !== 'supplied' && privateReferencesChecked !== true) {
+    return refuse('private-reference-unchecked');
+  }
+
   let result;
   try {
+    // GitHub builds the merge commit text from the PR title and body at merge time. The
+    // scanned title and body are passed explicitly so the writer must merge with exactly that
+    // text; a title changed after the scan cannot reach the commit.
     result = await writer.mergePullRequest({
       repository: { owner: repository.owner, name: repository.name },
       number: pullNumber,
-      expectedHeadSha: decision.headSha
+      expectedHeadSha: decision.headSha,
+      commitTitle: units[0].text,
+      commitMessage: units[1].text
     });
   } catch {
     return refuse('merge-outcome-unknown');
