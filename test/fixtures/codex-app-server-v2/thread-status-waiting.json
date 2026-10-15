@@ -1,0 +1,15 @@
+{
+  "source": "https://developers.openai.com/codex/app-server",
+  "retrievedAt": "2026-10-15",
+  "schemaGenerator": "codex-cli 0.162.1 app-server generate-json-schema",
+  "notification": {
+    "method": "thread/status/changed",
+    "params": {
+      "threadId": "thr_123",
+      "status": {
+        "type": "active",
+        "activeFlags": ["waitingOnApproval"]
+      }
+    }
+  }
+}

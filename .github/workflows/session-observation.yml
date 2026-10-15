@@ -39,5 +39,6 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: node --check src/observations/session.js
       - run: node --check src/observations/claude.js
+      - run: node --check src/observations/codex.js
       - run: node --test test/observations/*.test.js test/accounts/observation.test.js
         shell: bash
