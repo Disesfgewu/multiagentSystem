@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const nodePath = require('node:path');
 const os = require('node:os');
+const { pathFor, isStableAbsolute, isSameOrInside, PathResolutionError, canonicalize } = require('../shared/paths');
 
 // Variables that make a CLI use a credential other than the login stored in the
 // profile's own config directory. Claude Code list follows the documented
@@ -30,79 +31,15 @@ const PROVIDERS = Object.freeze({
   })
 });
 
-function pathFor(platform) {
-  return platform === 'win32' ? nodePath.win32 : nodePath.posix;
-}
-
-// On Windows a path such as \temp\x is "rooted" but has no drive, so it resolves
-// against whichever drive is current. Only drive-letter and UNC paths are stable.
-function isStableAbsolute(p, platform, value) {
-  if (!p.isAbsolute(value)) return false;
-  if (platform !== 'win32') return true;
-  return /^([A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+)/.test(value);
-}
-
-function isSameOrInside(p, platform, candidate, parent) {
-  const fold = (value) => (platform === 'win32' ? value.toLowerCase() : value);
-  const rel = p.relative(fold(parent), fold(candidate));
-  if (rel === '') return true;
-  if (rel === '..' || rel.startsWith(`..${p.sep}`)) return false;
-  return !p.isAbsolute(rel);
-}
-
-// Raised when a path cannot be resolved for a reason other than "does not exist
-// yet". Only the error code is kept, never the path.
-class PathResolutionError extends Error {
-  constructor(code) {
-    super(`path-unresolvable:${code}`);
-    this.code = code;
-  }
-}
-
-// Resolve symlinks on the nearest existing ancestor so a not-yet-created
-// config directory cannot hide a link that points back into the repository.
-// Only ENOENT means "not created yet"; permission errors, loops, a file where a
-// directory is expected and anything unrecognised fail closed. So does a walk
-// that reaches the filesystem root without anything existing (for example a
-// drive letter that is not mounted): nothing was verified. The nearest existing
-// ancestor must be a directory, because Windows reports ENOENT for a path below
-// a regular file where macOS reports ENOTDIR.
-function canonicalize(target, p, realpath, isDirectory) {
-  const resolved = p.resolve(target);
-  const tail = [];
-  let current = resolved;
-  for (;;) {
-    try {
-      const real = realpath(current);
-      if (tail.length > 0) {
-        let directory;
-        try {
-          directory = isDirectory(real);
-        } catch (error) {
-          throw new PathResolutionError(error && error.code ? error.code : 'unknown');
-        }
-        if (!directory) throw new PathResolutionError('ENOTDIR');
-      }
-      return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
-    } catch (error) {
-      if (error instanceof PathResolutionError) throw error;
-      if (!error || error.code !== 'ENOENT') {
-        throw new PathResolutionError(error && error.code ? error.code : 'unknown');
-      }
-      const parent = p.dirname(current);
-      if (parent === current) throw new PathResolutionError('ENOROOT');
-      tail.push(p.basename(current));
-      current = parent;
-    }
-  }
-}
-
 function defaultContext(context) {
   return {
     platform: process.platform,
     homeDir: os.homedir(),
     realpath: (value) => fs.realpathSync.native(value),
     isDirectory: (value) => fs.statSync(value).isDirectory(),
+    lstat: (value) => fs.lstatSync(value),
+    stat: (value) => fs.statSync(value),
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
     ...context
   };
 }
@@ -116,20 +53,38 @@ function sameDirectory(a, b, context) {
   const ctx = defaultContext(context);
   const p = pathFor(ctx.platform);
   try {
-    return samePath(p, ctx.platform, canonicalize(a, p, ctx.realpath, ctx.isDirectory), canonicalize(b, p, ctx.realpath, ctx.isDirectory));
+    return samePath(p, ctx.platform, canonicalize(a, p, ctx.realpath, ctx.isDirectory, ctx.lstat), canonicalize(b, p, ctx.realpath, ctx.isDirectory, ctx.lstat));
   } catch (error) {
     if (error instanceof PathResolutionError) return null;
     throw error;
   }
 }
 
-function tryCanonicalize(target, p, realpath, isDirectory) {
+function tryCanonicalize(target, p, realpath, isDirectory, lstat) {
   try {
-    return { value: canonicalize(target, p, realpath, isDirectory) };
+    return { value: canonicalize(target, p, realpath, isDirectory, lstat) };
   } catch (error) {
     if (error instanceof PathResolutionError) return { code: error.code };
     throw error;
   }
+}
+
+function existingConfigDirProblem(configDir, ctx) {
+  try {
+    ctx.lstat(configDir);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    return 'config-dir-unresolvable';
+  }
+  let stat;
+  try {
+    stat = ctx.stat(configDir);
+  } catch {
+    return 'config-dir-unresolvable';
+  }
+  if (!stat.isDirectory()) return 'config-dir-not-directory';
+  if (ctx.platform !== 'win32' && Number.isInteger(ctx.uid) && stat.uid !== ctx.uid) return 'config-dir-owner-mismatch';
+  return null;
 }
 
 function validateProfile(profile, context) {
@@ -152,17 +107,22 @@ function validateProfile(profile, context) {
     return { ok: false, problems };
   }
 
-  const dir = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory);
-  const repo = tryCanonicalize(ctx.repoRoot, p, ctx.realpath, ctx.isDirectory);
+  const dir = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
+  const repo = tryCanonicalize(ctx.repoRoot, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
   const providerDefault = tryCanonicalize(
     p.join(ctx.homeDir, PROVIDERS[profile.provider].defaultDirName),
     p,
     ctx.realpath,
-    ctx.isDirectory
+    ctx.isDirectory,
+    ctx.lstat
   );
   if (dir.code) problems.push('config-dir-unresolvable');
   if (repo.code) problems.push('repo-root-unresolvable');
   if (providerDefault.code) problems.push('provider-default-unresolvable');
+  if (dir.value) {
+    const existing = existingConfigDirProblem(profile.configDir, ctx);
+    if (existing) problems.push(existing);
+  }
 
   if (dir.value && repo.value) {
     if (isSameOrInside(p, ctx.platform, dir.value, repo.value)) problems.push('config-dir-inside-repo');
@@ -183,7 +143,7 @@ function findConfigDirConflicts(profiles, context) {
   const conflicts = [];
   const dirs = [];
   for (const profile of profiles) {
-    const resolved = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory);
+    const resolved = tryCanonicalize(profile.configDir, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
     if (resolved.code) conflicts.push({ a: profile.id, b: null, kind: 'unresolvable' });
     else dirs.push({ id: profile.id, dir: resolved.value });
   }

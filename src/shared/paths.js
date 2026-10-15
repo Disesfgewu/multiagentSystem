@@ -1,0 +1,123 @@
+'use strict';
+
+const fs = require('node:fs');
+const nodePath = require('node:path');
+
+const pathFor = (platform) => (platform === 'win32' ? nodePath.win32 : nodePath.posix);
+
+// A path without a drive letter or UNC prefix is "rooted" on Windows but still
+// resolves against the current drive, so it is not a stable location.
+function isStableAbsolute(p, platform, value) {
+  if (!p.isAbsolute(value)) return false;
+  if (platform !== 'win32') return true;
+  return /^([A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+)/.test(value);
+}
+
+function isSameOrInside(p, platform, candidate, parent) {
+  const fold = (value) => (platform === 'win32' ? value.toLowerCase() : value);
+  const rel = p.relative(fold(parent), fold(candidate));
+  if (rel === '') return true;
+  if (rel === '..' || rel.startsWith(`..${p.sep}`)) return false;
+  return !p.isAbsolute(rel);
+}
+
+// Raised for any resolution failure other than "does not exist yet". Only the
+// error code is kept, never the path.
+class PathResolutionError extends Error {
+  constructor(code) {
+    super(`path-unresolvable:${code}`);
+    this.code = code;
+  }
+}
+
+// Follow links through the nearest existing ancestor so a directory that does
+// not exist yet cannot hide a link pointing back into the repository. Only
+// ENOENT means "not created yet"; every other failure fails closed, and so does
+// a walk that reaches the filesystem root without anything existing (for
+// example a drive letter that is not mounted), because nothing was verified.
+// The nearest existing ancestor must be a directory: Windows reports ENOENT
+// for a path below a regular file, which must not pass as "not created yet".
+function canonicalize(target, p, realpath, isDirectory, lstat = (value) => fs.lstatSync(value)) {
+  const resolved = p.resolve(target);
+  const tail = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      const real = realpath(current);
+      if (tail.length > 0) {
+        let directory;
+        try {
+          directory = isDirectory(real);
+        } catch (error) {
+          throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+        }
+        if (!directory) throw new PathResolutionError('ENOTDIR');
+      }
+      return tail.length > 0 ? p.join(real, ...tail.reverse()) : real;
+    } catch (error) {
+      if (error instanceof PathResolutionError) throw error;
+      if (!error || error.code !== 'ENOENT') {
+        throw new PathResolutionError(error && error.code ? error.code : 'unknown');
+      }
+      // A broken symlink also makes realpath report ENOENT. It is an existing path whose
+      // destination cannot be verified, not a directory that has yet to be created.
+      try {
+        lstat(current);
+        throw new PathResolutionError('EUNRESOLVED');
+      } catch (probeError) {
+        if (probeError instanceof PathResolutionError) throw probeError;
+        if (!probeError || probeError.code !== 'ENOENT') {
+          throw new PathResolutionError(probeError && probeError.code ? probeError.code : 'unknown');
+        }
+      }
+      const parent = p.dirname(current);
+      if (parent === current) throw new PathResolutionError('ENOROOT');
+      tail.push(p.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function resolvers(context = {}) {
+  return {
+    platform: context.platform || process.platform,
+    realpath: context.realpath || ((value) => fs.realpathSync.native(value)),
+    isDirectory: context.isDirectory || ((value) => fs.statSync(value).isDirectory()),
+    lstat: context.lstat || ((value) => fs.lstatSync(value))
+  };
+}
+
+// Private data must live outside the repository working tree, and the repository
+// must not live inside the data directory.
+function checkPrivateRoot(dir, repoRoot, context) {
+  const { platform, realpath, isDirectory, lstat } = resolvers(context);
+  const p = pathFor(platform);
+  if (typeof dir !== 'string' || !isStableAbsolute(p, platform, dir)) {
+    return { ok: false, problems: ['private-root-not-absolute'] };
+  }
+  if (typeof repoRoot !== 'string' || repoRoot === '') {
+    return { ok: false, problems: ['repo-root-missing'] };
+  }
+  const problems = [];
+  let target;
+  let repo;
+  try {
+    target = canonicalize(dir, p, realpath, isDirectory, lstat);
+  } catch (error) {
+    if (!(error instanceof PathResolutionError)) throw error;
+    problems.push('private-root-unresolvable');
+  }
+  try {
+    repo = canonicalize(repoRoot, p, realpath, isDirectory, lstat);
+  } catch (error) {
+    if (!(error instanceof PathResolutionError)) throw error;
+    problems.push('repo-root-unresolvable');
+  }
+  if (target && repo) {
+    if (isSameOrInside(p, platform, target, repo)) problems.push('private-root-inside-repo');
+    if (isSameOrInside(p, platform, repo, target)) problems.push('private-root-contains-repo');
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+module.exports = { PathResolutionError, canonicalize, checkPrivateRoot, isSameOrInside, isStableAbsolute, pathFor, resolvers };

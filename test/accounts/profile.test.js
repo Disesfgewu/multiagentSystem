@@ -11,14 +11,16 @@ const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code }
 const alwaysDirectory = () => true;
 const BASE = ['/', '/home', '/home/user', '/work', '/work/project', '/data'];
 const posix = {
-  platform: 'darwin', homeDir: '/home/user', repoRoot: '/work/project', realpath: identity, isDirectory: alwaysDirectory
+  platform: 'darwin', homeDir: '/home/user', repoRoot: '/work/project', realpath: identity, isDirectory: alwaysDirectory,
+  lstat: () => { throw failure('ENOENT'); }
 };
 const win = {
   platform: 'win32',
   homeDir: 'C:\\Users\\Me',
   repoRoot: 'C:\\Users\\Me\\Project With Space',
   realpath: identity,
-  isDirectory: alwaysDirectory
+  isDirectory: alwaysDirectory,
+  lstat: () => { throw failure('ENOENT'); }
 };
 
 function profile(overrides) {
@@ -245,7 +247,8 @@ function fakeWindows(existing) {
       const hit = index.get(value.toLowerCase());
       if (!hit) throw failure('ENOENT');
       return hit[1];
-    }
+    },
+    lstat: () => { throw failure('ENOENT'); }
   };
 }
 const baseWindows = { 'C:\\': true, 'C:\\work': true, 'C:\\work\\repo': true, 'C:\\Users': true, 'C:\\Users\\u': true };
@@ -320,6 +323,54 @@ test('real file system: below a regular file is unresolvable here too, a fresh d
     assert.deepEqual(validateProfile(profile({ configDir: path.join(root, 'plain.txt', 'acct') }), ctx).problems,
       ['config-dir-unresolvable']);
     assert.deepEqual(validateProfile(profile({ configDir: path.join(root, 'fresh', 'acct') }), ctx), { ok: true, problems: [] });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an existing config path must be a directory owned by the current POSIX user', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-profile-'));
+  try {
+    const repo = path.join(root, 'repo');
+    const configDir = path.join(root, 'account');
+    const file = path.join(root, 'plain.txt');
+    fs.mkdirSync(repo);
+    fs.mkdirSync(configDir);
+    fs.writeFileSync(file, 'x');
+    assert.deepEqual(validateProfile(profile({ configDir: file }), { repoRoot: repo }).problems,
+      ['config-dir-not-directory']);
+    if (typeof process.getuid === 'function') {
+      assert.deepEqual(validateProfile(profile({ configDir }), { repoRoot: repo, uid: process.getuid() + 1 }).problems,
+        ['config-dir-owner-mismatch']);
+      assert.equal(validateProfile(profile({ configDir }), { repoRoot: repo }).ok, true);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a dangling config symlink fails closed, including when a missing child is requested', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-profile-'));
+  try {
+    const repo = path.join(root, 'repo');
+    const link = path.join(root, 'broken-link');
+    fs.mkdirSync(repo);
+    try {
+      fs.symlinkSync(path.join(root, 'missing-target'), link, 'dir');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('symlink creation unavailable');
+      throw error;
+    }
+    for (const configDir of [link, path.join(link, 'child')]) {
+      assert.deepEqual(validateProfile(profile({ configDir }), { repoRoot: repo }).problems,
+        ['config-dir-unresolvable']);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

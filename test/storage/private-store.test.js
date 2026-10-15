@@ -473,7 +473,7 @@ test('lock inspection and recovery do not follow a link into the repository', (t
   assert.equal(fs.existsSync(path.join(s.repoRoot, 'store.lock')), true, 'the lock file in the repository was not deleted');
 });
 
-test('a data directory that is a link with no target is refused on reads, not read as empty', (t) => {
+test('a data directory that is a link with no target is refused before opening', (t) => {
   const s = sandbox(t);
   try {
     fs.symlinkSync(path.join(s.repoRoot, 'not-there'), s.dir, 'junction');
@@ -481,13 +481,7 @@ test('a data directory that is a link with no target is refused on reads, not re
     t.skip(`cannot create a directory link here: ${error.code}`);
     return;
   }
-  const store = open(s);
-  const result = store.list('profiles');
-  assert.deepEqual([result.ok, result.reason, result.items], [false, 'directory-rejected', []]);
-  assert.equal(store.get('profiles', 'p1').reason, 'directory-rejected');
-  assert.equal(store.status().reason, 'directory-rejected');
-  assert.equal(store.exportMasked().reason, 'directory-rejected');
-  assert.equal(store.put('profiles', 'p1', profile()).reason, 'directory-rejected');
+  assert.throws(() => open(s), (error) => error.problems?.includes('private-root-unresolvable'));
   assert.deepEqual(fs.readdirSync(s.repoRoot), [], 'nothing was created in the repository');
 });
 

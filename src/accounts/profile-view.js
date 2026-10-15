@@ -26,6 +26,9 @@ const ISSUE_HINTS = Object.freeze({
   'config-dir-conflict:same': 'Another profile uses the same configuration folder.',
   'config-dir-conflict:nested': 'Another profile uses a folder inside or around this one.',
   'config-dir-conflict:unresolvable': 'The configuration folder cannot be resolved, so conflicts cannot be ruled out.',
+  'config-dir-not-directory': 'The configuration path is an existing file, not a folder.',
+  'config-dir-owner-mismatch': 'The configuration folder belongs to another local user.',
+  'config-dir-unresolvable': 'The configuration folder cannot be resolved safely.',
   'anomaly:credential-from-environment': 'A credential from the environment overrides this login. Remove it before launching.',
   'anomaly:auth-method-mismatch': 'The login method differs from the one expected for this profile.'
 });
