@@ -6,6 +6,7 @@ import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
+import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord } from '../../../src/roles/roleCommands';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -19,7 +20,8 @@ const COMMANDS = [
   'multiagentSystem.worktrees.create',
   'multiagentSystem.worktrees.remove',
   ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details,
-  ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch
+  ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
+  ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
 
@@ -151,6 +153,27 @@ async function accountFlow(workspace: string): Promise<void> {
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
+async function roleFlow(): Promise<void> {
+  const saved = await saveRoleRecord({
+    group: {
+      id: 'host-pm', name: 'Host PM', role: 'pm', provider: 'claude', version: 1,
+      defaultAccountProfileId: null, allowedScope: { repositories: [], paths: [] },
+      toolPermissions: { merge: 'allow' }, memoryScope: { mode: 'off' },
+      rules: [{ id: 'host-review', type: 'instruction', text: 'Review the latest PR head.', version: 1 }]
+    },
+    layers: { platform: [{ id: 'host-no-merge', type: 'forbid', key: 'tool:merge', version: 2 }] }
+  } as Parameters<typeof saveRoleRecord>[0]);
+  assert.equal(saved.ok, true, saved.reason);
+  const items = await roleTreeForTests().getChildren();
+  assert.ok(items?.some((item) => item.label === 'Host PM' && String(item.description).includes('CLI not verified')));
+  await vscode.commands.executeCommand(ROLE_COMMANDS.preview, 'host-pm');
+  const text = vscode.window.activeTextEditor?.document.getText() ?? '';
+  assert.match(text, /CLI application: not verified/);
+  assert.match(text, /host-no-merge \(platform v2\)/);
+  assert.match(text, /permission-relaxation-blocked/);
+  console.log('host smoke: private role group appears in Explorer and previews source, version, conflict, and unverified CLI status');
+}
+
 interface Outcome {
   ok: boolean;
   code?: string;
@@ -265,6 +288,7 @@ export async function run(): Promise<void> {
 
   await sessionFlow(workspace);
   await accountFlow(workspace);
+  await roleFlow();
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
   assert.ok(worktreeTarget, 'the worktree test folder is provided');
