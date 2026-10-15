@@ -24,7 +24,8 @@ function trap(t) {
   return { ...box, raw, leaked: path.join(box.repoRoot, 'x') };
 }
 
-test('the trap is real: the operating system puts the raw path inside the repository', (t) => {
+// Windows normalizes `..` as text before it touches the file system, so the trap only exists on POSIX.
+test('the trap is real: the operating system puts the raw path inside the repository', { skip: process.platform === 'win32' }, (t) => {
   const s = trap(t);
   fs.mkdirSync(s.raw);
   assert.equal(fs.existsSync(s.leaked), true);
