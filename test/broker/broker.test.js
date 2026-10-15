@@ -403,3 +403,66 @@ test('a merge that cannot even be set up is refused, not recorded as unknown, an
   assert.equal(calls.length, 0);
   assert.equal(audits.at(-1).outcome, 'refused');
 });
+
+// Every string the transport receives must have been scanned. For each operation, a synthetic
+// token is put into each text field in turn; none may reach the transport.
+const TEXT_FIELDS = {
+  createIssue: { base: { title: 't', body: 'b' }, fields: ['title', 'body'], actor: asPm },
+  editIssue: { base: { number: 3, title: 't', body: 'b' }, fields: ['title', 'body'], actor: asPm },
+  createPr: { base: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }, fields: ['title', 'body', 'headBranch', 'baseBranch'], actor: undefined },
+  push: { base: { branch: 'feat/x', headSha: HEAD }, fields: ['branch'], actor: undefined },
+  comment: { base: { target: 'issue', number: 3, body: 'b' }, fields: ['body'], actor: asPm },
+  reviewPr: { base: { number: 7, decision: 'comment', body: 'b', expectedHeadSha: HEAD }, fields: ['body'], actor: asPm }
+};
+
+test('a synthetic token in any text field of any operation never reaches the transport', async () => {
+  for (const [operation, { base, fields, actor }] of Object.entries(TEXT_FIELDS)) {
+    for (const field of fields) {
+      for (const value of [TOKEN, `C:\\Users\\someone\\x`, '/Users/someone/private-project']) {
+        const { broker, calls } = setup({ actor });
+        const result = await broker.request({ operation, requestId: id(), ...base, [field]: value });
+        assert.equal(result.ok, false, `${operation}.${field}`);
+        assert.ok(['content-blocked', 'invalid-field'].includes(result.reason), `${operation}.${field}: ${result.reason}`);
+        assert.equal(calls.length, 0, `${operation}.${field}`);
+      }
+    }
+  }
+});
+
+test('every field of every operation is either scanned, a fixed value set, a number or a hash', () => {
+  const covered = new Set(Object.values(TEXT_FIELDS).flatMap(({ fields }, index) => fields.map((f) => `${Object.keys(TEXT_FIELDS)[index]}.${f}`)));
+  for (const [operation, spec] of Object.entries(OPERATIONS)) {
+    for (const field of [...Object.keys(spec.fields), ...Object.keys(spec.optional || {})]) {
+      const probe = { operation, field };
+      const kind = ['number', 'target', 'decision', 'headSha', 'expectedHeadSha'].includes(field) ? 'fixed' : 'text';
+      if (kind === 'text') assert.ok(covered.has(`${operation}.${field}`), `${operation}.${field} is a text field and must be in the leak test`, probe);
+    }
+  }
+});
+
+test('createPr scans the base branch', async () => {
+  const { broker, calls } = setup();
+  const result = await broker.request({ operation: 'createPr', requestId: id(), title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: TOKEN });
+  assert.deepEqual([result.ok, result.reason], [false, 'content-blocked']);
+  assert.equal(calls.length, 0);
+});
+
+test('scan options may only add private reference material; a detectors option can neither be set nor sneak in', async () => {
+  const { broker } = setup({ actor: asPm });
+  for (const scanOptions of [{ detectors: [] }, { scan: () => ({ status: 'clear', blocked: false }) }, { budgetMs: 1 }, { now: () => 0 }, 'x', [], null]) {
+    assert.throws(() => new Broker({ ...broker.d, scanOptions }), TypeError, JSON.stringify(scanOptions));
+  }
+  const loose = new Broker({ ...broker.d, scanOptions: { knownValues: [{ id: 'k', value: 'private-label-value' }] } });
+  loose.d.scanOptions = { ...loose.d.scanOptions, detectors: [] };
+  const leaked = await loose.request({ operation: 'createIssue', requestId: id(), title: 'ok', body: `leak ${TOKEN}` });
+  assert.deepEqual([leaked.ok, leaked.reason], [false, 'content-blocked'], 'a detectors key set later is ignored');
+  const caught = new Broker({ ...broker.d, scanOptions: { knownValues: [{ id: 'k', value: 'private-label-value' }] } });
+  assert.equal((await caught.request({ operation: 'createIssue', requestId: id(), title: 'about private-label-value', body: 'b' })).reason, 'content-blocked');
+});
+
+test('text fields have a size limit and over-long text is refused before any scan', async () => {
+  const { broker, calls } = setup({ actor: asPm });
+  assert.equal((await broker.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'x'.repeat(262145) })).reason, 'invalid-field');
+  assert.equal((await broker.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'x'.repeat(262144) })).ok, true);
+  assert.equal(calls.length, 1);
+});

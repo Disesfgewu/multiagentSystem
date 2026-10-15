@@ -25,7 +25,9 @@ const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const FORBIDDEN_FIELDS = ['actorId', 'role', 'token', 'credential', 'credentials', 'authorization', 'password', 'secret', 'headers'];
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const positive = (value) => Number.isSafeInteger(value) && value > 0;
-const text = (value) => typeof value === 'string' && value.trim() !== '';
+const SCAN_OPTION_KEYS = ['memories', 'rules', 'knownValues'];
+const MAX_TEXT_CHARS = 262144;
+const text = (value) => typeof value === 'string' && value.trim() !== '' && value.length <= MAX_TEXT_CHARS;
 
 // field checks per operation; `roles` are who may ask, `policy` is how `publish-policy` sees it
 const OPERATIONS = Object.freeze({
@@ -97,6 +99,8 @@ class Broker {
     for (const name of ['identity', 'reader', 'transport', 'audit']) if (!isPlain(deps[name])) throw new TypeError(`${name} is required`);
     if (!isPlain(deps.config) || !text(deps.config.pmActorId) || !text(deps.config.pmLogin)) throw new TypeError('config.pmActorId and config.pmLogin are required');
     if (!isPlain(deps.project) || !isPlain(deps.project.repository)) throw new TypeError('project.repository is required');
+    // Settings may add private reference material to the scan. They may never replace a detector.
+    if (deps.scanOptions !== undefined && (!isPlain(deps.scanOptions) || Object.keys(deps.scanOptions).some((key) => !SCAN_OPTION_KEYS.includes(key)))) throw new TypeError('scanOptions may only hold memories, rules and knownValues');
     this.d = deps;
     this.done = new Map();
     this.unknown = new Map();
@@ -139,7 +143,12 @@ class Broker {
   async #scan(units) {
     let result;
     try {
-      result = scanPublication(units, { ...(this.d.scanOptions || {}) });
+      // Only private reference material is passed on. `detectors` and any other key would replace
+      // or switch off the standard detectors, so they never reach the scanner.
+      const given = isPlain(this.d.scanOptions) ? this.d.scanOptions : {};
+      const safe = {};
+      for (const key of SCAN_OPTION_KEYS) if (Object.hasOwn(given, key)) safe[key] = given[key];
+      result = scanPublication(units, safe);
     } catch {
       return deny('content-scan-failed');
     }
@@ -214,7 +223,7 @@ class Broker {
     } else if (operation === 'createPr') {
       const content = await this.#trustedContent(payload.headSha);
       if (!content) return deny('content-unverified');
-      units = [{ kind: 'pr-title', text: payload.title }, { kind: 'pr-body', text: payload.body }, { kind: 'branch-name', text: payload.headBranch }, { kind: 'commit-message', text: content.message }, { kind: 'diff', text: content.diff }];
+      units = [{ kind: 'pr-title', text: payload.title }, { kind: 'pr-body', text: payload.body }, { kind: 'branch-name', text: payload.headBranch }, { kind: 'branch-name', text: payload.baseBranch }, { kind: 'commit-message', text: content.message }, { kind: 'diff', text: content.diff }];
       send = () => this.d.transport.createPullRequest({ repository, title: payload.title, body: payload.body, headBranch: payload.headBranch, headSha: payload.headSha, baseBranch: payload.baseBranch });
     } else if (operation === 'commit' || operation === 'push') {
       const content = await this.#trustedContent(payload.headSha);
