@@ -35,6 +35,8 @@ export interface IssueSummary {
   author: string | null;
   labels: string[];
   assignees: string[];
+  body?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface PullRequestSummary {
@@ -46,6 +48,8 @@ export interface PullRequestSummary {
   author: string | null;
   headSha: string;
   baseRef: string;
+  body?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface PullRequestSnapshot {
@@ -73,6 +77,8 @@ export interface GitHubReader {
   };
   listIssues(filter: { state: 'open' }, options?: ReadOptions): Promise<ReadResult<IssueSummary[]>>;
   listPullRequests(filter: { state: 'open' }, options?: ReadOptions): Promise<ReadResult<PullRequestSummary[]>>;
+  getIssue(number: number, options?: ReadOptions): Promise<ReadResult<IssueSummary>>;
+  getPullRequest(number: number, options?: ReadOptions): Promise<ReadResult<PullRequestSummary>>;
   getPullRequestSnapshot(number: number, options?: ReadOptions): Promise<PullRequestSnapshot>;
 }
 

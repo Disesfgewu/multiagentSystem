@@ -14,7 +14,7 @@ const read = (name: string): string => strip(fs.readFileSync(path.join(SRC, name
 const count = (code: string, pattern: RegExp): number => [...code.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))].length;
 
 test('the GitHub sources are present', () => {
-  assert.deepEqual(files.sort(), ['controller.ts', 'githubCommands.ts']);
+  assert.deepEqual(files.sort(), ['controller.ts', 'githubCommands.ts', 'githubTree.ts']);
 });
 
 test('the command logic does not import the editor, so it can be tested without one', () => {
@@ -22,7 +22,7 @@ test('the command logic does not import the editor, so it can be tested without 
 });
 
 test('the sources import no file, process, network or OS module', () => {
-  const allowedTargets = new Set(['vscode', '../../packages/github-read-adapter/src', '../projects/worktrees', './controller']);
+  const allowedTargets = new Set(['vscode', '../../packages/github-read-adapter/src', '../projects/worktrees', './controller', './githubTree']);
   for (const name of files) {
     for (const match of read(name).matchAll(/(?:from\s+|require\(\s*)['"]([^'"]+)['"]/g)) {
       assert.ok(allowedTargets.has(match[1]), `${name} imports ${match[1]}`);
@@ -92,8 +92,8 @@ test('the commands in package.json match the ones the code registers, and each a
     activationEvents: string[];
     contributes: { commands: Array<{ command: string; title: string }> };
   };
-  const registered = [...read('githubCommands.ts').matchAll(/'(multiagentSystem\.github\.[A-Za-z]+)'/g)].map((match) => match[1]).sort();
-  assert.equal(registered.length, 6);
+  const registered = [...`${read('githubCommands.ts')}\n${read('githubTree.ts')}`.matchAll(/'(multiagentSystem\.github\.[A-Za-z]+)'/g)].map((match) => match[1]).sort();
+  assert.equal(registered.length, 8);
   const declared = manifest.contributes.commands.map((entry) => entry.command).filter((id) => id.startsWith('multiagentSystem.github.')).sort();
   assert.deepEqual(declared, registered);
   for (const id of registered) {
