@@ -61,6 +61,15 @@ test('the masked export keeps structure and public enumerations only', (t) => {
   });
 });
 
+test('the registry allows the exact agy provider value in a masked export', (t) => {
+  const s = sandbox(t);
+  const store = open(s);
+  store.put('profiles', 'agy-profile', { provider: 'agy', label: 'Synthetic agy' });
+  store.put('profiles', 'lookalike', { provider: 'agy-private', label: 'Must be masked' });
+  const fields = store.exportMasked().export.collections.profiles.records.map((record) => record.fields);
+  assert.deepEqual(fields.map((value) => value.provider).sort(), ['<string>', 'agy']);
+});
+
 test('nothing identifying appears anywhere in the export', (t) => {
   const s = sandbox(t);
   const store = open(s);

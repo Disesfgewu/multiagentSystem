@@ -3,7 +3,8 @@
 const nodePath = require('node:path');
 const { isPlainObject, label, safeText, validateRuleList } = require('./rule-input');
 
-const PROVIDERS = Object.freeze(['claude', 'codex']);
+const { builtIn } = require('../providers/registry');
+const PROVIDERS = Object.freeze(builtIn.ids());
 // The tools a role group can grant or withhold. A tool that is not listed in a
 // group is denied, so a new tool never becomes available by omission.
 const TOOLS = Object.freeze(['shell', 'fileWrite', 'network', 'githubRead', 'githubWrite', 'merge']);

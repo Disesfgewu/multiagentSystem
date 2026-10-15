@@ -6,6 +6,7 @@ const nodePath = require('node:path');
 const { LAYERS } = require('./rules');
 const { byCodeUnit } = require('./order');
 const { checkPrivateRoot, resolvers, isSameOrInside } = require('./paths');
+const { builtIn } = require('../providers/registry');
 
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -44,6 +45,8 @@ function tomlString(text) {
 function planInjection(options) {
   const { provider, roleGroup, rules, memories, omitted, privateDir, repoRoot, sessionToken,
     codexHome, capabilities = {}, context } = options;
+  const descriptor = builtIn.get(provider);
+  if (!descriptor) throw new Error('unsupported provider');
   if (!TOKEN.test(sessionToken || '')) throw new Error('invalid session token');
 
   const privateCheck = checkPrivateRoot(privateDir, repoRoot, context);
@@ -61,7 +64,7 @@ function planInjection(options) {
     note: 'Open the file and paste it into the terminal as the first message.'
   });
 
-  if (provider === 'claude') {
+  if (descriptor.id === 'claude') {
     if (!capabilities.appendSystemPromptFile) return manual();
     const file = nodePath.join(sessionDir, 'claude-context.md');
     return {
@@ -73,7 +76,7 @@ function planInjection(options) {
     };
   }
 
-  if (provider === 'codex') {
+  if (descriptor.id === 'codex') {
     const profileName = `mas-${sessionToken}`;
     if (!capabilities.profileFlag || !codexHome || !PROFILE_NAME.test(profileName)) return manual();
     const homeCheck = checkPrivateRoot(codexHome, repoRoot, context);
@@ -90,7 +93,9 @@ function planInjection(options) {
     };
   }
 
-  throw new Error(`unsupported provider: ${provider}`);
+  // A registered provider with no dedicated injection path receives the same explicit
+  // paste-by-hand plan used when a dedicated CLI flag is unavailable.
+  return manual();
 }
 
 const lstatOrNull = (target) => {

@@ -16,11 +16,12 @@ test('the default group has one PM and three workers with unique names', () => {
   assert.equal(new Set(GROUP_NAMES).size, GROUP_NAMES.length);
 });
 
-test('provider executables are plain command names that are safe to type into a shell', () => {
-  assert.ok(PROVIDERS.length >= 2);
+test('provider choices come from the registry and include all built-ins', () => {
+  assert.deepEqual(PROVIDERS.map((provider) => provider.id), ['agy', 'claude', 'codex']);
   for (const provider of PROVIDERS) {
     assert.match(provider.executable, /^[A-Za-z0-9_-]+$/);
     assert.notEqual(provider.label.trim(), '');
+    assert.deepEqual(provider.args, []);
   }
 });
 

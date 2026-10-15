@@ -4,7 +4,7 @@
 
 產品將支援 PM 與 worker 等自訂身份組、依身份共享的精選記憶，以及以 GitHub Issues／PRs 為主的任務與 review 流程：PM 定義 issue，coding agent 領取任務並提交 PR，PM review 通過後由人工或依設定由 PM merge。使用者可為同一 CLI provider 登入多個帳號，指定各 agent 使用的帳號並查看可取得的各帳號額度。執行階段 agent 資訊不得進入 GitHub 提交與協作內容。
 
-第一階段內建三個 CLI provider：Claude Code、Codex CLI 與 agy（登錄核心已建立，見 [Provider 登錄](docs/PROVIDERS.md)；啟動選單等尚未改用登錄，所以目前的選單仍只有前兩項）。agy 只假設能在原生 terminal 啟動，其餘能力一律未知；使用者自訂 provider 尚未支援。
+第一階段內建三個 CLI provider：Claude Code、Codex CLI 與 agy（見 [Provider 登錄](docs/PROVIDERS.md)）。啟動選單與身份組現在都使用登錄；agy 可選擇在原生 terminal 啟動，規則與記憶以手動方式注入，其餘能力一律未知；使用者自訂 provider 尚未支援。
 
 目前已有 P0 原生 terminal 雛形。需求、技術選型、開源參考、風險、里程碑與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)。
 
