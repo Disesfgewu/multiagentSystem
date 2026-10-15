@@ -29,8 +29,7 @@ test('the memory code no longer uses locale-dependent comparison anywhere', () =
   const offenders = fs.readdirSync(dir)
     .filter((name) => name.endsWith('.js'))
     .filter((name) => /\.localeCompare\(/.test(fs.readFileSync(path.join(dir, name), 'utf8').replace(/\/\/.*$/gm, '')));
-  // rules.js is fixed by the role-group work (#14, PR #40), which defines the same helper there.
-  assert.deepEqual(offenders.filter((name) => name !== 'rules.js'), []);
+  assert.deepEqual(offenders, []);
 });
 
 // The same scrambled ids, rendered and retrieved in child processes under very different locales.
@@ -51,4 +50,12 @@ test('injected text and retrieval order are identical under every locale and equ
   }
   const distinct = new Set(results.map((result) => JSON.stringify(result.localeSort)));
   t.diagnostic(`localeCompare produced ${distinct.size} different order(s) across these locales on this machine (collator: ${results.map((r) => r.collatorLocale).join(', ')})`);
+});
+
+test('rules.js shares the single comparator from order.js; no second definition remains', () => {
+  const rules = require('../../src/memory/rules');
+  assert.equal(rules.byCodeUnit, byCodeUnit);
+  const fs = require('node:fs');
+  const text = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'memory', 'rules.js'), 'utf8');
+  assert.doesNotMatch(text, /const byCodeUnit\s*=/);
 });
