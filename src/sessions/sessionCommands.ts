@@ -6,6 +6,12 @@ import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
 import { SessionManager, SessionView } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
+import { builtIn } from '../providers/registry';
+
+const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
+const { selectRoleProfiles } = require('../roles/account-choices') as {
+  selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
+};
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -20,6 +26,9 @@ const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: 
 const MESSAGES: Record<string, string> = {
   ...ROLE_REASONS,
   'provider-unsupported': 'That CLI provider is not supported.',
+  'executable-not-found': 'This CLI could not be found. Install it from the official provider or add its executable to PATH, then retry.',
+  'account-isolation-unknown': '此 provider 的帳號隔離未驗證，無法指派獨立帳號。請使用 CLI 預設登入，或先選擇已支援的 provider。',
+  'invalid-account-list': 'Account profiles could not be validated. Refresh the accounts view and try again.',
   'invalid-name': 'Enter a session name.',
   'session-not-found': 'That session no longer exists.',
   'terminal-not-open': 'The session has no open terminal in this window.',
@@ -88,6 +97,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       create: ({ name, cwd, env }) => vscode.window.createTerminal({ name, cwd, env, location: vscode.TerminalLocation.Editor })
     },
     providers: Object.fromEntries(PROVIDERS.map((provider) => [provider.executable, provider.executable])),
+    executableAvailable,
     resolveProject,
     directoryExists: (target) => {
       try {
@@ -113,21 +123,30 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
       let accountProfileId = input.accountProfileId;
       const provider = input.provider ?? '';
-      if (!accountProfileId && interactive && (provider === 'claude' || provider === 'codex')) {
-        const available = await accountService(() => manager.list());
-        if (!available.ok) return failure(Object.assign(new Error(available.message), { code: available.code }), true);
-        const listed = available.service.list();
-        if (!listed.ok) return failure(Object.assign(new Error(listed.message), { code: listed.code }), true);
-        const profiles = listed.profiles.filter((profile: { provider: string }) => profile.provider === provider);
-        const choice = await vscode.window.showQuickPick([
-          { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: 'unassigned' },
-          ...profiles.map((profile: { id: string; label: string }) => ({ label: profile.label, description: 'Account identity: unknown until observed', id: profile.id }))
-        ], { placeHolder: 'Choose an account for this new session' });
-        if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-        accountProfileId = choice.id === 'unassigned' ? undefined : choice.id;
+      if (!accountProfileId && interactive && builtIn.has(provider)) {
+        const isolation = builtIn.capability(provider, 'accountIsolation');
+        if (isolation === 'unknown' || isolation === 'unsupported') {
+          const answer = await vscode.window.showWarningMessage(
+            '此 provider 的帳號隔離未驗證；擴充套件無法為它指派獨立帳號。',
+            { modal: true, detail: '此 CLI 將使用自己的預設登入；身份核實與額度資訊也維持未知。' }, 'Use CLI Default');
+          if (answer !== 'Use CLI Default') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        } else {
+          const available = await accountService(() => manager.list());
+          if (!available.ok) return failure(Object.assign(new Error(available.message), { code: available.code }), true);
+          const listed = available.service.list();
+          if (!listed.ok) return failure(Object.assign(new Error(listed.message), { code: listed.code }), true);
+          const selected = selectRoleProfiles(listed.profiles, provider);
+          if (!selected.ok || !Array.isArray(selected.profiles)) return failure(Object.assign(new Error('invalid-account-list'), { code: 'invalid-account-list' }), true);
+          const choice = await vscode.window.showQuickPick([
+            { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: 'unassigned' },
+            ...selected.profiles.map((profile) => ({ label: profile.label, description: 'Account identity: unknown until observed', id: profile.id }))
+          ], { placeHolder: 'Choose an account for this new session' });
+          if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          accountProfileId = choice.id === 'unassigned' ? undefined : choice.id;
+        }
       }
       let roleGroupId = input.roleGroupId;
-      if (roleGroupId === undefined && interactive && (provider === 'claude' || provider === 'codex')) {
+      if (roleGroupId === undefined && interactive && builtIn.has(provider)) {
         const picked = await pickRoleForLaunch(provider);
         if (picked === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
         roleGroupId = picked === 'none' ? undefined : picked;
@@ -150,6 +169,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
       const provider = input.provider ?? '';
       let env: Record<string, string | null> | undefined;
+      if (input.accountProfileId && !['verified', 'unverified'].includes(builtIn.capability(provider, 'accountIsolation'))) {
+        return failure(Object.assign(new Error('account-isolation-unknown'), { code: 'account-isolation-unknown' }), interactive);
+      }
       if (input.roleGroupId !== undefined) {
         const role = await resolveRoleForLaunch(input.roleGroupId, provider);
         if (!role.ok) return failure(Object.assign(new Error(role.message), { code: role.code }), interactive);
