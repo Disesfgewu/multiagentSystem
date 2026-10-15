@@ -263,6 +263,12 @@ async function agyFlow(workspace: string): Promise<void> {
   }
   const sentinel = process.env.MULTIAGENT_TEST_AGY_SENTINEL;
   assert.ok(sentinel);
+  const cannotAssignAccount = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy', accountProfileId: 'acct-synthetic',
+    name: 'Agy Account Refused', cwd: workspace, launch: false
+  });
+  assert.equal(cannotAssignAccount.code, 'account-isolation-unknown');
+  assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Agy Account Refused'), false);
   const command = (name: string): Thenable<SessionOutcome> => vscode.commands.executeCommand('multiagentSystem.sessions.start', {
     interactive: false, provider: 'agy', roleGroupId: 'host-agy', name, cwd: workspace, launch: true
   });

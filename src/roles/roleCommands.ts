@@ -338,19 +338,28 @@ async function startWithRole(sessions: SessionCommands, value: unknown): Promise
   let accountProfileId: string | undefined = typeof options.accountProfileId === 'string' ? options.accountProfileId : undefined;
   if (options.accountProfileId === undefined && !interactive && group.defaultAccountProfileId) accountProfileId = group.defaultAccountProfileId;
   if (options.accountProfileId === undefined && interactive) {
-    const listed = await accountChoices(group.provider);
-    if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return { ok: false, code: 'storage-unavailable', message: 'Account profiles could not be read.' }; }
-    if (group.defaultAccountProfileId && !listed.profiles.some((profile) => profile.id === group.defaultAccountProfileId)) {
-      void vscode.window.showErrorMessage('This role group\'s default account is missing. Edit the role group and choose an available account.');
-      return { ok: false, code: 'default-profile-missing', message: 'This role group\'s default account is missing.' };
+    const isolation = builtIn.capability(group.provider, 'accountIsolation');
+    if (isolation === 'unknown' || isolation === 'unsupported') {
+      const answer = await vscode.window.showWarningMessage(
+        '此 provider 的帳號隔離未驗證；此身份組無法指派獨立帳號。',
+        { modal: true, detail: '將使用 CLI 預設登入；身份核實與額度資訊也維持未知。身份組規則需依預覽的注入狀態手動處理。' },
+        'Use CLI Default');
+      if (answer !== 'Use CLI Default') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    } else {
+      const listed = await accountChoices(group.provider);
+      if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return { ok: false, code: 'storage-unavailable', message: 'Account profiles could not be read.' }; }
+      if (group.defaultAccountProfileId && !listed.profiles.some((profile) => profile.id === group.defaultAccountProfileId)) {
+        void vscode.window.showErrorMessage('This role group\'s default account is missing. Edit the role group and choose an available account.');
+        return { ok: false, code: 'default-profile-missing', message: 'This role group\'s default account is missing.' };
+      }
+      const choices = [
+        ...listed.profiles.map((profile) => ({ label: profile.label, description: profile.id === group.defaultAccountProfileId ? 'this role\'s default account' : 'identity unknown until the CLI reports it', id: profile.id as string | undefined })),
+        { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: undefined as string | undefined }
+      ].sort((a, b) => Number(b.description === 'this role\'s default account') - Number(a.description === 'this role\'s default account'));
+      const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which account should “${group.name}” use?`, ignoreFocusOut: true });
+      if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+      accountProfileId = picked.id;
     }
-    const choices = [
-      ...listed.profiles.map((profile) => ({ label: profile.label, description: profile.id === group.defaultAccountProfileId ? 'this role\'s default account' : 'identity unknown until the CLI reports it', id: profile.id as string | undefined })),
-      { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: undefined as string | undefined }
-    ].sort((a, b) => Number(b.description === 'this role\'s default account') - Number(a.description === 'this role\'s default account'));
-    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which account should “${group.name}” use?`, ignoreFocusOut: true });
-    if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-    accountProfileId = picked.id;
   }
   const folders = vscode.workspace.workspaceFolders ?? [];
   const cwd = options.cwd ?? (folders.length === 1 ? folders[0].uri.fsPath : undefined);

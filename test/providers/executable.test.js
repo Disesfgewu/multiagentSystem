@@ -14,8 +14,12 @@ test('a synthetic agy binary on an absolute PATH is detected; absent and non-exe
   fs.writeFileSync(fake, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   assert.equal(executableAvailable('agy', { env: { PATH: directory }, platform: 'darwin' }), true);
   assert.equal(executableAvailable('missing', { env: { PATH: directory }, platform: 'darwin' }), false);
-  fs.chmodSync(fake, 0o600);
-  assert.equal(executableAvailable('agy', { env: { PATH: directory }, platform: 'darwin' }), false);
+  assert.equal(executableAvailable('agy', { env: { PATH: directory }, platform: 'darwin',
+    access: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }), false);
+  if (process.platform !== 'win32') {
+    fs.chmodSync(fake, 0o600);
+    assert.equal(executableAvailable('agy', { env: { PATH: directory }, platform: 'darwin' }), false);
+  }
 });
 
 test('the preflight ignores relative PATH entries and rejects command text', (t) => {
