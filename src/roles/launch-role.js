@@ -2,6 +2,7 @@
 
 const { validateRoleGroup } = require('./role-group');
 const { validRecord } = require('./role-store');
+const { builtIn } = require('../providers/registry');
 
 // Whether a role group may be assigned to a session that is about to start. The assignment is a fact
 // about a new session: it names the group and nothing else. It does not change a running session
@@ -15,6 +16,7 @@ const REASONS = Object.freeze({
   'invalid-role-group': 'The role group is not a valid choice.',
   'role-group-not-found': 'That role group no longer exists. Choose another one.',
   'role-group-unreadable': 'That role group could not be read or is not valid. Open it in the Role Groups list and fix it first.',
+  'role-group-account-isolation-unknown': 'This role group names a default account, but account isolation is not verified for its CLI. Clear the default account before starting it.',
   'role-group-provider-mismatch': 'That role group is for a different CLI than the one you are starting. Choose a role group for this CLI.'
 });
 
@@ -30,6 +32,9 @@ function checkRoleForLaunch({ id, provider, record }) {
     return { ok: false, code: 'role-group-unreadable', message: REASONS['role-group-unreadable'] };
   }
   if (checked.group.provider !== provider) return { ok: false, code: 'role-group-provider-mismatch', message: REASONS['role-group-provider-mismatch'] };
+  if (checked.group.defaultAccountProfileId && !['verified', 'unverified'].includes(builtIn.capability(provider, 'accountIsolation'))) {
+    return { ok: false, code: 'role-group-account-isolation-unknown', message: REASONS['role-group-account-isolation-unknown'] };
+  }
   return { ok: true, group: checked.group };
 }
 

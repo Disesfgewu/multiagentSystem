@@ -13,6 +13,16 @@ test('a valid role group for the same provider may be assigned', () => {
   assert.deepEqual([checked.group.id, checked.group.name, checked.group.version], ['role-a', 'Alpha', 3]);
 });
 
+test('a role for a provider without account isolation cannot silently ignore its default account', () => {
+  const agy = record({ provider: 'agy', defaultAccountProfileId: 'profile-a' });
+  const checked = checkRoleForLaunch({ id: 'role-a', provider: 'agy', record: agy });
+  assert.deepEqual([checked.ok, checked.code], [false, 'role-group-account-isolation-unknown']);
+  assert.equal(checked.message, REASONS['role-group-account-isolation-unknown']);
+  assert.deepEqual(roleChoices([{ id: 'role-a', value: agy }], 'agy'), { choices: [], skipped: 1 });
+  assert.equal(checkRoleForLaunch({ id: 'role-a', provider: 'agy', record: record({ provider: 'agy' }) }).ok, true);
+  assert.equal(checkRoleForLaunch({ id: 'role-a', provider: 'claude', record: record({ defaultAccountProfileId: 'profile-a' }) }).ok, true);
+});
+
 test('every refusal has a code and a plain message', () => {
   const cases = [
     [{ id: 'role-a', provider: 'codex', record: record() }, 'role-group-provider-mismatch'],

@@ -240,6 +240,21 @@ async function roleFlow(workspace: string): Promise<void> {
   const agyText = (await vscode.workspace.openTextDocument(previewUri('host-agy'))).getText();
   assert.match(agyText, /Not supported by this provider: give these rules to the agent by hand/);
   assert.match(agyText, /<not supported: give by hand>/);
+  const agyWithDefault = {
+    group: { ...structuredClone((privateHandle.store.get('roleGroups', 'host-agy') as { value: { group: object } }).value.group),
+      id: 'host-agy-bound', name: 'Agy With Default', defaultAccountProfileId: 'acct-synthetic' },
+    layers: {}
+  } as Parameters<typeof saveRoleRecord>[0];
+  assert.equal((await saveRoleRecord(agyWithDefault)).ok, true);
+  const refusedAgy = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy-bound', name: 'Agy Default Refused', cwd: workspace, launch: false
+  });
+  assert.deepEqual([refusedAgy.ok, refusedAgy.code], [false, 'role-group-account-isolation-unknown']);
+  const refusedFromRole = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(ROLE_COMMANDS.start, {
+    id: 'host-agy-bound', interactive: false, name: 'Agy Role Refused', cwd: workspace, launch: false
+  });
+  assert.deepEqual([refusedFromRole.ok, refusedFromRole.code], [false, 'role-group-account-isolation-unknown']);
+  assert.equal(vscode.window.terminals.some((terminal) => /Agy (Default|Role) Refused/.test(terminal.name)), false);
 
   // Assigning a role group to a NEW session: checked against the provider, fixed for that session, shown in the overview.
   const start = (options: object): Thenable<{ ok: boolean; code?: string; session?: { id: string; roleGroupId: string; provider: string } }> =>
