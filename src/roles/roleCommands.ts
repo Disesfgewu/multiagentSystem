@@ -223,15 +223,28 @@ async function edit(value: unknown): Promise<void> {
     if (!level) return;
     change = { kind: 'tool', tool: tool.label, level: level.label };
   } else if (action.value === 'account') {
-    const listed = await accountChoices(record.group.provider);
-    if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return; }
-    const choices: Array<{ label: string; description?: string; id: string | null }> = [
-      { label: 'No default account', id: null },
-      ...listed.profiles.map((profile) => ({ label: profile.label, id: profile.id }))
-    ];
-    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
-    if (!picked) return;
-    change = { kind: 'account', profileId: picked.id };
+    const isolation = builtIn.capability(record.group.provider, 'accountIsolation');
+    if (isolation === 'unknown' || isolation === 'unsupported') {
+      if (!record.group.defaultAccountProfileId) {
+        void vscode.window.showWarningMessage('Account isolation is not verified for this CLI, so a default account cannot be assigned.');
+        return;
+      }
+      const answer = await vscode.window.showWarningMessage(
+        'Account isolation is not verified for this CLI. Clear this role group’s unsupported default account?',
+        { modal: true }, 'Clear Default Account');
+      if (answer !== 'Clear Default Account') return;
+      change = { kind: 'account', profileId: null };
+    } else {
+      const listed = await accountChoices(record.group.provider);
+      if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return; }
+      const choices: Array<{ label: string; description?: string; id: string | null }> = [
+        { label: 'No default account', id: null },
+        ...listed.profiles.map((profile) => ({ label: profile.label, id: profile.id }))
+      ];
+      const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
+      if (!picked) return;
+      change = { kind: 'account', profileId: picked.id };
+    }
   } else if (action.value === 'memory') {
     const picked = await vscode.window.showQuickPick([
       { label: 'Off', detail: 'Do not use saved project notes for this role.', mode: 'off' },
@@ -335,6 +348,11 @@ async function startWithRole(sessions: SessionCommands, value: unknown): Promise
   const record = await chooseRecord(options.id ?? value);
   if (!record) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
   const group = record.group;
+  if (group.defaultAccountProfileId && !['verified', 'unverified'].includes(builtIn.capability(group.provider, 'accountIsolation'))) {
+    const message = 'This role group names a default account, but account isolation is not verified for its CLI. Clear the default account before starting it.';
+    if (interactive) void vscode.window.showErrorMessage(message);
+    return { ok: false, code: 'role-group-account-isolation-unknown', message };
+  }
   let accountProfileId: string | undefined = typeof options.accountProfileId === 'string' ? options.accountProfileId : undefined;
   if (options.accountProfileId === undefined && !interactive && group.defaultAccountProfileId) accountProfileId = group.defaultAccountProfileId;
   if (options.accountProfileId === undefined && interactive) {
