@@ -61,6 +61,24 @@ test('remove reports remove-unconfirmed when the value remains or confirmation c
   assert.deepEqual(await second.remove(savedSecond.secretRef), { ok: false, reason: 'remove-unconfirmed' });
 });
 
+test('remove also times out if delete or a confirmation read never settles', async () => {
+  const deleting = memoryBackend();
+  const first = new SecretVault(deleting, 'accounts', { removeTimeoutMs: 5, removePollMs: 1 });
+  const saved = await first.save('profile-1', 'synthetic-value-1');
+  deleting.delete = () => new Promise(() => {});
+  const deleteStarted = Date.now();
+  assert.deepEqual(await first.remove(saved.secretRef), { ok: false, reason: 'remove-unconfirmed' });
+  assert.ok(Date.now() - deleteStarted < 250, 'a stalled delete is bounded');
+
+  const reading = memoryBackend();
+  const second = new SecretVault(reading, 'accounts', { removeTimeoutMs: 5, removePollMs: 1 });
+  const savedSecond = await second.save('profile-2', 'synthetic-value-2');
+  reading.get = () => new Promise(() => {});
+  const readStarted = Date.now();
+  assert.deepEqual(await second.remove(savedSecond.secretRef), { ok: false, reason: 'remove-unconfirmed' });
+  assert.ok(Date.now() - readStarted < 250, 'a stalled confirmation read is bounded');
+});
+
 test('references outside the namespace, malformed references and empty values are refused', async () => {
   const vault = new SecretVault(memoryBackend(), 'accounts');
   await assert.rejects(() => vault.read('secret:other/profile-1'), TypeError);

@@ -11,6 +11,18 @@ const KEY_PREFIX = 'multiagentSystem';
 const DEFAULT_REMOVE_TIMEOUT_MS = 5000;
 const DEFAULT_REMOVE_POLL_MS = 25;
 
+async function withinTimeout(operation, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeoutMs); })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 class SecretVault {
   // `backend` has the shape of VS Code's SecretStorage: async get/store/delete.
   constructor(backend, namespace, options = {}) {
@@ -54,17 +66,23 @@ class SecretVault {
 
   async remove(ref) {
     const key = this.#key(ref);
-    await this.backend.delete(key);
     const deadline = Date.now() + this.removeTimeoutMs;
+    try {
+      await withinTimeout(this.backend.delete(key), Math.max(0, deadline - Date.now()));
+    } catch {
+      return { ok: false, reason: 'remove-unconfirmed' };
+    }
     while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { ok: false, reason: 'remove-unconfirmed' };
       try {
-        if ((await this.backend.get(key)) === undefined) return { ok: true };
+        if ((await withinTimeout(this.backend.get(key), remaining)) === undefined) return { ok: true };
       } catch {
         return { ok: false, reason: 'remove-unconfirmed' };
       }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return { ok: false, reason: 'remove-unconfirmed' };
-      await new Promise((resolve) => setTimeout(resolve, Math.min(this.removePollMs, remaining)));
+      const remainingAfterRead = deadline - Date.now();
+      if (remainingAfterRead <= 0) return { ok: false, reason: 'remove-unconfirmed' };
+      await new Promise((resolve) => setTimeout(resolve, Math.min(this.removePollMs, remainingAfterRead)));
     }
   }
 }
