@@ -12,6 +12,7 @@ const { executableAvailable } = require('../providers/executable') as { executab
 const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
+import { gateAccountLaunch } from '../accounts/quotaGateUi';
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -79,7 +80,7 @@ async function resolveProject(cwd: string): Promise<{ repoId: string }> {
 
 function failure(error: unknown, interactive: boolean): SessionOutcome {
   const code = typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : 'unexpected-error';
-  const message = MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
+  const message = code === 'quota-gate' ? errorMessage(error) : MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
   if (interactive) void vscode.window.showErrorMessage(message);
   return { ok: false, code, message };
 }
@@ -177,6 +178,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!role.ok) return failure(Object.assign(new Error(role.message), { code: role.code }), interactive);
       }
       if (input.accountProfileId) {
+        const gate = await gateAccountLaunch(input.accountProfileId, interactive, () => manager.list());
+        if (!gate.ok) return gate.code === 'cancelled' ? { ok: false, code: 'cancelled', message: 'Cancelled.' } : failure(Object.assign(new Error(gate.message), { code: gate.code }), interactive);
         const prepared = await launchEnvironment(input.accountProfileId, provider, () => manager.list());
         if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
         if (interactive) {

@@ -24,7 +24,7 @@ const COMMANDS = [
   'multiagentSystem.worktrees.list',
   'multiagentSystem.worktrees.create',
   'multiagentSystem.worktrees.remove',
-  ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details,
+  ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details, ACCOUNT_COMMANDS.limits,
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
   ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove
 ];
@@ -128,6 +128,8 @@ async function accountFlow(workspace: string): Promise<void> {
   const item = entries.find((entry) => entry.label === 'Host Work Account');
   assert.ok(item, 'the persistent account view lists the created profile');
   assert.match(String(item?.description ?? ''), /Claude Code · identity unknown/);
+  assert.match(String(item?.tooltip ?? ''), /Limits: none set/);
+  assert.match(String(item?.tooltip ?? ''), /Usage: unknown/);
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
@@ -181,6 +183,31 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.doesNotMatch(detailText, /Configuration folder: rejected/, 'a CLI that could not be started does not make the folder "rejected"');
   assert.doesNotMatch(detailText, /@/, 'no email-like text in the details');
   assert.equal(detailText.includes(accountDir), false, 'the details do not show the full folder path');
+
+  // Account limits: with none set nothing is held back; with limits that cannot be met (usage is unknown and the setting
+  // says do not start), a non-interactive start is refused with a plain reason and opens no terminal; clearing them lifts it.
+  const gated = (name: string) => vscode.commands.executeCommand<{ ok: boolean; code?: string; message?: string; session?: { id: string } }>('multiagentSystem.sessions.start', { interactive: false, provider: 'claude', name, cwd: workspace, accountProfileId: created.profile.id, launch: false });
+  const freeStart = await gated('Ungated');
+  assert.equal(freeStart.ok, true, 'an account with no limits is never held back');
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: freeStart.session?.id });
+  const setLimits = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '70', block: '90', max: '1', unknownQuota: 'block' });
+  assert.equal(setLimits.ok, true);
+  const badLimits = await vscode.commands.executeCommand<{ ok: boolean; problems?: string[] }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '95', block: '90' });
+  assert.deepEqual([badLimits.ok, badLimits.problems?.[0]], [false, 'The warning level cannot be higher than the pause level.']);
+  const held = await gated('Gated');
+  assert.deepEqual([held.ok, held.code], [false, 'quota-gate']);
+  assert.match(String(held.message), /No verified, current usage reading.*do not start new agents/);
+  assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Gated'), false, 'a held-back start opens no terminal');
+  await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
+  const limitText = vscode.window.activeTextEditor?.document.getText() ?? '';
+  assert.match(limitText, /Limits: warn at 70% used; pause new agents at 90%; at most 1 running at once; if usage is unknown, do not start new agents\./);
+  assert.match(limitText, /Usage: unknown\. No verified usage source is connected/);
+  assert.doesNotMatch(limitText, /\d+% used, verified/, 'no usage percentage is invented');
+  const cleared = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, clear: true });
+  assert.equal(cleared.ok, true);
+  const lifted = await gated('Lifted');
+  assert.equal(lifted.ok, true, 'clearing the limits lifts the hold');
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: lifted.session?.id });
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
