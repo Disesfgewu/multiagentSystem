@@ -3,8 +3,10 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
+import { chooseConfigFolder, ChooserUi, Explained } from './folderChooser';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
+const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
 const { describeAccounts } = require('./profile-view') as { describeAccounts(input: { profiles: any[]; context: { repoRoot: string } }): any[] };
 
 export const ACCOUNT_VIEW = 'multiagentSystem.accountsView';
@@ -143,8 +145,40 @@ async function chooseProfile(provider?: string): Promise<any | undefined> {
   return choice?.profile;
 }
 
-function errorFor(result: { code?: string; message?: string }): string {
+function errorFor(result: { code?: string; message?: string; problems?: string[]; kind?: string }): string {
+  const explained = explainFailure(result);
+  if (explained.length > 0) return explained.map((item) => `${item.message} ${item.fix}`).join(' ');
   return result.message ?? `Account operation failed${result.code ? ` (${result.code})` : ''}.`;
+}
+
+const folderUi: ChooserUi = {
+  async pickAction(suggestionName) {
+    const picked = await vscode.window.showQuickPick([
+      { label: '$(add) Create a recommended folder for this account', description: suggestionName, detail: 'A new private folder under your home folder, outside your project. Recommended.', action: 'create' as const },
+      { label: '$(folder-opened) Choose an existing folder…', detail: 'Pick a new, empty folder outside your project. It is checked as soon as you choose it.', action: 'choose' as const }
+    ], { placeHolder: 'Where should this account keep its sign-in data?', ignoreFocusOut: true });
+    return picked?.action;
+  },
+  async openFolder(defaultPath) {
+    const folders = await vscode.window.showOpenDialog({
+      canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
+      defaultUri: vscode.Uri.file(defaultPath),
+      title: 'Choose a new folder for this account (outside your project)',
+      openLabel: 'Use this folder'
+    });
+    return folders?.[0]?.fsPath;
+  },
+  async showProblems(summary, detail, offerRecommended) {
+    const buttons = offerRecommended ? ['Use the recommended folder', 'Choose another folder'] : ['Try again'];
+    const answer = await vscode.window.showWarningMessage(summary, { modal: true, detail }, ...buttons);
+    if (answer === 'Use the recommended folder') return 'recommended';
+    return answer === undefined ? undefined : 'another';
+  }
+};
+
+async function pickConfigFolder(provider: string, label: string, profiles: any[], repoRoot: string): Promise<string | undefined> {
+  const chosen = await chooseConfigFolder({ provider, label, profiles, repoRoot, homeDir: os.homedir(), ui: folderUi });
+  return chosen.ok ? chosen.dir : undefined;
 }
 
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
@@ -172,11 +206,13 @@ async function create(): Promise<void> {
   if (!picked) return;
   const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
   if (!label) return;
-  const folders = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, defaultUri: vscode.Uri.file(os.homedir()), openLabel: 'Use account configuration folder' });
-  if (!folders?.[0]) return;
   const result = await accountService(() => sessions?.list() ?? []);
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }
-  const created = result.service.create({ provider: picked.id, label, configDir: folders[0].fsPath });
+  const existing = result.service.list();
+  if (!existing.ok) { void vscode.window.showErrorMessage(errorFor(existing)); return; }
+  const configDir = await pickConfigFolder(picked.id, label, existing.profiles, (result.store as { repoRoot: string }).repoRoot);
+  if (!configDir) return;
+  const created = result.service.create({ provider: picked.id, label, configDir });
   if (!created.ok) { void vscode.window.showErrorMessage(errorFor(created)); return; }
   void vscode.window.showInformationMessage(`Account profile “${created.profile.label}” was saved. Its service identity remains unknown until verified by the CLI.`);
   currentTree?.refresh();
@@ -224,9 +260,12 @@ async function edit(value: unknown, tree: AccountTree): Promise<void> {
     if (!label) return;
     changes = { label };
   } else {
-    const folders = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, defaultUri: vscode.Uri.file(os.homedir()), openLabel: 'Use account configuration folder' });
-    if (!folders?.[0]) return;
-    changes = { configDir: folders[0].fsPath };
+    const all = result.service.list();
+    if (!all.ok) { void vscode.window.showErrorMessage(errorFor(all)); return; }
+    const others = all.profiles.filter((entry: any) => entry.id !== profileId);
+    const configDir = await pickConfigFolder(current.profile.provider, current.profile.label, others, (result.store as { repoRoot: string }).repoRoot);
+    if (!configDir) return;
+    changes = { configDir };
   }
   const updated = result.service.update(profileId, changes, { expectedRevision: current.profile.revision });
   if (!updated.ok) { void vscode.window.showErrorMessage(errorFor(updated)); return; }
