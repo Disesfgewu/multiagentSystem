@@ -39,6 +39,8 @@ jobs:
       - run: node --check src/accounts/profile.js
       - run: node --check src/accounts/observation.js
       - run: node --check src/accounts/readiness.js
+      - run: node --check src/accounts/profile-service.js
+      - run: node --check src/accounts/profile-view.js
       - run: node --check scripts/p0/check-account-isolation.js
       # Node 20 cannot expand globs itself, so the shell does it (bash on Windows too).
       - run: node --test test/accounts/*.test.js
