@@ -21,10 +21,21 @@
     "onCommand:multiagentSystem.github.openChecks",
     "onCommand:multiagentSystem.github.pullRequestStatus",
     "onCommand:multiagentSystem.github.signIn",
+    "onCommand:multiagentSystem.github.refreshView",
+    "onCommand:multiagentSystem.github.openInEditor",
+    "onView:multiagentSystem.githubView",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
   "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "multiagentSystem.githubView",
+          "name": "Multiagent GitHub"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "multiagentSystem.openTerminalGroup",
@@ -71,6 +82,15 @@
         "title": "Multiagent: Sign In to GitHub"
       },
       {
+        "command": "multiagentSystem.github.refreshView",
+        "title": "Multiagent: Refresh GitHub View",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "multiagentSystem.github.openInEditor",
+        "title": "Multiagent: Open GitHub Item in Editor"
+      },
+      {
         "command": "multiagentSystem.storage.status",
         "title": "Multiagent: Show Private Storage Status"
       },
@@ -78,7 +98,16 @@
         "command": "multiagentSystem.sessions.list",
         "title": "Multiagent: Sessions"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "multiagentSystem.github.refreshView",
+          "when": "view == multiagentSystem.githubView",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "tsc -p .",

@@ -1,8 +1,10 @@
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import * as vscode from 'vscode';
 // The same module file the extension loaded, so the overrides apply to the running extension.
 // They are accepted only while the editor runs in test mode.
-import { GITHUB_COMMANDS, installTestOverrides } from '../../../src/github/githubCommands';
+import { GITHUB_COMMANDS, githubTreeForTests, installTestOverrides } from '../../../src/github/githubCommands';
+import { GITHUB_TREE_COMMANDS } from '../../../src/github/githubTree';
 
 // Drives the GitHub commands in non-interactive form inside a real Extension Host. Every
 // answer comes from a synthetic fetch; nothing here contacts GitHub or uses a real account.
@@ -146,6 +148,46 @@ export async function runGitHubChecks(registered: string[]): Promise<string> {
   const noRepository = await run(GITHUB_COMMANDS.openIssue, { interactive: false, number: 1 });
   assert.deepEqual([badRepository.code, badNumber.code, noRepository.code], ['repository-invalid', 'number-invalid', 'repository-required']);
 
+  // 8. The persistent view lists work without a number, and opens issue content inside VS Code.
+  const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
+  assert.ok(workspace);
+  execFileSync('git', ['remote', 'add', 'origin', `${WEB}.git`], { cwd: workspace });
+  const inEditorOpened: string[] = [];
+  const pull = {
+    number: 7, title: 'PR visible in tree', state: 'open', user: { login: 'worker' },
+    body: 'Actual pull request body in editor', head: { sha: 'a'.repeat(40), ref: 'feature' },
+    base: { sha: 'b'.repeat(40), ref: 'main' }, html_url: `${WEB}/pull/7`
+  };
+  installTestOverrides({
+    fetch: fakeFetch((url) => {
+      if (url.pathname === '/repos/example-org/example-repo/issues') return reply(200, [issue(12, 'Issue visible in tree')]);
+      if (url.pathname === '/repos/example-org/example-repo/issues/12') return reply(200, { ...issue(12, 'Issue visible in tree'), body: 'Actual issue body in editor' });
+      if (url.pathname === '/repos/example-org/example-repo/pulls') return reply(200, [pull]);
+      if (url.pathname === '/repos/example-org/example-repo/pulls/7') return reply(200, pull);
+      return reply(404, {});
+    }, []),
+    getToken: async () => undefined,
+    openExternal: async (url) => { inEditorOpened.push(url); return true; }
+  });
+  assert.ok(registered.includes(GITHUB_TREE_COMMANDS.refresh));
+  assert.ok(registered.includes(GITHUB_TREE_COMMANDS.openItem));
+  const tree = githubTreeForTests();
+  const categories = await tree.getChildren();
+  assert.deepEqual(categories.map((item) => item.label), ['Issues', 'Pull requests']);
+  const items = await tree.getChildren(categories[0]);
+  const picked = items.find((item) => item.label === '#12 Issue visible in tree');
+  assert.ok(picked?.command, 'the issue appears in the persistent tree without a typed number');
+  await vscode.commands.executeCommand(picked.command.command, ...(picked.command.arguments ?? []));
+  assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Actual issue body in editor/);
+  const pullItems = await tree.getChildren(categories[1]);
+  const pickedPull = pullItems.find((item) => item.label === '#7 PR visible in tree');
+  assert.ok(pickedPull?.command, 'the pull request appears in the persistent tree without a typed number');
+  await vscode.commands.executeCommand(pickedPull.command.command, ...(pickedPull.command.arguments ?? []));
+  const pullDetail = vscode.window.activeTextEditor?.document.getText() ?? '';
+  assert.match(pullDetail, /Actual pull request body in editor/);
+  assert.match(pullDetail, /Review and CI/);
+  assert.deepEqual(inEditorOpened, [], 'opening the tree entry does not leave VS Code');
+
   installTestOverrides({});
-  return 'github host smoke: 6 commands registered; anonymous and signed-in reads use GET to the API host only; failures, cancel and repository switch are reported; arguments cannot select a transport or credential';
+  return 'github host smoke: native tree lists issues without a number and opens body in editor; reads use GET to the API host only; failures, cancel and repository switch are reported';
 }

@@ -10,6 +10,7 @@ import {
   PickItem,
   SignInOutcome
 } from './controller';
+import { GitHubTree, GITHUB_TREE_COMMANDS, GITHUB_TREE_VIEW } from './githubTree';
 
 export const GITHUB_COMMANDS = {
   browse: 'multiagentSystem.github.browse',
@@ -50,6 +51,12 @@ export interface TestOverrides {
 let testMode = false;
 let overrides: TestOverrides = {};
 let adapter: GitHubAdapter | undefined;
+let testTree: GitHubTree | undefined;
+
+export function githubTreeForTests(): GitHubTree {
+  if (!testMode || !testTree) throw new Error('The GitHub tree is available only in Extension Host tests.');
+  return testTree;
+}
 
 export function installTestOverrides(next: TestOverrides): void {
   if (!testMode) throw new Error('Test overrides are only available when the editor runs in test mode.');
@@ -143,6 +150,14 @@ export function registerGitHubCommands(context: vscode.ExtensionContext): void {
       return typeof project.githubRepository === 'string' ? project.githubRepository : null;
     }
   });
+  const tree = new GitHubTree(controller, getAdapter);
+  if (testMode) testTree = tree;
+  context.subscriptions.push(
+    vscode.window.createTreeView(GITHUB_TREE_VIEW, { treeDataProvider: tree }),
+    vscode.commands.registerCommand(GITHUB_TREE_COMMANDS.refresh, () => tree.refresh()),
+    vscode.commands.registerCommand(GITHUB_TREE_COMMANDS.openItem, (value?: unknown) => tree.openItem(value)),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh())
+  );
   // Invoked from the Command Palette the argument is undefined. Other callers (the Extension
   // Host smoke test) pass options; see GitHubCommandOptions.
   context.subscriptions.push(
@@ -151,6 +166,10 @@ export function registerGitHubCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(GITHUB_COMMANDS.openPullRequest, (value?: unknown) => controller.openPage('pullRequest', commandOptions(value))),
     vscode.commands.registerCommand(GITHUB_COMMANDS.openChecks, (value?: unknown) => controller.openPage('checks', commandOptions(value))),
     vscode.commands.registerCommand(GITHUB_COMMANDS.pullRequestStatus, (value?: unknown) => controller.pullRequestStatus(commandOptions(value))),
-    vscode.commands.registerCommand(GITHUB_COMMANDS.signIn, () => controller.signIn())
+    vscode.commands.registerCommand(GITHUB_COMMANDS.signIn, async () => {
+      const result = await controller.signIn();
+      if (result.ok) tree.refresh();
+      return result;
+    })
   );
 }
