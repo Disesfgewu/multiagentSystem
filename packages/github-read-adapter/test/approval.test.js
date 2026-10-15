@@ -83,9 +83,10 @@ test('a dismissed review does not count and does not revive an earlier approval'
   assert.equal(assessApprovals({ reviews: earlierApproval, headSha: SHA_A, prAuthor: 'worker' }).status, 'not_approved');
 });
 
-test('pending and undated reviews are ignored', () => {
-  const reviews = [r('pm', 'PENDING', SHA_A, null), r('pm', 'APPROVED', SHA_A, null)];
-  assert.equal(assessApprovals({ reviews, headSha: SHA_A, prAuthor: 'worker' }).status, 'not_approved');
+test('pending reviews are ignored; an undated decisive review is unknown, not ignored', () => {
+  const pending = r('pm', 'PENDING', SHA_A, null);
+  assert.equal(assessApprovals({ reviews: [pending], headSha: SHA_A, prAuthor: 'worker' }).status, 'not_approved');
+  assert.equal(assessApprovals({ reviews: [pending, r('pm', 'APPROVED', SHA_A, null)], headSha: SHA_A, prAuthor: 'worker' }).status, 'unknown');
 });
 
 test("the PR author's own approval is ignored", () => {
@@ -108,10 +109,52 @@ test('required approvals are counted per distinct reviewer on the current head',
 
 test('no reviews at all is not_approved/no_approval; input order does not matter', () => {
   assert.equal(assessApprovals({ reviews: [], headSha: SHA_A, prAuthor: 'w' }).reason, 'no_approval');
-  const reviews = [r('pm', 'APPROVED', SHA_B, t(9)), r('pm', 'CHANGES_REQUESTED', SHA_A, t(1))];
-  assert.equal(assessApprovals({ reviews, headSha: SHA_B, prAuthor: 'w' }).status, 'approved');
+  const early = r('pm', 'CHANGES_REQUESTED', SHA_A, t(1));
+  const late = r('pm', 'APPROVED', SHA_B, t(9));
+  for (const reviews of [[early, late], [late, early]]) {
+    assert.equal(assessApprovals({ reviews, headSha: SHA_B, prAuthor: 'w' }).status, 'approved');
+  }
 });
 
 test('a malformed head SHA is rejected', () => {
   assert.throws(() => assessApprovals({ reviews: [], headSha: 'main' }), TypeError);
+});
+
+test('a decisive review with a missing or malformed time makes the result unknown, whatever the order', () => {
+  for (const bad of [null, '', undefined, 'not-a-date', 12345]) {
+    const approved = r('pm', 'APPROVED', SHA_A, t(1));
+    const changes = r('pm', 'CHANGES_REQUESTED', SHA_A, bad);
+    for (const reviews of [[approved, changes], [changes, approved]]) {
+      const result = assessApprovals({ reviews, headSha: SHA_A, prAuthor: 'worker' });
+      assert.equal(result.status, 'unknown', String(bad));
+      assert.equal(result.reason, 'review_time_unreadable');
+      assert.equal(result.currentApprovals.length, 0);
+    }
+  }
+});
+
+test('a review without a usable id is unknown; undecisive reviews with bad times are ignored', () => {
+  const noId = { reviewer: 'pm', state: 'APPROVED', commitId: SHA_A, submittedAt: t(1) };
+  assert.equal(assessApprovals({ reviews: [noId], headSha: SHA_A }).status, 'unknown');
+  const comment = r('pm', 'COMMENTED', SHA_A, 'garbage');
+  const pending = r('pm', 'PENDING', SHA_A, null);
+  const result = assessApprovals({ reviews: [r('pm', 'APPROVED', SHA_A, t(1)), comment, pending], headSha: SHA_A, prAuthor: 'worker' });
+  assert.equal(result.status, 'approved');
+});
+
+test('the result does not depend on input order; the id decides which review is later', () => {
+  const approved = r('pm', 'APPROVED', SHA_A, t(5));
+  const changes = { ...r('pm', 'CHANGES_REQUESTED', SHA_A, t(1)) };
+  // the later id wins even though its clock reads earlier
+  for (const reviews of [[approved, changes], [changes, approved]]) {
+    assert.equal(assessApprovals({ reviews, headSha: SHA_A, prAuthor: 'worker' }).status, 'changes_requested');
+  }
+});
+
+test('with equal ids the time breaks the tie, whatever the input order', () => {
+  const a = { id: 900, reviewer: 'pm', state: 'APPROVED', commitId: SHA_A, submittedAt: t(1) };
+  const c = { id: 900, reviewer: 'pm', state: 'CHANGES_REQUESTED', commitId: SHA_A, submittedAt: t(2) };
+  for (const reviews of [[a, c], [c, a]]) {
+    assert.equal(assessApprovals({ reviews, headSha: SHA_A, prAuthor: 'w' }).status, 'changes_requested');
+  }
 });
