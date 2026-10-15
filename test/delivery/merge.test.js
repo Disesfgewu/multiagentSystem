@@ -12,7 +12,7 @@ const CONFIG = { pmActorId: '10', mergeAuthority: 'pm' };
 function snapshot(extra = {}) {
   const pr = {
     number: 7, state: 'open', merged: false, draft: false, author: 'worker-user',
-    headSha: HEAD, mergeable: true, baseRef: 'main', ...(extra.pr || {})
+    title: 'Safe change', body: 'Refs #17', headSha: HEAD, mergeable: true, baseRef: 'main', ...(extra.pr || {})
   };
   const value = {
     repository: REPOSITORY,
@@ -47,6 +47,15 @@ const context = (extra = {}) => ({
   role: 'pm', actorId: '10', authorId: '20', pmLogin: 'pm-user',
   policyConfig: CONFIG, ...extra
 });
+
+function readerFor(value = snapshot(), publication = {
+  kind: 'ok', data: { complete: true, number: 7, headSha: HEAD, diff: 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -0,0 +1 @@\n+const safe = true;\n' }
+}) {
+  return {
+    getPullRequestSnapshot: async () => value,
+    getPullRequestPublication: async () => publication
+  };
+}
 
 test('a complete current snapshot passes the pure merge decision', () => {
   assert.deepEqual(assessMerge(snapshot(), context()), {
@@ -106,49 +115,91 @@ test('inconsistent snapshots, changed heads, and mismatched PR identities are re
   assert.equal(assessMerge(snapshot({ number: 8 }), context({ expectedNumber: 7 })).reason, 'pr-mismatch');
 });
 
-test('coordinator force-refreshes, scans, and sends only the expected head to the injected writer', async () => {
+test('coordinator force-refreshes snapshot and bound content, then sends only the expected head to the writer', async () => {
   const reads = [];
+  const contentReads = [];
   const writes = [];
-  const reader = { getPullRequestSnapshot: async (...args) => { reads.push(args); return snapshot(); } };
+  const scanned = [];
+  const reader = {
+    getPullRequestSnapshot: async (...args) => { reads.push(args); return snapshot(); },
+    getPullRequestPublication: async (...args) => {
+      contentReads.push(args);
+      return { kind: 'ok', data: { complete: true, number: 7, headSha: HEAD, diff: 'safe diff' } };
+    }
+  };
   const writer = { mergePullRequest: async payload => { writes.push(payload); return { ok: true }; } };
   const result = await mergePullRequest({
     reader, writer, repository: REPOSITORY, pullNumber: 7,
-    ...context(), publication: [{ kind: 'pr-body', text: 'Refs #17. Decision core slice.' }]
+    ...context(), scan: units => { scanned.push(units); return { status: 'clear', blocked: false }; }
   });
   assert.deepEqual(result, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD });
   assert.deepEqual(reads, [[7, { forceRefresh: true }]]);
+  assert.deepEqual(contentReads, [[7, HEAD, { forceRefresh: true }]]);
+  assert.deepEqual(scanned, [[
+    { kind: 'pr-title', text: 'Safe change' },
+    { kind: 'pr-body', text: 'Refs #17' },
+    { kind: 'diff', text: 'safe diff' }
+  ]]);
   assert.deepEqual(writes, [{ repository: REPOSITORY, number: 7, expectedHeadSha: HEAD }]);
 });
 
-test('publication scan blocks credentials and malformed scan input before the writer', async () => {
+test('a secret in the current PR body is scanned even when the bound diff is benign', async () => {
   const writes = [];
   const common = {
-    reader: { getPullRequestSnapshot: async () => snapshot() },
     writer: { mergePullRequest: async payload => { writes.push(payload); return { ok: true }; } },
     repository: REPOSITORY, pullNumber: 7, ...context()
   };
-  const credential = await mergePullRequest({
-    ...common,
-    publication: [{ kind: 'pr-body', text: `accidental ghp_${'x'.repeat(36)}` }]
+  const bodySecret = await mergePullRequest({
+    ...common, reader: readerFor(snapshot({ pr: { body: `accidental ghp_${'x'.repeat(36)}` } }))
   });
-  assert.deepEqual([credential.ok, credential.reason, credential.scanStatus], [false, 'publication-blocked', 'blocked']);
-  const malformed = await mergePullRequest({ ...common, publication: [] });
-  assert.deepEqual([malformed.reason, malformed.scanStatus, malformed.scanReason], ['publication-blocked', 'error', 'invalid-input']);
+  assert.deepEqual([bodySecret.ok, bodySecret.reason, bodySecret.scanStatus], [false, 'publication-blocked', 'blocked']);
+
+  const diffSecret = await mergePullRequest({
+    ...common,
+    reader: readerFor(snapshot(), { kind: 'ok', data: {
+      complete: true, number: 7, headSha: HEAD,
+      diff: `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+ghp_${'x'.repeat(36)}\n`
+    } })
+  });
+  assert.deepEqual([diffSecret.ok, diffSecret.reason, diffSecret.scanStatus], [false, 'publication-blocked', 'blocked']);
   assert.equal(writes.length, 0);
+});
+
+test('missing, partial, stale, or mismatched publication evidence fails closed', async () => {
+  const cases = [
+    { kind: 'partial', data: { complete: false, number: 7, headSha: HEAD, diff: 'safe' } },
+    { kind: 'ok', data: { complete: false, number: 7, headSha: HEAD, diff: 'safe' } },
+    { kind: 'ok', data: { complete: true, number: 7, headSha: OLD, diff: 'safe' } },
+    { kind: 'ok', data: { complete: true, number: 8, headSha: HEAD, diff: 'safe' } },
+    { kind: 'ok', data: { complete: true, number: 7, headSha: HEAD } }
+  ];
+  for (const publication of cases) {
+    let writes = 0;
+    const result = await mergePullRequest({
+      reader: readerFor(snapshot(), publication),
+      writer: { mergePullRequest: async () => { writes += 1; return { ok: true }; } },
+      repository: REPOSITORY, pullNumber: 7, ...context()
+    });
+    assert.equal(result.reason, 'publication-unverified');
+    assert.equal(writes, 0);
+  }
 });
 
 test('a failed policy decision never scans or writes', async () => {
   let scans = 0;
   let writes = 0;
+  let contentReads = 0;
   const result = await mergePullRequest({
-    reader: { getPullRequestSnapshot: async () => snapshot() },
+    reader: {
+      getPullRequestSnapshot: async () => snapshot(),
+      getPullRequestPublication: async () => { contentReads += 1; return {}; }
+    },
     writer: { mergePullRequest: async () => { writes += 1; return { ok: true }; } },
     repository: REPOSITORY, pullNumber: 7, ...context({ role: 'worker', actorId: '20' }),
-    publication: [{ kind: 'pr-body', text: 'safe' }],
     scan: () => { scans += 1; return { status: 'clear', blocked: false }; }
   });
   assert.equal(result.reason, 'role-forbidden');
-  assert.deepEqual([scans, writes], [0, 0]);
+  assert.deepEqual([contentReads, scans, writes], [0, 0, 0]);
 });
 
 test('writer conflicts are returned and unknown outcomes are not retried', async () => {
@@ -160,10 +211,9 @@ test('writer conflicts are returned and unknown outcomes are not retried', async
   ]) {
     let calls = 0;
     const result = await mergePullRequest({
-      reader: { getPullRequestSnapshot: async () => snapshot() },
+      reader: readerFor(),
       writer: { mergePullRequest: async payload => { calls += 1; return implementation(payload); } },
-      repository: REPOSITORY, pullNumber: 7, ...context(),
-      publication: [{ kind: 'pr-body', text: 'safe publication' }]
+      repository: REPOSITORY, pullNumber: 7, ...context()
     });
     assert.deepEqual([result.reason, result.writerReason], expected);
     assert.equal(calls, 1);
@@ -174,17 +224,28 @@ test('read failures and repository confusion never reach scan or writer', async 
   let calls = 0;
   const base = {
     writer: { mergePullRequest: async () => { calls += 1; return { ok: true }; } },
-    repository: REPOSITORY, pullNumber: 7, ...context(),
-    publication: [{ kind: 'pr-body', text: 'safe publication' }]
+    repository: REPOSITORY, pullNumber: 7, ...context()
   };
-  assert.equal((await mergePullRequest({ ...base, reader: { getPullRequestSnapshot: async () => { throw new Error('offline'); } } })).reason, 'cannot-verify');
-  assert.equal((await mergePullRequest({ ...base, reader: { getPullRequestSnapshot: async () => ({ kind: 'cancelled' }) } })).reason, 'snapshot-incomplete');
-  assert.equal((await mergePullRequest({ ...base, reader: { getPullRequestSnapshot: async () => snapshot({ repository: { owner: 'evil', name: 'project' } }) } })).reason, 'repository-mismatch');
+  assert.equal((await mergePullRequest({ ...base, reader: { ...readerFor(), getPullRequestSnapshot: async () => { throw new Error('offline'); } } })).reason, 'cannot-verify');
+  assert.equal((await mergePullRequest({ ...base, reader: { ...readerFor(), getPullRequestSnapshot: async () => ({ kind: 'cancelled' }) } })).reason, 'snapshot-incomplete');
+  assert.equal((await mergePullRequest({ ...base, reader: readerFor(snapshot({ repository: { owner: 'evil', name: 'project' } })) })).reason, 'repository-mismatch');
   assert.equal(calls, 0);
 });
 
+test('publication reader failures are closed and never expose their error', async () => {
+  let writes = 0;
+  const result = await mergePullRequest({
+    reader: { ...readerFor(), getPullRequestPublication: async () => { throw new Error('private response'); } },
+    writer: { mergePullRequest: async () => { writes += 1; return { ok: true }; } },
+    repository: REPOSITORY, pullNumber: 7, ...context()
+  });
+  assert.deepEqual(result, { ok: false, reason: 'publication-unverified' });
+  assert.equal(writes, 0);
+});
+
 test('missing adapters are programming errors', async () => {
-  const base = { repository: REPOSITORY, pullNumber: 7, ...context(), publication: [{ kind: 'pr-body', text: 'safe' }] };
+  const base = { repository: REPOSITORY, pullNumber: 7, ...context() };
   await assert.rejects(() => mergePullRequest({ ...base, reader: {}, writer: { mergePullRequest() {} } }), TypeError);
-  await assert.rejects(() => mergePullRequest({ ...base, reader: { getPullRequestSnapshot() {} }, writer: {} }), TypeError);
+  await assert.rejects(() => mergePullRequest({ ...base, reader: { getPullRequestSnapshot() {} }, writer: { mergePullRequest() {} } }), TypeError);
+  await assert.rejects(() => mergePullRequest({ ...base, reader: readerFor(), writer: {} }), TypeError);
 });

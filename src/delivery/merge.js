@@ -91,6 +91,7 @@ function assessMerge(snapshot, { role, actorId, authorId, pmLogin, policyConfig 
   const pr = snapshot.pullRequest.data;
   if (pr.number !== snapshot.number) return refuse('pr-mismatch');
   if (!isSha(snapshot.headSha) || pr.headSha !== snapshot.headSha) return refuse('head-unverified');
+  if (typeof pr.author !== 'string' || typeof pr.title !== 'string' || (pr.body !== null && typeof pr.body !== 'string')) return refuse('pr-unverified');
   if (pr.state !== 'open' || pr.merged === true) return refuse('pr-not-open');
   if (pr.draft !== false) return refuse('pr-draft');
   if (pr.mergeable === false) return refuse('merge-conflict');
@@ -140,15 +141,17 @@ function sameRepository(left, right) {
 }
 
 /**
- * Re-read immediately before merge, scan the publication, and invoke an injected writer.
+ * Re-read immediately before merge, read content bound to that head, scan it, and invoke
+ * an injected writer.
  * The writer contract is `mergePullRequest({ repository, number, expectedHeadSha })` and it
  * must enforce `expectedHeadSha` atomically at GitHub. Unknown outcomes are never retried.
  */
 async function mergePullRequest({
   reader, writer, repository, pullNumber, role, actorId, authorId, pmLogin,
-  policyConfig = {}, publication, scanOptions = {}, scan = scanPublication
+  policyConfig = {}, scanOptions = {}, scan = scanPublication
 } = {}) {
   if (!reader || typeof reader.getPullRequestSnapshot !== 'function') throw new TypeError('reader.getPullRequestSnapshot is required');
+  if (typeof reader.getPullRequestPublication !== 'function') throw new TypeError('reader.getPullRequestPublication is required');
   if (!writer || typeof writer.mergePullRequest !== 'function') throw new TypeError('writer.mergePullRequest is required');
   if (!isPlain(repository) || typeof repository.owner !== 'string' || typeof repository.name !== 'string') throw new TypeError('repository is required');
   if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) throw new TypeError('pullNumber must be a positive integer');
@@ -164,9 +167,32 @@ async function mergePullRequest({
   if (!decision.ok) return decision;
   if (!sameRepository(snapshot.repository, repository)) return refuse('repository-mismatch');
 
+  // The content reader is a trusted boundary: it must fetch the complete diff for exactly
+  // this PR head. A free-form caller payload is deliberately not accepted here.
+  let publication;
+  try {
+    publication = await reader.getPullRequestPublication(pullNumber, decision.headSha, { forceRefresh: true });
+  } catch {
+    return refuse('publication-unverified');
+  }
+  if (
+    !isPlain(publication) || publication.kind !== 'ok' || !isPlain(publication.data) ||
+    publication.data.complete !== true || publication.data.number !== pullNumber ||
+    publication.data.headSha !== decision.headSha || typeof publication.data.diff !== 'string'
+  ) {
+    return refuse('publication-unverified');
+  }
+
+  const pr = snapshot.pullRequest.data;
+  const units = [
+    { kind: 'pr-title', text: pr.title },
+    { kind: 'pr-body', text: pr.body || '' },
+    { kind: 'diff', text: publication.data.diff }
+  ];
+
   let scanResult;
   try {
-    scanResult = scan(publication, scanOptions);
+    scanResult = scan(units, scanOptions);
   } catch {
     return refuse('publication-scan-failed');
   }
