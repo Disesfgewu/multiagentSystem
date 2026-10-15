@@ -64,15 +64,15 @@ export interface Unavailable {
 
 /**
  * What the repository check covered.
- *   ancestors-checked  every open folder, and every directory above it, was looked at for a `.git`
- *                      entry. What this does not see: a repository whose working tree has no
- *                      `.git` entry (configured with `core.worktree`).
- *   no-folder-open     nothing is open, so there is no repository to be inside of
+ *   ancestors-checked  every open folder and the private storage location, plus their ancestors,
+ *                      were looked at for a `.git` entry. What this does not see: a repository
+ *                      whose working tree has no `.git` entry (configured with `core.worktree`).
+ *   no-folder-open     nothing is open; the private storage location is still checked
  */
 export interface Coverage {
   level: 'ancestors-checked' | 'no-folder-open';
   folders: number;
-  /** How many distinct repository working trees were found above the open folders. */
+  /** How many distinct repository working trees were found above open folders or private storage. */
   repositoriesFound: number;
 }
 
@@ -122,6 +122,15 @@ export function createStorageHandle(deps: StorageDeps): StorageHandle {
       const folders = deps.workspaceFolders();
       const checked: string[] = [];
       const repositories = new Set<string>();
+      // The editor's global storage can itself sit inside an unrelated repository (for example,
+      // when user data is under a dotfiles checkout and the workspace is elsewhere). Check its
+      // ancestors independently; checking only workspace folders would miss that case.
+      const storageRoots = findRepositoryRoots(dir, probe);
+      if (storageRoots.problem !== null) return unavailable('directory-rejected', [storageRoots.problem]);
+      for (const root of storageRoots.roots) {
+        repositories.add(root);
+        checked.push(root);
+      }
       for (const folder of folders) {
         checked.push(folder);
         const found = findRepositoryRoots(folder, probe);

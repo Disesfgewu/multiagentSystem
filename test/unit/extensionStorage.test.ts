@@ -97,6 +97,24 @@ test('storage opens in the editor\'s storage folder, outside the repository, and
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o077, 0, 'the file is private to the user');
 });
 
+test('storage is refused when the editor storage folder is inside a repository unrelated to the workspace', async (t) => {
+  const s = sandbox(t);
+  const storageRepo = path.join(s.root, 'dotfiles-checkout');
+  const storage = path.join(storageRepo, '.config', 'Code', 'User', 'globalStorage', 'publisher.extension');
+  fs.mkdirSync(path.join(storageRepo, '.git'), { recursive: true });
+  fs.mkdirSync(path.dirname(storage), { recursive: true });
+
+  const before = snapshot(s.root);
+  const result = await createStorageHandle({
+    context: { ...s.context, globalStorageUri: { fsPath: storage } },
+    workspaceFolders: () => [s.other]
+  }).use();
+
+  assert.equal(result.ok, false);
+  assert.ok(!result.ok && result.problems.includes('private-root-inside-repo'));
+  assert.deepEqual(snapshot(s.root), before, 'no private storage was created inside the unrelated repository');
+});
+
 test('a secret goes to the editor\'s secret storage and the record holds only an opaque reference', async (t) => {
   const s = sandbox(t);
   const result = await handleFor(s, () => [s.repo]).use();
