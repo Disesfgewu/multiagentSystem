@@ -9,6 +9,7 @@ import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
+import { privateStorage } from '../../../src/storage/storageCommands';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -185,6 +186,21 @@ async function roleFlow(workspace: string): Promise<void> {
   await assert.rejects(Promise.resolve(vscode.workspace.fs.writeFile(previewUri('host-pm'), Buffer.from('x'))), 'a virtual preview cannot be written');
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
   assert.equal(fs.existsSync(path.join(workspaceRoot, 'effective-rules.txt')), false, 'no preview file appears in the project');
+
+  // Two editor windows that read the same private record cannot overwrite each other.
+  const privateHandle = await privateStorage()?.use();
+  assert.equal(privateHandle?.ok, true);
+  const loadedRole = privateHandle.store.get('roleGroups', 'host-pm');
+  assert.equal(loadedRole.ok && 'found' in loadedRole && loadedRole.found, true);
+  const first = (loadedRole as { value: Parameters<typeof saveRoleRecord>[0] & { revision: number } }).value;
+  const second = structuredClone(first);
+  first.group.rules[0].text = 'Review the latest approved head.';
+  assert.equal((await saveRoleRecord(first, first.revision)).ok, true);
+  second.group.rules[0].text = 'Stale instruction.';
+  assert.equal((await saveRoleRecord(second, second.revision)).reason, 'stale-revision');
+  const latestRole = privateHandle.store.get('roleGroups', 'host-pm');
+  assert.equal(latestRole.ok && 'found' in latestRole && latestRole.found, true);
+  assert.equal((latestRole as { value: { group: { rules: Array<{ text: string }> } } }).value.group.rules[0].text, 'Review the latest approved head.');
 
   // agy has no known way to receive rules: its preview must say they have to be given by hand.
   const agy = await saveRoleRecord({
