@@ -187,6 +187,8 @@ class MemoryStore {
   }
 
   inspectLock() {
+    const problem = this.#directoryProblem();
+    if (problem) return { ok: false, reason: 'directory-rejected', detail: problem };
     try {
       const { held, detail, ageMs, stale } = this.lock.inspect();
       return held ? { ok: true, held, detail, ageMs, stale } : { ok: true, held: false };
@@ -200,6 +202,8 @@ class MemoryStore {
   // owner a program cannot judge (another host, unreadable, or a reused process
   // id); it still requires the lock to be older than the stale age.
   recoverLock(options) {
+    const problem = this.#directoryProblem();
+    if (problem) return { ok: false, reason: 'directory-rejected', detail: problem };
     try {
       const { text, ...rest } = this.lock.recover(options);
       return rest;
@@ -235,7 +239,10 @@ class MemoryStore {
         return;
       } catch (error) {
         // Windows can briefly refuse a rename while a reader has the file open.
-        if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+        if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) {
+          fs.rmSync(temp, { force: true });
+          throw error;
+        }
         lastError = error;
         sleep(20);
       }
