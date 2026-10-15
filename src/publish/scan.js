@@ -27,9 +27,13 @@ const KINDS = Object.freeze([
 
 const LIMITS = Object.freeze({
   maxUnits: 200,
-  maxUnitChars: 2_000_000,
-  maxTotalChars: 8_000_000,
-  maxFindings: 200
+  maxUnitChars: 1_000_000,
+  maxTotalChars: 4_000_000,
+  maxFindings: 200,
+  // Work budget for one scan, checked between detector runs. A scan that runs over it is refused,
+  // never reported as clear. It cannot interrupt a single pattern, which is why every pattern is
+  // also required to be linear (see test/publish/stress.test.js).
+  budgetMs: 10_000
 });
 
 const LIMITATIONS = Object.freeze([
@@ -102,13 +106,18 @@ function locate(starts, index) {
  * @param {Array<{ id: string, text: string }>} [options.rules] private rule text, supplied by the caller
  * @param {Array<{ id: string, value: string }>} [options.knownValues] values known to be private
  * @param {Array<{ name: string, detect(text: string): object[] }>} [options.detectors] replaces the default detectors
+ * @param {number} [options.budgetMs] work budget; a scan over it is an error, never clear
+ * @param {() => number} [options.now] clock, for tests
  * @returns {object} { status: 'clear'|'blocked'|'incomplete'|'error', blocked, findings, unmatchable, unscanned,
  *   privateReference: 'supplied'|'none-supplied', ... }
  */
+class BudgetExceeded extends Error {}
+
 function scanPublication(units, options = {}) {
   try {
     return run(units, options);
-  } catch {
+  } catch (caught) {
+    if (caught instanceof BudgetExceeded) return error('scan-budget-exceeded');
     // Never pass on an error, and never include its message (it could hold the scanned text).
     return error('scanner-failed');
   }
@@ -128,6 +137,11 @@ function run(units, options) {
   const known = detectors.knownValues(options.knownValues || []);
   const fragments = detectors.privateFragments({ memories: options.memories, rules: options.rules });
   const active = options.detectors || [detectors.sensitiveShapes(), detectors.localPaths(), fragments, known];
+
+  const clock = typeof options.now === 'function' ? options.now : Date.now;
+  const budget = Number.isFinite(options.budgetMs) && options.budgetMs > 0 ? options.budgetMs : LIMITS.budgetMs;
+  const deadline = clock() + budget;
+  const withinBudget = () => { if (clock() > deadline) throw new BudgetExceeded(); };
 
   const findings = [];
   const unscanned = [];
@@ -152,7 +166,9 @@ function run(units, options) {
   const scanText = (text, base, where, keep = () => true) => {
     const starts = lineStarts(text);
     for (const detector of active) {
+      withinBudget();
       const hits = detector.detect(text);
+      withinBudget();
       // A detector that stopped at its own cap says so; the result then reports the truncation.
       if (hits && hits.truncated === true) truncated = true;
       for (const hit of hits) {
