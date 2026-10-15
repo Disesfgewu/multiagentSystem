@@ -23,6 +23,16 @@ class LockIoError extends Error {
   }
 }
 
+// Which file a descriptor refers to, so a file can later be recognised as the same one.
+function identityOf(descriptor) {
+  try {
+    const stat = fs.fstatSync(descriptor);
+    return { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return null;
+  }
+}
+
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -66,17 +76,23 @@ class DirectoryLock {
     const token = crypto.randomBytes(8).toString('hex');
     let transient = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let descriptor = null;
+      let identity = null;
+      let created = false;
       try {
-        const descriptor = fs.openSync(this.file, 'wx', 0o600);
-        try {
-          fs.writeSync(descriptor, JSON.stringify({
-            token, pid: process.pid, host: this.host, createdAt: new Date().toISOString()
-          }));
-        } finally {
-          fs.closeSync(descriptor);
-        }
+        descriptor = fs.openSync(this.file, 'wx', 0o600);
+        // From here the file exists because this call created it ('wx' is exclusive), so it is
+        // ours to clean up if anything below fails.
+        created = true;
+        identity = identityOf(descriptor);
+        fs.writeSync(descriptor, JSON.stringify({
+          token, pid: process.pid, host: this.host, createdAt: new Date().toISOString()
+        }));
+        fs.closeSync(descriptor);
+        descriptor = null;
         return { ok: true, token };
       } catch (error) {
+        if (created) this.#discard(descriptor, identity);
         if (error.code === 'EEXIST') {
           transient = null;
         } else if (this.platform === 'win32' && WINDOWS_TRANSIENT_CODES.includes(error.code)) {
@@ -92,6 +108,28 @@ class DirectoryLock {
     if (transient !== null) throw new LockIoError(transient);
     const info = this.inspect();
     return { ok: false, reason: 'locked', detail: info.held ? info.detail : 'owner-unreadable' };
+  }
+
+  // A failure after this call created the lock file (the content could not be written, or the
+  // file could not be closed) must not leave an empty lock behind: every later attempt would
+  // find it, read an owner that cannot be parsed, and report the lock as held by someone.
+  // The file is removed only if it is still the very file this call created, which is checked
+  // by identity and not by name; if something else has replaced it, it is left alone.
+  #discard(descriptor, identity) {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // Already closed or invalid.
+      }
+    }
+    if (identity === null) return; // the file cannot be proven to be ours
+    try {
+      const now = fs.lstatSync(this.file);
+      if (now.isFile() && now.dev === identity.dev && now.ino === identity.ino) fs.unlinkSync(this.file);
+    } catch {
+      // Gone already, or cannot be removed: nothing more can be done here.
+    }
   }
 
   // Reports who holds the lock without changing it.

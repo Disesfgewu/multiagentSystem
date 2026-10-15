@@ -180,3 +180,37 @@ test('on Windows a transient lock error is waited out by the store; one that nev
     { ok: false, reason: 'lock-failed', detail: 'EPERM' });
   assert.equal(once(), 1, 'other platforms do not retry');
 });
+
+// Failing to write the lock content (the disk is full, say) must not leave an empty lock that blocks every later write.
+function failLockWrite(t, s, code) {
+  const open = fs.openSync;
+  const write = fs.writeSync;
+  const target = lockPath(s);
+  const lockDescriptors = new Set();
+  let failing = true;
+  t.mock.method(fs, 'openSync', function patched(...args) {
+    const descriptor = open.apply(this, args);
+    if (args[0] === target) lockDescriptors.add(descriptor);
+    return descriptor;
+  });
+  t.mock.method(fs, 'writeSync', function patched(descriptor, ...rest) {
+    if (failing && lockDescriptors.has(descriptor)) {
+      lockDescriptors.delete(descriptor);
+      throw Object.assign(new Error(`synthetic ${code}`), { code });
+    }
+    return write.call(this, descriptor, ...rest);
+  });
+  return { stop() { failing = false; } };
+}
+
+test('a failed write of the lock does not leave a lock behind that blocks the next write', (t) => {
+  const s = sandbox(t);
+  const failure = failLockWrite(t, s, 'ENOSPC');
+  const store = open(s, { retries: 2, waitMs: 1 });
+  const refused = store.put('profiles', 'p1', { provider: 'claude' });
+  assert.deepEqual(refused, { ok: false, reason: 'lock-failed', detail: 'ENOSPC' });
+  assert.equal(fs.existsSync(lockPath(s)), false, 'no empty lock file');
+  failure.stop();
+  assert.equal(store.put('profiles', 'p1', { provider: 'claude' }).ok, true, 'and the next write goes through');
+  assert.deepEqual(store.inspectLock(), { ok: true, held: false });
+});
