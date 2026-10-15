@@ -352,3 +352,12 @@ test('a copied file with a sensitive name is refused like a new one', () => {
   const diff = ['diff --git a/c.txt b/.env', 'similarity index 100%', 'copy from c.txt', 'copy to .env'].join('\n') + '\n';
   assert.deepEqual(codes(scan('diff', diff)), ['sensitive-file-name']);
 });
+
+test('a doubled-backslash Windows path is blocked in every unit kind and never echoed', () => {
+  const text = 'leak C:\\\\Users\\\\someone\\\\secret.txt and \\\\\\\\server\\\\share and ~/.ssh/id_rsa';
+  for (const kind of ['pr-title', 'pr-body', 'comment', 'commit-message']) {
+    const result = scanPublication([{ kind, text }], {});
+    assert.equal(result.status, 'blocked', kind);
+    assert.equal(JSON.stringify(result).includes('someone'), false, kind);
+  }
+});

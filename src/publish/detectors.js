@@ -45,13 +45,15 @@ function sensitiveShapes() {
 
 // Absolute paths on this machine that name a user, a volume or a temporary area. Repository
 // relative paths (src/a.js), URLs and the interpreter in a shebang (/usr/bin/env) do not match.
+// A backslash doubled by escaping (a path inside a JSON or source string literal) is the same path.
 // The start boundary keeps "https://host/home/x" from matching.
 const LOCAL_PATH = new RegExp(
   String.raw`(?<![A-Za-z0-9_.:/~-])(?:` +
     String.raw`/(?:Users|home|root|Volumes)/[^\s/\\"'` + '`' + String.raw`)\]]+` +
     String.raw`|/private/(?:var|tmp)/|/var/folders/` +
-    String.raw`|[A-Za-z]:[\\/](?![\\/])[^\s"'` + '`' + String.raw`]+` +
-    String.raw`|\\\\[A-Za-z0-9_.$-]+\\[A-Za-z0-9_$.-]+` +
+    String.raw`|[A-Za-z]:(?:\\+|/)(?![\\/])[^\s"'` + '`' + String.raw`]+` +
+    String.raw`|\\{2,}[A-Za-z0-9_.$-]+\\+[A-Za-z0-9_$.-]+` +
+    String.raw`|~[\\/]\.(?:ssh|aws|gnupg|kube|docker|npmrc|netrc)(?![A-Za-z0-9_-])` +
     String.raw`)`,
   'g'
 );

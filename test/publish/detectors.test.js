@@ -50,6 +50,16 @@ test('local absolute paths: user, volume and temporary areas and Windows drives 
   }
 });
 
+test('local absolute paths: escaped (doubled) backslashes and home credential folders are found', () => {
+  const detect = d.localPaths().detect;
+  for (const text of ['C:\\\\Users\\\\Someone\\\\secret.txt', 'c:\\\\work', '\\\\\\\\server\\\\share', '\\\\\\\\wsl$\\\\Ubuntu', 'cat ~/.ssh/id_rsa', '~\\.aws\\credentials', 'in ~/.gnupg']) {
+    assert.ok(detect(text).length > 0, text);
+  }
+  for (const text of ['C:\\\\', 'C://x', '~/.sshd-docs', 'see ~/notes', 'a~/.ssh']) {
+    assert.deepEqual(detect(text), [], text);
+  }
+});
+
 test('known values match case-insensitively and are reported by id; too-short values are listed, not skipped', () => {
   const detector = d.knownValues([{ id: 'acct-label', value: 'Personal-Work-Account' }, { id: 'tiny', value: 'ab' }, { id: 'session', value: 'tok_abc123' }]);
   assert.deepEqual(detector.unmatchable, ['tiny']);
