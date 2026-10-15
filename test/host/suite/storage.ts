@@ -61,11 +61,10 @@ export async function runStorageChecks(registered: string[], workspace: string):
     const status = await vscode.commands.executeCommand<StorageStatus>(STORAGE_COMMANDS.status, { interactive: false });
     assert.equal(status.state, 'available', JSON.stringify(status));
     assert.equal(JSON.stringify(status).includes(storageFolder), false, 'no path in the report');
-    // Whether Git can name a repository for the test project decides how much was established, and the report says so.
-    const inRepository = fs.existsSync(path.join(workspace, '.git'));
-    assert.deepEqual(status.coverage, inRepository
-      ? { level: 'complete', folders: 1, withoutRepositoryRoot: 0 }
-      : { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
+    // The repository check reads the file system: the open folder was examined, with its ancestors.
+    assert.equal(status.coverage?.level, 'ancestors-checked');
+    assert.equal(status.coverage?.folders, 1);
+    assert.equal((status.coverage?.repositoriesFound ?? 0) >= (fs.existsSync(path.join(workspace, '.git')) ? 1 : 0), true);
 
     // 2. The real storage folder is outside the open project, and the store reads and writes there.
     const used = await handle.use();

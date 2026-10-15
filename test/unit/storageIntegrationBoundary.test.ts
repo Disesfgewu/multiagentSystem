@@ -7,18 +7,29 @@ import * as path from 'node:path';
 // only to the editor's own storage folder, never to a fallback place, and nothing here reads a
 // CLI login or the environment.
 const ROOT = path.resolve(__dirname, '..', '..', '..');
-const FILES = ['extensionStorage.ts', 'storageCommands.ts'];
+const FILES = ['extensionStorage.ts', 'storageCommands.ts', 'repositoryRoots.ts'];
 const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const read = (name: string): string => strip(fs.readFileSync(path.join(ROOT, 'src', 'storage', name), 'utf8'));
 const count = (code: string, pattern: RegExp): number => [...code.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`))].length;
 const imports = (code: string): string[] => [...code.matchAll(/(?:from\s+|require\(\s*)['"]([^'"]+)['"]/g)].map((match) => match[1]).sort();
 
-test('the pure module imports only the path helper and the existing storage modules, never the editor', () => {
-  assert.deepEqual(imports(read('extensionStorage.ts')), ['./paths', './private-store', './secrets', 'node:path']);
+test('the pure module imports only the path helper, the existing storage modules and the file-system walk, never the editor', () => {
+  assert.deepEqual(imports(read('extensionStorage.ts')), ['./paths', './private-store', './repositoryRoots', './secrets', 'node:path']);
 });
 
-test('the editor binding imports only the editor, the worktree service and the pure module', () => {
-  assert.deepEqual(imports(read('storageCommands.ts')), ['../projects/worktrees', './extensionStorage', 'vscode']);
+test('the walk imports only the file system and path helpers', () => {
+  assert.deepEqual(imports(read('repositoryRoots.ts')), ['node:fs', 'node:path']);
+});
+
+test('the editor binding imports only the editor and the pure module: no worktree service, no Git', () => {
+  assert.deepEqual(imports(read('storageCommands.ts')), ['./extensionStorage', 'vscode']);
+});
+
+test('no program is started: no Git, no process of any kind', () => {
+  for (const name of FILES) {
+    const code = read(name);
+    assert.doesNotMatch(code, /child_process|\bspawn\b|\bexecFile?\b|\bfork\b|worker_threads|WorktreeService|git rev-parse|isTrusted/, name);
+  }
 });
 
 test('nothing reaches for the environment, CLI logins, the home or temporary folder, or the working directory', () => {
@@ -30,14 +41,26 @@ test('nothing reaches for the environment, CLI logins, the home or temporary fol
     /globalState|workspaceState|workspace\.fs|\bwriteFile|\bmkdir|\bappendFile|\bunlink\b|\brmSync\b/
   ];
   for (const name of FILES) {
-    for (const pattern of forbidden) assert.doesNotMatch(read(name), pattern, `${name} matches ${pattern}`);
+    for (const pattern of forbidden) {
+      // The walk reads the file system, which is its whole purpose; it writes nothing.
+      if (name === 'repositoryRoots.ts' && String(pattern).includes('node:(?:fs')) continue;
+      assert.doesNotMatch(read(name), pattern, `${name} matches ${pattern}`);
+    }
   }
+});
+
+test('the walk only reads: it has no way to create, change or remove anything', () => {
+  const code = read('repositoryRoots.ts');
+  assert.doesNotMatch(code, /\b(?:writeFile|appendFile|mkdir|rmdir|rm|unlink|rename|copyFile|symlink|chmod|chown|truncate|utimes|createWriteStream)\w*\s*\(/);
+  assert.deepEqual([...new Set([...code.matchAll(/fs\.(\w+)(?:\.native)?\(/g)].map((match) => match[1]))].sort(), ['closeSync', 'lstatSync', 'openSync', 'readSync', 'realpathSync']);
+  assert.match(code, /fs\.openSync\(path, 'r'\)/, 'files are opened read-only');
 });
 
 test('the data folder is computed in exactly one place, inside the editor\'s storage folder, with no alternative', () => {
   const code = read('extensionStorage.ts');
   assert.equal(count(code, /nodePath\.join\(bound\.storageDir, PRIVATE_FOLDER\)/), 1);
   assert.equal(count(code, /nodePath\./), 1, 'no other path is built');
+  assert.doesNotMatch(code, /repositoryRoot\b/, 'the Git-based hook is gone');
   assert.equal(count(code, /\bdir\s*=/), 1, 'the folder is assigned once');
   assert.doesNotMatch(read('storageCommands.ts'), /nodePath|path\.join|path\.resolve/);
   // The extension's own folder is only a stand-in for comparison when no folder is open.
@@ -50,10 +73,6 @@ test('the repository check runs on every use, against every open folder', () => 
   assert.match(code, /const folders = deps\.workspaceFolders\(\);/);
   assert.match(code, /for \(const root of toCheck\) \{\s*const verdict = checkPrivateRoot\(dir, root\)/);
   assert.match(code, /if \(problems\.length > 0\) return unavailable\('directory-rejected'/);
-});
-
-test('Git is asked about a repository only in a trusted workspace', () => {
-  assert.match(read('storageCommands.ts'), /if \(!vscode\.workspace\.isTrusted\) return null;/);
 });
 
 test('the test context is reachable only in test mode, and a command argument can only ask for the probe and a quiet reply', () => {

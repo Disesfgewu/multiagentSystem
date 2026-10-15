@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { WorktreeService } from '../projects/worktrees';
 import { StorageHandle, StorageStatus, createStorageHandle, describeStorage, statusMessage } from './extensionStorage';
 
 export const STORAGE_COMMANDS = {
@@ -34,12 +33,8 @@ export function registerStorageCommands(context: vscode.ExtensionContext): void 
   handle = createStorageHandle({
     context,
     workspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-    // Only a trusted workspace is asked: Git can run programs named in a repository's own configuration.
-    repositoryRoot: async (folder) => {
-      if (!vscode.workspace.isTrusted) return null;
-      const project = await WorktreeService.open(folder);
-      return typeof project.root === 'string' ? project.root : null;
-    }
+    // The repository check reads the file system only. No Git or other program is started, so it
+    // is the same in a workspace that is not trusted yet.
   });
 
   context.subscriptions.push(

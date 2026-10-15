@@ -155,10 +155,12 @@ node scripts/p0/check-private-storage.js --repo <repo 路徑>
 實作在 `src/storage/extensionStorage.ts`（不 import `vscode`，以真實暫存資料夾測試）與 `src/storage/storageCommands.ts`（編輯器綁定）。其他模組（例如 #12 的 `AccountProfileService`）以 `privateStorage()` 取得，再呼叫 `use()`。
 
 - **位置**：私人資料只放在編輯器給這個擴充套件的儲存資料夾（`context.globalStorageUri`）下的 `private/`；憑證只放在編輯器的 `context.secrets`，記錄只存不透明的 `secretRef`（命名空間 `default`）。集合為 `profiles`、`roleGroups`、`sessions`、`policies`，schema 版本 1。
-- **每次 `use()` 都重新檢查**資料資料夾與**每一個目前開啟的工作區資料夾**，以及 Git 回報的該資料夾所屬 repo 的頂層目錄（只在已信任的工作區才詢問 Git）：資料夾在 repo 內、或 repo 在資料資料夾內、或連結指向 repo，都回報 `unavailable`／`directory-rejected`。檢查在**任何目錄被建立之前**完成。所以工作區在啟動之後才加入資料夾也會被檢查，不需重新啟動。
+- **每次 `use()` 都重新檢查**資料資料夾與**每一個目前開啟的工作區資料夾**，以及這些資料夾**所有祖先目錄中含有 `.git` 的目錄**：資料夾在 repo 內、或 repo 在資料資料夾內、或連結指向 repo，都回報 `unavailable`／`directory-rejected`。檢查在**任何目錄被建立之前**完成。所以工作區在啟動之後才加入資料夾、或啟動之後才出現的 repo，都會在下一次 `use()` 被發現，不需重新啟動。
+- **不執行 Git。** 找 repo 只讀檔案系統：從資料夾（以給定的路徑與其真實位置各走一次）一路向上，凡是有 `.git` 項目（目錄，或 linked worktree／submodule 的檔案）的目錄都算一個 repo 根目錄，**不是只取最近的一個**；`.git` 檔案會被跟隨到擁有它的主要 checkout 與 Git 目錄，所以 linked worktree 的主要 checkout、submodule 的上層 repo 都會被檢查。原因：Git 可能不存在、失敗、逾時或在未信任的工作區不能執行，這些都會看起來像「不在 repo 內」，私人資料就會寫進 repo；檔案系統的走訪不會有「沒有回答」。（上一版用 Git 查詢，Git 無法回答時第一次 `use()` 回傳可用，照回傳的 `store` 寫入會在 repo 內建立 `.editor-data/private/store.json`；這是 PM 在 PR 審查中重現的缺陷。）
+- **走訪無法判斷就拒絕**：`.git` 項目的檢查遇到「不存在」或「不是目錄」以外的錯誤（`EACCES`、`EPERM`、`EIO`、`ELOOP`…）、`.git` 檔案或 `commondir` 讀不到、連結的真實位置解析不出來、路徑深到 256 層以上，一律回報 `directory-rejected`／`repo-root-unresolvable`，不當成「不在 repo 內」。工作區資料夾本身不存在（例如被刪除）則只以給定路徑走訪。
 - **呼叫端必須每次操作都呼叫 `use()`，不要保存它回傳的 `store`**：`PrivateStore` 只會對它建立時的那一個資料夾比對，之後才開啟的資料夾只有下一次 `use()` 才會被發現（接上 #12 等模組時要確認）。
-- **Git 的查詢結果只在「找到」時才記住。** 找不到、Git 不存在、查詢失敗、工作區尚未信任，都不記住，下一次 `use()` 會再問一次；否則「沒有回答」會變成永久的「沒有 repo」，是 fail open。
-- **結果會說明驗證了多少**（`coverage`，狀態命令也會顯示）：`complete`＝每個開啟的資料夾及其 repo 根目錄都檢查過；`folders-only`＝只檢查了開啟的資料夾本身，Git 沒有為其中至少一個回報 repo（它不在 repo 裡，或當下無法詢問 Git）——此時**資料資料夾若在該資料夾所屬 repo 之內、但在開啟的資料夾之外，不會被偵測到**；`no-folder-open`＝沒有開啟任何資料夾。狀態訊息在 `folders-only` 時會寫明 `Only the open folders themselves were checked: Git did not report a repository for N of M.`，不讓報告看起來像完整驗證過。
+- **結果會說明檢查了什麼**（`coverage`，狀態命令也會回報）：`ancestors-checked`＝每個開啟的資料夾與它的所有祖先目錄都找過 `.git`（附找到的 repo 數）；`no-folder-open`＝沒有開啟任何資料夾。**仍然看不到的**：工作樹裡沒有 `.git` 項目的 repo（以 `core.worktree` 設定的）。
+- **已知的誤判代價（需 PM 決定）**：任何祖先含 `.git` 就算 repo，包括使用者家目錄下的「dotfiles repo」（`~/.git`）：編輯器的儲存資料夾通常在家目錄之下，這種機器上私人儲存會回報不可用（`private-root-inside-repo`），而且**永遠**如此，直到使用者移除或改用不在工作樹內的 Git 目錄。這是 fail closed 的取捨，沒有覆寫機制；是否需要明確的、由使用者設定的例外，請決定。
 - **不可用時不退路**：沒有備用位置——不是 repo 內的資料夾、不是家目錄、暫存資料夾或工作目錄。回報的原因只有代碼（`context-incomplete`、`directory-rejected` 與 `private-root-inside-repo` 等），不含路徑；測試以遞迴快照確認被拒絕之後整個暫存樹沒有新增任何東西。編輯器沒有提供儲存資料夾或 `secrets` 時回報 `context-incomplete`，不丟例外。
 - **沒有開啟任何資料夾**時沒有 repo 可言，所以可以使用；此時以擴充套件自己的資料夾作為「比較用的 repo 路徑」，只用來讓儲存核心有路徑可比，**不會在那裡存任何東西**。
 - **命令** `Multiagent: Show Private Storage Status`（`multiagentSystem.storage.status`）：回報可用與否、儲存核心自己的狀態（例如 `corrupt`）；只有代碼，不含路徑或內容。傳入 `{ probeSecrets: true }` 才會對編輯器的秘密儲存做一次合成值的寫入、讀取、刪除（會有逾時，不會無限等待，也不會留下值），因為真實後端可能詢問使用者授權；預設不探測。每次探測用自己的 key（隨機後綴），兩個視窗同時探測不會互相刪除。

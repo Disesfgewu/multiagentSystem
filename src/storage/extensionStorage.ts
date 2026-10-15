@@ -2,6 +2,7 @@ import * as nodePath from 'node:path';
 import { PrivateStore } from './private-store';
 import { checkPrivateRoot } from './paths';
 import { SecretVault, fromExtensionContext } from './secrets';
+import { FileProbe, findRepositoryRoots, nodeProbe } from './repositoryRoots';
 
 // Opens the private store and the secret vault for the extension, from what the editor
 // provides: `globalStorageUri` for the data folder and `secrets` for credentials. It does
@@ -14,7 +15,10 @@ import { SecretVault, fromExtensionContext } from './secrets';
 //     fallback to another place: not a folder in the repository, not the home or temporary
 //     folder, not the working directory.
 //   * The check against the repositories is made on every use, not once, because workspace
-//     folders can be added after activation.
+//     folders can be added after activation. It looks at the file system (a `.git` entry in
+//     the folder or any ancestor) and never runs Git: a Git that fails, is missing or is not
+//     yet allowed to run would otherwise look the same as "not in a repository", and private
+//     data would be written into the repository before anyone noticed.
 
 export const COLLECTIONS = ['profiles', 'roleGroups', 'sessions', 'policies'] as const;
 export const SCHEMA_VERSION = 1;
@@ -41,11 +45,8 @@ export interface StorageDeps {
   context: ExtensionContextLike;
   /** The folders of the open workspace, as paths. Read again on every use. */
   workspaceFolders(): string[];
-  /**
-   * The top-level directory of the repository a folder belongs to, or null when it is not in
-   * one. Optional: a folder is always checked as given, this adds the repository around it.
-   */
-  repositoryRoot?(folder: string): Promise<string | null>;
+  /** How the file system is read. Defaults to the real one; tests substitute their own. */
+  fileSystem?: FileProbe;
   namespace?: string;
 }
 
@@ -62,18 +63,17 @@ export interface Unavailable {
 }
 
 /**
- * How much of "is the data folder outside every repository" was actually established.
- *   complete        every open folder was checked, and so was the repository Git reported for it
- *   folders-only    the open folders themselves were checked, but Git did not report a repository
- *                   for at least one of them (it is not in one, or Git could not be asked, for
- *                   example in a workspace that is not trusted yet). A data folder that is inside
- *                   such a folder's repository, outside the folder itself, is not caught.
- *   no-folder-open  nothing is open, so there is no repository to be inside of
+ * What the repository check covered.
+ *   ancestors-checked  every open folder, and every directory above it, was looked at for a `.git`
+ *                      entry. What this does not see: a repository whose working tree has no
+ *                      `.git` entry (configured with `core.worktree`).
+ *   no-folder-open     nothing is open, so there is no repository to be inside of
  */
 export interface Coverage {
-  level: 'complete' | 'folders-only' | 'no-folder-open';
+  level: 'ancestors-checked' | 'no-folder-open';
   folders: number;
-  withoutRepositoryRoot: number;
+  /** How many distinct repository working trees were found above the open folders. */
+  repositoriesFound: number;
 }
 
 export interface Ready {
@@ -103,25 +103,7 @@ function distinct(values: string[]): string[] {
 
 export function createStorageHandle(deps: StorageDeps): StorageHandle {
   const namespace = deps.namespace ?? DEFAULT_NAMESPACE;
-  // A repository root that Git reported is remembered per folder, so Git is not asked again on
-  // every use. A lookup that found nothing is NOT remembered: "no answer" (Git missing, the
-  // workspace not trusted yet, a temporary failure) must not become a permanent "no repository",
-  // so it is asked again next time. The folder itself is checked on every use either way.
-  const roots = new Map<string, string>();
-
-  async function rootOf(folder: string): Promise<string | null> {
-    if (!deps.repositoryRoot) return null;
-    const known = roots.get(folder);
-    if (known !== undefined) return known;
-    let found: string | null = null;
-    try {
-      found = await deps.repositoryRoot(folder);
-    } catch {
-      found = null;
-    }
-    if (typeof found === 'string' && found !== '') roots.set(folder, found);
-    return typeof found === 'string' && found !== '' ? found : null;
-  }
+  const probe = deps.fileSystem ?? nodeProbe;
 
   return {
     async use(): Promise<StorageResult> {
@@ -135,20 +117,24 @@ export function createStorageHandle(deps: StorageDeps): StorageHandle {
         return unavailable('context-incomplete', ['storage-folder-or-secrets-missing']);
       }
 
-      // Every folder that is open now, and the repository it belongs to.
+      // Every folder that is open now, and every repository it is inside of. If the file system
+      // cannot say, storage is refused: not being able to tell is not the same as not being there.
       const folders = deps.workspaceFolders();
       const checked: string[] = [];
-      let withoutRoot = 0;
+      const repositories = new Set<string>();
       for (const folder of folders) {
         checked.push(folder);
-        const root = await rootOf(folder);
-        if (root === null) withoutRoot += 1;
-        else if (root !== folder) checked.push(root);
+        const found = findRepositoryRoots(folder, probe);
+        if (found.problem !== null) return unavailable('directory-rejected', [found.problem]);
+        for (const root of found.roots) {
+          repositories.add(root);
+          checked.push(root);
+        }
       }
       const coverage: Coverage = {
-        level: folders.length === 0 ? 'no-folder-open' : withoutRoot === 0 ? 'complete' : 'folders-only',
+        level: folders.length === 0 ? 'no-folder-open' : 'ancestors-checked',
         folders: folders.length,
-        withoutRepositoryRoot: withoutRoot
+        repositoriesFound: repositories.size
       };
       // With nothing open there is no repository to be inside of. The extension's own folder
       // stands in only so the store has a repository path to compare against; it is never
@@ -193,10 +179,7 @@ export function statusMessage(status: StorageStatus): { level: 'info' | 'error';
   if (status.state === 'available') {
     const store = status.store;
     const detail = store === null ? 'unknown' : store.ok ? 'ok' : (store.reason ?? 'unknown');
-    const partial = status.coverage !== null && status.coverage.level === 'folders-only'
-      ? ` Only the open folders themselves were checked: Git did not report a repository for ${status.coverage.withoutRepositoryRoot} of ${status.coverage.folders}.`
-      : '';
-    return { level: store !== null && !store.ok ? 'error' : 'info', text: `Private storage is available (store: ${detail}).${partial}` };
+    return { level: store !== null && !store.ok ? 'error' : 'info', text: `Private storage is available (store: ${detail}).` };
   }
   const codes = status.problems.length > 0 ? ` (${status.problems.join(', ')})` : '';
   return { level: 'error', text: `Private storage is unavailable: ${status.reason ?? 'unknown'}${codes}. Nothing is stored elsewhere instead.` };

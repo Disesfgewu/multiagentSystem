@@ -14,6 +14,7 @@ import {
   statusMessage
 } from '../../src/storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../../src/storage/private-store';
+import { FileProbe } from '../../src/storage/repositoryRoots';
 
 // Real temporary folders and a fake secret backend; everything is synthetic.
 interface Sandbox {
@@ -136,25 +137,22 @@ test('a folder that contains the storage folder is refused, with a reason, and n
   assert.deepEqual(snapshot(s.root), before, 'no folder or file appeared anywhere, so there was no fallback place');
 });
 
-test('the repository Git reports for a folder is checked too, not only the folder', async (t) => {
+test('the repository a folder is inside of is checked, not only the folder: found by its .git, with no Git run', async (t) => {
   const s = sandbox(t);
   // The editor's data lives inside the repository's top level, but outside the opened subfolder.
   const repo = path.join(s.root, 'monorepo');
   const subfolder = path.join(repo, 'packages', 'app');
   const storage = path.join(repo, '.editor-data', 'ext');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
   fs.mkdirSync(subfolder, { recursive: true });
   fs.mkdirSync(path.dirname(storage), { recursive: true });
   const context: ExtensionContextLike = { ...s.context, globalStorageUri: { fsPath: storage } };
+  const before = snapshot(repo);
 
-  const withGit = await createStorageHandle({ context, workspaceFolders: () => [subfolder], repositoryRoot: async () => repo }).use();
-  assert.equal(withGit.ok, false);
-  assert.ok(!withGit.ok && withGit.problems.includes('private-root-inside-repo'));
-
-  // Without a repository root the subfolder alone cannot show the problem: the limit of what
-  // is known, which is why the editor's own storage folder is the only place data is put.
-  const withoutGit = await createStorageHandle({ context, workspaceFolders: () => [subfolder] }).use();
-  assert.equal(withoutGit.ok, true);
-  assert.deepEqual(snapshot(subfolder), []);
+  const result = await createStorageHandle({ context, workspaceFolders: () => [subfolder] }).use();
+  assert.equal(result.ok, false, 'refused on the very first use');
+  assert.ok(!result.ok && result.reason === 'directory-rejected' && result.problems.includes('private-root-inside-repo'));
+  assert.deepEqual(snapshot(repo), before, 'nothing was created in the repository');
 });
 
 test('a storage folder that is a link into the repository is refused and the repository is untouched', async (t) => {
@@ -190,70 +188,135 @@ test('every open folder is checked: one bad folder among several is enough to re
   assert.equal(result.ok, false);
 });
 
-test('a lookup that found a repository is remembered; one that found nothing is asked again every time', async (t) => {
+// The review's reproduction: Git cannot answer (missing, failing, timed out, not yet trusted). The
+// check does not depend on Git, so it makes no difference, and the first use is already refused.
+test('the first use is refused when the data is inside the repository, and writing through the result is impossible', async (t) => {
   const s = sandbox(t);
-  let found = 0;
-  const remembers = handleFor(s, () => [s.repo], { repositoryRoot: async () => { found += 1; return s.repo; } });
-  for (let n = 0; n < 3; n += 1) assert.equal((await remembers.use()).ok, true);
-  assert.equal(found, 1, 'a repository root that Git reported is remembered per folder');
-
-  for (const [name, answer] of [['nothing', async () => null], ['an exception', async () => { throw new Error('git is not available'); }]] as const) {
-    let calls = 0;
-    const handle = handleFor(s, () => [s.root], { repositoryRoot: async () => { calls += 1; return answer(); } });
-    for (let n = 0; n < 3; n += 1) assert.equal((await handle.use()).ok, false, `${name}: the folder itself is still checked`);
-    assert.equal(calls, 3, `${name}: "no answer" is not remembered as "no repository"`);
-  }
-});
-
-test('Git could not say at first, and says later: the repository is checked from then on', async (t) => {
-  // The case that matters: the editor's data is inside the repository's top level, but outside the
-  // opened subfolder. While Git cannot be asked (an untrusted workspace, a missing Git, a failure)
-  // that cannot be seen. It must be seen as soon as Git can answer, without a restart.
-  const s = sandbox(t);
-  const repo = path.join(s.root, 'monorepo');
-  const subfolder = path.join(repo, 'packages', 'app');
-  const storage = path.join(repo, '.editor-data', 'ext');
-  fs.mkdirSync(subfolder, { recursive: true });
-  fs.mkdirSync(path.dirname(storage), { recursive: true });
+  const repo = path.join(s.root, 'repo-under-review');
+  const subfolder = path.join(repo, 'pkg');
+  const storage = path.join(repo, '.editor-data');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(subfolder);
   const context: ExtensionContextLike = { ...s.context, globalStorageUri: { fsPath: storage } };
   const before = snapshot(repo);
 
-  for (const failure of ['null', 'throw'] as const) {
-    let answer: 'none' | 'repository' = 'none';
-    const handle = createStorageHandle({
-      context,
-      workspaceFolders: () => [subfolder],
-      repositoryRoot: async () => {
-        if (answer === 'repository') return repo;
-        if (failure === 'throw') throw new Error('git is not available');
-        return null;
-      }
-    });
-    const first = await handle.use();
-    assert.equal(first.ok, true, 'cannot be seen while Git cannot answer');
-    assert.deepEqual(first.ok && first.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 }, 'and the result says so');
-    answer = 'repository'; // the workspace is trusted now, or Git works again
-    const second = await handle.use();
-    assert.equal(second.ok, false, `${failure}: the earlier "no answer" was not kept`);
-    assert.ok(!second.ok && second.problems.includes('private-root-inside-repo'));
-    answer = 'none';
-    assert.equal((await handle.use()).ok, false, 'and the repository found once keeps being checked');
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await createStorageHandle({ context, workspaceFolders: () => [subfolder] }).use();
+    assert.equal(result.ok, false, `use ${attempt + 1}`);
+    assert.ok(!result.ok && result.problems.includes('private-root-inside-repo'));
+    assert.equal('store' in result, false, 'there is no store to write through');
   }
-  assert.deepEqual(snapshot(repo), before, 'nothing was created in the repository');
+  assert.deepEqual(snapshot(repo), before, 'no .editor-data, no private/store.json');
+  assert.equal(fs.existsSync(path.join(storage, 'private', 'store.json')), false);
 });
 
-test('the result says how much was checked: complete, the open folders only, or nothing open', async (t) => {
+test('a linked worktree or a submodule (a .git file) is found, and so is the checkout that owns it', async (t) => {
   const s = sandbox(t);
-  const complete = await handleFor(s, () => [s.repo, s.other], { repositoryRoot: async (folder) => folder }).use();
-  assert.deepEqual(complete.ok && complete.coverage, { level: 'complete', folders: 2, withoutRepositoryRoot: 0 });
-  const mixed = await handleFor(s, () => [s.repo, s.other], { repositoryRoot: async (folder) => (folder === s.repo ? folder : null) }).use();
-  assert.deepEqual(mixed.ok && mixed.coverage, { level: 'folders-only', folders: 2, withoutRepositoryRoot: 1 });
-  const noResolver = await handleFor(s, () => [s.repo]).use();
-  assert.deepEqual(noResolver.ok && noResolver.coverage, { level: 'folders-only', folders: 1, withoutRepositoryRoot: 1 });
+  const main = path.join(s.root, 'main-checkout');
+  const worktree = path.join(s.root, 'linked-worktree');
+  const gitDir = path.join(main, '.git');
+  fs.mkdirSync(path.join(gitDir, 'worktrees', 'linked'), { recursive: true });
+  fs.mkdirSync(worktree);
+  fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${path.join(gitDir, 'worktrees', 'linked')}\n`);
+  fs.writeFileSync(path.join(gitDir, 'worktrees', 'linked', 'commondir'), '../..\n');
+  const storageInMain = path.join(main, 'notes', 'editor-data');
+  fs.mkdirSync(path.dirname(storageInMain), { recursive: true });
+  const storageInWorktree = path.join(worktree, '.editor-data');
+
+  const inMain = await createStorageHandle({ context: { ...s.context, globalStorageUri: { fsPath: storageInMain } }, workspaceFolders: () => [worktree] }).use();
+  assert.equal(inMain.ok, false, 'the main checkout is another place the repository lives');
+  const inWorktree = await createStorageHandle({ context: { ...s.context, globalStorageUri: { fsPath: storageInWorktree } }, workspaceFolders: () => [worktree] }).use();
+  assert.equal(inWorktree.ok, false);
+
+  // A submodule: its .git file points into the parent's .git/modules, and the parent is above it.
+  const parent = path.join(s.root, 'parent-repo');
+  const sub = path.join(parent, 'vendor', 'sub');
+  fs.mkdirSync(path.join(parent, '.git', 'modules', 'sub'), { recursive: true });
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(path.join(sub, '.git'), 'gitdir: ../../.git/modules/sub\n');
+  const storageInParent = path.join(parent, 'docs', 'data');
+  fs.mkdirSync(path.dirname(storageInParent), { recursive: true });
+  const inParent = await createStorageHandle({ context: { ...s.context, globalStorageUri: { fsPath: storageInParent } }, workspaceFolders: () => [sub] }).use();
+  assert.equal(inParent.ok, false);
+  assert.ok(!inParent.ok && inParent.problems.includes('private-root-inside-repo'));
+});
+
+test('a repository that appears later is noticed on the next use, without a restart', async (t) => {
+  const s = sandbox(t);
+  const folder = path.join(s.root, 'project');
+  const storage = path.join(s.root, 'project-data', 'ext');
+  fs.mkdirSync(folder);
+  fs.mkdirSync(path.dirname(storage), { recursive: true });
+  // The data folder is below the project's parent, which is made a repository afterwards.
+  const handle = createStorageHandle({ context: { ...s.context, globalStorageUri: { fsPath: storage } }, workspaceFolders: () => [folder] });
+  assert.equal((await handle.use()).ok, true);
+  fs.mkdirSync(path.join(s.root, '.git'));
+  const refused = await handle.use();
+  assert.equal(refused.ok, false);
+  assert.ok(!refused.ok && refused.problems.includes('private-root-inside-repo'));
+  fs.rmSync(path.join(s.root, '.git'), { recursive: true });
+  assert.equal((await handle.use()).ok, true, 'and available again when it is gone');
+});
+
+test('a folder that cannot be examined is refused, not assumed to be outside a repository', async (t) => {
+  const s = sandbox(t);
+  const asked: string[] = [];
+  const failing = (codeAt: (path: string) => string | null): FileProbe => ({
+    lstat(target) {
+      asked.push(target);
+      const code = codeAt(target);
+      if (code) throw Object.assign(new Error(`synthetic ${code}`), { code });
+      throw Object.assign(new Error('synthetic ENOENT'), { code: 'ENOENT' });
+    },
+    readText() { throw Object.assign(new Error('synthetic ENOENT'), { code: 'ENOENT' }); },
+    realpath(target) { return target; }
+  });
+  for (const code of ['EACCES', 'EPERM', 'EIO', 'ELOOP', 'EMFILE', 'ETIMEDOUT']) {
+    const result = await handleFor(s, () => [s.repo], { fileSystem: failing(() => code) }).use();
+    assert.equal(result.ok, false, code);
+    assert.deepEqual(!result.ok && [result.reason, result.problems], ['directory-rejected', ['repo-root-unresolvable']], code);
+  }
+  // Only "not there" counts as not there.
+  for (const code of ['ENOENT', 'ENOTDIR']) {
+    const result = await handleFor(s, () => [s.repo], { fileSystem: failing(() => null) }).use();
+    assert.equal(result.ok, true, 'a missing .git everywhere means no repository');
+    void code;
+  }
+  // A failure far up the tree, at an ancestor, is just as much a failure as one at the folder.
+  const high = await handleFor(s, () => [s.repo], { fileSystem: failing((target) => (target === path.join(path.dirname(path.dirname(s.repo)), '.git') ? 'EACCES' : null)) }).use();
+  assert.equal(high.ok, false);
+  assert.ok(asked.length > 0);
+  // And so is a link target that cannot be resolved.
+  const unresolved: FileProbe = { ...failing(() => null), realpath() { throw Object.assign(new Error('synthetic'), { code: 'EACCES' }); } };
+  assert.equal((await handleFor(s, () => [s.repo], { fileSystem: unresolved }).use()).ok, false);
+  // A folder that does not exist (a workspace folder that was deleted) has nothing to be inside of.
+  const gone: FileProbe = { ...failing(() => null), realpath() { throw Object.assign(new Error('synthetic'), { code: 'ENOENT' }); } };
+  assert.equal((await handleFor(s, () => [s.repo], { fileSystem: gone }).use()).ok, true);
+  assert.deepEqual(snapshot(s.repo), []);
+});
+
+test('a folder reached through a link into a repository is checked as the repository it really is', async (t) => {
+  const s = sandbox(t);
+  const repo = path.join(s.root, 'real-repo');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const inner = path.join(repo, 'pkg');
+  fs.mkdirSync(inner);
+  const alias = path.join(s.root, 'alias');
+  if (!tryLink(t, inner, alias)) return;
+  const storage = path.join(repo, '.editor-data');
+  const result = await createStorageHandle({ context: { ...s.context, globalStorageUri: { fsPath: storage } }, workspaceFolders: () => [alias] }).use();
+  assert.equal(result.ok, false, 'the alias sits outside the repository, the folder it points at does not');
+});
+
+test('the result says what was covered, and that a repository was found above the open folders', async (t) => {
+  const s = sandbox(t);
+  const outside = await handleFor(s, () => [s.repo, s.other]).use();
+  assert.deepEqual(outside.ok && outside.coverage, { level: 'ancestors-checked', folders: 2, repositoriesFound: 0 });
+  fs.mkdirSync(path.join(s.repo, '.git'));
+  const inside = await handleFor(s, () => [s.repo, s.other]).use();
+  assert.deepEqual(inside.ok && inside.coverage, { level: 'ancestors-checked', folders: 2, repositoriesFound: 1 });
   const none = await handleFor(s, () => []).use();
-  assert.deepEqual(none.ok && none.coverage, { level: 'no-folder-open', folders: 0, withoutRepositoryRoot: 0 });
-  const empty = await handleFor(s, () => [s.repo], { repositoryRoot: async () => '' }).use();
-  assert.equal(empty.ok && empty.coverage.level, 'folders-only', 'an empty answer is not a repository root');
+  assert.deepEqual(none.ok && none.coverage, { level: 'no-folder-open', folders: 0, repositoriesFound: 0 });
 });
 
 // ---- the editor does not provide what is needed -------------------------------
@@ -290,10 +353,10 @@ test('a folder where a file is in the way is refused by the store, not worked ar
 
 test('the status report holds codes only: no path, no contents', async (t) => {
   const s = sandbox(t);
-  const ready = await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder }), { probeSecrets: true });
+  const ready = await describeStorage(handleFor(s, () => [s.repo]), { probeSecrets: true });
   assert.deepEqual(ready, {
     state: 'available', reason: null, problems: [], store: { ok: true, reason: null, detail: null },
-    coverage: { level: 'complete', folders: 1, withoutRepositoryRoot: 0 }, secrets: 'reachable'
+    coverage: { level: 'ancestors-checked', folders: 1, repositoriesFound: 0 }, secrets: 'reachable'
   });
   const refused = await describeStorage(handleFor(s, () => [s.root]));
   assert.equal(refused.state, 'unavailable');
@@ -358,13 +421,8 @@ test('secret references are scoped to the namespace the extension chose', async 
 
 test('the message for the user says what is wrong in codes, and that nothing is stored elsewhere', async (t) => {
   const s = sandbox(t);
-  const ready = statusMessage(await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder })));
+  const ready = statusMessage(await describeStorage(handleFor(s, () => [s.repo])));
   assert.deepEqual(ready, { level: 'info', text: 'Private storage is available (store: ok).' });
-  const partial = statusMessage(await describeStorage(handleFor(s, () => [s.repo, s.other])));
-  assert.deepEqual(partial, {
-    level: 'info',
-    text: 'Private storage is available (store: ok). Only the open folders themselves were checked: Git did not report a repository for 2 of 2.'
-  });
 
   const refused = statusMessage(await describeStorage(handleFor(s, () => [s.root])));
   assert.equal(refused.level, 'error');
@@ -379,7 +437,7 @@ test('the message for the user says what is wrong in codes, and that nothing is 
   if (!opened.ok) return;
   opened.store.put('profiles', 'p1', { provider: 'claude' });
   fs.writeFileSync(path.join(s.storage, 'private', 'store.json'), '{ truncated');
-  assert.deepEqual(statusMessage(await describeStorage(handleFor(s, () => [s.repo], { repositoryRoot: async (folder) => folder }))),
+  assert.deepEqual(statusMessage(await describeStorage(handleFor(s, () => [s.repo]))),
     { level: 'error', text: 'Private storage is available (store: corrupt).' });
 });
 
