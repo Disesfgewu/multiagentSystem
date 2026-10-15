@@ -13,6 +13,8 @@ function fullUsage(taskIds, { off = 1000, on = 800 } = {}) {
   for (const id of taskIds) for (const [arm, base] of [['off', off], ['on', on]]) {
     records.push(rec(arm, id, 'input_tokens', base), rec(arm, id, 'output_tokens', 100));
   }
+  // the memory arm also pays to build and retrieve memory
+  for (const id of taskIds) records.push(rec('on', id, 'memory_build_tokens', 20), rec('on', id, 'memory_retrieval_tokens', 10));
   return records;
 }
 const quality = (on, off) => ({ byArm: { on, off } });
@@ -126,7 +128,7 @@ test('billing modes are summarized apart and never added together', () => {
 test('the saving claim: supported only with real, complete, single-billing, lower totals and no quality regression', () => {
   const ok = claimOf();
   assert.deepEqual([ok.supported, ok.reasons], [true, []]);
-  assert.deepEqual(ok.totals, { off: 11000, on: 9000 });
+  assert.deepEqual(ok.totals, { off: 11000, on: 9300 });
 });
 
 test('the saving claim is refused for each missing ingredient', () => {
@@ -148,7 +150,7 @@ test('the saving claim is refused for each missing ingredient', () => {
 
 test('memory build and retrieval cost count against the saving', () => {
   const taskIds = ids(MIN_TASKS_FOR_CLAIM);
-  const records = [...fullUsage(taskIds, { off: 1000, on: 950 }), ...taskIds.map((id) => rec('on', id, 'memory_build_tokens', 30)), ...taskIds.map((id) => rec('on', id, 'memory_retrieval_tokens', 30))];
+  const records = [...fullUsage(taskIds, { off: 1000, on: 950 }).filter((r) => !r.field.startsWith('memory_')), ...taskIds.map((id) => rec('on', id, 'memory_build_tokens', 30)), ...taskIds.map((id) => rec('on', id, 'memory_retrieval_tokens', 30))];
   const result = claimOf({ records });
   assert.ok(result.reasons.includes('total-not-lower'));
   assert.deepEqual(result.totals, { off: 11000, on: 11100 });
@@ -189,7 +191,8 @@ test('with no tasks nothing is complete', () => {
   const { summary } = summarizeUsage({ records: [], taskIds: [] });
   assert.deepEqual(summary, { off: {}, on: {} });
   const none = summarizeUsage({ records: [rec('on', 'a', 'input_tokens', 1)], taskIds: [] });
-  assert.equal(none.summary.on.api.input_tokens.complete, false);
+  assert.deepEqual(none.problems, ['unknown-task']);
+  assert.equal(none.billings.length, 0);
 });
 
 test('an extra token field reported for only some tasks makes the claim incomplete', () => {
@@ -208,4 +211,85 @@ test('the report orders tasks by id whatever order they come in', () => {
   const result = run();
   const reversed = renderReport({ suiteId: 'x', real: false, runs: [...result.runs].reverse(), quality: result.quality, usage: result.usage, claim: result.claim });
   assert.ok(reversed.indexOf('| t01 |') < reversed.indexOf('| t06 |'));
+});
+
+// The three ways the claim gate used to say SUPPORTED when the saving did not hold.
+const honest = (taskIds) => {
+  const records = [];
+  for (const id of taskIds) {
+    records.push(rec('off', id, 'input_tokens', 1000), rec('off', id, 'output_tokens', 200), rec('on', id, 'input_tokens', 1100), rec('on', id, 'output_tokens', 200), rec('on', id, 'memory_build_tokens', 5), rec('on', id, 'memory_retrieval_tokens', 5));
+  }
+  return records;
+};
+
+test('the honest baseline (memory costs more) is not supported', () => {
+  const taskIds = ids(10);
+  assert.deepEqual(claimOf({ records: honest(taskIds), taskIds }).reasons, ['total-not-lower']);
+});
+
+test('duplicate records are reported and not added, and the claim is refused', () => {
+  const taskIds = ids(10);
+  const records = honest(taskIds);
+  const doubled = [...records, ...records.filter((r) => r.arm === 'off')];
+  const usage = summarizeUsage({ records: doubled, taskIds });
+  assert.equal(usage.summary.off.api.input_tokens.providerReported, 10000, 'not added twice');
+  assert.deepEqual([...new Set(usage.problems)], ['duplicate-record']);
+  const result = claimOf({ records: doubled, taskIds });
+  assert.equal(result.supported, false);
+  assert.ok(result.reasons.includes('invalid-usage-records'));
+  assert.ok(result.reasons.includes('total-not-lower'), 'and the totals are still the honest ones');
+  // the same measurement from another source is not a duplicate; another billing mode is not either
+  const other = summarizeUsage({ taskIds, records: [rec('on', 't01', 'input_tokens', 1), rec('on', 't01', 'input_tokens', 2, { source: 'estimated', method: 'm' }), rec('on', 't01', 'input_tokens', 3, { billing: 'subscription' })] });
+  assert.deepEqual(other.problems, []);
+});
+
+test('a record for a task that is not in the suite is reported and not added', () => {
+  const taskIds = ids(10);
+  const records = [...honest(taskIds), rec('off', 'ghost', 'input_tokens', 99999)];
+  const usage = summarizeUsage({ records, taskIds });
+  assert.equal(usage.summary.off.api.input_tokens.providerReported, 10000);
+  assert.deepEqual(usage.problems, ['unknown-task']);
+  const result = claimOf({ records, taskIds });
+  assert.equal(result.supported, false);
+  assert.ok(result.reasons.includes('invalid-usage-records'));
+  assert.deepEqual(result.totals, { off: 12000, on: 13100 });
+});
+
+test('missing memory build or retrieval cost is unknown, not zero: the memory arm must report both for every task', () => {
+  const taskIds = ids(10);
+  const cheap = (extra) => [...taskIds.flatMap((id) => [rec('off', id, 'input_tokens', 1000), rec('off', id, 'output_tokens', 200), rec('on', id, 'input_tokens', 900), rec('on', id, 'output_tokens', 200)]), ...extra];
+  const none = claimOf({ records: cheap([]), taskIds });
+  assert.equal(none.supported, false);
+  assert.deepEqual(none.reasons.filter((r) => r.includes('memory')), ['on-memory_build_tokens-missing', 'on-memory_retrieval_tokens-missing']);
+  const onlyBuild = claimOf({ records: cheap(taskIds.map((id) => rec('on', id, 'memory_build_tokens', 1))), taskIds });
+  assert.deepEqual(onlyBuild.reasons.filter((r) => r.includes('memory')), ['on-memory_retrieval_tokens-missing']);
+  const partial = claimOf({ records: cheap([...taskIds.map((id) => rec('on', id, 'memory_build_tokens', 1)), ...taskIds.slice(1).map((id) => rec('on', id, 'memory_retrieval_tokens', 1))]), taskIds });
+  assert.deepEqual(partial.reasons.filter((r) => r.includes('memory')), ['on-memory_retrieval_tokens-incomplete']);
+  const estimated = claimOf({ records: cheap([...taskIds.map((id) => rec('on', id, 'memory_build_tokens', 1)), ...taskIds.map((id) => rec('on', id, 'memory_retrieval_tokens', 1, { source: 'estimated', method: 'm' }))]), taskIds });
+  assert.ok(estimated.reasons.includes('on-memory_retrieval_tokens-missing'));
+  const full = claimOf({ records: cheap([...taskIds.map((id) => rec('on', id, 'memory_build_tokens', 1)), ...taskIds.map((id) => rec('on', id, 'memory_retrieval_tokens', 1))]), taskIds });
+  assert.deepEqual([full.supported, full.totals], [true, { off: 12000, on: 11020 }]);
+});
+
+test('a cache field reported by either arm must be reported by both, completely', () => {
+  const taskIds = ids(10);
+  for (const field of ['cache_read_tokens', 'cache_write_tokens']) {
+    const base = fullUsage(taskIds);
+    const onlyOn = claimOf({ records: [...base, ...taskIds.map((id) => rec('on', id, field, 5))], taskIds });
+    assert.ok(onlyOn.reasons.includes(`off-${field}-missing`), field);
+    const onlyOff = claimOf({ records: [...base, ...taskIds.map((id) => rec('off', id, field, 5))], taskIds });
+    assert.ok(onlyOff.reasons.includes(`on-${field}-missing`), field);
+    assert.equal(onlyOff.supported, false);
+    const both = claimOf({ records: [...base, ...taskIds.map((id) => rec('on', id, field, 5)), ...taskIds.map((id) => rec('off', id, field, 50))], taskIds });
+    assert.equal(both.supported, true, field);
+    const incomplete = claimOf({ records: [...base, ...taskIds.map((id) => rec('on', id, field, 5)), ...taskIds.slice(1).map((id) => rec('off', id, field, 50))], taskIds });
+    assert.ok(incomplete.reasons.includes(`off-${field}-incomplete`), field);
+  }
+});
+
+test('the report masks the names of shared privacy domains', () => {
+  const run1 = { taskId: 't', off: { chars: 1 }, on: { chars: 2, memories: 1, memoryChars: 1, omitted: null, sharedFrom: ['account:someone-private'] } };
+  const text = renderReport({ suiteId: 's', real: false, runs: [run1], quality: quality(good, good), usage: summarizeUsage({ records: [], taskIds: ['t'] }), claim: { supported: false, reasons: ['x'] } });
+  assert.equal(text.includes('someone-private'), false);
+  assert.match(text, /domain-[0-9a-f]{8}/);
 });

@@ -21,6 +21,7 @@ const BILLING = Object.freeze(['subscription', 'api', 'unknown']);
 const SOURCES = Object.freeze(['provider-reported', 'estimated']);
 const CHECK_KINDS = Object.freeze(['context-includes', 'context-excludes', 'output-includes', 'output-excludes']);
 const MIN_TASKS_FOR_CLAIM = 10;
+const MEMORY_COST_FIELDS = Object.freeze(['memory_build_tokens', 'memory_retrieval_tokens']);
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value) => typeof value === 'string' && value.trim() !== '';
@@ -106,10 +107,19 @@ function summarizeUsage({ records = [], taskIds }) {
   if (!Array.isArray(records) || !Array.isArray(taskIds)) throw new TypeError('records and taskIds must be lists');
   const problems = [];
   const valid = [];
+  const known = new Set(taskIds);
+  const seen = new Set();
   for (const record of records) {
     const problem = checkRecord(record);
-    if (problem) problems.push(problem);
-    else valid.push({ ...record, billing: record.billing ?? 'unknown' });
+    if (problem) { problems.push(problem); continue; }
+    // A record for a task that is not in the suite, or a second record for the same measurement,
+    // would be added to a total it does not belong to. Both are reported and neither is counted.
+    if (!known.has(record.taskId)) { problems.push('unknown-task'); continue; }
+    const billing = record.billing ?? 'unknown';
+    const key = JSON.stringify([record.arm, record.taskId, record.field, billing, record.source]);
+    if (seen.has(key)) { problems.push('duplicate-record'); continue; }
+    seen.add(key);
+    valid.push({ ...record, billing });
   }
   const billings = [...new Set(valid.map((record) => record.billing))].sort(byCodeUnit);
   const summary = {};
@@ -161,8 +171,14 @@ function assessSavingsClaim({ usage, quality, taskCount, real }) {
       }
       for (const field of ['cache_read_tokens', 'cache_write_tokens', 'memory_build_tokens', 'memory_retrieval_tokens']) {
         const entry = usage.summary[arm][billing][field];
+        const other = usage.summary[arm === 'on' ? 'off' : 'on'][billing][field];
         if (entry.estimated !== null) reasons.push(`${arm}-${field}-estimated`);
-        if (entry.providerReported !== null) {
+        // The cost of building and retrieving memory belongs to the memory arm and must be reported
+        // for every task. A cache field reported by either arm must be reported by both. A value that
+        // is missing is unknown, never zero.
+        const required = MEMORY_COST_FIELDS.includes(field) ? arm === 'on' : other.providerReported !== null || entry.providerReported !== null;
+        if (required && entry.providerReported === null) reasons.push(`${arm}-${field}-missing`);
+        else if (entry.providerReported !== null) {
           if (!entry.complete) reasons.push(`${arm}-${field}-incomplete`);
           total += entry.providerReported;
         }
@@ -179,6 +195,7 @@ function assessSavingsClaim({ usage, quality, taskCount, real }) {
   return { supported: unique.length === 0, reasons: unique, totals };
 }
 
+const maskDomain = (name) => `domain-${require('node:crypto').createHash('sha256').update(String(name)).digest('hex').slice(0, 8)}`;
 const fmt = (value) => (value === null || value === undefined ? 'unknown' : String(value));
 const pct = (value) => (value === null ? 'unknown' : `${(value * 100).toFixed(1)}%`);
 
@@ -196,7 +213,7 @@ function renderReport({ suiteId, real, runs, quality, usage, claim, notes = [] }
   ];
   for (const run of [...runs].sort((a, b) => byCodeUnit(a.taskId, b.taskId))) {
     const omitted = run.on.omitted ? `${run.on.omitted.count} (${run.on.omitted.chars} chars, ${run.on.omitted.reason})` : 'none';
-    lines.push(`| ${run.taskId} | ${run.off.chars} | ${run.on.chars} | ${run.on.memories} | ${fmt(run.on.memoryChars)} | ${omitted} | ${run.on.sharedFrom.join(', ') || 'none'} |`);
+    lines.push(`| ${run.taskId} | ${run.off.chars} | ${run.on.chars} | ${run.on.memories} | ${fmt(run.on.memoryChars)} | ${omitted} | ${run.on.sharedFrom.map(maskDomain).join(', ') || 'none'} |`);
   }
   lines.push('', 'Characters are not tokens and are never converted into tokens here.', '', '## Quality (machine checks)', '', '| arm | pass | fail | not run | pass rate |', '| --- | ---: | ---: | ---: | ---: |');
   for (const arm of ARMS) lines.push(`| ${arm} | ${quality.byArm[arm].pass} | ${quality.byArm[arm].fail} | ${quality.byArm[arm].notRun} | ${pct(quality.byArm[arm].passRate)} |`);
