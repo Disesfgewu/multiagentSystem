@@ -47,32 +47,61 @@ function sensitiveShapes() {
 // relative paths (src/a.js), URLs and the interpreter in a shebang (/usr/bin/env) do not match.
 // A backslash doubled by escaping (a path inside a JSON or source string literal) is the same path.
 // The start boundary keeps "https://host/home/x" from matching.
+//
+// Every alternative here starts at a character that is not repeated in the text it consumes, so
+// each start costs time proportional to the path it finds and a long run of one character cannot
+// make the scan quadratic. Runs of backslashes (UNC paths) are handled by `uncPaths` below, which
+// visits each run once.
 const LOCAL_PATH = new RegExp(
   String.raw`(?<![A-Za-z0-9_.:/~-])(?:` +
     String.raw`/(?:Users|home|root|Volumes)/[^\s/\\"'` + '`' + String.raw`)\]]+` +
     String.raw`|/private/(?:var|tmp)/|/var/folders/` +
     String.raw`|[A-Za-z]:(?:\\+|/)(?![\\/])[^\s"'` + '`' + String.raw`]+` +
-    String.raw`|\\{2,}[A-Za-z0-9_.$-]+\\+[A-Za-z0-9_$.-]+` +
-    String.raw`|~[\\/]\.(?:ssh|aws|gnupg|kube|docker|npmrc|netrc)(?![A-Za-z0-9_-])` +
+    String.raw`|~(?:\\+|/)\.(?:ssh|aws|gnupg|kube|docker|npmrc|netrc)(?![A-Za-z0-9_-])` +
     String.raw`)`,
   'g'
 );
+
+const BACKSLASH_RUN = /\\{2,}/g;
+const UNC_TAIL = /[A-Za-z0-9_.$-]+\\+[A-Za-z0-9_$.-]+/y;
+const BOUNDARY = /[A-Za-z0-9_.:/~-]/;
+
+// \\server\share, also with every backslash doubled by escaping. Where the first backslash of a run
+// follows a boundary character (a letter, a colon, ...) the match can only start one character in,
+// and only when the run is long enough to leave two; this is exactly what the single pattern did.
+function uncPaths(text) {
+  const found = [];
+  BACKSLASH_RUN.lastIndex = 0;
+  let run = BACKSLASH_RUN.exec(text);
+  while (run !== null) {
+    const end = run.index + run[0].length;
+    UNC_TAIL.lastIndex = end;
+    if (UNC_TAIL.test(text)) {
+      const blocked = run.index > 0 && BOUNDARY.test(text[run.index - 1]);
+      if (!blocked) found.push(run.index);
+      else if (run[0].length >= 3) found.push(run.index + 1);
+    }
+    run = BACKSLASH_RUN.exec(text);
+  }
+  BACKSLASH_RUN.lastIndex = 0;
+  return found;
+}
 
 function localPaths() {
   return {
     name: 'local-paths',
     detect: (text) => {
-      const hits = [];
+      const indexes = [];
       LOCAL_PATH.lastIndex = 0;
       let match = LOCAL_PATH.exec(text);
-      let count = 0;
-      while (match !== null && count < LOCATE_LIMIT) {
-        hits.push({ code: 'local-absolute-path', category: 'local-path', index: match.index });
-        count += 1;
+      while (match !== null && indexes.length <= LOCATE_LIMIT) {
+        indexes.push(match.index);
         match = LOCAL_PATH.exec(text);
       }
       LOCAL_PATH.lastIndex = 0;
-      if (match !== null) hits.truncated = true;
+      const all = [...indexes, ...uncPaths(text)].sort((a, b) => a - b);
+      const hits = all.slice(0, LOCATE_LIMIT).map((index) => ({ code: 'local-absolute-path', category: 'local-path', index }));
+      if (all.length > LOCATE_LIMIT) hits.truncated = true;
       return hits;
     }
   };
