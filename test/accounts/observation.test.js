@@ -6,6 +6,7 @@ const {
   CONFIDENCE,
   QUOTA_TTL_MS,
   observe,
+  isFresh,
   isGateEligible,
   claudeIdentityFromAuthStatus,
   claudeQuotaFromStatusLine,
@@ -45,6 +46,7 @@ test('only fresh actual values with a lifetime are gate eligible', () => {
   assert.equal(isGateEligible(fresh, new Date(Date.parse(observedAt) + 1001)), false);
   assert.equal(isGateEligible(observe('x', 10, { source: 's', observedAt }), observedAt), false);
   const estimate = observe('x', 10, { source: 's', observedAt, validForMs: 1000, confidence: CONFIDENCE.ESTIMATED });
+  assert.equal(isFresh(estimate, observedAt), true, 'a fresh estimate may be displayed');
   assert.equal(isGateEligible(estimate, observedAt), false);
   assert.equal(isGateEligible(observe('x', null, { source: 's', observedAt }), observedAt), false);
 });

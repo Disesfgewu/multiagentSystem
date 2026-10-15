@@ -65,6 +65,13 @@ function observe(field, value, options) {
 // observedAt + validForMs, which for quota readings never passes the reset.
 function isGateEligible(observation, now) {
   if (observation.confidence !== CONFIDENCE.ACTUAL) return false;
+  return isFresh(observation, now);
+}
+
+// Freshness is independent of confidence: estimates can remain fresh enough to display,
+// while isGateEligible still restricts hard decisions to service-reported actual values.
+function isFresh(observation, now) {
+  if (!observation || ![CONFIDENCE.ACTUAL, CONFIDENCE.ESTIMATED].includes(observation.confidence)) return false;
   if (observation.value === null || observation.value === undefined) return false;
   if (observation.unit === 'percent' && !isPercent(observation.value)) return false;
 
@@ -270,6 +277,7 @@ module.exports = {
   QUOTA_TTL_MS,
   unknown,
   observe,
+  isFresh,
   isGateEligible,
   claudeIdentityFromAuthStatus,
   claudeQuotaFromStatusLine,
