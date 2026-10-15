@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
-const { pathFor } = require('../shared/paths');
+const { pathFor, canonicalize, isSameOrInside } = require('../shared/paths');
 const { validateProfile, findConfigDirConflicts, PROVIDERS } = require('./profile');
 const { byCodeUnit } = require('../memory/order');
 
@@ -25,6 +25,22 @@ const EXPLANATIONS = Object.freeze({
   'config-dir-is-provider-default': {
     message: 'This is the folder the command-line tool already uses for its own sign-in. Using it would mix this account with the one you use outside this extension.',
     fix: 'Choose a different, new folder, or use the recommended folder.'
+  },
+  'config-dir-is-home': {
+    message: 'This is your home folder. It holds everything you own, so it cannot be an account folder.',
+    fix: 'Choose a new folder inside it, or use the recommended folder.'
+  },
+  'config-dir-is-recommended-root': {
+    message: 'This folder holds the account folders this extension creates. Each account needs its own folder inside it, not the folder itself.',
+    fix: 'Use the recommended folder, or choose a new folder inside it.'
+  },
+  'recommended-root-unsafe': {
+    message: 'The folder where recommended account folders go already exists but is not private to you (it belongs to someone else, other users can change it, or it is a link).',
+    fix: 'Remove or rename that folder yourself, or choose a different folder instead.'
+  },
+  'config-dir-rejected': {
+    message: 'This account\'s folder no longer passes the safety checks (it moved, was replaced by a link, or now overlaps another account).',
+    fix: 'Edit the account and choose its folder again.'
   },
   'config-dir-not-directory': {
     message: 'The chosen path is a file, not a folder.',
@@ -76,7 +92,7 @@ const EXPLANATIONS = Object.freeze({
   },
   'label-missing': { message: 'The account needs a label.', fix: 'Enter a short label such as Work or Personal.' },
   'profile-id-missing': { message: 'The account has no internal id.', fix: 'Retry creating the account.' },
-  'provider-unsupported': { message: 'This provider is not supported.', fix: 'Choose Claude Code or Codex CLI.' },
+  'provider-unsupported': { message: 'This provider is not supported for accounts.', fix: 'Choose one of the providers in the list.' },
   'too-many-profiles': { message: 'The maximum number of accounts was reached.', fix: 'Remove an account you no longer use.' }
 });
 
@@ -96,6 +112,7 @@ function explainFailure(result) {
   if (result && Array.isArray(result.problems)) codes.push(...result.problems);
   if (result && result.code === 'config-dir-conflict') codes.push(`config-dir-conflict:${result.kind || 'same'}`);
   if (result && result.code === 'duplicate-label') codes.push('duplicate-label');
+  if (result && result.code === 'config-dir-rejected') codes.push('config-dir-rejected');
   if (result && result.code === 'too-many-profiles') codes.push('too-many-profiles');
   const items = [...new Set(codes)].map(explainProblem);
   return items;
@@ -137,9 +154,54 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
     const conflicts = findConfigDirConflicts([...profiles, candidate], context).filter((entry) => entry.a === candidate.id || entry.b === candidate.id);
     for (const entry of conflicts) problems.push(`config-dir-conflict:${entry.kind}`);
   }
+  if (validation.ok) {
+    const p = pathFor((context && context.platform) || process.platform);
+    const home = context && context.homeDir;
+    if (typeof home === 'string') {
+      try {
+        const real = (value) => canonicalize(value, p, (target) => fs.realpathSync.native(target), (target) => fs.statSync(target).isDirectory(), (target) => fs.lstatSync(target));
+        const dir = real(configDir);
+        const root = real(p.join(home, PARENT_NAME));
+        if (isSameOrInside(p, (context && context.platform) || process.platform, dir, root) && isSameOrInside(p, (context && context.platform) || process.platform, root, dir)) problems.push('config-dir-is-recommended-root');
+      } catch { /* a path that cannot be resolved was already reported by the checks above */ }
+    }
+  }
   const twin = profiles.find((other) => other.provider === provider && typeof other.label === 'string' && typeof label === 'string' && other.label.trim().toLowerCase() === label.trim().toLowerCase());
   if (twin) problems.push('duplicate-label');
   return { ok: problems.length === 0, problems, items: [...new Set(problems)].sort(byCodeUnit).map(explainProblem) };
+}
+
+// A recommended root that already exists must be a real folder (not a link), owned by this user
+// and not writable by anyone else, or another user could swap an account folder for their own.
+function existingRootProblem(parent, io) {
+  let stat;
+  try {
+    stat = (io.lstatSync || fs.lstatSync)(parent);
+  } catch (error) {
+    return error && error.code === 'ENOENT' ? null : 'recommended-root-unsafe';
+  }
+  if (typeof stat.isSymbolicLink === 'function' && stat.isSymbolicLink()) return 'recommended-root-unsafe';
+  if (typeof stat.isDirectory === 'function' && !stat.isDirectory()) return 'recommended-root-unsafe';
+  if (process.platform !== 'win32') {
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return 'recommended-root-unsafe';
+    if ((stat.mode & 0o022) !== 0) return 'recommended-root-unsafe';
+  }
+  return null;
+}
+
+/**
+ * Removes folders a failed save left behind: only the ones listed (made by this extension a moment
+ * ago), only while empty, deepest first. Anything that has content, or was not listed, stays.
+ */
+function discardCreated(folders, io = fs) {
+  const removed = [];
+  for (const target of [...(Array.isArray(folders) ? folders : [])].reverse()) {
+    try {
+      io.rmdirSync(target);
+      removed.push(target);
+    } catch { /* not empty, or already gone: leave it */ }
+  }
+  return removed;
 }
 
 /**
@@ -150,6 +212,8 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
 function createRecommendedFolder({ provider, label, suggestion, profiles = [], context, io = fs }) {
   const before = checkFolder({ provider, label, configDir: suggestion.dir, profiles, context });
   if (!before.ok) return { ok: false, created: false, items: before.items };
+  const unsafeRoot = existingRootProblem(suggestion.parent, io);
+  if (unsafeRoot) return { ok: false, created: false, items: [explainProblem(unsafeRoot)] };
   const made = [];
   try {
     for (const target of [suggestion.parent, suggestion.dir]) {
@@ -163,7 +227,7 @@ function createRecommendedFolder({ provider, label, suggestion, profiles = [], c
     }
     const after = checkFolder({ provider, label, configDir: suggestion.dir, profiles, context });
     if (!after.ok) throw Object.assign(new Error('recheck-failed'), { items: after.items });
-    return { ok: true, created: true, dir: suggestion.dir };
+    return { ok: true, created: true, dir: suggestion.dir, madeFolders: [...made] };
   } catch (error) {
     for (const target of made.reverse()) {
       try { io.rmdirSync(target); } catch { /* only an empty folder we made is removed; anything else stays */ }
@@ -173,4 +237,4 @@ function createRecommendedFolder({ provider, label, suggestion, profiles = [], c
   }
 }
 
-module.exports = { explainProblem, explainFailure, suggestFolder, checkFolder, createRecommendedFolder, EXPLANATIONS, PARENT_NAME };
+module.exports = { explainProblem, explainFailure, suggestFolder, checkFolder, createRecommendedFolder, discardCreated, EXPLANATIONS, PARENT_NAME };

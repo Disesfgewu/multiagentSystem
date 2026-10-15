@@ -4,7 +4,16 @@
 // Anything without a source is shown as "unknown"; nothing is guessed, no progress is invented,
 // and a terminal that exists is never described as an agent that is working.
 
+const { cleanTitle } = require('./model');
+
 const UNKNOWN = 'unknown';
+const SHOWN_LIMIT = 80;
+// Text that came from outside this module (a session name, a label, a branch) is shown as one clean,
+// short line: control, bidirectional and separator characters are removed and the length is limited.
+const shown = (value, fallback = UNKNOWN) => {
+  const text = typeof value === 'string' ? Array.from(cleanTitle(value)).slice(0, SHOWN_LIMIT).join('') : '';
+  return text === '' ? fallback : text;
+};
 
 const STATE_TEXT = Object.freeze({
   'terminal-open': 'terminal open, CLI not started',
@@ -23,11 +32,11 @@ function field(value, fallback = UNKNOWN) {
  * the state label that the session layer already worded honestly.
  */
 function presentAgent(row, session) {
-  const name = typeof session?.name === 'string' && session.name.trim() ? session.name.trim() : 'Session';
-  const role = row.role.state === 'known' ? row.role.name : UNKNOWN;
-  const provider = typeof session?.providerLabel === 'string' ? session.providerLabel : UNKNOWN;
-  const account = row.account.state === 'known' ? (row.account.label || UNKNOWN) : UNKNOWN;
-  const stateText = row.sessionState.state === 'known' ? (STATE_TEXT[row.sessionState.value] ?? UNKNOWN) : 'state unknown';
+  const name = shown(session?.name, 'Session');
+  const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
+  const provider = shown(session?.providerLabel);
+  const account = row.account.state === 'known' ? shown(row.account.label) : UNKNOWN;
+  const stateText = row.sessionState.state === 'known' ? (Object.hasOwn(STATE_TEXT, row.sessionState.value) ? STATE_TEXT[row.sessionState.value] : UNKNOWN) : 'state unknown';
   const identity = row.account.state === 'known' ? (row.account.verified ? 'identity verified by the CLI' : 'identity unknown') : 'account unknown';
   const pr = row.pullRequest.state === 'open' ? `#${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}` : row.pullRequest.state === 'none' ? 'no open pull request' : UNKNOWN;
   const ci = row.ci.state === 'known' ? row.ci.value : UNKNOWN;
@@ -40,7 +49,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Account: ${account} (${identity})`,
       `State: ${stateText}`,
-      `Branch: ${row.branch.state === 'known' ? row.branch.value : UNKNOWN}`,
+      `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
       `Pull request: ${pr}`,
       `CI: ${ci}`,
       'Fields marked unknown have no verified source yet.'
@@ -51,8 +60,16 @@ function presentAgent(row, session) {
 }
 
 /**
+ * Agents that are really running: a terminal this window holds, with an account assigned. A session that
+ * was closed or restored, or that has no account yet, is a record, not a running agent.
+ */
+function countRunningAgents(sessions) {
+  return Array.isArray(sessions) ? sessions.filter((entry) => entry && entry.terminalOpen === true && typeof entry.accountProfileId === 'string' && entry.accountProfileId !== '' && entry.accountProfileId !== 'unassigned').length : 0;
+}
+
+/**
  * The first-use steps. A step is done only when the real state says so; when the state cannot be
- * read the step is `unknown` and says why. Step 4 cannot be known from here, so it is never ticked.
+ * read the step is `unknown` and says why. Step 3 counts running agents only (see `countRunningAgents`). Step 4 cannot be known from here, so it is never ticked.
  * @param {{ accounts: number|null, roleGroups: number|null, sessions: number|null }} counts null = could not be read
  */
 function onboardingSteps({ accounts, roleGroups, sessions }) {
@@ -70,4 +87,4 @@ function guideVisible(steps) {
   return steps.some((step) => step.done === false || step.done === UNKNOWN);
 }
 
-module.exports = { presentAgent, onboardingSteps, guideVisible, UNKNOWN, STATE_TEXT };
+module.exports = { presentAgent, onboardingSteps, guideVisible, countRunningAgents, UNKNOWN, STATE_TEXT };

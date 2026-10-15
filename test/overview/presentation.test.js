@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildOverview } = require('../../src/overview/model');
-const { presentAgent, onboardingSteps, guideVisible, STATE_TEXT } = require('../../src/overview/presentation');
+const { presentAgent, onboardingSteps, guideVisible, countRunningAgents, STATE_TEXT } = require('../../src/overview/presentation');
 
 const session = (over = {}) => ({ id: 's1', roleGroupId: 'worker', accountProfileId: 'a1', worktree: '/private/place/wt', state: 'terminal-open', observedAt: null, ...over });
 const account = (over = {}) => ({ id: 'a1', provider: 'claude', label: { value: 'Main' }, health: 'ready', verifiedIdentity: { state: 'unknown' }, issues: [], ...over });
@@ -93,4 +93,43 @@ test('the guide stays while any tracked step is not done or unreadable, and goes
 test('rows carry no local path', () => {
   const shown = view();
   assert.equal(JSON.stringify(shown).includes('/private/place'), false);
+});
+
+const cp = (...codes) => String.fromCodePoint(...codes);
+
+test('only a running agent counts for the guide: an open terminal with an assigned account', () => {
+  const live = { terminalOpen: true, accountProfileId: 'acct-1' };
+  assert.equal(countRunningAgents([live]), 1);
+  assert.equal(countRunningAgents([{ ...live, terminalOpen: false }]), 0, 'a closed or restored session is a record');
+  assert.equal(countRunningAgents([{ ...live, accountProfileId: 'unassigned' }]), 0, 'no account assigned yet');
+  assert.equal(countRunningAgents([{ ...live, accountProfileId: '' }, { ...live, accountProfileId: undefined }, { ...live, accountProfileId: 7 }]), 0);
+  assert.equal(countRunningAgents([live, { ...live, terminalOpen: false }, { ...live, accountProfileId: 'unassigned' }, live]), 2);
+  for (const bad of [undefined, null, 'x', {}, [null, undefined, 3]]) assert.equal(countRunningAgents(bad), 0, String(bad));
+  assert.equal(onboardingSteps({ accounts: 1, roleGroups: 1, sessions: countRunningAgents([{ terminalOpen: false, accountProfileId: 'a' }]) }).find((step) => step.id === 'agent').done, false);
+});
+
+test('text from outside is shown as one clean, short line', () => {
+  const evil = `${cp(0x202e)}evil${cp(0)}\nname${cp(0x200b)}${cp(0x2028)}x`;
+  const shown = presentAgent(row({}, [account({ label: { value: evil } })], { worker: evil }), { name: evil, providerLabel: evil });
+  for (const text of [shown.label, shown.description, ...shown.tooltip]) {
+    assert.equal(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text.replace(/\n/g, '')), false, `a control or format character survived: ${JSON.stringify(text)}`);
+  }
+  assert.equal(shown.label, 'evil name x');
+  assert.equal(shown.description.includes('\n'), false);
+  const long = 'x'.repeat(100000);
+  const big = presentAgent(row({ branches: undefined }, [account({ label: { value: long } })], { worker: long }), { name: long, providerLabel: long });
+  assert.ok(Array.from(big.label).length <= 80);
+  assert.ok(big.description.length < 400, `${big.description.length}`);
+  assert.ok(big.tooltip.join('\n').length < 600);
+  const withBranch = buildOverview({ sessions: [session()], accounts: [account()], roleGroups: { worker: 'W' }, branches: { s1: long } }).rows[0];
+  assert.ok(presentAgent(withBranch, { name: 'A' }).tooltip.join('\n').length < 700);
+  assert.equal(presentAgent(row({}, [account({ label: { value: `${cp(0x202e)}${cp(0)}` } })]), { name: cp(0x200b) }).label, 'Session', 'a name that is only invisible characters falls back');
+});
+
+test('a state that is a property of every object is unknown, never shown as an object', () => {
+  for (const state of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    const shown = presentAgent({ ...row({}), sessionState: { state: 'known', value: state } }, { name: 'A', providerLabel: 'P' });
+    assert.equal(shown.description.includes('[object'), false, state);
+    assert.match(shown.description, /· unknown$/, state);
+  }
 });

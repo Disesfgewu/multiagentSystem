@@ -146,6 +146,11 @@ function validateProfile(profile, context) {
   if (dir.value && providerDefault.value && samePath(p, ctx.platform, dir.value, providerDefault.value)) {
     problems.push('config-dir-is-provider-default');
   }
+  if (dir.value) {
+    // The home folder holds everything a person owns; it is never an account folder.
+    const home = tryCanonicalize(ctx.homeDir, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
+    if (home.value && samePath(p, ctx.platform, dir.value, home.value)) problems.push('config-dir-is-home');
+  }
 
   return { ok: problems.length === 0, problems };
 }
