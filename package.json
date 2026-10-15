@@ -24,6 +24,8 @@
     "onCommand:multiagentSystem.github.refreshView",
     "onCommand:multiagentSystem.github.openInEditor",
     "onView:multiagentSystem.githubView",
+    "onView:multiagentSystem.overviewView",
+    "onCommand:multiagentSystem.overview.refresh",
     "onCommand:multiagentSystem.accounts.refresh",
     "onCommand:multiagentSystem.accounts.create",
     "onCommand:multiagentSystem.accounts.details",
@@ -42,16 +44,37 @@
     "onCommand:multiagentSystem.storage.status"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "multiagentSystem", "title": "Multiagent", "icon": "media/multiagent.svg" }
+      ]
+    },
     "views": {
-      "explorer": [
-        {
-          "id": "multiagentSystem.githubView",
-          "name": "Multiagent GitHub"
-        },
+      "multiagentSystem": [
+        { "id": "multiagentSystem.overviewView", "name": "Overview" },
+        { "id": "multiagentSystem.githubView", "name": "GitHub" },
         { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
         { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "multiagentSystem.overviewView",
+        "contents": "No agents yet. Nothing here is running until you start it.\n[Create Account](command:multiagentSystem.accounts.create)\n[Create Role Group](command:multiagentSystem.roles.create)\n[Open Four Native Terminals](command:multiagentSystem.openTerminalGroup)"
+      },
+      {
+        "view": "multiagentSystem.githubView",
+        "contents": "No GitHub items to show. Sign in, or open a project that has a GitHub remote.\n[Sign In to GitHub](command:multiagentSystem.github.signIn)\n[Refresh](command:multiagentSystem.github.refreshView)"
+      },
+      {
+        "view": "multiagentSystem.accountsView",
+        "contents": "No account profiles yet. An account says which CLI sign-in an agent uses.\n[Create Account](command:multiagentSystem.accounts.create)"
+      },
+      {
+        "view": "multiagentSystem.rolesView",
+        "contents": "No role groups yet. A role group says what an agent may do.\n[Create Role Group](command:multiagentSystem.roles.create)"
+      }
+    ],
     "commands": [
       {
         "command": "multiagentSystem.openTerminalGroup",
@@ -106,6 +129,7 @@
         "command": "multiagentSystem.github.openInEditor",
         "title": "Multiagent: Open GitHub Item in Editor"
       },
+      { "command": "multiagentSystem.overview.refresh", "title": "Multiagent: Refresh Overview", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
       { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details" },
@@ -125,10 +149,14 @@
       {
         "command": "multiagentSystem.sessions.list",
         "title": "Multiagent: Sessions"
-      }
+      },
+      { "command": "multiagentSystem.sessions.focus", "title": "Multiagent: Focus Session Terminal", "icon": "$(eye)" },
+      { "command": "multiagentSystem.sessions.stop", "title": "Multiagent: Stop Session Terminal", "icon": "$(debug-stop)" },
+      { "command": "multiagentSystem.sessions.reopen", "title": "Multiagent: Reopen Session in a New Terminal", "icon": "$(debug-restart)" }
     ],
     "menus": {
       "view/title": [
+        { "command": "multiagentSystem.overview.refresh", "when": "view == multiagentSystem.overviewView", "group": "navigation" },
         {
           "command": "multiagentSystem.github.refreshView",
           "when": "view == multiagentSystem.githubView",
@@ -140,6 +168,9 @@
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" }
       ],
       "view/item/context": [
+        { "command": "multiagentSystem.sessions.focus", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentLive", "group": "inline@1" },
+        { "command": "multiagentSystem.sessions.stop", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentLive", "group": "inline@2" },
+        { "command": "multiagentSystem.sessions.reopen", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentClosed", "group": "inline" },
         { "command": "multiagentSystem.accounts.login", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline" },
         { "command": "multiagentSystem.accounts.launch", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline@2" },
         { "command": "multiagentSystem.accounts.edit", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
