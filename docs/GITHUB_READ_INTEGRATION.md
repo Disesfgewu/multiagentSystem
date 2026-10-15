@@ -56,3 +56,13 @@ repo 的決定順序：命令的 `repository` 選項 → 工作區資料夾的 G
 - **互動式畫面**（選單、進度、取消按鈕、modal）只以假的 UI 驗證；Extension Host 冒煙測試只驅動非互動形式。
 - **Windows 實機**：CI 的 Windows 是 GitHub 託管環境，不是正式支援矩陣內的實機驗收。
 - 專案總覽畫面與 repo 切換畫面屬 #13。
+
+## 總覽中的分支、PR 與 CI
+
+總覽的 agent 列（`src/overview/githubJoin.ts`）把 session 對應到 GitHub：
+
+- **分支**：以 session 的 worktree 路徑（解析後的真實路徑，不是名稱）在 `git worktree list` 中比對；比對不到或為 detached head 就是未知。
+- **PR**：每個儲存庫讀一次開放 PR 清單，只採用「分支名相同、狀態開放、`headRepository` 與該儲存庫相同」的 PR；來自 fork 的同名分支不採用；清單不完整（`partial`、`truncated`）或失敗一律是未知，只有完整的 `ok`／`empty` 才能得出「沒有 PR」。
+- **CI**：只對符合 session 分支的 PR 讀取 snapshot（每次重新整理最多 20 個），checks 的 head SHA 必須與 PR 的 head SHA 完整相同，否則 CI 為未知。
+- 連結由儲存庫與 PR 編號自行組成，開啟前再檢查一次是 github.com 的網址；清單中沒有已驗證 PR 的列沒有「開啟 PR」按鈕。
+- 所有讀取都是唯讀 GET；沒有登入或沒有權限時顯示未知，不報錯。尚未驗證：真實 GitHub 帳號、權限與速率限制下的行為（只以假 reader 與真實 Git 測試）。

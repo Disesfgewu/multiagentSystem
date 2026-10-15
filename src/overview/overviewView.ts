@@ -3,11 +3,14 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService } from '../accounts/accountRuntime';
 import { privateStorage } from '../storage/storageCommands';
+import { githubReaderFor } from '../github/githubCommands';
+import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
+import { isGitHubWebUrl } from '../github/controller';
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
 const { presentAgent, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
   countRunningAgents(sessions: unknown): number;
-  presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean };
+  presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null };
   onboardingSteps(counts: { accounts: number | null; roleGroups: number | null; sessions: number | null }): Array<{ id: string; title: string; done: boolean | 'unknown' | 'not-tracked'; command: string; button: string; missing: string }>;
   guideVisible(steps: unknown[]): boolean;
 };
@@ -15,6 +18,21 @@ const { describeAccounts } = require('../accounts/profile-view') as { describeAc
 
 export const OVERVIEW_VIEW = 'multiagentSystem.overviewView';
 export const OVERVIEW_REFRESH = 'multiagentSystem.overview.refresh';
+export const OVERVIEW_OPEN_PULL_REQUEST = 'multiagentSystem.overview.openPullRequest';
+
+// The pull request address of each row, built by the model from the repository and the number. It is
+// the only address the open action can use, and it is checked again before it is opened.
+const pullRequestUrls = new Map<string, string>();
+
+let joinDeps: JoinDeps | undefined;
+/** Replaces how branches and pull requests are found. Only the Extension Host test does this. */
+export function setJoinDepsForTests(next: JoinDeps | undefined): void { joinDeps = next; }
+
+const realJoinDeps: JoinDeps = {
+  now: () => new Date(),
+  readerFor: (repository) => githubReaderFor(repository) as unknown as ReturnType<JoinDeps['readerFor']>,
+  worktreeInfo: worktreeInfoFor
+};
 
 class Row extends vscode.TreeItem {
   constructor(label: string) {
@@ -35,13 +53,13 @@ class StepRow extends Row {
 }
 
 class AgentRow extends Row {
-  constructor(entry: { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean }) {
+  constructor(entry: { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null }) {
     super(entry.label);
     this.id = entry.id;
     this.description = entry.description;
     this.tooltip = entry.tooltip.join('\n');
     this.iconPath = new vscode.ThemeIcon(entry.terminalOpen ? 'terminal' : 'debug-disconnect');
-    this.contextValue = entry.terminalOpen ? 'multiagentOverviewAgentLive' : 'multiagentOverviewAgentClosed';
+    this.contextValue = `${entry.terminalOpen ? 'multiagentOverviewAgentLive' : 'multiagentOverviewAgentClosed'}${entry.pullRequestUrl ? 'Pr' : ''}`;
     this.command = { command: 'multiagentSystem.sessions.focus', title: 'Focus terminal', arguments: [{ id: entry.id }] };
   }
 }
@@ -58,7 +76,7 @@ type Item = Row;
 
 export interface OverviewSnapshot {
   steps: ReturnType<typeof onboardingSteps>;
-  agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean }>;
+  agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null }>;
   problems: number;
   notes: string[];
 }
@@ -93,14 +111,27 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
     const group = entry?.value?.group;
     if (group && typeof group.name === 'string' && typeof group.id === 'string') roleNames[group.id] = group.name;
   }
-  const overview = buildOverview({
-    sessions: live,
-    accounts: described,
-    roleGroups: roleNames
-  });
-  const agents = overview.rows.map((row: any, index: number) => presentAgent(row, { name: live[index]?.name, providerLabel: builtIn.get(live[index]?.provider)?.label, terminalOpen: live[index]?.terminalOpen }));
+  const join = await collectGitHub(live.map((entry) => ({ id: entry.id, worktree: entry.worktree })), joinDeps ?? realJoinDeps);
+  const rowsById = new Map<string, any>();
+  let problems = 0;
+  const build = (subset: typeof live, extra: Record<string, unknown>) => {
+    const built = buildOverview({ sessions: subset, accounts: described, roleGroups: roleNames, branches: join.branches, ...extra });
+    problems += built.problems;
+    for (const row of built.rows) if (row.sessionId) rowsById.set(row.sessionId, row);
+  };
+  const grouped = new Set<string>();
+  for (const group of join.groups) {
+    const members = live.filter((entry) => group.sessionIds.includes(entry.id));
+    members.forEach((entry) => grouped.add(entry.id));
+    build(members, { repository: group.repository, github: group.github });
+  }
+  const rest = live.filter((entry) => !grouped.has(entry.id));
+  if (rest.length > 0) build(rest, {});
+  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen }));
+  pullRequestUrls.clear();
+  for (const agent of agents) if (agent.pullRequestUrl) pullRequestUrls.set(agent.id, agent.pullRequestUrl);
   const steps = onboardingSteps({ accounts: profiles ? profiles.length : null, roleGroups: roleGroups ? roleGroups.length : null, sessions: countRunningAgents(live) });
-  return { steps, agents, problems: overview.problems, notes };
+  return { steps, agents, problems, notes };
 }
 
 class OverviewTree implements vscode.TreeDataProvider<Item> {
@@ -148,6 +179,13 @@ export function registerOverview(context: vscode.ExtensionContext, sessions: Ses
     vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh()),
     vscode.window.onDidChangeWindowState((state) => { if (state.focused) tree.refresh(); }),
     view.onDidChangeVisibility((event) => { if (event.visible) tree.refresh(); }),
-    vscode.commands.registerCommand(OVERVIEW_REFRESH, () => tree.refresh())
+    vscode.commands.registerCommand(OVERVIEW_REFRESH, () => tree.refresh()),
+    vscode.commands.registerCommand(OVERVIEW_OPEN_PULL_REQUEST, async (value?: unknown) => {
+      const id = typeof value === 'string' ? value : value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' ? (value as { id: string }).id : undefined;
+      const url = id ? pullRequestUrls.get(id) : undefined;
+      if (!url || !isGitHubWebUrl(url)) return { ok: false, code: 'no-pull-request', message: 'There is no verified pull request for this agent.' };
+      const opened = await vscode.env.openExternal(vscode.Uri.parse(url, true));
+      return { ok: true, url, opened };
+    })
   );
 }

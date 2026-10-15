@@ -130,6 +130,7 @@
         "title": "Multiagent: Open GitHub Item in Editor"
       },
       { "command": "multiagentSystem.overview.refresh", "title": "Multiagent: Refresh Overview", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.overview.openPullRequest", "title": "Multiagent: Open This Agent's Pull Request on GitHub", "icon": "$(git-pull-request)" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
       { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details" },
@@ -168,9 +169,10 @@
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" }
       ],
       "view/item/context": [
-        { "command": "multiagentSystem.sessions.focus", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentLive", "group": "inline@1" },
-        { "command": "multiagentSystem.sessions.stop", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentLive", "group": "inline@2" },
-        { "command": "multiagentSystem.sessions.reopen", "when": "view == multiagentSystem.overviewView && viewItem == multiagentOverviewAgentClosed", "group": "inline" },
+        { "command": "multiagentSystem.overview.openPullRequest", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgent(Live|Closed)Pr$/", "group": "inline@0" },
+        { "command": "multiagentSystem.sessions.focus", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgentLive/", "group": "inline@1" },
+        { "command": "multiagentSystem.sessions.stop", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgentLive/", "group": "inline@2" },
+        { "command": "multiagentSystem.sessions.reopen", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgentClosed/", "group": "inline" },
         { "command": "multiagentSystem.accounts.login", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline" },
         { "command": "multiagentSystem.accounts.launch", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline@2" },
         { "command": "multiagentSystem.accounts.edit", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
