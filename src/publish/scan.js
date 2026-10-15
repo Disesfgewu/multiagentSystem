@@ -102,7 +102,8 @@ function locate(starts, index) {
  * @param {Array<{ id: string, text: string }>} [options.rules] private rule text, supplied by the caller
  * @param {Array<{ id: string, value: string }>} [options.knownValues] values known to be private
  * @param {Array<{ name: string, detect(text: string): object[] }>} [options.detectors] replaces the default detectors
- * @returns {object} { status: 'clear'|'blocked'|'incomplete'|'error', blocked, findings, unmatchable, unscanned, ... }
+ * @returns {object} { status: 'clear'|'blocked'|'incomplete'|'error', blocked, findings, unmatchable, unscanned,
+ *   privateReference: 'supplied'|'none-supplied', ... }
  */
 function scanPublication(units, options = {}) {
   try {
@@ -199,6 +200,9 @@ function run(units, options) {
   });
 
   const unmatchable = [...new Set([...known.unmatchable, ...fragments.unmatchable])];
+  // "clear" with no private material supplied is not the same as "checked against private
+  // material and found nothing"; callers that gate on the result must be able to tell.
+  const supplied = ['memories', 'rules', 'knownValues'].some((key) => Array.isArray(options[key]) && options[key].length > 0);
   let status = 'clear';
   if (findings.length > 0) status = 'blocked';
   else if (unscanned.length > 0) status = 'incomplete';
@@ -210,6 +214,7 @@ function run(units, options) {
     unmatchable,
     unscanned,
     truncated,
+    privateReference: supplied ? 'supplied' : 'none-supplied',
     limitations: LIMITATIONS
   };
 }

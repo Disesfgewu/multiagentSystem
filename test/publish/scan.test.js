@@ -361,3 +361,14 @@ test('a doubled-backslash Windows path is blocked in every unit kind and never e
     assert.equal(JSON.stringify(result).includes('someone'), false, kind);
   }
 });
+
+test('the result says whether any private material was supplied to compare against', () => {
+  const unit = [{ kind: 'pr-body', text: 'plain text' }];
+  for (const options of [undefined, {}, { memories: [] }, { rules: [], knownValues: [] }, { memories: undefined }, { knownValues: undefined }]) {
+    assert.equal(scanPublication(unit, options).privateReference, 'none-supplied', JSON.stringify(options));
+  }
+  assert.notEqual(scanPublication(unit, { memories: 'x' }).status, 'clear', 'malformed private material is never a clear result');
+  assert.equal(scanPublication(unit, { memories: [{ id: 'm', content: 'some private note text here' }] }).privateReference, 'supplied');
+  assert.equal(scanPublication(unit, { rules: [{ id: 'r', text: 'some private rule text here' }] }).privateReference, 'supplied');
+  assert.equal(scanPublication(unit, { knownValues: [{ id: 'k', value: 'private-value' }] }).privateReference, 'supplied');
+});

@@ -45,7 +45,7 @@ function snapshot(extra = {}) {
 
 const context = (extra = {}) => ({
   role: 'pm', actorId: '10', authorId: '20', pmLogin: 'pm-user',
-  policyConfig: CONFIG, ...extra
+  policyConfig: CONFIG, privateReferencesChecked: true, ...extra
 });
 
 function readerFor(value = snapshot(), publication = {
@@ -134,7 +134,7 @@ test('coordinator force-refreshes snapshot and bound content, then sends only th
   assert.deepEqual(result, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD });
   assert.deepEqual(reads, [[7, { forceRefresh: true }]]);
   assert.deepEqual(contentReads, [[7, HEAD, { forceRefresh: true }]]);
-  assert.deepEqual(writes, [{ repository: REPOSITORY, number: 7, expectedHeadSha: HEAD }]);
+  assert.deepEqual(writes, [{ repository: REPOSITORY, number: 7, expectedHeadSha: HEAD, commitTitle: 'Safe change', commitMessage: 'Refs #17' }]);
 });
 
 test('a secret in the current PR body is scanned even when the bound diff is benign', async () => {
@@ -253,4 +253,54 @@ test('missing adapters are programming errors', async () => {
   await assert.rejects(() => mergePullRequest({ ...base, reader: {}, writer: { mergePullRequest() {} } }), TypeError);
   await assert.rejects(() => mergePullRequest({ ...base, reader: { getPullRequestSnapshot() {} }, writer: { mergePullRequest() {} } }), TypeError);
   await assert.rejects(() => mergePullRequest({ ...base, reader: readerFor(), writer: {} }), TypeError);
+});
+
+const attempt = async (extra, pr) => {
+  const writes = [];
+  const result = await mergePullRequest({
+    reader: readerFor(snapshot(pr ? { pr } : {})),
+    writer: { mergePullRequest: async (payload) => { writes.push(payload); return { ok: true }; } },
+    repository: REPOSITORY, pullNumber: 7, ...context(), ...extra
+  });
+  return { result, writes };
+};
+
+test('a scan given no private material is refused unless the caller states it checked', async () => {
+  for (const extra of [
+    { privateReferencesChecked: undefined },
+    { privateReferencesChecked: false },
+    { privateReferencesChecked: 'true' },
+    { privateReferencesChecked: 1 },
+    { privateReferencesChecked: undefined, scanOptions: {} },
+    { privateReferencesChecked: undefined, scanOptions: { memories: [], rules: [], knownValues: [] } },
+    { privateReferencesChecked: undefined, scanOptions: { memories: undefined, rules: undefined, knownValues: undefined } }
+  ]) {
+    const { result, writes } = await attempt(extra);
+    assert.equal(result.reason, 'private-reference-unchecked', JSON.stringify(extra));
+    assert.equal(writes.length, 0);
+  }
+});
+
+test('supplying private material, or stating it was checked, lets a clean PR through', async () => {
+  const supplied = await attempt({ privateReferencesChecked: undefined, scanOptions: { knownValues: [{ id: 'label', value: 'private-label-value' }] } });
+  assert.equal(supplied.result.ok, true);
+  const stated = await attempt({ privateReferencesChecked: true });
+  assert.equal(stated.result.ok, true);
+});
+
+test('supplied private memory still blocks text that repeats it, and a blocked scan is reported before the unchecked refusal', async () => {
+  const memories = [{ id: 'm1', content: 'The release signing procedure uses the offline hardware token kept in the safe.' }];
+  const { result, writes } = await attempt({ privateReferencesChecked: undefined, scanOptions: { memories } }, { body: 'Note: the release signing procedure uses the offline hardware token kept in the safe.' });
+  assert.equal(result.reason, 'publication-blocked');
+  assert.equal(writes.length, 0);
+  const leaky = await attempt({ privateReferencesChecked: undefined }, { body: `accidental ghp_${'x'.repeat(36)}` });
+  assert.equal(leaky.result.reason, 'publication-blocked');
+});
+
+test('the writer receives exactly the scanned title and body as the commit text', async () => {
+  const { writes } = await attempt({}, { title: 'Scanned title', body: 'Scanned body, Refs #17' });
+  assert.equal(writes[0].commitTitle, 'Scanned title');
+  assert.equal(writes[0].commitMessage, 'Scanned body, Refs #17');
+  const empty = await attempt({}, { body: null });
+  assert.equal(empty.writes[0].commitMessage, '');
 });
