@@ -38,6 +38,7 @@
     "onCommand:multiagentSystem.roles.create",
     "onCommand:multiagentSystem.roles.edit",
     "onCommand:multiagentSystem.roles.preview",
+    "onCommand:multiagentSystem.roles.start",
     "onCommand:multiagentSystem.roles.remove",
     "onView:multiagentSystem.rolesView",
     "onCommand:multiagentSystem.sessions.list",
@@ -140,6 +141,7 @@
       { "command": "multiagentSystem.roles.refresh", "title": "Multiagent: Refresh Role Groups", "icon": "$(refresh)" },
       { "command": "multiagentSystem.roles.create", "title": "Multiagent: Create Role Group", "icon": "$(add)" },
       { "command": "multiagentSystem.roles.edit", "title": "Multiagent: Edit Role Group" },
+      { "command": "multiagentSystem.roles.start", "title": "Multiagent: Start Agent with This Role Group", "icon": "$(play)" },
       { "command": "multiagentSystem.roles.preview", "title": "Multiagent: Preview Effective Rules" },
       { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
       {
@@ -175,7 +177,8 @@
         { "command": "multiagentSystem.accounts.launch", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline@2" },
         { "command": "multiagentSystem.accounts.edit", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
         { "command": "multiagentSystem.accounts.remove", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
-        { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline" },
+        { "command": "multiagentSystem.roles.start", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@0" },
+        { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@1" },
         { "command": "multiagentSystem.roles.edit", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
         { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" }
       ]

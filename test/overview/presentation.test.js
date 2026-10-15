@@ -94,3 +94,8 @@ test('rows carry no local path', () => {
   const shown = view();
   assert.equal(JSON.stringify(shown).includes('/private/place'), false);
 });
+
+test('a known role group says its rules are not sent yet, and an unknown one adds no such claim', () => {
+  assert.match(view().tooltip.join('\n'), /not sent to the CLI yet, so editing it does not change what an agent that is already started was told/);
+  assert.equal(presentAgent(row({ roleGroupId: 'nobody' }), { name: 'A' }).tooltip.join('\n').includes('not sent to the CLI yet'), false);
+});

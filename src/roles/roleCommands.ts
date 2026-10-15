@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { builtIn } from '../providers/registry';
+import type { SessionCommands } from '../sessions/sessionCommands';
 
 const { validateRoleGroup } = require('./role-group') as { validateRoleGroup(value: unknown): { ok: boolean; problems: Array<{ code: string; path: string }>; group?: RoleGroup } };
 const { previewEffectiveRules, formatPreview } = require('./preview') as {
@@ -40,7 +41,8 @@ export const ROLE_COMMANDS = {
   create: 'multiagentSystem.roles.create',
   edit: 'multiagentSystem.roles.edit',
   preview: 'multiagentSystem.roles.preview',
-  remove: 'multiagentSystem.roles.remove'
+  remove: 'multiagentSystem.roles.remove',
+  start: 'multiagentSystem.roles.start'
 } as const;
 
 const message = (reason: unknown): string => `Role group storage is unavailable (${String(reason ?? 'unknown')}).`;
@@ -302,6 +304,42 @@ async function preview(value: unknown): Promise<void> {
   await vscode.window.showTextDocument(document, { preview: true });
 }
 
+type StartOptions = { id?: string; interactive?: boolean; accountProfileId?: string | null; name?: string; cwd?: string; launch?: boolean };
+
+/**
+ * Starts a new agent with this role group and an account. The role group is assigned to the NEW session;
+ * a running session keeps whatever it was started with. Rules are not sent to the CLI by this step.
+ */
+async function startWithRole(sessions: SessionCommands, value: unknown): Promise<unknown> {
+  const options: StartOptions = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as StartOptions) : {};
+  const interactive = options.interactive !== false;
+  const record = await chooseRecord(options.id ?? value);
+  if (!record) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+  const group = record.group;
+  let accountProfileId: string | undefined = typeof options.accountProfileId === 'string' ? options.accountProfileId : undefined;
+  if (options.accountProfileId === undefined && interactive) {
+    const opened = await store();
+    if (!opened) return { ok: false, code: 'storage-unavailable', message: message('storage') };
+    const listed = opened.list('profiles');
+    if (!listed.ok) { void vscode.window.showErrorMessage(message(listed.reason)); return { ok: false, code: 'storage-unavailable', message: message(listed.reason) }; }
+    const profiles: Array<{ id: string; value: { label?: unknown; provider?: string } }> = listed.items.filter((entry: { value: { provider?: string } }) => entry.value?.provider === group.provider);
+    const choices = [
+      ...profiles.map((entry) => ({ label: String(entry.value.label), description: entry.id === group.defaultAccountProfileId ? 'this role\'s default account' : 'identity unknown until the CLI reports it', id: entry.id as string | undefined })),
+      { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: undefined as string | undefined }
+    ].sort((a, b) => Number(b.description === 'this role\'s default account') - Number(a.description === 'this role\'s default account'));
+    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which account should “${group.name}” use?`, ignoreFocusOut: true });
+    if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    accountProfileId = picked.id;
+  }
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const cwd = options.cwd ?? (folders.length === 1 ? folders[0].uri.fsPath : undefined);
+  if (!cwd) {
+    if (interactive) void vscode.window.showErrorMessage('Open a single project folder first.');
+    return { ok: false, code: 'no-folder', message: 'Open a single project folder first.' };
+  }
+  return sessions.launchWithAccount({ interactive, provider: group.provider, name: options.name ?? group.name, cwd, accountProfileId, roleGroupId: group.id, launch: options.launch });
+}
+
 async function remove(value: unknown): Promise<void> {
   const record = await chooseRecord(value);
   if (!record) return;
@@ -315,7 +353,7 @@ async function remove(value: unknown): Promise<void> {
   else currentTree?.refresh();
 }
 
-export function registerRoleCommands(context: vscode.ExtensionContext): void {
+export function registerRoleCommands(context: vscode.ExtensionContext, sessions: SessionCommands): void {
   extensionRoot = context.extensionPath;
   const tree = new RoleTree();
   currentTree = tree;
@@ -329,6 +367,7 @@ export function registerRoleCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(ROLE_COMMANDS.create, create),
     vscode.commands.registerCommand(ROLE_COMMANDS.edit, edit),
     vscode.commands.registerCommand(ROLE_COMMANDS.preview, preview),
-    vscode.commands.registerCommand(ROLE_COMMANDS.remove, remove)
+    vscode.commands.registerCommand(ROLE_COMMANDS.remove, remove),
+    vscode.commands.registerCommand(ROLE_COMMANDS.start, (value?: unknown) => startWithRole(sessions, value))
   );
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
+import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
 import { SessionManager, SessionView } from './manager';
@@ -14,7 +15,10 @@ export const SESSION_COMMANDS = {
   reopen: 'multiagentSystem.sessions.reopen'
 } as const;
 
+const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: Record<string, string> };
+
 const MESSAGES: Record<string, string> = {
+  ...ROLE_REASONS,
   'provider-unsupported': 'That CLI provider is not supported.',
   'invalid-name': 'Enter a session name.',
   'session-not-found': 'That session no longer exists.',
@@ -37,6 +41,8 @@ export interface SessionCommandOptions {
   /** Needed to reopen a session whose earlier terminal this window cannot see. */
   acknowledgeUnknown?: boolean;
   accountProfileId?: string;
+  /** A role group to assign to the new session. It is checked against the provider and never changed afterwards. */
+  roleGroupId?: string;
 }
 
 export type SessionOutcome =
@@ -120,7 +126,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
         accountProfileId = choice.id === 'unassigned' ? undefined : choice.id;
       }
-      return await startWithAccount({ ...input, provider, cwd, accountProfileId });
+      let roleGroupId = input.roleGroupId;
+      if (roleGroupId === undefined && interactive && (provider === 'claude' || provider === 'codex')) {
+        const picked = await pickRoleForLaunch(provider);
+        if (picked === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        roleGroupId = picked === 'none' ? undefined : picked;
+      }
+      return await startWithAccount({ ...input, provider, cwd, accountProfileId, roleGroupId });
     } catch (error) {
       if ((error as { code?: string })?.code === 'no-folder') {
         const message = 'Open a single project folder first.';
@@ -138,6 +150,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
       const provider = input.provider ?? '';
       let env: Record<string, string | null> | undefined;
+      if (input.roleGroupId !== undefined) {
+        const role = await resolveRoleForLaunch(input.roleGroupId, provider);
+        if (!role.ok) return failure(Object.assign(new Error(role.message), { code: role.code }), interactive);
+      }
       if (input.accountProfileId) {
         const prepared = await launchEnvironment(input.accountProfileId, provider, () => manager.list());
         if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
@@ -156,6 +172,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         name: input.name ?? '',
         cwd,
         accountProfileId: input.accountProfileId,
+        roleGroupId: input.roleGroupId,
         env,
         launch: input.launch
       });
