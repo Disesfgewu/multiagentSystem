@@ -32,6 +32,12 @@
     "onCommand:multiagentSystem.accounts.login",
     "onCommand:multiagentSystem.accounts.launch",
     "onView:multiagentSystem.accountsView",
+    "onCommand:multiagentSystem.roles.refresh",
+    "onCommand:multiagentSystem.roles.create",
+    "onCommand:multiagentSystem.roles.edit",
+    "onCommand:multiagentSystem.roles.preview",
+    "onCommand:multiagentSystem.roles.remove",
+    "onView:multiagentSystem.rolesView",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
@@ -42,7 +48,8 @@
           "id": "multiagentSystem.githubView",
           "name": "Multiagent GitHub"
         },
-        { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" }
+        { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
+        { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" }
       ]
     },
     "commands": [
@@ -106,6 +113,11 @@
       { "command": "multiagentSystem.accounts.remove", "title": "Multiagent: Remove Account Profile" },
       { "command": "multiagentSystem.accounts.login", "title": "Multiagent: Sign In to Account" },
       { "command": "multiagentSystem.accounts.launch", "title": "Multiagent: Start Session with Account" },
+      { "command": "multiagentSystem.roles.refresh", "title": "Multiagent: Refresh Role Groups", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.roles.create", "title": "Multiagent: Create Role Group", "icon": "$(add)" },
+      { "command": "multiagentSystem.roles.edit", "title": "Multiagent: Edit Role Group" },
+      { "command": "multiagentSystem.roles.preview", "title": "Multiagent: Preview Effective Rules" },
+      { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
       {
         "command": "multiagentSystem.storage.status",
         "title": "Multiagent: Show Private Storage Status"
@@ -123,13 +135,18 @@
           "group": "navigation"
         },
         { "command": "multiagentSystem.accounts.create", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
-        { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" }
+        { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
+        { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
+        { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" }
       ],
       "view/item/context": [
         { "command": "multiagentSystem.accounts.login", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline" },
         { "command": "multiagentSystem.accounts.launch", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "inline@2" },
         { "command": "multiagentSystem.accounts.edit", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
-        { "command": "multiagentSystem.accounts.remove", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" }
+        { "command": "multiagentSystem.accounts.remove", "when": "view == multiagentSystem.accountsView && viewItem == multiagentAccountProfile", "group": "management" },
+        { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline" },
+        { "command": "multiagentSystem.roles.edit", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
+        { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" }
       ]
     }
   },
