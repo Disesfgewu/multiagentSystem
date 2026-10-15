@@ -5,6 +5,7 @@ import { registerGitHubCommands } from './github/githubCommands';
 import { registerStorageCommands } from './storage/storageCommands';
 import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { registerRoleCommands } from './roles/roleCommands';
+import { registerOverview } from './overview/overviewView';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
 import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
 
@@ -70,6 +71,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   sessions = registerSessionCommands(context);
   registerAccountCommands(context, sessions);
+  registerOverview(context, sessions);
   registerRoleCommands(context);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);

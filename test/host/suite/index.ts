@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
+import { runOverviewChecks } from './overview';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord } from '../../../src/roles/roleCommands';
@@ -239,6 +240,7 @@ export async function run(): Promise<void> {
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
   assert.ok(workspace, 'the test workspace path is provided');
   console.log(await runStorageChecks(registered, workspace));
+  console.log(await runOverviewChecks(workspace));
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
   const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));
