@@ -3,10 +3,11 @@ import * as fs from 'node:fs';
 const guidance = require('./folder-guidance') as {
   suggestFolder(input: { homeDir: string; provider: string; label: string }): { parent: string; dir: string; name: string };
   checkFolder(input: { provider: string; label: string; configDir: string; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; items: Explained[] };
-  createRecommendedFolder(input: { provider: string; label: string; suggestion: { parent: string; dir: string; name: string }; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; dir?: string; madeFolders?: string[]; items?: Explained[] };
-  discardCreated(folders: string[]): string[];
+  createRecommendedFolder(input: { provider: string; label: string; suggestion: { parent: string; dir: string; name: string }; profiles: unknown[]; context: { repoRoot: string; homeDir?: string } }): { ok: boolean; dir?: string; madeFolders?: FolderIdentity[]; items?: Explained[] };
+  discardCreated(folders: FolderIdentity[]): string[];
 };
 
+export type FolderIdentity = { path: string; dev: string; ino: string };
 export type Explained = { code: string; known: boolean; message: string; fix: string };
 
 /** The three questions the chooser asks. The VS Code wiring answers them with real dialogs; tests answer them directly. */
@@ -16,7 +17,7 @@ export interface ChooserUi {
   showProblems(summary: string, detail: string, offerRecommended: boolean): Promise<'recommended' | 'another' | undefined>;
 }
 
-export type ChosenFolder = { ok: true; dir: string; created: boolean; madeFolders: string[] } | { ok: false };
+export type ChosenFolder = { ok: true; dir: string; created: boolean; madeFolders: FolderIdentity[] } | { ok: false };
 
 export function describeProblems(items: Explained[]): string {
   return items.map((item) => `• ${item.message}\n  ${item.fix}`).join('\n\n');

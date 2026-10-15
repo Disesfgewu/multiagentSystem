@@ -10,6 +10,9 @@ const { PROVIDERS } = require('../../src/accounts/profile');
 
 // Real temporary folders: a fake home with a project inside it, as on a real machine.
 function world(t) {
+  // folders the test makes are private, as account folders must be
+  const oldMask = process.umask(0o077);
+  t.after(() => process.umask(oldMask));
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-folder-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const homeDir = path.join(root, 'home');
@@ -19,6 +22,7 @@ function world(t) {
   const check = (configDir, extra = {}) => checkFolder({ provider: 'claude', label: 'Work', configDir, context, ...extra });
   return { root, homeDir, repoRoot, context, check };
 }
+const identity = (target) => { const stat = fs.lstatSync(target, { bigint: true }); return { path: target, dev: String(stat.dev), ino: String(stat.ino) }; };
 const snapshot = (dir) => {
   const out = [];
   const walk = (current) => { for (const entry of fs.readdirSync(current, { withFileTypes: true })) { const full = path.join(current, entry.name); out.push(path.relative(dir, full)); if (entry.isDirectory()) walk(full); } };
@@ -247,18 +251,18 @@ test('an existing recommended root must be a real, private folder owned by this 
   assert.equal(onFile.ok, false);
   assert.equal(onFile.items[0].known, true, 'a file in the way is explained');
   fs.unlinkSync(suggestion.parent);
-  // writable by others, or by the group
-  for (const mode of [0o777, 0o770, 0o722, 0o702, 0o755 | 0o020]) {
+  // any permission for the group or others, even read-only, is refused
+  for (const mode of [0o777, 0o770, 0o755, 0o750, 0o705, 0o704, 0o740, 0o722, 0o702, 0o710, 0o701]) {
     fs.mkdirSync(suggestion.parent);
     fs.chmodSync(suggestion.parent, mode);
-    result = attempt();
+    const result = attempt();
     assert.deepEqual([result.ok, result.items[0].code], [false, 'recommended-root-unsafe'], mode.toString(8));
     assert.deepEqual(fs.readdirSync(suggestion.parent), []);
     fs.rmdirSync(suggestion.parent);
   }
-  // readable by others is not writable by others, and is accepted
+  // only a folder closed to everyone else is accepted
   fs.mkdirSync(suggestion.parent);
-  fs.chmodSync(suggestion.parent, 0o755);
+  fs.chmodSync(suggestion.parent, 0o700);
   assert.equal(attempt().ok, true);
   assert.ok(explainProblem('recommended-root-unsafe').known);
 });
@@ -275,7 +279,7 @@ test('creation reports exactly the folders it made, and a failed save can discar
   const w = world(t);
   const suggestion = suggestFolder({ homeDir: w.homeDir, provider: 'claude', label: 'Work' });
   const made = createRecommendedFolder({ provider: 'claude', label: 'Work', suggestion, context: w.context });
-  assert.deepEqual(made.madeFolders, [suggestion.parent, suggestion.dir]);
+  assert.deepEqual(made.madeFolders.map((entry) => entry.path), [suggestion.parent, suggestion.dir]);
   assert.deepEqual(discardCreated(made.madeFolders), [suggestion.dir, suggestion.parent]);
   assert.equal(fs.existsSync(suggestion.parent), false);
   // the root already existed (made earlier for another account): only the new account folder is reported and removed
@@ -283,7 +287,7 @@ test('creation reports exactly the folders it made, and a failed save can discar
   const first = createRecommendedFolder({ provider: 'claude', label: 'Other', suggestion: other, context: w.context });
   const again = suggestFolder({ homeDir: w.homeDir, provider: 'claude', label: 'Work' });
   const second = createRecommendedFolder({ provider: 'claude', label: 'Work', suggestion: again, profiles: [{ id: 'a', provider: 'claude', label: 'Other', configDir: first.dir }], context: w.context });
-  assert.deepEqual(second.madeFolders, [again.dir]);
+  assert.deepEqual(second.madeFolders.map((entry) => entry.path), [again.dir]);
   assert.deepEqual(discardCreated(second.madeFolders), [again.dir]);
   assert.equal(fs.existsSync(other.dir), true, 'the other account folder is untouched');
 });
@@ -295,9 +299,9 @@ test('discarding never removes a folder that has content, one that was not liste
   fs.mkdirSync(keep);
   fs.mkdirSync(used);
   fs.writeFileSync(path.join(used, 'login.json'), 'x');
-  assert.deepEqual(discardCreated([used]), []);
+  assert.deepEqual(discardCreated([identity(used)]), []);
   assert.equal(fs.existsSync(path.join(used, 'login.json')), true);
-  assert.deepEqual(discardCreated([path.join(w.root, 'missing')]), []);
+  assert.deepEqual(discardCreated([{ path: path.join(w.root, 'missing'), dev: '1', ino: '1' }]), []);
   for (const bad of [undefined, null, 'x', {}, 5]) assert.deepEqual(discardCreated(bad), []);
   assert.equal(fs.existsSync(keep), true, 'not listed, not removed');
 });
@@ -327,4 +331,115 @@ test('an existing recommended root is judged from what the file system reports: 
   assert.deepEqual(mkdirs, [], 'nothing was made while the root was judged unsafe');
   const missing = attempt(() => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); });
   assert.notEqual(codes(missing)[0], 'recommended-root-unsafe', 'a missing root is simply created');
+});
+
+test('a chosen existing folder that others can open is refused with a plain explanation; a private one and a missing one are fine', { skip: process.platform === 'win32' }, (t) => {
+  const w = world(t);
+  const open = path.join(w.homeDir, 'open-folder');
+  fs.mkdirSync(open);
+  for (const mode of [0o755, 0o750, 0o705, 0o777, 0o701]) {
+    fs.chmodSync(open, mode);
+    assert.deepEqual(w.check(open).problems, ['config-dir-too-open'], mode.toString(8));
+  }
+  fs.chmodSync(open, 0o700);
+  assert.deepEqual(w.check(open).problems, []);
+  assert.deepEqual(w.check(path.join(w.homeDir, 'not-yet-made')).problems, [], 'a folder that does not exist is made private when created');
+  const explained = explainProblem('config-dir-too-open');
+  assert.equal(explained.known, true);
+  assert.equal(/config-dir-too-open|[\\/]/.test(explained.message + explained.fix), false);
+  assert.match(explained.fix, /private/);
+});
+
+test('cleanup is by identity: a folder swapped for a link, another folder or one with content is not removed', { skip: process.platform === 'win32' }, (t) => {
+  const w = world(t);
+  const made = (name) => { const dir = path.join(w.root, name); fs.mkdirSync(dir); return identity(dir); };
+
+  // the very same empty folder is removed
+  const same = made('same');
+  assert.deepEqual(discardCreated([same]), [same.path]);
+  assert.equal(fs.existsSync(same.path), false);
+
+  // replaced by a link to the project: the link and the project are untouched
+  const linked = made('linked');
+  fs.rmdirSync(linked.path);
+  fs.symlinkSync(w.repoRoot, linked.path, 'dir');
+  fs.writeFileSync(path.join(w.repoRoot, 'precious.txt'), 'x');
+  assert.deepEqual(discardCreated([linked]), []);
+  assert.equal(fs.lstatSync(linked.path).isSymbolicLink(), true, 'the link is still there');
+  assert.equal(fs.existsSync(path.join(w.repoRoot, 'precious.txt')), true);
+
+  // replaced by another EMPTY folder (a different inode): not removed
+  const swapped = made('swapped');
+  fs.rmdirSync(swapped.path);
+  fs.mkdirSync(swapped.path);
+  assert.notEqual(identity(swapped.path).ino, swapped.ino, 'the replacement is a different folder');
+  assert.deepEqual(discardCreated([swapped]), []);
+  assert.equal(fs.existsSync(swapped.path), true);
+
+  // a file was put inside after it was made
+  const used = made('used');
+  fs.writeFileSync(path.join(used.path, 'login.json'), 'x');
+  assert.deepEqual(discardCreated([used]), []);
+  assert.equal(fs.existsSync(path.join(used.path, 'login.json')), true);
+
+  // replaced by a plain file
+  const filed = made('filed');
+  fs.rmdirSync(filed.path);
+  fs.writeFileSync(filed.path, 'x');
+  assert.deepEqual(discardCreated([filed]), []);
+  assert.equal(fs.existsSync(filed.path), true);
+
+  // a wrong or malformed record
+  const mine = made('mine');
+  for (const bad of [{ ...mine, ino: '1' }, { ...mine, dev: '1' }, { path: mine.path }, { ...mine, ino: 5 }, null, undefined, 'x', [mine.path]]) assert.deepEqual(discardCreated([bad]), [], JSON.stringify(bad));
+  assert.equal(fs.existsSync(mine.path), true);
+});
+
+test('creation removes what it made if the folder is swapped for a link before the recheck, but never what a link points to', { skip: process.platform === 'win32' }, (t) => {
+  const w = world(t);
+  const suggestion = suggestFolder({ homeDir: w.homeDir, provider: 'claude', label: 'Work' });
+  const elsewhere = path.join(w.root, 'elsewhere');
+  fs.mkdirSync(elsewhere);
+  const io = {
+    ...fs,
+    mkdirSync(target, options) {
+      fs.mkdirSync(target, options);
+      if (target === suggestion.dir) { fs.rmdirSync(target); fs.symlinkSync(w.repoRoot, target, 'dir'); }
+    },
+    lstatSync: fs.lstatSync,
+    rmdirSync: fs.rmdirSync
+  };
+  const result = createRecommendedFolder({ provider: 'claude', label: 'Work', suggestion, context: w.context, io });
+  assert.equal(result.ok, false);
+  assert.equal(fs.lstatSync(suggestion.dir).isSymbolicLink(), true, 'the planted link was not followed or removed');
+  assert.deepEqual(fs.readdirSync(w.repoRoot), [], 'nothing in the project');
+  assert.deepEqual(fs.readdirSync(suggestion.parent), [path.basename(suggestion.dir)], 'the root keeps only the planted link: it is not empty, so it is not removed either');
+});
+
+test('rollback after a failed recheck is by identity: a different folder that took its place is left alone', { skip: process.platform === 'win32' }, (t) => {
+  const w = world(t);
+  const suggestion = suggestFolder({ homeDir: w.homeDir, provider: 'claude', label: 'Work' });
+  let swapped = false;
+  const io = {
+    ...fs,
+    mkdirSync: fs.mkdirSync,
+    rmdirSync: fs.rmdirSync,
+    // the moment the new folder has been recorded, someone replaces it with another, open (0777), empty folder
+    lstatSync(target, options) {
+      const stat = fs.lstatSync(target, options);
+      if (target === suggestion.dir && !swapped) {
+        swapped = true;
+        fs.rmdirSync(target);
+        fs.mkdirSync(target);
+        fs.chmodSync(target, 0o777);
+      }
+      return stat;
+    }
+  };
+  const result = createRecommendedFolder({ provider: 'claude', label: 'Work', suggestion, context: w.context, io });
+  assert.equal(result.ok, false, 'the recheck sees an open folder');
+  assert.deepEqual(result.items.map((item) => item.code), ['config-dir-too-open']);
+  assert.equal(fs.existsSync(suggestion.dir), true, 'the folder that took its place is not removed');
+  assert.equal(fs.statSync(suggestion.dir).mode & 0o777, 0o777);
+  assert.equal(fs.existsSync(suggestion.parent), true, 'it is not empty, so its root stays too');
 });
