@@ -2,23 +2,38 @@
 
 // Research Tools Catalog: pinned, verified, read-only MCP specifications.
 //
-// Shaped by four security principles:
-//  1. Pinned versions and integrity hashes: no dynamic 'latest' downloads or arbitrary scripts.
-//  2. Static command arrays: commands must be argument arrays, never shell strings.
+// Shaped by five security principles:
+//  1. Pinned versions and verifiable source integrity: dynamic 'latest' and synthetic hashes are forbidden.
+//  2. Shell and code execution prevention: commands must be argument arrays, strictly forbidding
+//     shell binaries, eval/code flags (-c, -e), and unpinned dynamic package runners.
 //  3. Strict read-only constraint: tools provided by research servers must be marked read-only.
 //     Any write, execute, or modification tools are rejected immediately.
-//  4. Credential hygiene: environment specifications only declare key names. Real secrets
-//     must come from SecretStorage and must never be stored in catalog definitions.
+//  4. Credential hygiene: environment specifications only declare key names with `secret: true`.
+//     Real secrets must come from SecretStorage and must never be stored in catalog definitions.
+//  5. Honest enforcement declarations: schema-level read-only flags are self-declared by the tool
+//     and are explicitly marked `sandboxEnforced: false` until runtime isolation is verified.
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const TOOL_NAME = /^[a-z0-9_]{1,64}$/;
-const PINNED_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const PINNED_VERSION = /^(?:v)?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const INTEGRITY_HASH = /^sha256:[a-f0-9]{64}$/i;
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const hasUnsafe = (value) => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 
 const ALLOWED_LICENSES = Object.freeze(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
-const FORBIDDEN_COMMAND_TOKENS = Object.freeze(['latest', 'next', 'curl', 'wget', 'bash', 'sh', 'powershell', 'cmd.exe', 'postinstall']);
+
+// Disallowed command tokens: shells, package downloaders, and dangerous tools
+const FORBIDDEN_SHELL_NAMES = Object.freeze([
+  'sh', 'bash', 'zsh', 'csh', 'ksh', 'fish', 'dash',
+  'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'
+]);
+
+const FORBIDDEN_EVAL_FLAGS = Object.freeze(['-c', '-e', '--eval', '/c']);
+
+const FORBIDDEN_COMMAND_TOKENS = Object.freeze([
+  'latest', 'next', 'curl', 'wget', 'fetch', 'postinstall',
+  'install', 'pip', 'cargo'
+]);
 
 const LIMITS = Object.freeze({
   serverId: 64,
@@ -51,8 +66,56 @@ function limitedText(value, limit, code, { optional = false } = {}) {
 }
 
 /**
+ * Validates command array:
+ *  - Executable must not be a shell or script interpreter wrapper.
+ *  - Must not contain eval flags (-c, -e).
+ *  - Package runners like npx or uvx must not use dynamic -y or unpinned invocations.
+ */
+function validateCommand(commandArray) {
+  if (!Array.isArray(commandArray) || commandArray.length === 0 || commandArray.length > LIMITS.commandArgs) {
+    fail('command-invalid');
+  }
+
+  const cleanArgs = [];
+  for (let i = 0; i < commandArray.length; i++) {
+    const part = commandArray[i];
+    if (typeof part !== 'string' || part.trim() === '' || hasUnsafe(part)) fail('command-invalid');
+    cleanArgs.push(part.trim());
+  }
+
+  const executable = cleanArgs[0].toLowerCase();
+  const execBasename = executable.split(/[/\\]/).pop();
+
+  if (FORBIDDEN_SHELL_NAMES.includes(execBasename)) {
+    fail('shell-executable-forbidden');
+  }
+
+  for (let i = 0; i < cleanArgs.length; i++) {
+    const token = cleanArgs[i].toLowerCase();
+
+    // Check forbidden eval flags (e.g. node -e, python -c)
+    if (FORBIDDEN_EVAL_FLAGS.includes(token)) {
+      fail('eval-flag-forbidden');
+    }
+
+    // Check dynamic package runners (npx -y, uvx without pinned version)
+    if ((execBasename === 'npx' || execBasename === 'uvx') && (token === '-y' || token === '--yes')) {
+      fail('dynamic-package-runner-forbidden');
+    }
+
+    for (const forbidden of FORBIDDEN_COMMAND_TOKENS) {
+      if (token === forbidden || token.includes(`@${forbidden}`)) {
+        fail('command-token-forbidden');
+      }
+    }
+  }
+
+  return Object.freeze(cleanArgs);
+}
+
+/**
  * Validates a single tool definition inside an MCP server entry.
- * All tools must be read-only; write, publish or execution tools are strictly prohibited.
+ * All tools must be self-declared read-only; write, publish or execution tools are strictly prohibited.
  */
 function validateTool(tool) {
   if (!isPlain(tool)) fail('tool-invalid');
@@ -71,9 +134,9 @@ function validateTool(tool) {
  * Validates an MCP catalog item against security rules:
  * - Pinned version and valid SHA-256 integrity hash.
  * - Allowed open-source license.
- * - Array-based command execution (no shell string拼接, no forbidden dynamic flags).
- * - All declared tools must be read-only.
- * - Secret keys must only declare names, never inline credentials.
+ * - Array-based command execution with shell/eval filtering.
+ * - Self-declared read-only tools only.
+ * - Environment specifications only allow `secret: true`.
  *
  * @param {object} raw
  */
@@ -108,16 +171,7 @@ function validateCatalogItem(raw) {
   if (typeof raw.license !== 'string' || !ALLOWED_LICENSES.includes(raw.license)) fail('license-invalid');
   const license = raw.license;
 
-  if (!Array.isArray(raw.command) || raw.command.length === 0 || raw.command.length > LIMITS.commandArgs) fail('command-invalid');
-  const command = [];
-  for (const part of raw.command) {
-    if (typeof part !== 'string' || part.trim() === '' || hasUnsafe(part)) fail('command-invalid');
-    const lower = part.toLowerCase();
-    for (const forbidden of FORBIDDEN_COMMAND_TOKENS) {
-      if (lower === forbidden || lower.includes(`@${forbidden}`)) fail('command-token-forbidden');
-    }
-    command.push(part.trim());
-  }
+  const command = validateCommand(raw.command);
 
   if (!Array.isArray(raw.tools) || raw.tools.length === 0 || raw.tools.length > LIMITS.toolCount) fail('tools-invalid');
   const seenToolNames = new Set();
@@ -134,9 +188,11 @@ function validateCatalogItem(raw) {
     if (!isPlain(raw.env)) fail('env-invalid');
     for (const [key, meta] of Object.entries(raw.env)) {
       if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(key)) fail('env-key-invalid');
-      if (!isPlain(meta) || typeof meta.secret !== 'boolean') fail('env-meta-invalid');
+      if (!isPlain(meta)) fail('env-meta-invalid');
+      // Secret hygiene: only secret: true is accepted. Non-secret env declarations must not appear in secret specifications.
+      if (meta.secret !== true) fail('env-non-secret-meta-forbidden');
       if (meta.value !== undefined) fail('env-inline-secret-forbidden');
-      env[key] = Object.freeze({ secret: meta.secret });
+      env[key] = Object.freeze({ secret: true });
     }
   }
 
@@ -148,10 +204,11 @@ function validateCatalogItem(raw) {
     integrity,
     source,
     license,
-    command: Object.freeze(command),
+    command,
     tools: Object.freeze(tools),
     env: Object.freeze(env),
-    status: 'unverified'
+    status: 'unverified',
+    sandboxEnforced: false
   });
 }
 

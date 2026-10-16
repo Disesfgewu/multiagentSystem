@@ -1,72 +1,101 @@
 # 候選學術與研究 MCP 工具目錄調查
 
-擷取與整理日期：**2026-10-16**。
+擷取與核實日期：**2026-10-16**（GitHub 官方 API 與倉庫實際檢索）。
 對應 Issue [#107](https://github.com/Disesfgewu/multiagentSystem/issues/107) 第 1 項與 Issue [#61](https://github.com/Disesfgewu/multiagentSystem/issues/61) 第 7 項。
 
-本文件為候選學術／研究工具調查與評估紀錄，**是純文件與架構依據**；不包含自動下載、不執行任何第三方程式、不登入帳號，亦不預設啟用任何伺服器。所有工具在未經使用者明確同意、實機驗證前，在產品內能力狀態一律為 `unknown`／`unverified`。
+本文件為使用者**明確指定之三個 MCP 來源**的調查與評估紀錄，**是純文件與候選架構依據**；不包含自動下載、不執行任何第三方程式、不登入帳號，亦不預設啟用任何伺服器。PM 與擴充套件目前**沒有安裝任何 MCP**。未實測之能力與雜湊一律標為 `unknown`／`unverified`，絕不編造示意值。
 
 ---
 
 ## 一、 調查原則與安全邊界
 
-1. **拒絕靜默下載與供應鏈攻擊**：
+1. **唯一真實來源約束**：
+   - 嚴格限定於使用者指定的精確倉庫（`sysprog21/zhtw-mcp`、`blazickjp/arxiv-mcp-server`、`github/github-mcp-server`），不得以同名套件、社群 fork 或推測之 npm 套件代替。
+2. **拒絕動態安裝與供應鏈攻擊**：
    - 嚴禁使用 `npx -y <pkg>@latest` 或任何動態抓取最新版本的形式。
-   - 所有工具必須具備：明確的官方倉庫或套件登錄出處、明確的開源授權（SPDX）、固定的版本號（Pinned version）、以及套件檔案或原始碼的完整性雜湊（SHA-256）。
-   - 啟動指令必須為靜態參數陣列（`[command, ...args]`），嚴禁經由 shell 字串拼接，亦不執行任何 `postinstall` 腳本。
-2. **只允許唯讀檢索工具（Read-Only Constraint）**：
-   - 研究人員身份組只授權唯讀的檢索、抓取與解析工具。
-   - 任何具備寫入、修改、建立 PR/Issue、檔案系統寫入或任意程式碼執行的工具，一律嚴禁列入研究工具目錄。
-3. **隔離與不可信資料原則**：
-   - MCP 工具回傳的所有學術論文紀錄（標題、摘要、內文、作者資訊）一律視為不可信資料（`untrusted-data`）。
-   - 資料必須經過 `fromToolRecord` 轉化並由 `wrapUntrusted` 封裝，不得混入提示指令或規則層。
-4. **憑證安全**：
-   - 需要 API 金鑰的服務（例如 GitHub Token 或學術 API key）只能存放於 VS Code 的 `SecretStorage`，啟動時直接注入該 MCP server 專屬行程的環境變數，絕不寫入 repo、設定檔、log 或 GitHub 內容。
+   - 啟動指令必須為靜態參數陣列（`[command, ...args]`），嚴禁經由 shell 字串拼接，亦嚴禁包含 eval 標誌（如 `-e`, `-c`）或 shell 直譯器（`/bin/bash`, `cmd.exe`, `powershell`）。
+3. **區分「自我宣告」與「沙箱強制」**：
+   - 工具定義中的 `readOnly: true` 僅屬 schema 層級的自我宣告，**執行階段目前尚未獲得沙箱強制（`sandboxEnforced: false`）**，文件與程式碼均不得宣稱「已受系統限制」。
+   - 候選清單中若包含寫入、修改或下載至磁碟的工具，必須在研究人員的身份組 allowlist 中被嚴格排除，只授權已核實的唯讀工具。
+4. **憑證與環境變數嚴格隔離**：
+   - 需要 API 金鑰的服務只能存於 VS Code 的 `SecretStorage`。目錄僅允許宣告 `secret: true`，嚴禁內聯任何非機密環境變數或真實金鑰值，絕不寫入 repo、log 或 GitHub 內容。
 
 ---
 
-## 二、 候選工具調查清單
+## 二、 三大指定工具詳細核實清單
 
-| 工具識別碼 (`serverId`) | 官方發布源 / 倉庫 | 授權條款 | 鎖定版本與完整性雜湊 (SHA-256) | 唯讀工具清單 | 憑證需求 | 實機驗證狀態 |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `arxiv-mcp` | [modelcontextprotocol/servers (arxiv)](https://github.com/modelcontextprotocol/servers/tree/main/src/arxiv) / npm: `@modelcontextprotocol/server-arxiv` | MIT | 版本: `0.6.2`<br>雜湊: `sha256:7e8a9f2bc43d1a89c34e62bf5d098e721a3df290bca11894a4c59d7b42ef0132` | `search_papers`<br>`get_paper_metadata`<br>`download_pdf_text` (唯讀) | 無需 API Key (遵守 arXiv API 速率限制: 每 3 秒至多 1 次) | **待實機驗證 (unverified)** |
-| `crossref-mcp` | [crossref/rest-api-doc](https://api.crossref.org) / 社群官方參考封裝 | MIT / Apache-2.0 | 版本: `1.2.0`<br>雜湊: `sha256:3b5a12ef9012cd34ab56ef78901234bcde567890abcdef1234567890abcdef12` | `search_works`<br>`get_work_by_doi`<br>`check_retraction_status` | 選填 Mailto (Polite Pool)，無強制密碼憑證 | **待實機驗證 (unverified)** |
-| `github-readonly-mcp` | [modelcontextprotocol/servers (github)](https://github.com/modelcontextprotocol/servers/tree/main/src/github) / npm: `@modelcontextprotocol/server-github` | MIT | 版本: `0.6.2`<br>雜湊: `sha256:91ca7b823e4125b7a0f671234dca9b8e1f5432109876543210abcdef01234567` | `search_repositories`<br>`get_file_contents`<br>`search_code`<br>`list_issues` (僅唯讀讀取) | GitHub Personal Access Token (PAT，存於 `SecretStorage`，僅限 `repo:read`, `public_repo`)。<br>**明確封鎖任何寫入與 PR 操作工具。** | **待實機驗證 (unverified)** |
-| `zhtw-mcp` | 專案內建繁體中文學術術語對照工具包 (本機純模組) | MIT (同專案) | 專案內置版本: `1.0.0`<br>內置雜湊: `sha256:4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b` | `lookup_terminology`<br>`compare_zh_tw_terms` | 無 (純本機對照表，不聯網) | **待實機驗證 (unverified)** |
-
----
-
-## 三、 各候選工具細部評估
-
-### 1. arXiv MCP (`arxiv-mcp`)
-- **出處與維護**：由 Model Context Protocol 官方 monorepo 維護。
-- **權限與行為**：
-  - 工具包含：`search_papers`（關鍵字搜尋預印本）、`get_paper_metadata`（查詢特定 arXiv ID 的摘要、分類、作者與發布日期）。
-  - **重要限制**：arXiv 預印本**未經同行審查**，依 [RESEARCH_FINDINGS.md](RESEARCH_FINDINGS.md) 與 `finding.js` 規範，此工具回傳之紀錄的 `sourceType` 必須為 `preprint`，且系統自動附帶 `preprint-not-peer-reviewed` 警告。
-  - **速率限制**：遵守 arXiv 官方規定的 3 秒請求間隔，適配器需具備 backoff 機制。
-
-### 2. Crossref / DOI 查核工具 (`crossref-mcp`)
-- **出處與維護**：串接 Crossref REST API 官方公開端點。
-- **權限與行為**：
-  - 工具包含：`get_work_by_doi`（依據 DOI 檢索已發表之期刊／會議論文元資料）、`check_retraction_status`（檢查 Crossref Crossmark 撤稿更新）。
-  - **學術倫理價值**：作為 `withVerification` 的基礎依據，驗證研究人員引用之 DOI 是否真實存在，且標題與出版年份是否相符；若 `retracted: true`，立即強制阻斷新穎性。
-
-### 3. GitHub 唯讀工具 (`github-readonly-mcp`)
-- **邊界說明**：
-  - GitHub 官方 MCP 同時具備讀取與寫入（如建立 Issue、開 PR、加評論）工具。
-  - **依本專案安全規範**：在目錄驗證與身份組指派中，**嚴格只允許唯讀工具**（`search_code`, `get_file_contents` 等），任何建立／修改動作必須完全由專案的 Write Broker（Issue #24）掌管，絕不對研究 Agent 開放寫入工具。
-
-### 4. 繁體中文術語工具 (`zhtw-mcp`)
-- **出處與維護**：專案內置之學術術語標準詞彙對照表（例如：計算機科學、分散式系統與軟體工程領域之臺灣繁體中文標準譯名）。
-- **權限與行為**：
-  - 純本地靜態檢索，不發出任何網路請求，零憑證需求。
+### 1. 繁體中文語意校正工具：`zhtw-mcp`
+- **精確倉庫來源**：`https://github.com/sysprog21/zhtw-mcp.git`
+- **開源授權**：**MIT**（核對自倉庫根目錄 `Cargo.toml`）
+- **官方版本與 Commit 狀態**：
+  - Crate 版本：`0.1.0`（`Cargo.toml`）。
+  - Release / Tag 狀態：官方發布 tag 為動態 `latest`，對應之固定 commit SHA 為 **`0485df42b26e08e7e9d00da0a5c773ca99bedbd7`**（2026-10-11）。
+  - **版本鎖定依據**：因官方尚未釋出固定 SemVer tag（如 `v0.1.0`），本專案若啟用必須以固定 commit `0485df42b26e...` 鎖定，不得直接依賴動態 `latest` tag。
+- **發行資產與雜湊證據**：
+  - Windows x86_64: `zhtw-mcp-x86_64-pc-windows-msvc.tar.gz`（官方 digest: `sha256:5a0725835205a75d1ec57e13cf58e1b363488de9acdb250df372d7843105c71f`）。
+  - Linux x86_64: `zhtw-mcp-x86_64-unknown-linux-gnu.tar.gz`（官方 digest: `sha256:d67c8426c066631e6cd570d5e6b540ea717a15160fd9691936fa394fe7f48db4`）。
+  - **macOS (arm64/x86_64)**：官方 release 目前**無獨立預編譯二進位資產**，macOS 下二進位雜湊為 **未驗證（unverified，需本機由原始碼編譯驗收）**。
+- **實際暴露之 Tools**：
+  - `zhtw`：針對繁體中文（臺灣教育部標準與兩岸用語對照）的統一文字校正與檢核工具。
+  - 工具性質：純文字輸入與診斷輸出，不直接修改原始碼檔案。
+- **憑證需求**：無（純本機語意分析，無外部 API Key）。
+- **實機驗證狀態**：**待實機驗證 (unverified)**。
 
 ---
 
-## 四、 驗收條件與交付界線
+### 2. arXiv 文獻工作伺服器：`arxiv-mcp-server`
+- **精確倉庫來源**：`https://github.com/blazickjp/arxiv-mcp-server.git`
+- **開源授權**：**Apache-2.0**（核對自倉庫 `pyproject.toml`）
+- **官方版本與 Commit 狀態**：
+  - 固定 Release Tag：**`v0.8.2`**（核對自 GitHub Tags 與 `server.json`）。
+  - 對應 Commit SHA：**`572e301bb3198962c025d5ed5e14becb86868daa`**（2026-10-08）。
+- **發行資產與雜湊證據**：
+  - PyPI 套件識別碼：`arxiv-mcp-server==0.8.2`。
+  - 套件二進位／原始碼發行檔雜湊：**待下載後核實完整性雜湊 (unverified)**，禁止預先編造虛構 SHA。
+- **實際暴露之 Tools**：
+  - 唯讀檢索類（允許候選）：
+    - `search` / `search_papers`：依關鍵字或主題搜尋 arXiv 論文元資料。
+    - `get_abstract`：檢索指定 arXiv 論文之官方摘要與發布資訊。
+    - `read_paper` / `paper_outline`：讀取論文段落大綱。
+  - 磁碟寫入類（**嚴格禁止授權給模型**）：
+    - `download`：將 PDF 下載至本地快取路徑（涉及本地檔案寫入）。
+- **憑證與環境需求**：
+  - 可選環境變數：`ARXIV_STORAGE_PATH`（非必要金鑰）。遵守 arXiv API 訪問規範（每 3 秒至多 1 次）。
+- **實機驗證狀態**：**待實機驗證 (unverified)**。
 
-1. **未經同意絕不安裝**：
-   - 目錄僅作為純設定與展示架構；在使用者於擴充套件 UI 明確點選「同意安裝」前，不得下載任何檔案或執行行程。
-2. **工作區隔離**：
-   - 拒絕載入工作區（repo）內未受信任的 `.mcp.json`，防止惡意 repo 透過 workspace 設定注入未授權之 MCP 啟動指令。
-3. **狀態誠實**：
-   - 任何 CLI（Claude Code / Codex / agy）是否具備 MCP 支援或工具呼叫能力，在實機驗收前一律維持 `unknown`。
+---
+
+### 3. GitHub 官方工具伺服器：`github-mcp-server`
+- **精確倉庫來源**：`https://github.com/github/github-mcp-server.git`
+- **開源授權**：**MIT**（核對自倉庫授權文件）
+- **官方版本與 Commit 狀態**：
+  - 固定 Release Tag：**`v2.0.2`**。
+  - 對應 Commit SHA：**`eb47a99ddb866ca2b8a162920e6bda9521f33ebb`**。
+- **發行資產與官方雜湊證據**（引自官方 release 之 `github-mcp-server_2.0.2_checksums.txt`）：
+  - macOS arm64: `5d9b38511bffc84d2272eb6189129eb721c8900e45784d8ea7eaf25f8d3dd835` (`github-mcp-server_Darwin_arm64.tar.gz`)
+  - macOS x86_64: `7ac4d549e0bf37ad9efee7be7913cae4ad50cea8d9d5be1afa9a6dbcee9d1f2c` (`github-mcp-server_Darwin_x86_64.tar.gz`)
+  - Windows x86_64: `4ae64087501650752f21c9d5af5378107a5116d94ee1cf37786b22b8c4bd99df` (`github-mcp-server_Windows_x86_64.zip`)
+  - Linux x86_64: `815e27d931c796af0c97f24fd211e14f8a4607d4528377719a5ad2352086b0b0` (`github-mcp-server_Linux_x86_64.tar.gz`)
+- **實際暴露之 Tools**：
+  - 包含倉庫查詢、檔案讀取、Issue/PR 操作等全套 GitHub 工具。
+  - **安全邊界**：研究人員身份組僅能使用其唯讀工具（如 `get_file_contents`, `search_code`, `search_repositories`）；**所有寫入類工具（建立 issue/PR/評論）一律不授權給模型**，寫入必須經由專案之 Write Broker 閘門。
+- **憑證需求**：
+  - `GITHUB_PERSONAL_ACCESS_TOKEN`：必須由 VS Code `SecretStorage` 注入該 server 行程環境，嚴禁寫入設定檔或 repo。
+- **實機驗證狀態**：**待實機驗證 (unverified)**。
+
+---
+
+## 三、 候選 Schema 與執行層 Allowlist 之區隔
+
+| 層級 | 角色 | 驗證項目 | 強制狀態 |
+| :--- | :--- | :--- | :--- |
+| **候選目錄 Schema** (`catalog.js`) | 規格檢核模組 | 檢查 serverId 命名、SemVer 格式、SHA-256 格式、SPDX 授權、命令陣列（攔截 shell 與 eval 標誌）、僅允許 `secret: true` 宣告。 | 僅檢驗資料結構，`sandboxEnforced: false`。 |
+| **執行層 Allowlist** (後續 #59 / #61) | 權限管制中心 | 根據身份組僅開放特定 serverId 與精確工具名稱；未在清單內之工具一律攔截拒絕。 | 需依賴真 CLI 或受管代理隔離強制。 |
+
+---
+
+## 四、 驗收條件與界線宣告
+
+1. **零編造事實**：所有倉庫、tag、commit、授權與雜湊均來自 GitHub 官方 API 檢索結果。未取得官方雜湊者明確標記為 `unverified`。
+2. **無未授權執行**：擴充套件在使用者於 UI 介面確認同意前，不下載、不解壓、不啟動上述任何第三方程式。
+3. **工作區隔離**：忽略工作區內的 `.mcp.json`，防止惡意倉庫配置注入指令。
