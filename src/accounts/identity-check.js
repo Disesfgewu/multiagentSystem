@@ -29,6 +29,8 @@ const CHECKS = Object.freeze({
 const REASONS = Object.freeze({
   'provider-not-supported': { summary: 'This provider has no sign-in check in this extension yet.', hint: 'Its sign-in cannot be verified here. The identity stays unknown.' },
   'profile-rejected': { summary: 'The account folder no longer passes the safety checks, so the check was not run.', hint: 'Edit the account and choose its folder again.' },
+  'windows-not-supported': { summary: 'This check is not supported on Windows yet.', hint: 'The sign-in cannot be verified here. The identity stays unknown; use the CLI\'s own status command in a terminal.' },
+  'cli-not-executable': { summary: 'The command-line tool was found but could not be run (permission denied).', hint: 'Check the file\'s permissions, or reinstall the CLI, then check again.' },
   'cli-not-found': { summary: 'The command-line tool could not be started.', hint: 'Check that the CLI is installed and on your PATH, then check again.' },
   'timed-out': { summary: 'The check took too long and was stopped.', hint: 'Try again. If it keeps happening, run the CLI\'s own status command in a terminal.' },
   'output-too-large': { summary: 'The CLI answered with more text than expected, so the answer was ignored.', hint: 'The identity stays unknown.' },
@@ -52,12 +54,14 @@ const unknownResult = (reason, checkedAt, source) => ({ ok: false, state: 'unkno
  *   hardLimitMs?: number
  * }} input `env` is the full environment for the child, already built for this profile
  */
-async function checkAccountIdentity({ profile, runner, env = {}, context, now = () => new Date(), hardLimitMs = HARD_LIMIT_MS } = {}) {
+async function checkAccountIdentity({ profile, runner, env = {}, context, now = () => new Date(), hardLimitMs = HARD_LIMIT_MS, platform = process.platform } = {}) {
   const checkedAt = now().toISOString();
   const spec = isPlain(profile) && typeof profile.provider === 'string' && Object.hasOwn(CHECKS, profile.provider) ? CHECKS[profile.provider] : null;
   if (!spec) return unknownResult('provider-not-supported', checkedAt, null);
   const executable = builtIn.get(profile.provider)?.executable;
   if (typeof executable !== 'string') return unknownResult('provider-not-supported', checkedAt, spec.source);
+  // A Windows CLI is often a .cmd shim, which cannot be started without a shell; the check is not run there rather than guessed.
+  if (platform === 'win32') return unknownResult('windows-not-supported', checkedAt, spec.source);
   if (!validateProfile(profile, context).ok) return unknownResult('profile-rejected', checkedAt, spec.source);
 
   let outcome;
@@ -72,6 +76,7 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   }
   if (!isPlain(outcome)) return unknownResult('run-failed', checkedAt, spec.source);
   if (outcome.errorCode === 'ENOENT') return unknownResult('cli-not-found', checkedAt, spec.source);
+  if (outcome.errorCode === 'EACCES') return unknownResult('cli-not-executable', checkedAt, spec.source);
   if (outcome.timedOut === true) return unknownResult('timed-out', checkedAt, spec.source);
   if (outcome.truncated === true || (typeof outcome.stdout === 'string' && Buffer.byteLength(outcome.stdout) > MAX_OUTPUT_BYTES)) return unknownResult('output-too-large', checkedAt, spec.source);
   if (typeof outcome.errorCode === 'string') return unknownResult('run-failed', checkedAt, spec.source);
