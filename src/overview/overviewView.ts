@@ -169,15 +169,15 @@ class OverviewTree implements vscode.TreeDataProvider<Item> {
       rows.push(...snapshot.steps.map((step) => new StepRow(step)));
     }
     for (const note of snapshot.notes) rows.push(new Heading(note));
-    if (snapshot.accounts.length > 0) {
-      rows.push(new Heading('Accounts', `${snapshot.accounts.length} profile${snapshot.accounts.length === 1 ? '' : 's'}`));
-      rows.push(...snapshot.accounts.map((entry) => new AccountRow(entry)));
-    }
     if (snapshot.agents.length > 0) {
       rows.push(new Heading('Agents', `${snapshot.agents.length} session${snapshot.agents.length === 1 ? '' : 's'}`));
       rows.push(...snapshot.agents.map((entry) => new AgentRow(entry)));
     } else if (!guideVisible(snapshot.steps)) {
       rows.push(new Heading('No agents are running', 'start one from an account'));
+    }
+    if (snapshot.accounts.length > 0) {
+      rows.push(new Heading('Accounts', `${snapshot.accounts.length} profile${snapshot.accounts.length === 1 ? '' : 's'}`));
+      rows.push(...snapshot.accounts.map((entry) => new AccountRow(entry)));
     }
     if (snapshot.problems > 0) rows.push(new Heading(`${snapshot.problems} item${snapshot.problems === 1 ? '' : 's'} could not be read`));
     return rows;

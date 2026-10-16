@@ -164,6 +164,10 @@ async function accountFlow(workspace: string): Promise<void> {
   });
   assert.equal(started.ok, true);
   assert.equal(started.session?.accountProfileId, created.profile.id);
+  const orderedOverview = (await overviewTreeForTests().getChildren()) ?? [];
+  const agentsHeading = orderedOverview.findIndex((entry) => entry.label === 'Agents');
+  const accountsHeading = orderedOverview.findIndex((entry) => entry.label === 'Accounts');
+  assert.ok(agentsHeading >= 0 && accountsHeading > agentsHeading, 'running agents remain ahead of account usage in the default overview');
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
 
   // The sign-in check with no CLI available: the identity stays unknown, with a reason, and nothing is shown as ready.
