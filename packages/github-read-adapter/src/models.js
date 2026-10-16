@@ -107,6 +107,19 @@ function normalizePullRequest(raw, urls, repo) {
   };
 }
 
+function normalizePullRequestFile(raw) {
+  need(isObject(raw), 'pull_request_file');
+  need(typeof raw.filename === 'string' && raw.filename.length > 0, 'pull_request_file.filename');
+  need(typeof raw.status === 'string', 'pull_request_file.status');
+  return {
+    filename: raw.filename,
+    status: raw.status,
+    additions: Number.isSafeInteger(raw.additions) && raw.additions >= 0 ? raw.additions : null,
+    deletions: Number.isSafeInteger(raw.deletions) && raw.deletions >= 0 ? raw.deletions : null,
+    patch: optString(raw.patch)
+  };
+}
+
 const REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING']);
 
 function normalizeReview(raw, urls, repo, pullNumber) {
@@ -205,6 +218,7 @@ module.exports = {
   normalizeRepository,
   normalizeIssue,
   normalizePullRequest,
+  normalizePullRequestFile,
   normalizeReview,
   normalizeComment,
   normalizeCheckRun,

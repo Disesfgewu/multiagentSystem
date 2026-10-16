@@ -209,6 +209,16 @@ function createGitHubReadAdapter(options) {
         );
       },
 
+      /** Changed files and available patch hunks; an incomplete page set stays incomplete. */
+      getPullRequestFiles(number, opts) {
+        assertPositiveInteger(number, 'pull request number');
+        return run(opts, async (signal) =>
+          mapResult(await paginated(`${base}/pulls/${number}/files`, signal, opts), listOf((raw) =>
+            models.normalizePullRequestFile(raw)
+          ))
+        );
+      },
+
       /** The list endpoint does not compute `mergeable`; it is null for every item. */
       listPullRequests(filter = {}, opts) {
         const state = filter.state === undefined ? 'open' : filter.state;

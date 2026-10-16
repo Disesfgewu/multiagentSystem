@@ -85,6 +85,24 @@ test('pull requests expose head SHA, merge state and declared issue links', asyn
   assert.deepEqual(data.referencedIssues, [{ number: 15, closes: true }, { number: 16, closes: false }]);
 });
 
+test('changed files are read through GET, retain patch text, and never turn incomplete pages into a complete diff', async () => {
+  const { transport, reader } = setup({ maxPages: 1 });
+  transport.get(`${fx.BASE}/pulls/7/files`, json(200, [
+    { filename: 'src/report.ts', status: 'modified', additions: 2, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }
+  ]));
+  const result = await reader.getPullRequestFiles(7);
+  assert.equal(result.kind, 'ok');
+  assert.deepEqual(result.data, [{ filename: 'src/report.ts', status: 'modified', additions: 2, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }]);
+  assert.equal(transport.calls[0].method, 'GET');
+
+  const incomplete = setup({ maxPages: 1 });
+  incomplete.transport.get(`${fx.BASE}/pulls/7/files`, json(200, [
+    { filename: 'src/report.ts', status: 'modified', additions: 2, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }
+  ], { link: linkTo(`${fx.BASE}/pulls/7/files`, 2) }));
+  assert.equal((await incomplete.reader.getPullRequestFiles(7)).kind, 'truncated');
+  assert.throws(() => reader.getPullRequestFiles(0), /positive integer/);
+});
+
 test('a payload missing required fields is invalid, not a crash or a silent success', async () => {
   const { transport, reader } = setup();
   transport.get(`${fx.BASE}/pulls/7`, json(200, { number: 7, state: 'open' }));

@@ -25,6 +25,9 @@
     "onCommand:multiagentSystem.github.openInEditor",
     "onView:multiagentSystem.githubView",
     "onView:multiagentSystem.overviewView",
+    "onView:multiagentSystem.issuesReportView",
+    "onView:multiagentSystem.prsReportView",
+    "onCommand:multiagentSystem.reports.refresh",
     "onCommand:multiagentSystem.overview.refresh",
     "onView:multiagentSystem.planView",
     "onCommand:multiagentSystem.plan.open",
@@ -62,6 +65,8 @@
       "multiagentSystem": [
         { "id": "multiagentSystem.overviewView", "name": "Overview" },
         { "id": "multiagentSystem.planView", "name": "Core Plan" },
+        { "id": "multiagentSystem.issuesReportView", "name": "Issues Report" },
+        { "id": "multiagentSystem.prsReportView", "name": "PRs Report" },
         { "id": "multiagentSystem.githubView", "name": "GitHub" },
         { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
         { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" }
@@ -75,6 +80,14 @@
       {
         "view": "multiagentSystem.planView",
         "contents": "This project has no core plan yet. Create docs/MASTER_PLAN.md, then add numbered TODOs.\n[Create Core Plan](command:multiagentSystem.plan.create)\n[Refresh](command:multiagentSystem.plan.refresh)"
+      },
+      {
+        "view": "multiagentSystem.issuesReportView",
+        "contents": "No Issues to read. Open a project folder that has a GitHub origin and sign in to GitHub.\n[Sign In to GitHub](command:multiagentSystem.github.signIn)\n[Refresh](command:multiagentSystem.reports.refresh)"
+      },
+      {
+        "view": "multiagentSystem.prsReportView",
+        "contents": "No pull requests to read. Open a project folder that has a GitHub origin and sign in to GitHub.\n[Sign In to GitHub](command:multiagentSystem.github.signIn)\n[Refresh](command:multiagentSystem.reports.refresh)"
       },
       {
         "view": "multiagentSystem.githubView",
@@ -150,6 +163,11 @@
       { "command": "multiagentSystem.plan.filter", "title": "Multiagent: Filter Core Plan TODOs", "icon": "$(filter)" },
       { "command": "multiagentSystem.plan.returnToOverview", "title": "Multiagent: Return to Agent Overview", "icon": "$(arrow-left)" },
       { "command": "multiagentSystem.overview.openPullRequest", "title": "Multiagent: Open This Agent's Pull Request on GitHub", "icon": "$(git-pull-request)" },
+      { "command": "multiagentSystem.reports.open", "title": "Multiagent: Read Report" },
+      { "command": "multiagentSystem.reports.next", "title": "Multiagent: Next Report", "icon": "$(arrow-down)" },
+      { "command": "multiagentSystem.reports.previous", "title": "Multiagent: Previous Report", "icon": "$(arrow-up)" },
+      { "command": "multiagentSystem.reports.backToOverview", "title": "Multiagent: Back to Agent Overview", "icon": "$(home)" },
+      { "command": "multiagentSystem.reports.refresh", "title": "Multiagent: Refresh Reports", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
       { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details" },
@@ -178,7 +196,13 @@
       { "command": "multiagentSystem.sessions.reopen", "title": "Multiagent: Reopen Session in a New Terminal", "icon": "$(debug-restart)" }
     ],
     "menus": {
+      "editor/title": [
+        { "command": "multiagentSystem.reports.backToOverview", "when": "resourceScheme == multiagent-report", "group": "navigation@0" },
+        { "command": "multiagentSystem.reports.previous", "when": "resourceScheme == multiagent-report", "group": "navigation@1" },
+        { "command": "multiagentSystem.reports.next", "when": "resourceScheme == multiagent-report", "group": "navigation@2" }
+      ],
       "view/title": [
+        { "command": "multiagentSystem.reports.refresh", "when": "view == multiagentSystem.issuesReportView || view == multiagentSystem.prsReportView", "group": "navigation" },
         { "command": "multiagentSystem.overview.refresh", "when": "view == multiagentSystem.overviewView", "group": "navigation" },
         { "command": "multiagentSystem.plan.create", "when": "view == multiagentSystem.planView", "group": "navigation@1" },
         { "command": "multiagentSystem.plan.refresh", "when": "view == multiagentSystem.planView", "group": "navigation@2" },
