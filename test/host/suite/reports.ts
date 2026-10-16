@@ -14,7 +14,7 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
     listPullRequests: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: prs }),
     getPullRequest: async (n) => ({ kind: 'ok', data: prs.find((entry) => entry.number === n) }),
     getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
-    getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0 }),
+    getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{ name: 'unit tests', state: 'passing', completedAt: '2026-10-16T01:00:00Z' }, { name: 'host smoke', state: 'failing', completedAt: '2026-10-16T01:05:00Z' }], statuses: [] } }, unresolvedThreads: 0 }),
     getReviews: async () => ({ kind: 'ok', data: [] }),
     ...over
   };
