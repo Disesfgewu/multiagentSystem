@@ -78,10 +78,34 @@ function commentLines(comments, currentHead, { max = 8, limit = 1200 } = {}) {
 
 const STATE_ORDER = Object.freeze({ failing: 0, pending: 1, passing: 2 });
 const MAX_CHECKS = 40;
+const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?Z$/;
+
+const validCompletedAt = (value) => {
+  if (value === null) return true;
+  if (typeof value !== 'string') return false;
+  const parts = ISO_INSTANT.exec(value);
+  if (!parts) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.getUTCFullYear() === Number(parts[1]) && parsed.getUTCMonth() + 1 === Number(parts[2]) &&
+    parsed.getUTCDate() === Number(parts[3]) && parsed.getUTCHours() === Number(parts[4]) && parsed.getUTCMinutes() === Number(parts[5]) &&
+    parsed.getUTCSeconds() === Number(parts[6]);
+};
+const validCheckItem = (item, head) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  if (typeof item.name !== 'string' || item.name.trim() === '' || !Object.hasOwn(STATE_ORDER, item.state)) return false;
+  if (!Object.hasOwn(item, 'completedAt') || !validCompletedAt(item.completedAt)) return false;
+  if (!(item.headSha === undefined || item.headSha === null || (typeof item.headSha === 'string' && /^[a-f0-9]{40}$/i.test(item.headSha)))) return false;
+  return typeof item.headSha !== 'string' || item.headSha.toLowerCase() === head.toLowerCase();
+};
 
 /** Each check on the latest head: name, state and when it finished. Missing, partial or foreign data never reads as a pass. */
-function checkDetail(checks, head) {
+function checkDetail(snapshot, head) {
   const out = ['CHECKS ON THE LATEST HEAD'];
+  if (!snapshot || typeof snapshot !== 'object') return [...out, 'Check details: unknown (not read).'];
+  if (snapshot.consistent !== true || typeof snapshot.headSha !== 'string' || !head || snapshot.headSha.toLowerCase() !== head.toLowerCase()) {
+    return [...out, 'Check details: unknown (the snapshot was not consistently read from the latest head).'];
+  }
+  const checks = snapshot.checks;
   if (!checks || typeof checks !== 'object') return [...out, 'Check details: unknown (not read).'];
   if (checks.kind !== 'ok' && checks.kind !== 'empty' && checks.kind !== 'partial') return [...out, `Check details: unknown (${line(checks.kind ?? 'not read', 30)}).`];
   const data = checks.data;
@@ -103,13 +127,14 @@ function checkDetail(checks, head) {
   if (checks.kind !== 'partial' && !(haveRuns && haveStatuses)) {
     return [...out, 'Check details: unknown (one of the two sources is missing even though the read was reported complete).'];
   }
-  const items = [...(haveRuns ? data.checkRuns : []), ...(haveStatuses ? data.statuses : [])]
-    .filter((item) => item && typeof item === 'object')
-    .filter((item) => typeof item.headSha !== 'string' || item.headSha.toLowerCase() === head.toLowerCase());
+  const items = [...(haveRuns ? data.checkRuns : []), ...(haveStatuses ? data.statuses : [])];
+  if (!items.every((item) => validCheckItem(item, head))) {
+    return [...out, 'Check details: unknown (a check item was malformed or belonged to another head).'];
+  }
   if (checks.kind === 'partial') out.push('Only one of the two sources (check runs, commit statuses) could be read, so this list may be incomplete.');
   if (items.length === 0) return [...out, checks.kind === 'partial' ? 'No checks in the part that could be read. That is not a pass.' : 'No checks were reported for this head. That is not a pass.'];
-  const rank = (item) => (Object.hasOwn(STATE_ORDER, item.state) ? STATE_ORDER[item.state] : 0);
-  const named = items.map((item) => ({ name: line(item.name, 80) || '(unnamed)', state: Object.hasOwn(STATE_ORDER, item.state) ? item.state : 'unknown', done: typeof item.completedAt === 'string' ? line(item.completedAt, 40) : null, rank: rank(item) }));
+  const rank = (item) => STATE_ORDER[item.state];
+  const named = items.map((item) => ({ name: line(item.name, 80), state: item.state, done: typeof item.completedAt === 'string' ? line(item.completedAt, 40) : null, rank: rank(item) }));
   named.sort((a, b) => a.rank - b.rank || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const item of named.slice(0, MAX_CHECKS)) out.push(`- ${item.name} · ${item.state} · ${item.state === 'pending' ? 'not finished' : item.done ? `finished ${item.done}` : 'finish time unknown'}`);
   if (named.length > MAX_CHECKS) out.push(`(${named.length - MAX_CHECKS} more checks are not shown)`);
@@ -218,7 +243,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
     } else lines.push('CI for this head: unknown (the checks read do not belong to the latest head, or could not be read).');
     lines.push(`Unresolved review threads: ${Number.isSafeInteger(snapshot.unresolvedThreads) ? snapshot.unresolvedThreads : 'unknown'}`);
   }
-  lines.push(...checkDetail(snapshot && typeof snapshot === 'object' ? snapshot.checks : null, head));
+  lines.push(...checkDetail(snapshot, head));
   lines.push('', 'REVIEWS ON GITHUB');
   const reviewNote = readNote('Reviews', reviews);
   const reviewItems = dataOf(reviews);
