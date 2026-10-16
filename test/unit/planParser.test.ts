@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parsePlan } from '../../src/plan/parser';
+import { parsePlan, planReportLinks } from '../../src/plan/parser';
 
 test('the project core plan has 65 unique decisions and traceable fields', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'docs', 'MASTER_PLAN.md'), 'utf8');
@@ -31,4 +31,16 @@ test('one hundred TODOs remain addressable by source line', () => {
   assert.equal(parsed.errors.length, 0);
   assert.equal(parsed.sections[0].tasks.length, 100);
   assert.equal(parsed.sections[0].tasks[99].line, 101);
+});
+
+test('dependency and evidence links preserve Issue/PR kinds without guessing bare evidence', () => {
+  assert.deepEqual(planReportLinks('M1-001 title #999。負責：PM；依賴：#106、#111；證據：PR #112／#108 已合併，Issue #73；下一決策：#900；'), [
+    { kind: 'issue', number: 106 }, { kind: 'issue', number: 111 },
+    { kind: 'pullRequest', number: 112 }, { kind: 'pullRequest', number: 108 }, { kind: 'issue', number: 73 }
+  ]);
+  assert.deepEqual(planReportLinks('dependency: Issue #12, PR #7; evidence: PR #7;'), [{ kind: 'issue', number: 12 }, { kind: 'pullRequest', number: 7 }]);
+  assert.deepEqual(planReportLinks('證據：#123 待確認；依賴：#0、#9007199254740992；'), []);
+  assert.deepEqual(planReportLinks('dependency: other/repo#12, https://github.com/o/r/issues/7#123;'), [], 'foreign shorthand and URL fragments must not become same-project links');
+  assert.deepEqual(planReportLinks('evidence: [PR #7](https://github.com/other/repo/pull/7);'), [], 'Markdown labels must not redirect a foreign report into this project');
+  assert.deepEqual(parsePlan('## M1\n- [ ] M1-001 Task。負責：PM；依賴：#12；證據：PR #7；').sections[0].tasks[0].reports, [{ kind: 'issue', number: 12 }, { kind: 'pullRequest', number: 7 }]);
 });

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { parsePlan, PlanSection, PlanTask } from './parser';
 import { OVERVIEW_VIEW } from '../overview/overviewView';
+import { REPORT_COMMANDS } from '../reports/reportsView';
 
 export const PLAN_VIEW = 'multiagentSystem.planView';
 export const PLAN_COMMANDS = {
@@ -25,7 +26,7 @@ Public project goals and decisions only. Keep agent runtime identities, account 
 - [ ] DEC-001 Review the first result. Owner: project owner; dependency: M1-002; evidence: pending; next decision: pass or request changes.
 `;
 
-type Node = SectionNode | TaskNode | MessageNode;
+type Node = SectionNode | TaskNode | MessageNode | ReportNode;
 type TaskFilter = 'all' | 'open' | 'done';
 const FILTER_LABELS: Record<TaskFilter, string> = { all: 'All TODOs', open: 'Open TODOs', done: 'Recorded TODOs' };
 
@@ -38,11 +39,20 @@ class SectionNode extends vscode.TreeItem {
 }
 class TaskNode extends vscode.TreeItem {
   constructor(readonly task: PlanTask) {
-    super(`${task.id} ${task.title}`, vscode.TreeItemCollapsibleState.None);
+    super(`${task.id} ${task.title}`, vscode.TreeItemCollapsibleState.Collapsed);
     this.description = task.done ? 'recorded' : 'open';
     this.tooltip = task.title;
     this.iconPath = new vscode.ThemeIcon(task.done ? 'pass' : 'circle-outline');
     this.command = { command: PLAN_COMMANDS.open, title: 'Open this TODO', arguments: [{ line: task.line }] };
+  }
+}
+class ReportNode extends vscode.TreeItem {
+  constructor(kind: 'issue' | 'pullRequest', number: number) {
+    super(`${kind === 'issue' ? 'Issue' : 'PR'} #${number}`, vscode.TreeItemCollapsibleState.None);
+    this.description = 'Read report';
+    this.tooltip = 'Read the GitHub report inside this editor. This link does not certify that the TODO is complete.';
+    this.iconPath = new vscode.ThemeIcon(kind === 'issue' ? 'issues' : 'git-pull-request');
+    this.command = { command: REPORT_COMMANDS.open, title: 'Read linked report', arguments: [{ kind, number }] };
   }
 }
 class MessageNode extends vscode.TreeItem {
@@ -65,6 +75,9 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
   getTreeItem(node: Node): vscode.TreeItem { return node; }
   async getChildren(node?: Node): Promise<Node[]> {
     if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task));
+    if (node instanceof TaskNode) return node.task.reports.length
+      ? node.task.reports.map((link) => new ReportNode(link.kind, link.number))
+      : [new MessageNode('待連結：在依賴／證據欄位加入 Issue #12 或 PR #7。')];
     if (node) return [];
     const uri = planUri();
     if (!uri) return [new MessageNode('Open a project folder to read its core plan.')];
