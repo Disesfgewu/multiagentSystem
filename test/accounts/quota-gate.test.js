@@ -93,7 +93,7 @@ test('every reason has a sentence, with no code and no raw window text', () => {
 });
 
 test('the limits are described as sentences, including none', () => {
-  assert.match(describePolicy({ ok: true, stored: false }), /none set.*never held back/);
+  assert.match(describePolicy({ ok: true, stored: false }), /none set.*Set Account Limits.*never held back/);
   assert.equal(describePolicy({ ok: false }), 'Limits: could not be read.');
   assert.equal(describePolicy(undefined), 'Limits: could not be read.');
   assert.equal(describePolicy(stored({ warnAtPercent: 70, blockAtPercent: 90, maxConcurrent: 2, unknownQuota: 'block' })), 'Limits: warn at 70% used; pause new agents at 90%; at most 2 running at once; if usage is unknown, do not start new agents.');
@@ -110,6 +110,14 @@ test('usage is unknown when no verified source exists, and a reading is shown wi
   assert.match(lines.find((line) => line.includes('seven_day')), /estimate \(not used to block\)/);
   assert.match(lines.find((line) => line.includes('(old)')), /out of date \(not used to block\)/);
   assert.equal(describeQuota([reading('x', null)], NOW)[0].includes('unknown'), true);
+  const future = describeQuota([reading('future', 99, { observedAt: new Date(NOW.getTime() + 60_000) })], NOW)[0];
+  assert.match(future, /Usage \(future\): unknown, timestamp is in the future/);
+  assert.equal(future.includes('99%'), false);
+  assert.match(describeQuota([reading('invalid', NaN)], NOW)[0], /invalid or missing reading/);
+  assert.match(describeQuota([reading('unverified', 95, { source: null })], NOW)[0], /source unverified \(not used to block\)/);
+  const hostile = describeQuota([reading('safe', 10, { source: 'evil\u202E\ncommand' })], NOW)[0];
+  assert.equal(hostile.includes('\u202E'), false);
+  assert.equal(hostile.includes('\n'), false);
 });
 
 test('what a person types becomes a policy, or a list of plain problems', () => {

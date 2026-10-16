@@ -22,6 +22,11 @@ const MAX_CONCURRENT_LIMIT = 64;
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const percent = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
+const credibleTime = (item, now) => {
+  const observed = Date.parse(item?.observedAt);
+  const current = now instanceof Date ? now.getTime() : Date.parse(now);
+  return Number.isFinite(observed) && Number.isFinite(current) && observed <= current;
+};
 
 /** Defaults: no thresholds, no concurrency limit, and an unknown quota needs confirmation. */
 const DEFAULT_POLICY = Object.freeze({ unknownQuota: 'require-confirmation' });
@@ -62,7 +67,7 @@ function summarizeQuota(observations, now) {
   const list = Array.isArray(observations) ? observations : [];
   return [...windowsOf(list)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([window, item]) => {
     const reset = list.find((other) => isPlain(other) && other.field === RESETS(window));
-    const usable = item.unit === 'percent' && percent(item.value) && item.confidence !== CONFIDENCE.UNKNOWN;
+    const usable = item.unit === 'percent' && percent(item.value) && item.confidence !== CONFIDENCE.UNKNOWN && credibleTime(item, now);
     return {
       window,
       usedPercent: usable ? item.value : null,
@@ -111,7 +116,7 @@ function decideDispatch({ policy, observations, now, running = 0, approval } = {
   for (const [window, item] of [...windows].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (item.unit !== 'percent' || !isGateEligible(item, at)) {
       // An estimate, an expired reading or a missing value is shown, never used as a gate.
-      if (item.unit === 'percent' && item.value !== null && item.value !== undefined && percent(item.value) && rules.warnAtPercent !== undefined && item.value >= rules.warnAtPercent) {
+      if (item.unit === 'percent' && item.value !== null && item.value !== undefined && percent(item.value) && credibleTime(item, at) && rules.warnAtPercent !== undefined && item.value >= rules.warnAtPercent) {
         raise('warn', { code: 'unverified-reading-over-warning', window, confidence: item.confidence });
       } else {
         raise('warn', { code: 'window-unverified', window });

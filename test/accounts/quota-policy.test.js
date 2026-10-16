@@ -62,8 +62,15 @@ test('only a fresh service-reported reading can block; estimates and stale readi
     const result = decide({ observations: [item] });
     assert.notEqual(result.decision, 'block', JSON.stringify(item));
     assert.ok(codes(result).includes('quota-unknown'), 'no usable reading means the quota is unknown');
-    assert.ok(codes(result).some((code) => code === 'unverified-reading-over-warning'), JSON.stringify(item));
+    assert.equal(codes(result).includes('unverified-reading-over-warning'), item !== future, JSON.stringify(item));
   }
+  const futureSummary = summarizeQuota([future], NOW)[0];
+  assert.deepEqual([futureSummary.usedPercent, futureSummary.confidence, futureSummary.gateEligible], [null, 'unknown', false]);
+  const noSource = reading('without_source', 95, { source: null });
+  const withoutSource = decide({ observations: [noSource] });
+  assert.equal(codes(withoutSource).includes('quota-block-threshold'), false);
+  assert.ok(codes(withoutSource).includes('quota-unknown'));
+  assert.equal(summarizeQuota([noSource], NOW)[0].gateEligible, false);
   const mixed = decide({ observations: [estimate, reading('x', 10)] });
   assert.equal(mixed.decision, 'warn');
   assert.ok(codes(mixed).includes('unverified-reading-over-warning'));

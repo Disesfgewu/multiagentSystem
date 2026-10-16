@@ -131,7 +131,10 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
       if (builtIn.capability(profile.provider, 'accountIsolation') !== 'verified') issues.push('Account isolation is not verified for this provider on this machine.');
       issues.push(lastCheckedText(profile.id));
       issues.push(...limitText[index]);
-      return new AccountItem(profile.id, profile.label, provider, status.health, identity, issues);
+      const item = new AccountItem(profile.id, profile.label, provider, status.health, identity, issues);
+      const policyLine = limitText[index][0] ?? 'Limits: could not be read.';
+      item.description += policyLine.startsWith('Limits: none set.') ? ' · limits not set' : policyLine.startsWith('Limits: could not be read.') ? ' · limits unknown' : ' · limits set';
+      return item;
     }));
     const labels = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
     rows.push(...liveSessions.map((entry) => new SessionItem(
