@@ -8,7 +8,7 @@ const path = require('node:path');
 const root = path.join(__dirname, '..', '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const { contributes } = manifest;
-const VIEWS = ['multiagentSystem.overviewView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView'];
+const VIEWS = ['multiagentSystem.overviewView', 'multiagentSystem.planView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView'];
 
 test('the activity bar has a Multiagent container with an icon that exists', () => {
   const [container] = contributes.viewsContainers.activitybar;
