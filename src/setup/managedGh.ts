@@ -44,7 +44,7 @@ export interface GhManagerDeps {
 
 type Pointer = {
   schema: 1; installId: string; version: string; platform: string; arch: string;
-  archiveSha256: string; binarySha256: string; executable: string; source: string; verifiedAt: string;
+  archiveSha256: string; executable: string; source: string; verifiedAt: string;
 };
 
 const hash = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex');
@@ -73,13 +73,34 @@ function validRelease(value: GhRelease | null): value is GhRelease {
 function validPointer(value: unknown, release: GhRelease): value is Pointer {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const pointer = value as Record<string, unknown>;
-  const keys = ['schema', 'installId', 'version', 'platform', 'arch', 'archiveSha256', 'binarySha256', 'executable', 'source', 'verifiedAt'];
+  const keys = ['schema', 'installId', 'version', 'platform', 'arch', 'archiveSha256', 'executable', 'source', 'verifiedAt'];
   return Object.keys(pointer).length === keys.length && keys.every((key) => Object.hasOwn(pointer, key)) &&
     pointer.schema === 1 && typeof pointer.installId === 'string' && INSTALL_ID.test(pointer.installId) &&
     pointer.version === release.version && pointer.platform === release.platform && pointer.arch === release.arch &&
-    pointer.archiveSha256 === release.sha256 && typeof pointer.binarySha256 === 'string' && SHA.test(pointer.binarySha256) &&
+    pointer.archiveSha256 === release.sha256 &&
     pointer.executable === release.executable && pointer.source === release.url &&
     typeof pointer.verifiedAt === 'string' && Number.isFinite(Date.parse(pointer.verifiedAt));
+}
+
+/**
+ * Extracts exactly the pinned entry from an archive already known to match the release's trusted
+ * sha256 (the caller verifies that). Shared by prepare() (fresh download) and status() (the retained
+ * archive), so the binary that is checked against is always one this function just derived from a
+ * hash-anchored archive, never a value some other step merely asserted.
+ */
+function extractBinary(archive: Uint8Array, release: GhRelease): Uint8Array {
+  let entrySeen = false;
+  const extracted = unzipSync(archive, {
+    filter: (file: UnzipFileInfo) => {
+      if (file.name !== release.entry) return false;
+      entrySeen = true;
+      if (file.originalSize < 1 || file.originalSize > MAX_BINARY_BYTES) throw new Error('binary-size-invalid');
+      return true;
+    }
+  });
+  const binary = extracted[release.entry];
+  if (!entrySeen || !(binary instanceof Uint8Array) || binary.byteLength < 1 || binary.byteLength > MAX_BINARY_BYTES) throw new Error('archive-entry-missing');
+  return binary;
 }
 
 export const downloadHttps: Downloader = async (url, maxBytes, progress) => {
@@ -170,13 +191,33 @@ export class ManagedGh {
       value = JSON.parse(bytes.toString('utf8'));
     } catch { return { state: 'corrupt', reason: 'invalid-install-record' }; }
     if (!validPointer(value, this.release)) return { state: 'corrupt', reason: 'invalid-install-record' };
-    const install = path.join(this.root, 'installs', value.installId);
+    // 'installs' is a fixed, reused path component. If it were ever replaced by a symlink before
+    // this install existed, every path built under it would resolve outside the boundary even
+    // though each of THOSE path's own final components is a real, non-symlink entry. It is checked
+    // on every status() call, not only when prepare() happens to (re)create it.
+    const installsDir = path.join(this.root, 'installs');
+    if (!await directoryNoLink(installsDir)) return { state: 'corrupt', reason: 'managed-path-replaced' };
+    const install = path.join(installsDir, value.installId);
     const binDir = path.join(install, 'bin');
     const executable = path.join(binDir, value.executable);
-    if (!inside(this.root, install) || !await directoryNoLink(install) || !await directoryNoLink(binDir) || !await regularNoLink(executable)) return { state: 'corrupt', reason: 'managed-path-replaced' };
+    const archivePath = path.join(install, 'archive.zip');
+    if (!inside(this.root, install) || !await directoryNoLink(install) || !await directoryNoLink(binDir) ||
+        !await regularNoLink(executable) || !await regularNoLink(archivePath)) return { state: 'corrupt', reason: 'managed-path-replaced' };
+    // The binary is never trusted from a scalar some earlier step merely asserted (that value could
+    // be edited to match a tampered binary with nothing left to catch it). It is re-derived here from
+    // the retained archive, and that archive is itself re-checked against the hardcoded release
+    // digest, so an attacker must defeat a hash they do not control to make either lie convincing.
+    let archive: Buffer;
+    try {
+      archive = await fs.promises.readFile(archivePath);
+      if (archive.byteLength < 1 || archive.byteLength > MAX_ARCHIVE_BYTES) return { state: 'corrupt', reason: 'managed-archive-changed' };
+    } catch { return { state: 'corrupt', reason: 'managed-archive-unreadable' }; }
+    if (hash(archive) !== this.release.sha256) return { state: 'corrupt', reason: 'managed-archive-changed' };
+    let expectedBinary: Uint8Array;
+    try { expectedBinary = extractBinary(archive, this.release); } catch { return { state: 'corrupt', reason: 'managed-archive-changed' }; }
     try {
       const binary = await fs.promises.readFile(executable);
-      if (binary.byteLength < 1 || binary.byteLength > MAX_BINARY_BYTES || hash(binary) !== value.binarySha256) return { state: 'corrupt', reason: 'managed-binary-changed' };
+      if (binary.byteLength < 1 || binary.byteLength > MAX_BINARY_BYTES || hash(binary) !== hash(expectedBinary)) return { state: 'corrupt', reason: 'managed-binary-changed' };
     } catch { return { state: 'corrupt', reason: 'managed-binary-unreadable' }; }
     return { state: 'ready', version: value.version, verifiedAt: value.verifiedAt, binDir, executable, source: value.source };
   }
@@ -193,34 +234,32 @@ export class ManagedGh {
     const id = `gh-${safeVersion}-${this.release.platform}-${this.release.arch}-${this.newId().replace(/[^a-z0-9-]/gi, '').toLowerCase().slice(0, 24)}`;
     if (!INSTALL_ID.test(id)) return { state: 'corrupt', reason: 'install-id-invalid' };
     const staging = path.join(this.root, `staging-${id}`);
-    const install = path.join(this.root, 'installs', id);
+    const installsDir = path.join(this.root, 'installs');
+    const install = path.join(installsDir, id);
     const pointerTemp = path.join(this.root, `.current-${id}.json`);
     if (!inside(this.root, staging) || !inside(this.root, install)) return { state: 'corrupt', reason: 'managed-path-invalid' };
     try {
       const archive = await this.download(this.release.url, MAX_ARCHIVE_BYTES, progress);
       if (!(archive instanceof Uint8Array) || archive.byteLength < 1 || archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error('download-invalid');
       if (hash(archive) !== this.release.sha256) throw new Error('integrity-mismatch');
-      let entrySeen = false;
-      const extracted = unzipSync(archive, {
-        filter: (file: UnzipFileInfo) => {
-          if (file.name !== this.release!.entry) return false;
-          entrySeen = true;
-          if (file.originalSize < 1 || file.originalSize > MAX_BINARY_BYTES) throw new Error('binary-size-invalid');
-          return true;
-        }
-      });
-      const binary = extracted[this.release.entry];
-      if (!entrySeen || !(binary instanceof Uint8Array) || binary.byteLength < 1 || binary.byteLength > MAX_BINARY_BYTES) throw new Error('archive-entry-missing');
+      const binary = extractBinary(archive, this.release);
       await fs.promises.mkdir(path.join(staging, 'bin'), { recursive: true, mode: 0o700 });
       const executable = path.join(staging, 'bin', this.release.executable);
       await fs.promises.writeFile(executable, binary, { mode: 0o700, flag: 'wx' });
+      // The verified archive itself moves into the install directory, read-only: status() re-derives
+      // the expected binary from it on every check instead of trusting a scalar hash on its own.
+      await fs.promises.writeFile(path.join(staging, 'archive.zip'), archive, { mode: 0o400, flag: 'wx' });
       const pointer: Pointer = {
         schema: 1, installId: id, version: this.release.version, platform: this.release.platform, arch: this.release.arch,
-        archiveSha256: this.release.sha256, binarySha256: hash(binary), executable: this.release.executable,
+        archiveSha256: this.release.sha256, executable: this.release.executable,
         source: this.release.url, verifiedAt: this.now().toISOString()
       };
       await fs.promises.writeFile(path.join(staging, POINTER), JSON.stringify(pointer), { mode: 0o600, flag: 'wx' });
-      await fs.promises.mkdir(path.join(this.root, 'installs'), { recursive: true, mode: 0o700 });
+      // 'installs' is reused across every install this manager ever makes. A recursive mkdir would
+      // silently follow it if something had already replaced it with a symlink; create and verify it
+      // as its own real, non-symlink step, not folded into one recursive call with the rename target.
+      try { await fs.promises.mkdir(installsDir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      if (!await directoryNoLink(installsDir)) throw new Error('installs-dir-replaced');
       await fs.promises.rename(staging, install);
       await fs.promises.writeFile(pointerTemp, JSON.stringify(pointer), { mode: 0o600, flag: 'wx' });
       await fs.promises.rename(pointerTemp, this.pointerPath());
@@ -234,7 +273,8 @@ export class ManagedGh {
       }
       const reason = error instanceof Error && error.message === 'integrity-mismatch' ? 'archive-integrity-failed'
         : error instanceof Error && ['archive-entry-missing', 'binary-size-invalid'].includes(error.message) ? 'archive-invalid'
-          : 'download-or-install-failed';
+          : error instanceof Error && error.message === 'installs-dir-replaced' ? 'managed-folder-replaced'
+            : 'download-or-install-failed';
       const after = await this.status();
       return after.state === 'ready' ? after : { state: 'missing', reason };
     }

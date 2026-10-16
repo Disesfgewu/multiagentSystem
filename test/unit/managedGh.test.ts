@@ -39,9 +39,9 @@ test('a fixed official archive is hash checked, one expected file is installed, 
   assert.equal((await manager.prepare()).state, 'ready');
   assert.equal(downloads, 1, 'a verified installation is not downloaded again');
   const pointer = JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8'));
-  assert.equal(pointer.binarySha256, sha(binary));
   assert.equal(pointer.archiveSha256, sha(archive));
   assert.equal(JSON.stringify(pointer).includes(root), false, 'the record has no local path');
+  assert.equal(fs.readFileSync(path.join(path.dirname(ready.binDir), 'archive.zip')).length, archive.byteLength, 'the verified archive is retained for status() to re-derive the binary from');
 });
 
 test('hash mismatch, offline interruption and malformed archives fail closed and can be retried', async (t) => {
@@ -78,6 +78,55 @@ test('a replaced binary or symlink is unknown/corrupt and never accepted from th
   fs.rmSync(ready.executable);
   fs.symlinkSync(path.join(root, 'elsewhere'), ready.executable);
   assert.deepEqual(await manager.status(), { state: 'corrupt', reason: 'managed-path-replaced' });
+});
+
+test('the binary is never trusted from a scalar the pointer asserts: there is no such field left to tamper, and status() re-derives it from the archive instead', async (t) => {
+  const root = world(t);
+  const manager = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'swap' });
+  const ready = await manager.prepare();
+  assert.equal(ready.state, 'ready');
+  if (ready.state !== 'ready') return;
+  const pointer = JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8'));
+  assert.equal('binarySha256' in pointer, false, 'the pointer no longer carries a self-asserted binary hash to tamper with');
+  // Swapping the live binary alone (the archive is untouched) is still caught: status() re-extracts
+  // the expected binary from the retained, hash-anchored archive on every check.
+  fs.writeFileSync(ready.executable, 'forged binary, nothing left in the pointer agrees with it');
+  assert.deepEqual(await manager.status(), { state: 'corrupt', reason: 'managed-binary-changed' });
+});
+
+test('the retained archive is itself re-checked against the hardcoded release digest, not just re-used', async (t) => {
+  const root = world(t);
+  const manager = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'tamper-archive' });
+  const ready = await manager.prepare();
+  assert.equal(ready.state, 'ready');
+  if (ready.state !== 'ready') return;
+  const archivePath = path.join(path.dirname(ready.binDir), 'archive.zip');
+  // Replacing a read-only file: deletion only needs write access to the containing directory, not to
+  // the file itself, so this is how an attacker with filesystem access would actually do it.
+  fs.rmSync(archivePath);
+  fs.writeFileSync(archivePath, zipSync({ [entry]: new TextEncoder().encode('a different, still well-formed archive') }));
+  assert.deepEqual(await manager.status(), { state: 'corrupt', reason: 'managed-archive-changed' });
+  fs.rmSync(archivePath);
+  fs.symlinkSync(path.join(root, 'elsewhere'), archivePath);
+  assert.deepEqual(await manager.status(), { state: 'corrupt', reason: 'managed-path-replaced' });
+});
+
+test('"installs" being replaced by a symlink is refused on every status() check, not only while prepare() first creates it', async (t) => {
+  const root = world(t);
+  const manager = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'first' });
+  const ready = await manager.prepare();
+  assert.equal(ready.state, 'ready');
+  if (ready.state !== 'ready') return;
+  const installsDir = path.join(root, 'installs');
+  const outside = world(t);
+  fs.rmSync(installsDir, { recursive: true, force: true });
+  fs.symlinkSync(outside, installsDir, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.deepEqual(await manager.status(), { state: 'corrupt', reason: 'managed-path-replaced' });
+  // A later prepare() for a different install must not silently write through the symlink either.
+  const second = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'second' });
+  const result = await second.prepare();
+  assert.deepEqual(result, { state: 'missing', reason: 'managed-folder-replaced' });
+  assert.equal(fs.existsSync(path.join(outside, `gh-2-102-0-darwin-arm64-second`)), false, 'nothing was written through the symlinked installs directory');
 });
 
 test('a symlinked parent below the storage boundary is refused before anything is created outside', async (t) => {
