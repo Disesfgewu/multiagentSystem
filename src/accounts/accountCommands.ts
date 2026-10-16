@@ -5,6 +5,7 @@ import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
+import { editLimits, clearLimits, limitLines } from './quotaGateUi';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
@@ -24,7 +25,8 @@ export const ACCOUNT_COMMANDS = {
   remove: 'multiagentSystem.accounts.remove',
   login: 'multiagentSystem.accounts.login',
   launch: 'multiagentSystem.accounts.launch',
-  check: 'multiagentSystem.accounts.check'
+  check: 'multiagentSystem.accounts.check',
+  limits: 'multiagentSystem.accounts.limits'
 } as const;
 
 const LOGIN_COMMANDS: Record<string, string> = {
@@ -116,6 +118,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     const rows: AccountTreeItem[] = [];
     if (loaded.profiles.length === 0) rows.push(new AccountMessage('No account profiles. Use Create Profile to add one.'));
     const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
+    const limitText = await Promise.all(loaded.profiles.map((profile: any) => limitLines(profile.id, () => sessions?.list() ?? [])));
     rows.push(...loaded.profiles.map((profile: any, index: number) => {
       const status = described[index];
       const provider = builtIn.get(profile.provider)?.label ?? profile.provider;
@@ -125,6 +128,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
       const issues = status.issues.map((issue: { hint: string }) => issue.hint);
       if (builtIn.capability(profile.provider, 'accountIsolation') !== 'verified') issues.push('Account isolation is not verified for this provider on this machine.');
       issues.push(lastCheckedText(profile.id));
+      issues.push(...limitText[index]);
       return new AccountItem(profile.id, profile.label, provider, status.health, identity, issues);
     }));
     const labels = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
@@ -226,7 +230,8 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.remove, (id?: unknown) => remove(id, tree)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.login, (id?: unknown) => login(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.launch, (id?: unknown) => launch(id)),
-    vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id))
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id)),
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.limits, (value?: unknown) => limits(value))
   );
 }
 
@@ -277,6 +282,7 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     `Health: ${described.health}`,
     lastCheckedText(id),
     `Account isolation: ${isolation}`,
+    ...(await limitLines(id, () => sessions?.list() ?? [])),
     'The label is user supplied and does not prove which account is signed in.'
   ];
   const document = await vscode.workspace.openTextDocument({ language: 'plaintext', content: lines.join('\n') });
@@ -404,6 +410,30 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
     const answer = await vscode.window.showWarningMessage(message, 'Check Again', 'Open Login Terminal');
     if (answer === 'Check Again') void check(loaded.profile.id);
     if (answer === 'Open Login Terminal') void vscode.commands.executeCommand(ACCOUNT_COMMANDS.login, loaded.profile.id);
+  }
+  return outcome;
+}
+
+/** Sets (or, with `clear`, removes) the limits for one account. */
+async function limits(value: unknown): Promise<unknown> {
+  const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean; clear?: boolean; warn?: string; block?: string; max?: string; unknownQuota?: string }) : {};
+  const id = selectedId(options.id ?? value);
+  const profile = id ? undefined : await chooseProfile();
+  const selected = profile ?? (id ? { id } : undefined);
+  if (!selected) return { ok: false, cancelled: true };
+  const result = await accountService(() => sessions?.list() ?? []);
+  if (!result.ok) { if (options.interactive !== false) void vscode.window.showErrorMessage(result.message); return { ok: false, reason: 'storage-unavailable' }; }
+  const loaded = result.service.get(selected.id);
+  if (!loaded.ok) { if (options.interactive !== false) void vscode.window.showErrorMessage(errorFor(loaded)); return { ok: false, reason: 'profile-not-found' }; }
+  if (options.clear === true) {
+    const cleared = await clearLimits(loaded.profile.id, () => sessions?.list() ?? []);
+    currentTree?.refresh();
+    return { ok: cleared };
+  }
+  const outcome = await editLimits(loaded.profile.id, loaded.profile.label, () => sessions?.list() ?? [], options.interactive === false ? { warn: options.warn, block: options.block, max: options.max, unknownQuota: options.unknownQuota } : undefined);
+  if (outcome.ok) {
+    currentTree?.refresh();
+    if (options.interactive !== false) void vscode.window.showInformationMessage(`Limits saved for “${loaded.profile.label}”. They apply to agents started from now on; agents already running are not changed.`);
   }
   return outcome;
 }
