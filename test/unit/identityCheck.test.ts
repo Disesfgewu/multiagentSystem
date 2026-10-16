@@ -112,7 +112,7 @@ test('a check that takes too long is stopped and reported as timed out', { timeo
   const w = world(t);
   const started = Date.now();
   const result = await checkAccountIdentity({
-    profile: w.profile, context: w.context, env: { PATH: process.env.PATH },
+    profile: w.profile, context: w.context, platform: PLATFORM, env: { PATH: process.env.PATH },
     runner: (file: string, args: string[], options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number }) =>
       runCommand(process.execPath, [FAKE, ...args], { ...options, timeoutMs: 300, env: childEnvironment({ FAKE_MODE: 'sleep' }, options.env) })
   });
