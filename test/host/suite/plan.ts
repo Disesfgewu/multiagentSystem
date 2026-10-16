@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { planTreeForTests, PLAN_COMMANDS, PLAN_VIEW } from '../../../src/plan/planView';
+import { setReportDepsForTests, REPORT_SCHEME } from '../../../src/reports/reportsView';
 
 export async function runPlanChecks(workspace: string): Promise<string> {
   const commands = await vscode.commands.getCommands(true);
@@ -32,6 +33,7 @@ export async function runPlanChecks(workspace: string): Promise<string> {
   const tasks = await tree.getChildren(sections?.[0]);
   assert.equal(tasks?.length, 100);
   assert.equal(tasks?.[99]?.label, 'M1-100 Task 100');
+  assert.match(String((await tree.getChildren(tasks?.[99]))?.[0]?.label), /待連結/);
   await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'done');
   assert.match(String((await tree.getChildren())?.[0]?.label), /No recorded TODOs/);
   const completed = new vscode.WorkspaceEdit();
@@ -46,16 +48,37 @@ export async function runPlanChecks(workspace: string): Promise<string> {
   assert.equal((await tree.getChildren(openSections?.[0]))?.length, 99);
   await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'all');
   const unsaved = new vscode.WorkspaceEdit();
-  unsaved.replace(uri, new vscode.Range(2, 0, 2, lines[2].length), '- [ ] M1-001 Task 1 updated');
+  unsaved.replace(uri, new vscode.Range(2, 0, 2, lines[2].length), '- [ ] M1-001 Task 1 updated。負責：PM；依賴：#412；證據：PR #407；');
   assert.equal(await vscode.workspace.applyEdit(unsaved), true);
   const liveTasks = await tree.getChildren(sections?.[0]);
   assert.equal(liveTasks?.[0]?.label, 'M1-001 Task 1', 'a stale section retains its snapshot until refresh');
   const refreshed = await tree.getChildren();
   const currentTasks = await tree.getChildren(refreshed?.[0]);
   assert.equal(currentTasks?.[0]?.label, 'M1-001 Task 1 updated', 'unsaved changes appear in Core Plan');
+  const links = (await tree.getChildren(currentTasks?.[0])) ?? [];
+  assert.deepEqual(links.map((link) => link.label), ['Issue #412', 'PR #407']);
+  const head = 'a'.repeat(40);
+  setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => ({
+    listIssues: async () => ({ kind: 'empty' }),
+    getIssue: async (number) => ({ kind: 'ok', data: { number, title: 'Linked requirement', state: 'open', body: 'Core Plan linked this Issue.' } }),
+    getIssueComments: async () => ({ kind: 'empty' }),
+    listPullRequests: async () => ({ kind: 'empty' }),
+    getPullRequest: async (number) => ({ kind: 'ok', data: { number, title: 'Linked delivery', state: 'open', headSha: head, body: 'Core Plan linked this PR.' } }),
+    getPullRequestFiles: async () => ({ kind: 'empty' }),
+    getPullRequestSnapshot: async () => ({ status: 'partial' }),
+    getReviews: async () => ({ kind: 'empty' })
+  }) });
+  try {
+    for (const [index, expected] of ['Issue #412: Linked requirement', 'Pull request #407: Linked delivery'].entries()) {
+      const command = links[index].command!;
+      await vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
+      assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, REPORT_SCHEME);
+      assert.ok(vscode.window.activeTextEditor?.document.getText().includes(expected), 'TODO links open the corresponding report without a browser or typed number');
+    }
+  } finally { setReportDepsForTests(undefined); }
   await vscode.commands.executeCommand(PLAN_COMMANDS.open, { line: 101 });
   assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, uri.fsPath);
   assert.equal(vscode.window.activeTextEditor?.selection.active.line, 101);
   await vscode.commands.executeCommand(PLAN_COMMANDS.returnToOverview);
-  return 'host smoke: Core Plan can be created, filters 100 TODOs by status, opens a source line, and returns to Overview';
+  return 'host smoke: Core Plan filters 100 TODOs, opens linked Issue/PR reports and the source line, and returns to Overview';
 }
