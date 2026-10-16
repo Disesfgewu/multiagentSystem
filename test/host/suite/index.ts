@@ -7,7 +7,11 @@ import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
+import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
+import { privateStorage } from '../../../src/storage/storageCommands';
+import { builtIn } from '../../../src/providers/registry';
+import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -180,7 +184,7 @@ async function accountFlow(workspace: string): Promise<void> {
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
-async function roleFlow(): Promise<void> {
+async function roleFlow(workspace: string): Promise<void> {
   const saved = await saveRoleRecord({
     group: {
       id: 'host-pm', name: 'Host PM', role: 'pm', provider: 'claude', version: 1,
@@ -211,6 +215,21 @@ async function roleFlow(): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
   assert.equal(fs.existsSync(path.join(workspaceRoot, 'effective-rules.txt')), false, 'no preview file appears in the project');
 
+  // Two editor windows that read the same private record cannot overwrite each other.
+  const privateHandle = await privateStorage()?.use();
+  assert.equal(privateHandle?.ok, true);
+  const loadedRole = privateHandle.store.get('roleGroups', 'host-pm');
+  assert.equal(loadedRole.ok && 'found' in loadedRole && loadedRole.found, true);
+  const first = (loadedRole as { value: Parameters<typeof saveRoleRecord>[0] & { revision: number } }).value;
+  const second = structuredClone(first);
+  first.group.rules[0].text = 'Review the latest approved head.';
+  assert.equal((await saveRoleRecord(first, first.revision)).ok, true);
+  second.group.rules[0].text = 'Stale instruction.';
+  assert.equal((await saveRoleRecord(second, second.revision)).reason, 'stale-revision');
+  const latestRole = privateHandle.store.get('roleGroups', 'host-pm');
+  assert.equal(latestRole.ok && 'found' in latestRole && latestRole.found, true);
+  assert.equal((latestRole as { value: { group: { rules: Array<{ text: string }> } } }).value.group.rules[0].text, 'Review the latest approved head.');
+
   // agy has no known way to receive rules: its preview must say they have to be given by hand.
   const agy = await saveRoleRecord({
     group: { id: 'host-agy', name: 'Host Agy', role: 'worker', provider: 'agy', version: 1, defaultAccountProfileId: null,
@@ -221,7 +240,99 @@ async function roleFlow(): Promise<void> {
   const agyText = (await vscode.workspace.openTextDocument(previewUri('host-agy'))).getText();
   assert.match(agyText, /Not supported by this provider: give these rules to the agent by hand/);
   assert.match(agyText, /<not supported: give by hand>/);
+  const agyWithDefault = {
+    group: { ...structuredClone((privateHandle.store.get('roleGroups', 'host-agy') as { value: { group: object } }).value.group),
+      id: 'host-agy-bound', name: 'Agy With Default', defaultAccountProfileId: 'acct-synthetic' },
+    layers: {}
+  } as Parameters<typeof saveRoleRecord>[0];
+  assert.equal((await saveRoleRecord(agyWithDefault)).ok, true);
+  const refusedAgy = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy-bound', name: 'Agy Default Refused', cwd: workspace, launch: false
+  });
+  assert.deepEqual([refusedAgy.ok, refusedAgy.code], [false, 'role-group-account-isolation-unknown']);
+  const refusedFromRole = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(ROLE_COMMANDS.start, {
+    id: 'host-agy-bound', interactive: false, name: 'Agy Role Refused', cwd: workspace, launch: false
+  });
+  assert.deepEqual([refusedFromRole.ok, refusedFromRole.code], [false, 'role-group-account-isolation-unknown']);
+  assert.equal(vscode.window.terminals.some((terminal) => /Agy (Default|Role) Refused/.test(terminal.name)), false);
+
+  // Assigning a role group to a NEW session: checked against the provider, fixed for that session, shown in the overview.
+  const start = (options: object): Thenable<{ ok: boolean; code?: string; session?: { id: string; roleGroupId: string; provider: string } }> =>
+    vscode.commands.executeCommand('multiagentSystem.sessions.start', { interactive: false, provider: 'claude', name: 'Role Session', cwd: workspace, launch: false, ...options });
+  const refused = async (options: object, code: string): Promise<void> => {
+    const result = await start(options);
+    assert.deepEqual([result.ok, result.code], [false, code], JSON.stringify(options));
+  };
+  await refused({ roleGroupId: 'host-agy' }, 'role-group-provider-mismatch');
+  await refused({ roleGroupId: 'no-such-role' }, 'role-group-not-found');
+  await refused({ roleGroupId: '../escape' }, 'invalid-role-group');
+  await refused({ roleGroupId: 'unassigned' }, 'invalid-role-group');
+  assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Role Session'), false, 'a refused assignment opens no terminal');
+  const assigned = await start({ roleGroupId: 'host-pm' });
+  assert.equal(assigned.ok, true);
+  assert.equal(assigned.session?.roleGroupId, 'host-pm');
+  const viaRole = await vscode.commands.executeCommand<{ ok: boolean; session?: { roleGroupId: string; name: string } }>(ROLE_COMMANDS.start, { id: 'host-pm', interactive: false, name: 'Started From Role', launch: false });
+  assert.equal(viaRole.ok, true);
+  assert.equal(viaRole.session?.roleGroupId, 'host-pm', 'the Start Agent command assigns the group to the new session');
+  try {
+    const rows = (await overviewTreeForTests().getChildren()) ?? [];
+    const row = rows.find((entry) => entry.label === 'Role Session');
+    assert.ok(row, 'the assigned session is in the overview');
+    assert.match(String(row?.description ?? ''), /^Host PM · /, 'the overview shows the role group name');
+    assert.match(String(row?.tooltip ?? ''), /not sent to the CLI yet/);
+    const after = await vscode.commands.executeCommand<{ sessions?: Array<{ id: string; roleGroupId: string }> }>('multiagentSystem.sessions.list', { interactive: false });
+    assert.equal(after.sessions?.find((entry) => entry.id === assigned.session?.id)?.roleGroupId, 'host-pm');
+  } finally {
+    for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name === 'Multiagent: Role Session' || candidate.name === 'Multiagent: Started From Role')) terminal.dispose();
+  }
+  assert.equal(privateHandle.store.put('roleGroups', 'broken', { group: { id: 'broken' }, layers: {} }).ok, true);
+  try {
+    await assert.rejects(pickRoleForLaunch('agy'), (error: { code?: string }) => error.code === 'role-group-unreadable',
+      'a malformed private role is not treated as an empty list');
+  } finally {
+    privateHandle.store.delete('roleGroups', 'broken');
+  }
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
+}
+
+async function agyFlow(workspace: string): Promise<void> {
+  const capabilities = builtIn.get('agy')?.capabilities;
+  assert.ok(capabilities);
+  assert.equal(capabilities.terminalLaunch, 'unverified');
+  for (const [name, state] of Object.entries(capabilities)) {
+    if (name !== 'terminalLaunch') assert.equal(state, 'unknown', `${name} must stay unknown`);
+  }
+  const sentinel = process.env.MULTIAGENT_TEST_AGY_SENTINEL;
+  assert.ok(sentinel);
+  const cannotAssignAccount = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy', accountProfileId: 'acct-synthetic',
+    name: 'Agy Account Refused', cwd: workspace, launch: false
+  });
+  assert.equal(cannotAssignAccount.code, 'account-isolation-unknown');
+  assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Agy Account Refused'), false);
+  const command = (name: string): Thenable<SessionOutcome> => vscode.commands.executeCommand('multiagentSystem.sessions.start', {
+    interactive: false, provider: 'agy', roleGroupId: 'host-agy', name, cwd: workspace, launch: true
+  });
+  const started = await command('Agy Fake');
+  assert.equal(started.ok, true);
+  assert.equal(started.session?.state, 'launch-requested', 'typing a CLI command is not proof it is working');
+  assert.equal(started.session?.provider, 'agy');
+  await waitFor(() => fs.existsSync(sentinel) ? true : undefined, 20000);
+  assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'synthetic');
+  if (started.session?.id) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session.id });
+
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = path.join(path.dirname(sentinel), 'missing-cli-bin');
+    const missing = await command('Agy Missing');
+    assert.equal(missing.ok, false);
+    assert.equal(missing.code, 'executable-not-found');
+    assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Agy Missing'), false, 'missing agy opens no terminal');
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+  console.log('host smoke: synthetic agy starts in a native terminal; capabilities remain unknown; missing executable is actionable');
 }
 
 interface Outcome {
@@ -339,7 +450,8 @@ export async function run(): Promise<void> {
 
   await sessionFlow(workspace);
   await accountFlow(workspace);
-  await roleFlow();
+  await roleFlow(workspace);
+  await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
   assert.ok(worktreeTarget, 'the worktree test folder is provided');

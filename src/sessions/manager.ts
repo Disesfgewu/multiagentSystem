@@ -63,6 +63,8 @@ export interface ManagerDeps<T extends TerminalHandle> {
   terminals: TerminalHost<T>;
   /** provider id -> executable typed into the terminal. Unknown providers are refused. */
   providers: Readonly<Record<string, string>>;
+  /** Preflight only; a true result is not proof that the CLI later started. */
+  executableAvailable?: (executable: string) => boolean;
   resolveProject(cwd: string): Promise<{ repoId: string }>;
   /** True only for an existing directory. */
   directoryExists(path: string): boolean;
@@ -300,6 +302,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   }
 
   private open(identity: SessionIdentity, name: string, executable: string, launch: boolean, env?: Record<string, string | null>): SessionView {
+    if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
+      throw new SessionError('executable-not-found');
+    }
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
     const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();

@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
   sessions = registerSessionCommands(context);
   registerAccountCommands(context, sessions);
   registerOverview(context, sessions);
-  registerRoleCommands(context);
+  registerRoleCommands(context, sessions);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
 }

@@ -55,6 +55,7 @@ function presentAgent(row, session) {
       `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
       `Pull request: ${pr}`,
       `CI: ${ci}`,
+      ...(row.role.state === 'known' ? ['The role group is read from its current definition. Its rules are not sent to the CLI yet, so editing it does not change what an agent that is already started was told.'] : []),
       'Fields marked unknown have no verified source yet.'
     ],
     terminalOpen: session?.terminalOpen === true,
