@@ -1,6 +1,6 @@
 # M1 首次啟用工具來源清單（#73 第一切片）
 
-擷取日期：**2026-10-16**。本清單只核對供應商公開文件、發行資產名稱與發行端公布的 SHA-256；**沒有下載或執行任何工具二進位檔，也沒有完成授權審查、VSIX 打包或乾淨機器驗收**。「有資產」不等於「可以合法放進 VSIX」或「已在該平台運作」。固定版本是後續實作的候選鎖定點，更新時必須重新核對來源、完整性、相依授權與四平台執行結果。
+擷取日期：**2026-10-16**。本清單只核對供應商公開文件、發行資產名稱與發行端公布的 SHA-256，並驗證 Claude Code 2.1.89 manifest 的官方簽章；**沒有下載或執行任何工具二進位檔，也沒有完成授權審查、VSIX 打包或乾淨機器驗收**。「有資產」不等於「可以合法放進 VSIX」或「已在該平台運作」。固定版本是後續實作的候選鎖定點，更新時必須重新核對來源、完整性、相依授權與四平台執行結果。
 
 ## 用途與交付判定
 
@@ -26,7 +26,7 @@
 | Codex CLI | [x86_64 Apple tar.gz](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-apple-darwin.tar.gz) `562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1` | [aarch64 Apple tar.gz](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-aarch64-apple-darwin.tar.gz) `61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10` | [x86_64 Windows exe](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-pc-windows-msvc.exe) `2692c8c7bb2cf8b0aefe638741fc90236f4b824c59578ce84994f9de58200993` | [aarch64 Windows exe](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-aarch64-pc-windows-msvc.exe) `babd1ee5a76e4299d18f7ef99aa39d330e176e837566d3e2325d9b6b64e1ca61` |
 | agy | **未驗證**：查不到固定資產與雜湊 | **未驗證**：同左 | **未驗證**：同左 | **未驗證**：同左 |
 
-`gh`、Git for Windows 與 Codex 的 hash 來自對應 GitHub Releases 官方 API `assets[].digest`，並可在上述發行頁逐項核對。Claude 的值來自官方 manifest；官方文件列出 manifest 的 GPG 簽名、金鑰指紋 `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`，以及 macOS notarization／Windows Authenticode 驗證方式；**本次尚未執行簽章驗證**。[官方驗證說明](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
+`gh`、Git for Windows 與 Codex 的 hash 來自對應 GitHub Releases 官方 API `assets[].digest`，並可在上述發行頁逐項核對。Claude 的值來自官方 manifest；本次下載**公開的金鑰、manifest 與 detached signature**，在獨立臨時 GPG keyring 核對官方指紋 `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` 並驗證 2.1.89 manifest 的簽章通過。macOS notarization、Windows Authenticode 與二進位自身 hash 仍未驗證。[官方驗證說明](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
 
 ## VSIX 與安裝能力結論
 
@@ -40,4 +40,4 @@ VS Code 官方支援 `darwin-x64`、`darwin-arm64`、`win32-x64`、`win32-arm64`
 
 ## 本切片驗證邊界
 
-只查閱官方頁面、官方 GitHub 發行 metadata 與 Claude 公開 manifest；沒有下載、安裝、登入或執行真實 CLI。沒有驗證四平台二進位實際 hash、簽章、可執行性、VSIX 內容、授權履行、原生 terminal PATH、升級／移除與乾淨機器體驗。這些是 #73 後續 PR 和使用者實機驗收的工作。
+只查閱官方頁面、官方 GitHub 發行 metadata，並核對 Claude 公開 manifest 的簽章；沒有下載、安裝、登入或執行真實 CLI。沒有驗證四平台二進位實際 hash、平台簽章、可執行性、VSIX 內容、授權履行、原生 terminal PATH、升級／移除與乾淨機器體驗。這些是 #73 後續 PR 和使用者實機驗收的工作。
