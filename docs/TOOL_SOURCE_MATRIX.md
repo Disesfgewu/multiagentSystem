@@ -41,3 +41,11 @@ VS Code 官方支援 `darwin-x64`、`darwin-arm64`、`win32-x64`、`win32-arm64`
 ## 本切片驗證邊界
 
 只查閱官方頁面、官方 GitHub 發行 metadata，並核對 Claude 公開 manifest 的簽章；沒有下載、安裝、登入或執行真實 CLI。沒有驗證四平台二進位實際 hash、平台簽章、可執行性、VSIX 內容、授權履行、原生 terminal PATH、升級／移除與乾淨機器體驗。這些是 #73 後續 PR 和使用者實機驗收的工作。
+
+## `gh` 首次設定實作狀態（2026-10-16）
+
+Tools Setup 畫面會顯示 Git、`gh`、Claude Code、Codex CLI 與 agy 的狀態。只有從上表固定的 GitHub 官方 HTTPS 資產下載、SHA-256 相符、解壓出唯一預期執行檔，且目前檔案再次通過 SHA-256 檢查的 `gh` 會顯示 Ready。下載中斷、離線、雜湊不符、格式異常、紀錄缺漏或受管路徑遭替換時都不加入 PATH，使用者可從同一畫面重試。
+
+安裝位置由 VS Code 的擴充套件全域儲存目錄提供；每次操作先經 PrivateStore 的 repo 外驗證。安裝採 staging、不可變版本目錄與最後切換的指標檔，PATH 只指向目前驗證通過的受管 `gh`。ZIP 解壓使用 `fflate` 0.8.3，授權全文收錄於 `THIRD_PARTY_NOTICES.md`。
+
+Git、Claude Code、Codex CLI 與 agy 目前只報告 PATH 上是否找到命令；這不是來源、版本、登入、身份、額度或規則注入的證據，因此畫面明確顯示未準備或未驗證。本次在 macOS arm64 下載固定的官方 `gh` 資產，重新計算 SHA-256 並執行 `gh --version` 確認為 2.102.0；其餘三個平台、乾淨機器、登入、視覺與易用性仍待實機驗證。
