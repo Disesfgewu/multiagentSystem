@@ -7,7 +7,9 @@ import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explai
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, limitLines } from './quotaGateUi';
 
-const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
+const { accountProviderChoices } = require('./provider-choices') as {
+  accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
+};
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
 const { checkAccountIdentity, describeCheck, splitFolderIssues } = require('./identity-check') as {
   splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
@@ -236,9 +238,13 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
 }
 
 async function create(): Promise<void> {
-  const providers = Object.keys(PROVIDERS).map((id) => ({ id, label: builtIn.get(id)?.label ?? id }));
+  const providers = accountProviderChoices();
   const picked = await vscode.window.showQuickPick(providers, { placeHolder: 'Choose a CLI provider for this account' });
   if (!picked) return;
+  if (!picked.canCreateProfile) {
+    void vscode.window.showWarningMessage(`${picked.label} can launch in a terminal, but separate account profiles are unavailable. Account isolation, identity verification and quota/usage are unknown. Use the CLI's default sign-in; no account profile or configuration folder was created.`);
+    return;
+  }
   const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
   if (!label) return;
   const result = await accountService(() => sessions?.list() ?? []);
