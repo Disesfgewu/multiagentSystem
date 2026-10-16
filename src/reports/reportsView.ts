@@ -29,6 +29,7 @@ export interface ReportReader {
   getIssueComments(number: number): Promise<Result>;
   listPullRequests(filter: { state: 'open' }): Promise<Result>;
   getPullRequest(number: number): Promise<Result>;
+  getPullRequestFiles(number: number): Promise<Result>;
   getPullRequestSnapshot(number: number): Promise<any>;
   getReviews(number: number): Promise<Result>;
 }
@@ -135,9 +136,9 @@ export async function reportText(kind: Kind, number: number): Promise<string> {
       if (issue.kind !== 'ok' || !issue.data) return `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`;
       return render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests }));
     }
-    const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
+    const [pullRequest, snapshot, reviews, comments, files] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number), reader.getPullRequestFiles(number)]);
     if (pullRequest.kind !== 'ok' || !pullRequest.data) return `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`;
-    return render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments }));
+    return render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files }));
   } catch {
     return `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`;
   }

@@ -6,14 +6,15 @@ const HEAD = 'd'.repeat(40);
 
 function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
   const issues = [{ number: 12, title: 'Read reports in the editor', state: 'open', labels: ['mvp'], assignees: [], body: 'The user reads a report without a number.', author: 'pm-user' }, { number: 13, title: 'Second issue', state: 'open', labels: [], assignees: [], body: 'Another.', author: 'pm-user' }];
-  const prs = [{ number: 7, title: 'Add reports', state: 'open', draft: false, headRef: 'feat/reports', headSha: HEAD, baseRef: 'main', author: 'worker', body: 'Refs #12', referencedIssues: [{ number: 12 }] }, { number: 8, title: 'Second PR', state: 'open', draft: true, headRef: 'feat/two', headSha: HEAD, baseRef: 'main', author: 'worker', body: 'x', referencedIssues: [] }];
+  const prs = [{ number: 7, title: 'Add reports', state: 'open', draft: false, headRef: 'feat/reports', headRepository: 'external/reports', headSha: HEAD, baseRef: 'main', author: 'external-worker', body: 'Refs #12', referencedIssues: [{ number: 12 }] }, { number: 8, title: 'Second PR', state: 'open', draft: true, headRef: 'feat/two', headRepository: 'host/repo', headSha: HEAD, baseRef: 'main', author: 'worker', body: 'x', referencedIssues: [] }];
   return {
     listIssues: async () => ({ kind: 'ok', data: issues }),
     getIssue: async (n) => ({ kind: 'ok', data: issues.find((entry) => entry.number === n) }),
     getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'pm-user', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
     listPullRequests: async () => ({ kind: 'ok', data: prs }),
     getPullRequest: async (n) => ({ kind: 'ok', data: prs.find((entry) => entry.number === n) }),
-    getPullRequestSnapshot: async () => ({ status: 'complete', approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0 }),
+    getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
+    getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0 }),
     getReviews: async () => ({ kind: 'ok', data: [] }),
     ...over
   };
@@ -55,7 +56,7 @@ export async function runReportChecks(): Promise<string> {
     // a pull request report ties the verdict and CI to the latest head
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const prText = vscode.window.activeTextEditor?.document.getText() ?? '';
-    for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD.slice(0, 12)}`, 'Refers to: Issue #12', 'CI for this head: passing', 'verdict "Pass" applies to the current head', 'it cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+    for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'it cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
 
     // a report cannot be written to a file
     await assert.rejects(Promise.resolve(vscode.workspace.fs.writeFile(reportUri('pullRequest', 7), Buffer.from('x'))));

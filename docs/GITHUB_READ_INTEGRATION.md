@@ -72,7 +72,7 @@ repo 的決定順序：命令的 `repository` 選項 → 工作區資料夾的 G
 活動列 Multiagent 內的「Issues Report」「PRs Report」列出專案的開放 Issue／PR（只在讀取完整時才顯示清單；不完整或失敗只顯示原因，不當成完整清單）。點選任一項會在編輯器內開啟唯讀報告，不需輸入編號、不開瀏覽器：
 
 - **Issue 報告**：需求與範圍、標籤與受理人、相關的開放 PR、討論與 PM 留言、決策（本切片沒有可做的決策）、未驗證事項。
-- **PR 報告**：作者的描述、對應 Issue、最新 head、對最新 head 的正式核准狀態與 CI（checks 的 head 必須與 PR 的 head 相同，否則為未知）、GitHub 上的正式 review（標示在最新或較舊的 head 上）、PM／reviewer 留言（留言中的「結論：Pass／Needs changes」與其 `head` 會被讀出，並標示是否涵蓋最新 head；沒寫 head 就說沒寫）。
+- **PR 報告**：作者的描述、對應 Issue、完整最新 head SHA、head repository 與 fork／本 repo 來源、變更檔案及限長的純文字 patch 預覽、對最新 head 的正式核准狀態與 CI（checks 的 head 必須與 PR 的 head 相同，否則為未知）、GitHub 上的正式 review（標示在最新或較舊的 head 上）、PM／reviewer 留言（留言中的「結論：Pass／Needs changes」與其 `head` 會被讀出，並標示是否涵蓋最新 head；沒寫 head 就說沒寫）。檔案清單由官方 GitHub REST `pulls/{number}/files` 唯讀取得，分頁不完整、來源缺漏或 head 在讀取期間變動均顯示未知。patch 可能由 GitHub 省略或因畫面長度限制只顯示片段；需檢視完整差異時不得把此預覽視為完整 diff。
 - 報告是虛擬唯讀文件，不能存成檔案；編輯器標題列有「返回總覽」「上一份」「下一份」。
 - **這個切片只能讀**：不會核准、要求修改、合併或留言；PM 報告的產生與版本化、報告佇列與決策狀態（B）、受控寫入（C）都還沒做。GitHub 上同一帳號的留言是技術留言，不是正式核准。
 - 未驗證：真實 GitHub 帳號與權限、分頁與大量留言；macOS／原生 Windows 的實機視覺與易用性。

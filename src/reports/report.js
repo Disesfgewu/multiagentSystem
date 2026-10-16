@@ -30,8 +30,12 @@ const WHAT_IS_NOT_VERIFIED = Object.freeze([
   'The look and usability of this screen have not been confirmed on a real macOS or Windows machine.'
 ]);
 
-const complete = (result) => Boolean(result) && (result.kind === 'ok' || result.kind === 'empty');
-const dataOf = (result) => (complete(result) && Array.isArray(result.data) ? result.data : null);
+const complete = (result) => Boolean(result) && (result.kind === 'empty' || (result.kind === 'ok' && Array.isArray(result.data)));
+const dataOf = (result) => {
+  if (!complete(result)) return null;
+  if (result.kind === 'empty') return [];
+  return Array.isArray(result.data) ? result.data : null;
+};
 const readNote = (what, result) => {
   if (complete(result)) return null;
   const kind = result && typeof result.kind === 'string' ? result.kind : 'not read';
@@ -107,17 +111,42 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
 }
 
 /**
- * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object }} input
+ * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, files?: object }} input
  */
-function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments }) {
+function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, files }) {
   const pr = pullRequest;
   const head = typeof pr.headSha === 'string' ? pr.headSha : null;
   const lines = [...header('Pull request', repository, pr)];
-  lines.push(`Branch: ${line(pr.headRef ?? 'unknown', 100)} → ${line(pr.baseRef ?? 'unknown', 60)}`);
-  lines.push(`Latest head: ${head ? head.slice(0, 12) : 'unknown'}`);
+  const headRepository = line(pr.headRepository, 120);
+  const source = !headRepository ? 'unknown (head repository was not read)'
+    : headRepository.toLowerCase() === String(repository).toLowerCase() ? 'this repository branch' : 'fork / external contributor';
+  lines.push(`Source: ${source}`);
+  lines.push(`Head repository: ${headRepository || 'unknown'} · Branch: ${line(pr.headRef ?? 'unknown', 100)} → ${line(pr.baseRef ?? 'unknown', 60)}`);
+  lines.push(`Latest head: ${head ? line(head, 40) : 'unknown'}`);
   const referenced = Array.isArray(pr.referencedIssues) ? pr.referencedIssues.filter((ref) => ref && Number.isSafeInteger(ref.number)) : [];
   lines.push(`Refers to: ${referenced.length ? referenced.map((ref) => `Issue #${ref.number}`).join(', ') : '(no Issue reference found)'}`);
   lines.push('', 'WHAT THIS CHANGES (author\'s description)', block(pr.body, 20000));
+
+  lines.push('', 'CHANGED FILES AND DIFF (plain text preview)');
+  const fileNote = readNote('Changed files', files);
+  const fileItems = dataOf(files);
+  const sameHead = snapshot && snapshot.status === 'complete' && snapshot.consistent === true &&
+    typeof snapshot.headSha === 'string' && head && snapshot.headSha.toLowerCase() === head.toLowerCase();
+  if (!sameHead) lines.push('Diff for this head: unknown (the head changed during the read, or its version could not be verified).');
+  else if (fileNote) lines.push(fileNote);
+  else if (fileItems.length === 0) lines.push('No changed files were reported.');
+  else {
+    const shown = fileItems.slice(0, 12);
+    lines.push(`Showing ${shown.length} of ${fileItems.length} changed files. Patch text is limited; omitted content must be reviewed separately.`);
+    for (const file of shown) {
+      const name = line(file && file.filename, 240) || '(filename unavailable)';
+      const status = line(file && file.status, 30) || 'unknown';
+      const additions = Number.isSafeInteger(file && file.additions) ? file.additions : 'unknown';
+      const deletions = Number.isSafeInteger(file && file.deletions) ? file.deletions : 'unknown';
+      lines.push(`- ${name} (${status}; +${additions}/-${deletions})`);
+      lines.push(file && typeof file.patch === 'string' ? block(file.patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
+    }
+  }
 
   lines.push('', 'REVIEW AND CI (for the latest head)');
   if (!snapshot || snapshot.status !== 'complete') lines.push(`Review and CI: unknown (${line(snapshot && snapshot.status ? snapshot.status : 'not read', 30)}). The read was not complete, so nothing is concluded.`);

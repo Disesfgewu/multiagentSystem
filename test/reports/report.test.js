@@ -9,8 +9,8 @@ const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
 const ok = (data) => ({ kind: 'ok', data });
 const issue = (over = {}) => ({ number: 12, title: 'Build the report view', state: 'open', author: 'pm-user', labels: ['mvp', 'ready'], assignees: [], body: 'The user must read a report without a number.', updatedAt: '2026-10-16T00:00:00Z', ...over });
-const pr = (over = {}) => ({ number: 7, title: 'Add reports', state: 'open', draft: false, merged: false, author: 'worker', headSha: HEAD, headRef: 'feat/x', baseRef: 'main', body: 'Refs #12\n\n**使用者可操作結果：** x', referencedIssues: [{ number: 12 }], updatedAt: 'now', ...over });
-const snapshot = (over = {}) => ({ status: 'complete', approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0, ...over });
+const pr = (over = {}) => ({ number: 7, title: 'Add reports', state: 'open', draft: false, merged: false, author: 'worker', headSha: HEAD, headRef: 'feat/x', headRepository: 'o/r', baseRef: 'main', body: 'Refs #12\n\n**使用者可操作結果：** x', referencedIssues: [{ number: 12 }], updatedAt: 'now', ...over });
+const snapshot = (over = {}) => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0, ...over });
 const comment = (body, over = {}) => ({ author: 'pm-user', createdAt: '2026-10-16T01:00:00Z', body, ...over });
 const prReport = (over = {}) => render(buildPullRequestReport({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot(), reviews: ok([]), comments: ok([]), ...over }));
 const issueReport = (over = {}) => render(buildIssueReport({ repository: 'o/r', issue: issue(), comments: ok([]), pullRequests: ok([pr()]), ...over }));
@@ -24,6 +24,7 @@ test('an issue report shows the requirement, labels, related pull requests, disc
 test('an issue with no related pull request says so; an unread list is unknown, never "none"', () => {
   assert.match(issueReport({ pullRequests: ok([pr({ referencedIssues: [{ number: 99 }] })]) }), /No open pull request refers to this Issue\./);
   assert.match(issueReport({ pullRequests: ok([]) }), /No open pull request refers to this Issue\./);
+  assert.match(issueReport({ pullRequests: { kind: 'empty' } }), /No open pull request refers to this Issue\./);
   for (const kind of ['partial', 'truncated', 'denied', 'offline', 'rate_limited', 'invalid']) {
     const text = issueReport({ pullRequests: { kind, data: [pr()] } });
     assert.match(text, new RegExp(`Pull request list: unknown \\(${kind}\\)`), kind);
@@ -35,14 +36,43 @@ test('an issue with no related pull request says so; an unread list is unknown, 
 
 test('comments that could not be read are unknown, empty ones say no comments', () => {
   assert.match(issueReport({ comments: ok([]) }), /No comments\./);
-  assert.match(issueReport({ comments: { kind: 'empty', data: [] } }), /No comments\./);
+  assert.match(issueReport({ comments: { kind: 'empty' } }), /No comments\./);
+  assert.match(prReport({ comments: { kind: 'empty' } }), /No comments\./);
+  assert.match(prReport({ comments: { kind: 'ok' } }), /Comments: unknown \(ok\)/);
+  assert.match(prReport({ reviews: { kind: 'ok' } }), /Reviews: unknown \(ok\)/);
   assert.match(issueReport({ comments: { kind: 'partial', data: [comment('x')] } }), /Comments: unknown \(partial\)/);
   assert.match(issueReport({ comments: undefined }), /Comments: unknown \(not read\)/);
 });
 
 test('a pull request report ties review and CI to the latest head', () => {
   const text = prReport();
-  for (const part of ['Pull request #7: Add reports', 'Branch: feat/x → main', `Latest head: ${HEAD.slice(0, 12)}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'it cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
+  for (const part of ['Pull request #7: Add reports', 'Source: this repository branch', 'Head repository: o/r · Branch: feat/x → main', `Latest head: ${HEAD}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'it cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
+});
+
+test('a complete empty reviews result keeps the rest of the pull request readable', () => {
+  const text = prReport({ reviews: { kind: 'empty' }, comments: { kind: 'empty' }, files: { kind: 'empty' } });
+  assert.match(text, /WHAT THIS CHANGES[\s\S]*Refs #12/);
+  assert.match(text, /No changed files were reported\./);
+  assert.match(text, /No formal reviews\./);
+  assert.match(text, /No comments\./);
+  assert.match(text, /CI for this head: passing/);
+});
+
+test('fork source and plain diff are shown only when the exact head is verified; failures stay unknown', () => {
+  const files = ok([{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: `@@ -1 +1 @@\n-old\n+new${cp(0x202e)}${cp(0)}` }]);
+  const fork = prReport({ pullRequest: pr({ headRepository: 'outside/fork', author: 'outside-worker', headRef: 'feat/x' }), files });
+  assert.match(fork, /Source: fork \/ external contributor/);
+  assert.match(fork, /Head repository: outside\/fork · Branch: feat\/x/);
+  assert.match(fork, /src\/x\.ts[\s\S]*\+new/);
+  assert.equal(fork.includes(cp(0x202e)), false);
+  assert.match(prReport({ pullRequest: pr({ headRepository: null }), files }), /Source: unknown/);
+  assert.match(prReport({ files: { kind: 'truncated', data: files.data } }), /Changed files: unknown \(truncated\)/);
+  assert.equal(prReport({ files: { kind: 'truncated', data: files.data } }).includes('+new'), false);
+  for (const stale of [snapshot({ consistent: false }), snapshot({ headSha: OLD })]) {
+    const text = prReport({ snapshot: stale, files });
+    assert.match(text, /Diff for this head: unknown/);
+    assert.equal(text.includes('+new'), false);
+  }
 });
 
 test('CI that belongs to another head, or could not be read, is unknown', () => {
