@@ -32,6 +32,19 @@ export async function runPlanChecks(workspace: string): Promise<string> {
   const tasks = await tree.getChildren(sections?.[0]);
   assert.equal(tasks?.length, 100);
   assert.equal(tasks?.[99]?.label, 'M1-100 Task 100');
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'done');
+  assert.match(String((await tree.getChildren())?.[0]?.label), /No recorded TODOs/);
+  const completed = new vscode.WorkspaceEdit();
+  completed.replace(uri, new vscode.Range(3, 0, 3, lines[3].length), '- [x] M1-002 Task 2');
+  assert.equal(await vscode.workspace.applyEdit(completed), true);
+  const doneSections = await tree.getChildren();
+  assert.equal(doneSections?.length, 1);
+  assert.equal((await tree.getChildren(doneSections?.[0]))?.[0]?.label, 'M1-002 Task 2');
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'open');
+  const openSections = await tree.getChildren();
+  assert.match(String(openSections?.[0]?.description), /99 open \/ 100 total/);
+  assert.equal((await tree.getChildren(openSections?.[0]))?.length, 99);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'all');
   const unsaved = new vscode.WorkspaceEdit();
   unsaved.replace(uri, new vscode.Range(2, 0, 2, lines[2].length), '- [ ] M1-001 Task 1 updated');
   assert.equal(await vscode.workspace.applyEdit(unsaved), true);
@@ -44,5 +57,5 @@ export async function runPlanChecks(workspace: string): Promise<string> {
   assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, uri.fsPath);
   assert.equal(vscode.window.activeTextEditor?.selection.active.line, 101);
   await vscode.commands.executeCommand(PLAN_COMMANDS.returnToOverview);
-  return 'host smoke: Core Plan can be created, lists 100 TODOs, opens a source line, and returns to Overview';
+  return 'host smoke: Core Plan can be created, filters 100 TODOs by status, opens a source line, and returns to Overview';
 }
