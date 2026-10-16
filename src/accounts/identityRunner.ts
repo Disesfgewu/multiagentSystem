@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
 
 export type RunOutcome = { code: number | null; stdout: string; timedOut?: boolean; truncated?: boolean; errorCode?: string };
 
@@ -18,39 +18,64 @@ export function runCommand(file: string, args: string[], options: { env: NodeJS.
   const grace = options.graceMs ?? GRACE_MS;
   return new Promise((resolve) => {
     let settled = false;
+    let stopping = false;
+    let overflow = false;
     const timers: NodeJS.Timeout[] = [];
+    const chunks: Buffer[] = [];
+    let size = 0;
     const finish = (outcome: RunOutcome): void => {
       if (settled) return;
       settled = true;
       for (const timer of timers) clearTimeout(timer);
       resolve(outcome);
     };
+    let child: ChildProcess;
     try {
-      const child = execFile(file, args, {
-        env: options.env,
-        maxBuffer: options.maxOutputBytes,
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8'
-      }, (error, stdout) => {
-        if (!error) { finish({ code: 0, stdout }); return; }
-        const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string | null; code?: string | number };
-        if (failure.code === 'ENOENT') { finish({ code: null, stdout: '', errorCode: 'ENOENT' }); return; }
-        if (failure.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') { finish({ code: null, stdout: '', truncated: true }); return; }
-        if (failure.killed === true && failure.signal) { finish({ code: null, stdout: '', timedOut: true }); return; }
-        if (typeof failure.code === 'number') { finish({ code: failure.code, stdout: typeof stdout === 'string' ? stdout : '' }); return; }
-        finish({ code: null, stdout: '', errorCode: typeof failure.code === 'string' ? failure.code : 'ERR_UNKNOWN' });
-      });
-      timers.push(setTimeout(() => {
-        try { child.kill('SIGTERM'); } catch { /* already gone */ }
-        timers.push(setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, grace));
-        // Whatever the child does, the caller is told at this point.
-        timers.push(setTimeout(() => finish({ code: null, stdout: '', timedOut: true }), grace + 500));
-      }, options.timeoutMs));
-      child.stdin?.end();
+      // spawn, not execFile: only spawn lets the child lead its own process group (POSIX), which is what
+      // lets a timeout stop the child AND anything it started. Standard error is never read.
+      child = spawn(file, args, { env: options.env, shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
       finish({ code: null, stdout: '', errorCode: 'ERR_SPAWN' });
+      return;
     }
+    // Stops the child and, where the platform allows, everything it started: the whole process group on
+    // POSIX, the process tree through taskkill on Windows. Falls back to the child alone.
+    const stop = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+      const pid = child.pid;
+      try {
+        if (pid && process.platform !== 'win32') { process.kill(-pid, signal); return; }
+        if (pid && process.platform === 'win32') { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); return; }
+      } catch { /* fall through to the child alone */ }
+      try { child.kill(signal); } catch { /* already gone */ }
+    };
+    child.stdout?.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > options.maxOutputBytes) {
+        if (!overflow) { overflow = true; stop('SIGKILL'); finish({ code: null, stdout: '', truncated: true }); }
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      const code = error.code;
+      if (code === 'ENOENT') finish({ code: null, stdout: '', errorCode: 'ENOENT' });
+      else if (code === 'EACCES' || code === 'EPERM') finish({ code: null, stdout: '', errorCode: 'EACCES' });
+      else finish({ code: null, stdout: '', errorCode: typeof code === 'string' ? code : 'ERR_UNKNOWN' });
+    });
+    child.on('close', (code) => {
+      // Once the time limit has stopped it, whatever the child reports is a timeout, however it died.
+      if (stopping) { finish({ code: null, stdout: '', timedOut: true }); return; }
+      if (overflow) { finish({ code: null, stdout: '', truncated: true }); return; }
+      if (code === null) { finish({ code: null, stdout: '', errorCode: 'ERR_SIGNAL' }); return; }
+      finish({ code, stdout: Buffer.concat(chunks).toString('utf8') });
+    });
+    timers.push(setTimeout(() => {
+      stopping = true;
+      stop('SIGTERM');
+      timers.push(setTimeout(() => stop('SIGKILL'), grace));
+      // Whatever the child does, the caller is told at this point.
+      timers.push(setTimeout(() => finish({ code: null, stdout: '', timedOut: true }), grace + 500));
+    }, options.timeoutMs));
   });
 }
 

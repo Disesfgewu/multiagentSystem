@@ -30,6 +30,13 @@ switch (mode) {
   case 'exit2-stderr': process.stderr.write(`failed for ${EMAIL}\n`); process.exitCode = 2; break;
   case 'stderr-ok': process.stderr.write(`warning for ${EMAIL}\n`); out(base); break;
   case 'ignore-sigterm': process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); break;
+  case 'grandchild': {
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.env.FAKE_CHILD_PIDFILE, String(process.pid)); setInterval(() => {}, 1000)'], { stdio: 'ignore', env: process.env });
+    child.unref();
+    setInterval(() => {}, 1000);
+    break;
+  }
   case 'crash': throw new Error(`crashed with ${EMAIL}`);
   default: process.exitCode = 9;
 }
