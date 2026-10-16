@@ -66,3 +66,13 @@ repo 的決定順序：命令的 `repository` 選項 → 工作區資料夾的 G
 - **CI**：只對符合 session 分支的 PR 讀取 snapshot（每次重新整理最多 20 個），checks 的 head SHA 必須與 PR 的 head SHA 完整相同，否則 CI 為未知。
 - 連結由儲存庫與 PR 編號自行組成，開啟前再檢查一次是 github.com 的網址；清單中沒有已驗證 PR 的列沒有「開啟 PR」按鈕。
 - 所有讀取都是唯讀 GET；沒有登入或沒有權限時顯示未知，不報錯。尚未驗證：真實 GitHub 帳號、權限與速率限制下的行為（只以假 reader 與真實 Git 測試）。
+
+## Issues Report 與 PRs Report（#106 A 切片，唯讀）
+
+活動列 Multiagent 內的「Issues Report」「PRs Report」列出專案的開放 Issue／PR（只在讀取完整時才顯示清單；不完整或失敗只顯示原因，不當成完整清單）。點選任一項會在編輯器內開啟唯讀報告，不需輸入編號、不開瀏覽器：
+
+- **Issue 報告**：需求與範圍、標籤與受理人、相關的開放 PR、討論與 PM 留言、決策（本切片沒有可做的決策）、未驗證事項。
+- **PR 報告**：作者的描述、對應 Issue、最新 head、對最新 head 的正式核准狀態與 CI（checks 的 head 必須與 PR 的 head 相同，否則為未知）、GitHub 上的正式 review（標示在最新或較舊的 head 上）、PM／reviewer 留言（留言中的「結論：Pass／Needs changes」與其 `head` 會被讀出，並標示是否涵蓋最新 head；沒寫 head 就說沒寫）。
+- 報告是虛擬唯讀文件，不能存成檔案；編輯器標題列有「返回總覽」「上一份」「下一份」。
+- **這個切片只能讀**：不會核准、要求修改、合併或留言；PM 報告的產生與版本化、報告佇列與決策狀態（B）、受控寫入（C）都還沒做。GitHub 上同一帳號的留言是技術留言，不是正式核准。
+- 未驗證：真實 GitHub 帳號與權限、分頁與大量留言；macOS／原生 Windows 的實機視覺與易用性。

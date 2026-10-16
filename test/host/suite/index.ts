@@ -6,6 +6,7 @@ import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
+import { runReportChecks } from './reports';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -430,6 +431,7 @@ export async function run(): Promise<void> {
   console.log(await runStorageChecks(registered, workspace));
   console.log(await runOverviewChecks(workspace));
   console.log(await runPlanChecks(workspace));
+  console.log(await runReportChecks());
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
   const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));

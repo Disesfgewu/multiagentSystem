@@ -8,7 +8,7 @@ const path = require('node:path');
 const root = path.join(__dirname, '..', '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const { contributes } = manifest;
-const VIEWS = ['multiagentSystem.overviewView', 'multiagentSystem.planView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView'];
+const VIEWS = ['multiagentSystem.overviewView', 'multiagentSystem.planView', 'multiagentSystem.issuesReportView', 'multiagentSystem.prsReportView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView'];
 
 test('the activity bar has a Multiagent container with an icon that exists', () => {
   const [container] = contributes.viewsContainers.activitybar;
@@ -54,4 +54,14 @@ test('the overview activates the extension, and the extension never declares unt
   assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.overviewView'));
   assert.equal(Object.hasOwn(manifest, 'capabilities'), false, 'no capabilities block, so Restricted Mode keeps the extension off');
   assert.equal(JSON.stringify(manifest).includes('untrustedWorkspaces'), false);
+});
+
+test('the report lists and the editor buttons for reading reports are declared', () => {
+  const declared = new Set(contributes.commands.map((entry) => entry.command));
+  for (const command of ['multiagentSystem.reports.open', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous', 'multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.refresh']) assert.ok(declared.has(command), command);
+  const editor = contributes.menus['editor/title'];
+  assert.deepEqual(editor.map((item) => item.command).sort(), ['multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous']);
+  for (const item of editor) assert.equal(item.when, 'resourceScheme == multiagent-report', 'the buttons appear only on a report');
+  assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.issuesReportView'));
+  assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.prsReportView'));
 });
