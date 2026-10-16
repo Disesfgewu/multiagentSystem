@@ -4,6 +4,8 @@ import { WorktreeService } from '../projects/worktrees';
 import {
   Category,
   GitHubAdapter,
+  GitHubReader,
+  parseRepository,
   GitHubCommandOptions,
   GitHubController,
   GitHubUi,
@@ -73,6 +75,12 @@ function getAdapter(): GitHubAdapter {
     }) as unknown as GitHubAdapter;
   }
   return adapter;
+}
+
+/** A read-only reader for one repository (`owner/name`), or null when the name is not valid. Used by the overview. */
+export function githubReaderFor(repository: string): GitHubReader | null {
+  const parsed = parseRepository(repository);
+  return parsed ? getAdapter().useRepository(parsed) : null;
 }
 
 const isUserDecline = (error: unknown): boolean => error instanceof Error && /did not consent|cancel/i.test(error.message);

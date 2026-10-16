@@ -14,6 +14,7 @@ const shown = (value, fallback = UNKNOWN) => {
   const text = typeof value === 'string' ? Array.from(cleanTitle(value)).slice(0, SHOWN_LIMIT).join('') : '';
   return text === '' ? fallback : text;
 };
+const CI_WORDS = Object.freeze(['passing', 'failing', 'pending', 'none']);
 
 const STATE_TEXT = Object.freeze({
   'terminal-open': 'terminal open, CLI not started',
@@ -40,10 +41,12 @@ function presentAgent(row, session) {
   const identity = row.account.state === 'known' ? (row.account.verified ? 'identity verified by the CLI' : 'identity unknown') : 'account unknown';
   const pr = row.pullRequest.state === 'open' ? `#${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}` : row.pullRequest.state === 'none' ? 'no open pull request' : UNKNOWN;
   const ci = row.ci.state === 'known' ? row.ci.value : UNKNOWN;
+  const prText = row.pullRequest.state === 'open' ? ` · PR #${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}${row.ci.state === 'known' && CI_WORDS.includes(row.ci.value) ? ` · CI ${row.ci.value}` : ''}` : '';
   return {
     id: row.sessionId,
     label: name,
-    description: `${role} · ${provider} · ${account} · ${stateText}`,
+    description: `${role} · ${provider} · ${account} · ${stateText}${prText}`,
+    pullRequestUrl: row.pullRequest.state === 'open' && typeof row.pullRequest.url === 'string' ? row.pullRequest.url : null,
     tooltip: [
       `Role: ${role}`,
       `Provider: ${provider}`,

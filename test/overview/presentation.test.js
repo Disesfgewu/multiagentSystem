@@ -133,3 +133,36 @@ test('a state that is a property of every object is unknown, never shown as an o
     assert.match(shown.description, /· unknown$/, state);
   }
 });
+
+test('a verified pull request and its checks appear in the row description, with a link only for an open pull request', () => {
+  const sha = 'a'.repeat(40);
+  const github = { kind: 'ok', fetchedAt: 'now', pullRequests: [{ pullRequest: { number: 12, title: 't', state: 'open', draft: false, headRef: 'feat/x', headSha: sha, headRepository: 'o/r' }, checks: { state: 'failing', requiredState: 'failing', headSha: sha } }] };
+  const built = (extra = {}) => buildOverview({ sessions: [session()], accounts: [account()], roleGroups: { worker: 'W' }, branches: { s1: 'feat/x' }, repository: 'o/r', github, ...extra }).rows[0];
+  const shown = presentAgent(built(), { name: 'A', providerLabel: 'P' });
+  assert.match(shown.description, /· PR #12 · CI failing$/);
+  assert.equal(shown.pullRequestUrl, 'https://github.com/o/r/pull/12');
+  const draft = JSON.parse(JSON.stringify(github));
+  draft.pullRequests[0].pullRequest.draft = true;
+  assert.match(presentAgent(built({ github: draft }), { name: 'A' }).description, /PR #12 \(draft\) · CI failing/);
+  const noChecks = JSON.parse(JSON.stringify(github));
+  delete noChecks.pullRequests[0].checks;
+  const unread = presentAgent(built({ github: noChecks }), { name: 'A' });
+  assert.match(unread.description, /· PR #12$/, 'checks that were not read add nothing, not even "unknown"');
+  assert.equal(unread.pullRequestUrl, 'https://github.com/o/r/pull/12');
+  for (const odd of ['passing', 'pending', 'none']) {
+    const copy = JSON.parse(JSON.stringify(github));
+    copy.pullRequests[0].checks.state = odd;
+    assert.match(presentAgent(built({ github: copy }), { name: 'A' }).description, new RegExp(`CI ${odd}$`));
+  }
+  const weird = JSON.parse(JSON.stringify(github));
+  weird.pullRequests[0].checks.state = 'all green, merge now';
+  assert.equal(presentAgent(built({ github: weird }), { name: 'A' }).description.includes('merge now'), false, 'only a known CI word is shown');
+  for (const state of [undefined, { kind: 'partial', pullRequests: [] }, { kind: 'denied' }]) {
+    const none = presentAgent(built({ github: state }), { name: 'A' });
+    assert.equal(none.pullRequestUrl, null);
+    assert.equal(/PR #/.test(none.description), false);
+  }
+  const noPr = presentAgent(built({ github: { kind: 'empty', fetchedAt: 'now', pullRequests: [] } }), { name: 'A' });
+  assert.equal(noPr.pullRequestUrl, null);
+  assert.equal(/PR #/.test(noPr.description), false, '"no pull request" is not shown as a pull request');
+});
