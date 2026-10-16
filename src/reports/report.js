@@ -9,6 +9,7 @@
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const HEAD = /head\s*[`'"]?([0-9a-f]{7,40})[`'"]?/i;
 const VERDICT = /(?:結論[：:]\s*|verdict[：:]\s*)?(Needs changes|Pass)\b/i;
+const { pmReport, issueEvidenceVersion, FIELDS } = require('./decision-queue');
 
 // Text that came from GitHub is shown as plain lines: control, bidirectional and separator characters are
 // removed (newlines inside a body are kept by `block`), and every field has a length limit.
@@ -25,7 +26,7 @@ const block = (value, limit) => {
 
 const WHAT_IS_NOT_VERIFIED = Object.freeze([
   'This report is read-only. Nothing in it was approved, merged or changed by you or by this extension.',
-  'A PM report written for this item is not generated here yet; the comments below are shown as they are on GitHub.',
+  'Only an explicitly marked, complete report by the repository owner is shown as a PM report; other comments remain comments.',
   'GitHub comments from the same GitHub account as the author are technical comments, not a formal approval.',
   'The look and usability of this screen have not been confirmed on a real macOS or Windows machine.'
 ]);
@@ -83,6 +84,15 @@ function header(kind, repository, item) {
   ];
 }
 
+const PM_LABELS = Object.freeze({ operableResult: 'User can', solution: 'Solution', alternatives: 'Alternatives', acceptanceGap: 'Acceptance gap', risks: 'Risks', recommendedAction: 'Recommended action', evidenceTime: 'Evidence time', evidenceVersion: 'Evidence version' });
+function pmReportLines(comments, repository, version) {
+  const result = pmReport(comments, repository, version);
+  if (result.state === 'unknown') return ['PM REPORT', result.reason === 'invalid-pm-report' ? 'Unknown: the newest marked PM report has an invalid format.' : 'Unknown: comments could not be read completely.'];
+  if (result.state === 'missing') return ['PM REPORT', 'Pending: no structured PM report was found. Ordinary comments are not a PM report.'];
+  return ['PM REPORT', `Declared by repository owner · ${result.state === 'current' ? 'evidence version matches this report' : 'STALE: evidence version does not match this report'}`,
+    ...FIELDS.map((key) => `${PM_LABELS[key]}: ${block(result.fields[key], 2000)}`)];
+}
+
 /**
  * @param {{ repository: string, issue: object, comments?: object, pullRequests?: object }} input
  *   `comments` and `pullRequests` are adapter results; `pullRequests` is the list of open pull requests
@@ -92,6 +102,7 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
   lines.push(`Labels: ${(Array.isArray(issue.labels) ? issue.labels : []).map((name) => line(name, 60)).join(', ') || '(none)'}`);
   lines.push(`Assigned to: ${(Array.isArray(issue.assignees) ? issue.assignees : []).map((name) => line(name, 60)).join(', ') || '(nobody)'}`);
   lines.push('', 'REQUIREMENT AND SCOPE', block(issue.body, 20000));
+  lines.push('', ...pmReportLines(comments, repository, issueEvidenceVersion(issue)));
   lines.push('', 'RELATED PULL REQUESTS');
   const prs = dataOf(pullRequests);
   if (prs === null) lines.push(readNote('Pull request list', pullRequests) ?? 'unknown');
@@ -105,7 +116,7 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
   if (notes) lines.push(notes);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
   else lines.push(...commentLines(comments, null));
-  lines.push('', 'DECISIONS', 'None can be made here yet. This slice only reads.');
+  lines.push('', 'DECISIONS', 'A private note can be saved locally with Save Local Feedback. Nothing is sent to GitHub.');
   lines.push('', 'NOT VERIFIED', ...WHAT_IS_NOT_VERIFIED.map((text) => `- ${text}`));
   return { title: `Issue #${issue.number}`, lines };
 }
@@ -126,6 +137,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   const referenced = Array.isArray(pr.referencedIssues) ? pr.referencedIssues.filter((ref) => ref && Number.isSafeInteger(ref.number)) : [];
   lines.push(`Refers to: ${referenced.length ? referenced.map((ref) => `Issue #${ref.number}`).join(', ') : '(no Issue reference found)'}`);
   lines.push('', 'WHAT THIS CHANGES (author\'s description)', block(pr.body, 20000));
+  lines.push('', ...pmReportLines(comments, repository, head));
 
   lines.push('', 'CHANGED FILES AND DIFF (plain text preview)');
   const fileNote = readNote('Changed files', files);
@@ -175,7 +187,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   if (commentNote) lines.push(commentNote);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
   else lines.push(...commentLines(comments, head));
-  lines.push('', 'DECISIONS', 'None can be made here yet. This slice only reads; it cannot approve, request changes or merge.');
+  lines.push('', 'DECISIONS', 'A private note can be saved locally. It cannot approve, request changes or merge; nothing is sent to GitHub.');
   lines.push('', 'NOT VERIFIED', ...WHAT_IS_NOT_VERIFIED.map((text) => `- ${text}`));
   return { title: `Pull request #${pr.number}`, lines };
 }

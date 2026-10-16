@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED } = require('../../src/reports/report');
+const { issueEvidenceVersion, MARKER } = require('../../src/reports/decision-queue');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
 const HEAD = 'a'.repeat(40);
@@ -17,8 +18,17 @@ const issueReport = (over = {}) => render(buildIssueReport({ repository: 'o/r', 
 
 test('an issue report shows the requirement, labels, related pull requests, discussion, and what is not verified', () => {
   const text = issueReport({ comments: ok([comment('Scope is the read-only part.')]) });
-  for (const part of ['Issue #12: Build the report view', 'Repository: o/r · State: open', 'Labels: mvp, ready', 'Assigned to: (nobody)', 'REQUIREMENT AND SCOPE', 'The user must read a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports (open, branch feat/x)', 'DISCUSSION AND PM COMMENTS', 'Scope is the read-only part.', 'DECISIONS', 'None can be made here yet', 'NOT VERIFIED']) assert.ok(text.includes(part), part);
+  for (const part of ['Issue #12: Build the report view', 'Repository: o/r · State: open', 'Labels: mvp, ready', 'Assigned to: (nobody)', 'REQUIREMENT AND SCOPE', 'The user must read a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports (open, branch feat/x)', 'DISCUSSION AND PM COMMENTS', 'Scope is the read-only part.', 'DECISIONS', 'A private note can be saved locally', 'NOT VERIFIED']) assert.ok(text.includes(part), part);
+  assert.match(text, /PM REPORT\nPending: no structured PM report/);
   for (const item of WHAT_IS_NOT_VERIFIED) assert.ok(text.includes(item));
+});
+
+test('an Issue PM report stays current when its own comment updates updatedAt, then becomes stale when the requirement changes', () => {
+  const item = issue();
+  const fields = { operableResult: 'Read it', solution: 'Stable requirement digest', alternatives: 'Timestamp', acceptanceGap: 'Manual use', risks: 'Changed scope', recommendedAction: 'Review', evidenceTime: '2026-10-16T01:00:00Z', evidenceVersion: issueEvidenceVersion(item) };
+  const comments = ok([comment(`${MARKER}\n${JSON.stringify(fields)}`, { author: 'o' })]);
+  assert.match(issueReport({ issue: { ...item, updatedAt: '2026-10-16T03:00:00Z' }, comments }), /evidence version matches this report/);
+  assert.match(issueReport({ issue: { ...item, body: `${item.body} Changed requirement.` }, comments }), /STALE: evidence version does not match this report/);
 });
 
 test('an issue with no related pull request says so; an unread list is unknown, never "none"', () => {
@@ -46,7 +56,7 @@ test('comments that could not be read are unknown, empty ones say no comments', 
 
 test('a pull request report ties review and CI to the latest head', () => {
   const text = prReport();
-  for (const part of ['Pull request #7: Add reports', 'Source: this repository branch', 'Head repository: o/r · Branch: feat/x → main', `Latest head: ${HEAD}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'it cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
+  for (const part of ['Pull request #7: Add reports', 'Source: this repository branch', 'Head repository: o/r · Branch: feat/x → main', `Latest head: ${HEAD}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'It cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
 });
 
 test('a complete empty reviews result keeps the rest of the pull request readable', () => {
