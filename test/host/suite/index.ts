@@ -141,6 +141,14 @@ async function accountFlow(workspace: string): Promise<void> {
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
+  const detailDocument = vscode.window.activeTextEditor?.document;
+  assert.equal(detailDocument?.uri.scheme, 'multiagent-account', 'the details are a virtual document, not an unsaved file');
+  assert.equal(detailDocument?.isUntitled, false);
+  await assert.rejects(Promise.resolve(vscode.workspace.fs.writeFile(detailDocument!.uri, Buffer.from('x'))), 'the details cannot be saved into a project');
+  assert.match(detailDocument?.getText() ?? '', /Provider abilities \(dedicated support\):/);
+  assert.match(detailDocument?.getText() ?? '', /Start in a native terminal: the extension has code for it, not yet checked on a real machine/);
+  assert.match(detailDocument?.getText() ?? '', /Model in use: unknown \(no source reports which model a session uses\)\./);
+  assert.doesNotMatch(detailDocument?.getText() ?? '', /verified on a real machine/);
 
   const login = await launchEnvironment(created.profile.id, 'claude', () => []);
   assert.equal(login.ok, true, 'login uses the same current profile validation as a coding session');

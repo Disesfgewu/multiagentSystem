@@ -10,6 +10,7 @@ import { editLimits, clearLimits, limitLines } from './quotaGateUi';
 const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
 };
+const { describeProviderCapabilities } = require('../providers/capability-text') as { describeProviderCapabilities(id: unknown): string[] };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
 const { checkAccountIdentity, describeCheck, splitFolderIssues } = require('./identity-check') as {
   splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
@@ -225,6 +226,7 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
   currentTree = tree;
   treeForTest = context.extensionMode === vscode.ExtensionMode.Test ? tree : undefined;
   context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(ACCOUNT_DETAIL_SCHEME, { provideTextDocumentContent: (uri) => detailDocs.get(uri.query) ?? 'These details are no longer available. Open them again from the account list.' }),
     vscode.window.createTreeView(ACCOUNT_VIEW, { treeDataProvider: tree }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh()),
     sessionCommands.onDidChange(() => tree.refresh()),
@@ -291,12 +293,21 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     `Health: ${described.health}`,
     lastCheckedText(id),
     `Account isolation: ${isolation}`,
+    ...describeProviderCapabilities(profile.provider),
     ...(await limitLines(id, () => sessions?.list() ?? [])),
     'The label is user supplied and does not prove which account is signed in.'
   ];
-  const document = await vscode.workspace.openTextDocument({ language: 'plaintext', content: lines.join('\n') });
+  // A virtual document: it has no file behind it, so the account's label and details cannot be saved into a project.
+  const token = `${++detailCounter}`;
+  detailDocs.set(token, lines.join('\n'));
+  if (detailDocs.size > 20) detailDocs.delete(detailDocs.keys().next().value as string);
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.from({ scheme: ACCOUNT_DETAIL_SCHEME, path: '/account-details.txt', query: token }));
   await vscode.window.showTextDocument(document, { preview: true });
 }
+
+export const ACCOUNT_DETAIL_SCHEME = 'multiagent-account';
+const detailDocs = new Map<string, string>();
+let detailCounter = 0;
 
 async function edit(value: unknown, tree: AccountTree): Promise<void> {
   let profileId = selectedId(value);
