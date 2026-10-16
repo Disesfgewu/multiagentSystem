@@ -93,6 +93,30 @@ export async function runReportChecks(): Promise<string> {
     assert.match(feedbackStatus, /LOCAL FEEDBACK\nSaved only on this machine.*Nothing was sent to GitHub\./);
     assert.equal(feedbackStatus.includes('Please add a second test'), false, 'private feedback is never put into the report text');
 
+    // Feedback is bound to what the open report showed. A push while the input
+    // box is open must not relabel A's note as if it had been written for B.
+    const moved = 'e'.repeat(40);
+    setReportDepsForTests({
+      repository: async () => 'host/repo',
+      readerFor: () => fakeReader({ getPullRequest: async () => ({ kind: 'ok', data: { number: 7, title: 'Moved', state: 'open', headSha: moved, headRepository: 'host/repo' } }) }),
+      promptFeedback: async () => 'This was written while reading the old head'
+    });
+    const rejectedMovedHead = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.feedback);
+    assert.deepEqual(rejectedMovedHead, { ok: false, code: 'head-changed' });
+
+    // The same numbered PR in another workspace/repository must not receive the
+    // note if the workspace changes while the input is waiting.
+    let currentRepository = 'host/repo';
+    setReportDepsForTests({
+      repository: async () => currentRepository,
+      readerFor: () => fakeReader(),
+      promptFeedback: async () => { currentRepository = 'other/repo'; return 'Must stay with the old repository'; }
+    });
+    const rejectedWorkspace = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.feedback);
+    assert.deepEqual(rejectedWorkspace, { ok: false, code: 'report-context-changed' });
+    assert.match(await reportText('pullRequest', 7), /LOCAL FEEDBACK\nNone saved on this machine/, 'the new repository did not receive the note');
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
+
     // A push during the files request makes the patch's version unknowable; never label B's
     // changed files as the diff for head A.
     let headReads = 0;

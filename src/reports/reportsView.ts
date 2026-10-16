@@ -51,6 +51,7 @@ export interface ReportReader {
 export interface ReportDeps {
   repository(): Promise<string | null>;
   readerFor(repository: string): ReportReader | null;
+  promptFeedback?(value: string): Thenable<string | undefined>;
 }
 
 const realDeps: ReportDeps = {
@@ -65,7 +66,8 @@ const realDeps: ReportDeps = {
       return null;
     }
   },
-  readerFor: (repository) => githubReaderFor(repository) as unknown as ReportReader | null
+  readerFor: (repository) => githubReaderFor(repository) as unknown as ReportReader | null,
+  promptFeedback: (value) => vscode.window.showInputBox({ prompt: 'Feedback saved only on this machine; nothing is sent to GitHub', value, ignoreFocusOut: true })
 };
 let deps: ReportDeps = realDeps;
 let readGeneration = 0;
@@ -186,20 +188,23 @@ export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }
 
-/** Builds the report text for one item by reading GitHub now. Failures are written into the report, not thrown. */
-export async function reportText(kind: Kind, number: number): Promise<string> {
+type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null };
+type ReportResult = { text: string; evidence: ReportEvidence | null };
+
+/** Builds one report and records exactly which repository/head its text represents. */
+async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
   const repository = await deps.repository();
-  if (!repository) return 'No GitHub project is open, so this report cannot be read.\n';
+  if (!repository) return { text: 'No GitHub project is open, so this report cannot be read.\n', evidence: null };
   const reader = deps.readerFor(repository);
-  if (!reader) return 'GitHub could not be reached for this project.\n';
+  if (!reader) return { text: 'GitHub could not be reached for this project.\n', evidence: null };
   try {
     if (kind === 'issue') {
       const [issue, comments, pullRequests] = await Promise.all([reader.getIssue(number), reader.getIssueComments(number), reader.listPullRequests({ state: 'open' })]);
-      if (issue.kind !== 'ok' || !issue.data) return `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`;
-      return withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null);
+      if (issue.kind !== 'ok' || !issue.data) return { text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
+      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null } };
     }
     const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
-    if (pullRequest.kind !== 'ok' || !pullRequest.data) return `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`;
+    if (pullRequest.kind !== 'ok' || !pullRequest.data) return { text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
     // The files endpoint is keyed by PR number and has no head SHA. Read the head before and
     // after the files, so a concurrent push cannot attach a new patch to the old report head.
     let files: Result = { kind: 'not_read' };
@@ -214,18 +219,28 @@ export async function reportText(kind: Kind, number: number): Promise<string> {
     const filesHeadVerified = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) &&
       afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
-    return withFeedback(render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified })), repository, kind, number, beforeHead);
+    const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
+    return { text: await withFeedback(render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified })), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha } : null };
   } catch {
-    return `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`;
+    return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
   }
 }
+
+/** Failures are written into the report, not thrown. */
+export async function reportText(kind: Kind, number: number): Promise<string> { return (await reportResult(kind, number)).text; }
 
 class ReportContent implements vscode.TextDocumentContentProvider {
   readonly changed = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.changed.event;
+  private readonly evidence = new Map<string, ReportEvidence>();
+  evidenceFor(uri: vscode.Uri): ReportEvidence | null { return this.evidence.get(uri.toString()) ?? null; }
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const target = parse(uri);
-    return target ? reportText(target.kind, target.number) : 'This report address is not valid.\n';
+    if (!target) return 'This report address is not valid.\n';
+    const result = await reportResult(target.kind, target.number);
+    if (result.evidence) this.evidence.set(uri.toString(), result.evidence);
+    else this.evidence.delete(uri.toString());
+    return result.text;
   }
 }
 
@@ -302,21 +317,26 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const requestedNumber = typeof requested.number === 'number' && Number.isSafeInteger(requested.number) && requested.number > 0 ? requested.number : null;
       const target: { kind: Kind; number: number } | null = requestedKind && requestedNumber !== null ? { kind: requestedKind, number: requestedNumber } : activeTarget();
       if (!target) return { ok: false, code: 'no-report-open' };
-      const repository = await deps.repository();
-      if (!repository) return { ok: false, code: 'repository-unavailable' };
+      const activeUri = vscode.window.activeTextEditor?.document.uri;
+      const shown = activeUri?.scheme === REPORT_SCHEME ? content.evidenceFor(activeUri) : null;
+      if (!shown || shown.kind !== target.kind || shown.number !== target.number) return { ok: false, code: 'report-evidence-unavailable' };
+      const repository = shown.repository;
       const opened = await privateStorage()?.use();
       if (!opened?.ok) return { ok: false, code: 'private-storage-unavailable' };
       const key = { repository, kind: target.kind, number: target.number };
       const current = readFeedback(opened.store, key);
       if (current.state === 'unknown') return { ok: false, code: 'feedback-unreadable' };
-      const note = requested.interactive === false ? requested.note : await vscode.window.showInputBox({ prompt: 'Feedback saved only on this machine; nothing is sent to GitHub', value: current.record?.note ?? '', ignoreFocusOut: true });
+      const note = requested.interactive === false ? requested.note : await (deps.promptFeedback?.(current.record?.note ?? '') ?? realDeps.promptFeedback!(current.record?.note ?? ''));
       if (note === undefined) return { ok: false, code: 'cancelled' };
-      let headSha: string | null = null;
+      const currentRepository = await deps.repository();
+      if (currentRepository !== repository) return { ok: false, code: 'report-context-changed' };
+      let headSha = shown.headSha;
       if (target.kind === 'pullRequest') {
         const reader = deps.readerFor(repository);
         const read = reader ? await reader.getPullRequest(target.number, { forceRefresh: true }) : null;
-        headSha = read?.kind === 'ok' && typeof read.data?.headSha === 'string' ? read.data.headSha : null;
-        if (!headSha) return { ok: false, code: 'head-unavailable' };
+        const currentHead = read?.kind === 'ok' && typeof read.data?.headSha === 'string' && /^[a-f0-9]{40}$/i.test(read.data.headSha) ? read.data.headSha : null;
+        if (!currentHead || !headSha) return { ok: false, code: 'head-unavailable' };
+        if (currentHead.toLowerCase() !== headSha.toLowerCase()) return { ok: false, code: 'head-changed' };
       }
       const saved = saveFeedback(opened.store, key, { note, headSha }, current.record?.revision ?? null);
       if (!saved.ok) return { ok: false, code: saved.reason ?? 'feedback-save-failed' };

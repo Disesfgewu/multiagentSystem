@@ -9,7 +9,7 @@
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const HEAD = /head\s*[`'"]?([0-9a-f]{7,40})[`'"]?/i;
 const VERDICT = /(?:結論[：:]\s*|verdict[：:]\s*)?(Needs changes|Pass)\b/i;
-const { pmReport, FIELDS } = require('./decision-queue');
+const { pmReport, issueEvidenceVersion, FIELDS } = require('./decision-queue');
 
 // Text that came from GitHub is shown as plain lines: control, bidirectional and separator characters are
 // removed (newlines inside a body are kept by `block`), and every field has a length limit.
@@ -102,7 +102,7 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
   lines.push(`Labels: ${(Array.isArray(issue.labels) ? issue.labels : []).map((name) => line(name, 60)).join(', ') || '(none)'}`);
   lines.push(`Assigned to: ${(Array.isArray(issue.assignees) ? issue.assignees : []).map((name) => line(name, 60)).join(', ') || '(nobody)'}`);
   lines.push('', 'REQUIREMENT AND SCOPE', block(issue.body, 20000));
-  lines.push('', ...pmReportLines(comments, repository, issue.updatedAt));
+  lines.push('', ...pmReportLines(comments, repository, issueEvidenceVersion(issue)));
   lines.push('', 'RELATED PULL REQUESTS');
   const prs = dataOf(pullRequests);
   if (prs === null) lines.push(readNote('Pull request list', pullRequests) ?? 'unknown');

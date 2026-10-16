@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pmReport, classifyPullRequest, classifyIssue, MARKER } = require('../../src/reports/decision-queue');
+const { pmReport, issueEvidenceVersion, classifyPullRequest, classifyIssue, MARKER } = require('../../src/reports/decision-queue');
 const A = 'a'.repeat(40); const B = 'b'.repeat(40);
 const data = { operableResult: 'Can read two reports', solution: 'A read-only view', alternatives: 'Browser', acceptanceGap: 'Real use', risks: 'Stale head', recommendedAction: 'Review', evidenceTime: '2026-10-16T00:00:00Z', evidenceVersion: A };
 const comment = (author, body) => ({ author, body });
@@ -23,6 +23,16 @@ test('only a complete, deliberately marked owner report is displayed; old versio
   const hostile = pmReport({ kind: 'ok', data: [comment('owner', marked({ ...data, risks: 'bad\u202E\nname' }))] }, 'owner/repo', A);
   assert.equal(hostile.fields.risks.includes('\u202E'), false);
   assert.equal(hostile.fields.risks.includes('\n'), false);
+});
+
+test('an Issue evidence version changes with the requirement, not with comment activity', () => {
+  const requirement = { title: 'Keep feedback on its report', body: 'Bind it to the evidence the user read.', updatedAt: '2026-10-16T01:00:00Z' };
+  const version = issueEvidenceVersion(requirement);
+  assert.match(version, /^issue-sha256:[a-f0-9]{64}$/);
+  assert.equal(issueEvidenceVersion({ ...requirement, updatedAt: '2026-10-16T02:00:00Z' }), version, 'a new comment only changes updatedAt');
+  assert.notEqual(issueEvidenceVersion({ ...requirement, body: `${requirement.body} New acceptance.` }), version);
+  assert.notEqual(issueEvidenceVersion({ ...requirement, title: 'Changed scope' }), version);
+  for (const malformed of [null, {}, { title: 'x' }, { title: 'x', body: null }]) assert.equal(issueEvidenceVersion(malformed), null);
 });
 
 test('current-head formal approval and passing CI are both required for passed', () => {

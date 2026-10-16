@@ -1,11 +1,24 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
+
 const SHA = /^[a-f0-9]{40}$/i;
 const FIELDS = Object.freeze(['operableResult', 'solution', 'alternatives', 'acceptanceGap', 'risks', 'recommendedAction', 'evidenceTime', 'evidenceVersion']);
 const MARKER = 'MULTIAGENT_PM_REPORT_V1';
 const clean = (value, max) => typeof value === 'string' ? Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('') : '';
 const complete = (result) => result && ((result.kind === 'empty' && (result.data === undefined || (Array.isArray(result.data) && result.data.length === 0))) || (result.kind === 'ok' && Array.isArray(result.data)));
 const sameHead = (left, right) => typeof left === 'string' && typeof right === 'string' && SHA.test(left) && SHA.test(right) && left.toLowerCase() === right.toLowerCase();
+
+/**
+ * A comment must not make its own Issue report stale. Bind the report to the
+ * requirement fields that an author can edit instead of GitHub's updatedAt,
+ * which also changes whenever anybody adds a comment.
+ */
+function issueEvidenceVersion(issue) {
+  if (!issue || typeof issue !== 'object' || typeof issue.title !== 'string' || typeof issue.body !== 'string') return null;
+  const digest = createHash('sha256').update(JSON.stringify({ title: issue.title, body: issue.body })).digest('hex');
+  return `issue-sha256:${digest}`;
+}
 
 /** Only a deliberately marked, valid owner comment is a PM report. Other comments stay comments. */
 function pmReport(comments, repository, expectedVersion) {
@@ -46,4 +59,4 @@ function classifyPullRequest(pr, snapshot) {
 
 const classifyIssue = (issue) => issue && issue.state === 'closed' ? 'processed' : 'pending';
 
-module.exports = { pmReport, classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS, MARKER, FIELDS };
+module.exports = { pmReport, issueEvidenceVersion, classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS, MARKER, FIELDS };
