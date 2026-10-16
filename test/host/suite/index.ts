@@ -184,7 +184,7 @@ async function accountFlow(workspace: string): Promise<void> {
   process.env.PATH = emptyPath;
   try {
     const checked = await vscode.commands.executeCommand<{ ok: boolean; state: string; reason: string; identity: unknown }>(ACCOUNT_COMMANDS.check, { id: created.profile.id, interactive: false });
-    assert.deepEqual([checked.ok, checked.state, checked.reason, checked.identity], [false, 'unknown', 'cli-not-found', null]);
+    assert.deepEqual([checked.ok, checked.state, checked.reason, checked.identity], [false, 'unknown', process.platform === 'win32' ? 'windows-not-supported' : 'cli-not-found', null]);
   } finally {
     process.env.PATH = savedPath;
     fs.rmSync(emptyPath, { recursive: true, force: true });
