@@ -1,0 +1,48 @@
+import { strict as assert } from 'node:assert';
+import * as path from 'node:path';
+import * as vscode from 'vscode';
+import { planTreeForTests, PLAN_COMMANDS, PLAN_VIEW } from '../../../src/plan/planView';
+
+export async function runPlanChecks(workspace: string): Promise<string> {
+  const commands = await vscode.commands.getCommands(true);
+  for (const command of Object.values(PLAN_COMMANDS)) assert.ok(commands.includes(command));
+  const manifest = vscode.extensions.all.find((candidate) => candidate.packageJSON?.name === 'multiagentsystem')?.packageJSON;
+  assert.ok(manifest.contributes.views.multiagentSystem.some((view: { id: string }) => view.id === PLAN_VIEW));
+
+  const tree = planTreeForTests();
+  const empty = await tree.getChildren();
+  assert.match(String(empty?.[0]?.label), /No core plan yet/);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.create);
+  const uri = vscode.Uri.file(path.join(workspace, 'docs', 'MASTER_PLAN.md'));
+  const created = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  assert.match(created, /DEC-001/);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.create);
+  assert.equal(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)), created, 'create never overwrites the project plan');
+
+  const lines = ['# Project plan', '## M1 — many tasks', ...Array.from({ length: 100 }, (_, index) => `- [ ] M1-${String(index + 1).padStart(3, '0')} Task ${index + 1}`), '## Decisions', '- [ ] DEC-001 Review the evidence.'];
+  const document = await vscode.workspace.openTextDocument(uri);
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(uri, new vscode.Range(0, 0, document.lineCount, 0), lines.join('\n') + '\n');
+  assert.equal(await vscode.workspace.applyEdit(edit), true);
+  assert.equal(await document.save(), true);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.refresh);
+  const sections = await tree.getChildren();
+  assert.equal(sections?.length, 2);
+  assert.match(String(sections?.[0]?.description), /100 open \/ 100 total/);
+  const tasks = await tree.getChildren(sections?.[0]);
+  assert.equal(tasks?.length, 100);
+  assert.equal(tasks?.[99]?.label, 'M1-100 Task 100');
+  const unsaved = new vscode.WorkspaceEdit();
+  unsaved.replace(uri, new vscode.Range(2, 0, 2, lines[2].length), '- [ ] M1-001 Task 1 updated');
+  assert.equal(await vscode.workspace.applyEdit(unsaved), true);
+  const liveTasks = await tree.getChildren(sections?.[0]);
+  assert.equal(liveTasks?.[0]?.label, 'M1-001 Task 1', 'a stale section retains its snapshot until refresh');
+  const refreshed = await tree.getChildren();
+  const currentTasks = await tree.getChildren(refreshed?.[0]);
+  assert.equal(currentTasks?.[0]?.label, 'M1-001 Task 1 updated', 'unsaved changes appear in Core Plan');
+  await vscode.commands.executeCommand(PLAN_COMMANDS.open, { line: 101 });
+  assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, uri.fsPath);
+  assert.equal(vscode.window.activeTextEditor?.selection.active.line, 101);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.returnToOverview);
+  return 'host smoke: Core Plan can be created, lists 100 TODOs, opens a source line, and returns to Overview';
+}
