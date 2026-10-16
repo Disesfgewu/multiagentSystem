@@ -37,6 +37,15 @@ switch (mode) {
     setInterval(() => {}, 1000);
     break;
   }
+  // The direct child obeys SIGTERM (no handler, default termination) and exits quickly, while the
+  // grandchild it started ignores SIGTERM and keeps running: this is the race the runner must close.
+  case 'grandchild-ignore-sigterm': {
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.env.FAKE_CHILD_PIDFILE, String(process.pid)); setInterval(() => {}, 1000)'], { stdio: 'ignore', env: process.env });
+    child.unref();
+    setInterval(() => {}, 1000);
+    break;
+  }
   case 'crash': throw new Error(`crashed with ${EMAIL}`);
   default: process.exitCode = 9;
 }

@@ -339,6 +339,20 @@ test('a timeout stops the whole process group: a process the command started is 
   assert.equal(alive(read(childPidFile)), false, 'what the command started was stopped too');
 });
 
+test('a grandchild that ignores SIGTERM is still killed even when the direct child obeys it and exits first', { timeout: 40_000, skip: process.platform === 'win32' }, async (t) => {
+  const w = world(t);
+  const childPidFile = path.join(w.root, 'grandchild-ignoring.pid');
+  const parentPidFile = path.join(w.root, 'parent-obeying.pid');
+  const outcome = await runCommand(process.execPath, [FAKE], { env: childEnvironment({ FAKE_MODE: 'grandchild-ignore-sigterm', FAKE_PIDFILE: parentPidFile, FAKE_CHILD_PIDFILE: childPidFile }, { PATH: process.env.PATH }), timeoutMs: 1200, maxOutputBytes: 1000, graceMs: 500 });
+  assert.equal(outcome.timedOut, true);
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const read = (file: string): number => Number(fs.readFileSync(file, 'utf8'));
+  const deadline = Date.now() + 6000;
+  while ((alive(read(parentPidFile)) || alive(read(childPidFile))) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(alive(read(parentPidFile)), false, 'the direct child, which obeyed SIGTERM, exited');
+  assert.equal(alive(read(childPidFile)), false, 'the grandchild, which ignored SIGTERM, was still killed via the group-wide SIGKILL');
+});
+
 test('however the child dies after the time limit, the result is a timeout', { timeout: 40_000 }, async () => {
   const outcome = await runCommand(process.execPath, ['-e', 'process.on("SIGTERM", () => process.exit(7)); setInterval(() => {}, 1000)'], { env: { PATH: process.env.PATH }, timeoutMs: 300, maxOutputBytes: 1000, graceMs: 2000 });
   assert.equal(outcome.timedOut, true, 'a command that exits with its own code after SIGTERM is still a timeout');

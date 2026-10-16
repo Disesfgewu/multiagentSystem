@@ -44,7 +44,14 @@ export function runCommand(file: string, args: string[], options: { env: NodeJS.
       const pid = child.pid;
       try {
         if (pid && process.platform !== 'win32') { process.kill(-pid, signal); return; }
-        if (pid && process.platform === 'win32') { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); return; }
+        if (pid && process.platform === 'win32') {
+          const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          // taskkill may fail to start or exit non-zero; either way it must not become an unhandled
+          // error, and the direct child still needs a fallback signal so it does not run forever.
+          killer.on('error', () => { try { child.kill(signal); } catch { /* already gone */ } });
+          killer.on('exit', (killCode) => { if (killCode !== 0) { try { child.kill(signal); } catch { /* already gone */ } } });
+          return;
+        }
       } catch { /* fall through to the child alone */ }
       try { child.kill(signal); } catch { /* already gone */ }
     };
@@ -64,7 +71,11 @@ export function runCommand(file: string, args: string[], options: { env: NodeJS.
     });
     child.on('close', (code) => {
       // Once the time limit has stopped it, whatever the child reports is a timeout, however it died.
-      if (stopping) { finish({ code: null, stdout: '', timedOut: true }); return; }
+      // The direct child closing does not mean the group is empty: a grandchild can obey none of the
+      // signals the direct child obeys. Send a final group-wide SIGKILL here, synchronously before
+      // finish() cancels the scheduled one below, so a direct child that exits quickly after SIGTERM
+      // cannot let an ignoring grandchild outlive the cleanup.
+      if (stopping) { stop('SIGKILL'); finish({ code: null, stdout: '', timedOut: true }); return; }
       if (overflow) { finish({ code: null, stdout: '', truncated: true }); return; }
       if (code === null) { finish({ code: null, stdout: '', errorCode: 'ERR_SIGNAL' }); return; }
       finish({ code, stdout: Buffer.concat(chunks).toString('utf8') });
