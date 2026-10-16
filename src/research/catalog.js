@@ -28,8 +28,19 @@ const ALLOWED_LICENSES = Object.freeze(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BS
 // Disallowed command tokens: shells, package downloaders, and dangerous tools
 const FORBIDDEN_SHELL_NAMES = Object.freeze([
   'sh', 'bash', 'zsh', 'csh', 'ksh', 'fish', 'dash',
-  'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'
+  'cmd', 'powershell', 'pwsh'
 ]);
+
+// Windows normally exposes commands through these suffixes. Normalize them in one place before
+// every executable-name comparison so `bash.exe`, `npx.cmd` or `pip.bat` cannot bypass a rule that
+// correctly rejects the corresponding bare name. Repeating suffixes are removed too because a
+// command file may itself have a name such as `bash.exe.cmd`.
+const EXECUTABLE_SUFFIX = /\.(?:exe|cmd|bat|ps1)$/i;
+function executableName(value) {
+  let name = value.toLowerCase().split(/[/\\]/).pop();
+  while (EXECUTABLE_SUFFIX.test(name)) name = name.replace(EXECUTABLE_SUFFIX, '');
+  return name;
+}
 
 const FORBIDDEN_EVAL_FLAGS = Object.freeze(['-c', '-e', '--eval', '/c']);
 
@@ -93,8 +104,7 @@ function validateCommand(commandArray) {
     cleanArgs.push(part.trim());
   }
 
-  const executable = cleanArgs[0].toLowerCase();
-  const execBasename = executable.split(/[/\\]/).pop();
+  const execBasename = executableName(cleanArgs[0]);
 
   if (FORBIDDEN_SHELL_NAMES.includes(execBasename)) {
     fail('shell-executable-forbidden');
@@ -105,6 +115,7 @@ function validateCommand(commandArray) {
 
   for (let i = 0; i < cleanArgs.length; i++) {
     const token = cleanArgs[i].toLowerCase();
+    const tokenExecutableName = executableName(token);
 
     // Check forbidden eval flags (e.g. node -e, python -c)
     if (FORBIDDEN_EVAL_FLAGS.includes(token)) {
@@ -112,7 +123,7 @@ function validateCommand(commandArray) {
     }
 
     for (const forbidden of FORBIDDEN_COMMAND_TOKENS) {
-      if (token === forbidden || token.includes(`@${forbidden}`)) {
+      if (token === forbidden || tokenExecutableName === forbidden || token.includes(`@${forbidden}`)) {
         fail('command-token-forbidden');
       }
     }

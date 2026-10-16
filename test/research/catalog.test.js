@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const {
   validateCatalogItem,
   validateCatalog,
@@ -115,6 +116,21 @@ test('rejects shell executables (/bin/bash, sh, powershell)', () => {
   );
 });
 
+test('rejects every shell name through common Windows executable suffixes and path spellings', () => {
+  const drive = ['C', ':', path.win32.sep].join('');
+  const commands = [
+    'sh.exe', 'bash.exe', 'zsh.cmd', 'csh.bat', 'ksh.ps1', 'FISH.EXE', 'dash.exe',
+    'cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe.cmd', path.win32.join(drive, 'tools', 'sh.exe')
+  ];
+  for (const executable of commands) {
+    assert.throws(
+      () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: [executable, 'server.js'] }),
+      (err) => err instanceof CatalogError && err.code === 'shell-executable-forbidden',
+      executable
+    );
+  }
+});
+
 test('rejects eval flags like node -e or python -c', () => {
   assert.throws(
     () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: ['node', '-e', 'console.log("pwned")'] }),
@@ -134,7 +150,12 @@ test('rejects dynamic package runners (npx -y)', () => {
 });
 
 test('rejects the whole dynamic runner category, not just its -y/--yes shortcut: an unpinned invocation still resolves whatever the registry currently serves', () => {
-  for (const command of [['npx', 'some-package'], ['npx', '--yes', 'some-package'], ['uvx', 'some-package'], ['UVX', 'some-package'], ['/usr/local/bin/npx', 'some-package']]) {
+  const drive = ['C', ':', path.win32.sep].join('');
+  for (const command of [
+    ['npx', 'some-package'], ['npx', '--yes', 'some-package'], ['uvx', 'some-package'], ['UVX', 'some-package'],
+    ['/usr/local/bin/npx', 'some-package'], ['npx.cmd', 'some-package'], ['npx.bat', 'some-package'], ['npx.exe', 'some-package'],
+    ['uvx.exe', 'some-package'], ['NPX.CMD', 'some-package'], [path.win32.join(drive, 'tools', 'uvx.exe'), 'some-package']
+  ]) {
     assert.throws(
       () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command }),
       (err) => err instanceof CatalogError && err.code === 'dynamic-package-runner-forbidden',
@@ -152,6 +173,18 @@ test('rejects forbidden tokens in command to avoid downloads or arbitrary script
     () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: ['node', 'index.js', '@latest'] }),
     (err) => err instanceof CatalogError && err.code === 'command-token-forbidden'
   );
+  for (const token of ['pip.exe', 'pip.cmd', 'cargo.exe', 'CARGO.BAT']) {
+    assert.throws(
+      () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: ['safe-server', token] }),
+      (err) => err instanceof CatalogError && err.code === 'command-token-forbidden',
+      token
+    );
+  }
+});
+
+test('a reviewed direct executable may use a Windows suffix without being mistaken for a runner', () => {
+  const item = validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: ['github-mcp-server.exe', 'stdio'] });
+  assert.deepEqual(item.command, ['github-mcp-server.exe', 'stdio']);
 });
 
 test('strictly forbids write or execution tools', () => {
