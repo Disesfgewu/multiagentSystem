@@ -5,6 +5,7 @@ import { OVERVIEW_VIEW } from '../overview/overviewView';
 export const PLAN_VIEW = 'multiagentSystem.planView';
 export const PLAN_COMMANDS = {
   refresh: 'multiagentSystem.plan.refresh',
+  filter: 'multiagentSystem.plan.filter',
   open: 'multiagentSystem.plan.open',
   create: 'multiagentSystem.plan.create',
   returnToOverview: 'multiagentSystem.plan.returnToOverview'
@@ -25,9 +26,11 @@ Public project goals and decisions only. Keep agent runtime identities, account 
 `;
 
 type Node = SectionNode | TaskNode | MessageNode;
+type TaskFilter = 'all' | 'open' | 'done';
+const FILTER_LABELS: Record<TaskFilter, string> = { all: 'All TODOs', open: 'Open TODOs', done: 'Recorded TODOs' };
 
 class SectionNode extends vscode.TreeItem {
-  constructor(readonly section: PlanSection) {
+  constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[]) {
     super(section.title, vscode.TreeItemCollapsibleState.Expanded);
     this.description = `${section.tasks.filter((task) => !task.done).length} open / ${section.tasks.length} total`;
     this.iconPath = new vscode.ThemeIcon('list-tree');
@@ -56,10 +59,12 @@ function planUri(): vscode.Uri | undefined {
 class PlanTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  filter: TaskFilter = 'all';
   refresh(): void { this.changed.fire(undefined); }
+  setFilter(filter: TaskFilter): void { this.filter = filter; this.refresh(); }
   getTreeItem(node: Node): vscode.TreeItem { return node; }
   async getChildren(node?: Node): Promise<Node[]> {
-    if (node instanceof SectionNode) return node.section.tasks.map((task) => new TaskNode(task));
+    if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task));
     if (node) return [];
     const uri = planUri();
     if (!uri) return [new MessageNode('Open a project folder to read its core plan.')];
@@ -69,7 +74,13 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
       const parsed = parsePlan(source);
       const rows: Node[] = parsed.errors.slice(0, 5).map((error) => new MessageNode(error, PLAN_COMMANDS.open));
       if (parsed.errors.length > 5) rows.push(new MessageNode(`${parsed.errors.length - 5} more format errors; open the plan.`, PLAN_COMMANDS.open));
-      if (parsed.sections.length) rows.push(...parsed.sections.map((section) => new SectionNode(section)));
+      if (parsed.sections.length) {
+        for (const section of parsed.sections) {
+          const visible = section.tasks.filter((task) => this.filter === 'all' || (this.filter === 'done' ? task.done : !task.done));
+          if (visible.length) rows.push(new SectionNode(section, visible));
+        }
+        if (rows.length === 0) rows.push(new MessageNode(`No ${this.filter === 'done' ? 'recorded' : 'open'} TODOs in this plan.`, PLAN_COMMANDS.filter));
+      }
       else if (!parsed.errors.length) rows.push(new MessageNode('No numbered TODOs yet. Open the plan to add one.', PLAN_COMMANDS.open));
       return rows;
     } catch (error) {
@@ -87,6 +98,7 @@ export function registerPlanView(context: vscode.ExtensionContext): void {
   const tree = new PlanTree();
   testTree = context.extensionMode === vscode.ExtensionMode.Test ? tree : undefined;
   const view = vscode.window.createTreeView(PLAN_VIEW, { treeDataProvider: tree });
+  view.description = FILTER_LABELS[tree.filter];
   context.subscriptions.push(
     view,
     vscode.workspace.onDidChangeTextDocument((event) => { if (event.document.uri.toString() === planUri()?.toString()) tree.refresh(); }),
@@ -94,6 +106,18 @@ export function registerPlanView(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh()),
     view.onDidChangeVisibility((event) => { if (event.visible) tree.refresh(); }),
     vscode.commands.registerCommand(PLAN_COMMANDS.refresh, () => tree.refresh()),
+    vscode.commands.registerCommand(PLAN_COMMANDS.filter, async (value?: TaskFilter) => {
+      let selected: TaskFilter | undefined = value;
+      if (selected === undefined) {
+        const picked = await vscode.window.showQuickPick((Object.keys(FILTER_LABELS) as TaskFilter[]).map((id) => ({
+          label: FILTER_LABELS[id], id, description: id === tree.filter ? 'current' : undefined
+        })), { placeHolder: 'Show which Core Plan TODOs?' });
+        selected = picked?.id;
+      }
+      if (selected !== 'all' && selected !== 'open' && selected !== 'done') return;
+      tree.setFilter(selected);
+      view.description = FILTER_LABELS[selected];
+    }),
     vscode.commands.registerCommand(PLAN_COMMANDS.open, async (value?: { line?: number }) => {
       const uri = planUri();
       if (!uri) { void vscode.window.showErrorMessage('Open a project folder first.'); return; }
