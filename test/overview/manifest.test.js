@@ -58,9 +58,9 @@ test('the overview activates the extension, and the extension never declares unt
 
 test('the report lists and the editor buttons for reading reports are declared', () => {
   const declared = new Set(contributes.commands.map((entry) => entry.command));
-  for (const command of ['multiagentSystem.reports.open', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous', 'multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.backToList', 'multiagentSystem.reports.refresh', 'multiagentSystem.reports.feedback']) assert.ok(declared.has(command), command);
+  for (const command of ['multiagentSystem.reports.open', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous', 'multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.backToList', 'multiagentSystem.reports.showDiff', 'multiagentSystem.reports.refresh', 'multiagentSystem.reports.feedback']) assert.ok(declared.has(command), command);
   const editor = contributes.menus['editor/title'];
-  assert.deepEqual(editor.map((item) => item.command).sort(), ['multiagentSystem.reports.backToList', 'multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.feedback', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous']);
+  assert.deepEqual(editor.map((item) => item.command).sort(), ['multiagentSystem.reports.backToList', 'multiagentSystem.reports.backToOverview', 'multiagentSystem.reports.feedback', 'multiagentSystem.reports.next', 'multiagentSystem.reports.previous', 'multiagentSystem.reports.showDiff']);
   for (const item of editor) assert.equal(item.when, 'resourceScheme == multiagent-report', 'the buttons appear only on a report');
   assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.issuesReportView'));
   assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.prsReportView'));

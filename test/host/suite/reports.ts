@@ -66,6 +66,7 @@ export async function runReportChecks(): Promise<string> {
     const issueText = vscode.window.activeTextEditor?.document.getText() ?? '';
     assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, REPORT_SCHEME);
     for (const part of ['Issue #12: Read reports in the editor', 'REQUIREMENT AND SCOPE', 'The user reads a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports', 'A private note can be saved locally', 'NOT VERIFIED']) assert.ok(issueText.includes(part), part);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: false, code: 'no-pr-report-open' });
 
     // reading through the list: next and previous wrap around; each is a different report
     const next = await vscode.commands.executeCommand<{ ok: boolean; number?: number }>(REPORT_COMMANDS.next);
@@ -83,6 +84,9 @@ export async function runReportChecks(): Promise<string> {
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const prText = vscode.window.activeTextEditor?.document.getText() ?? '';
     for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'It cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: true });
+    const diffEditor = vscode.window.activeTextEditor;
+    assert.match(diffEditor?.document.lineAt(diffEditor.selection.active.line).text ?? '', /CHANGED FILES AND DIFF/, 'the title action locates the in-editor diff preview');
     const saved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Please add a second test', interactive: false });
     assert.equal(saved.ok, true, 'feedback is written only to the private store');
     const feedbackStatus = await reportText('pullRequest', 7);

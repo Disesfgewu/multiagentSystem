@@ -30,6 +30,7 @@ export const REPORT_COMMANDS = {
   previous: 'multiagentSystem.reports.previous',
   back: 'multiagentSystem.reports.backToOverview',
   backToList: 'multiagentSystem.reports.backToList',
+  showDiff: 'multiagentSystem.reports.showDiff',
   refresh: 'multiagentSystem.reports.refresh',
   feedback: 'multiagentSystem.reports.feedback'
 } as const;
@@ -281,6 +282,17 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const target = activeTarget();
       if (!target) return { ok: false, code: 'no-report-open' };
       await vscode.commands.executeCommand((target.kind === 'issue' ? REPORT_VIEWS.issues : REPORT_VIEWS.pullRequests) + '.focus');
+      return { ok: true };
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.showDiff, async () => {
+      const editor = vscode.window.activeTextEditor;
+      const target = activeTarget();
+      if (!editor || target?.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
+      const offset = editor.document.getText().indexOf('CHANGED FILES AND DIFF (plain text preview)');
+      if (offset < 0) return { ok: false, code: 'diff-unavailable' };
+      const position = editor.document.positionAt(offset);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.AtTop);
       return { ok: true };
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.refresh, refresh),
