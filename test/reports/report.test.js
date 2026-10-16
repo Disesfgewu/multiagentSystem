@@ -12,7 +12,7 @@ const issue = (over = {}) => ({ number: 12, title: 'Build the report view', stat
 const pr = (over = {}) => ({ number: 7, title: 'Add reports', state: 'open', draft: false, merged: false, author: 'worker', headSha: HEAD, headRef: 'feat/x', headRepository: 'o/r', baseRef: 'main', body: 'Refs #12\n\n**使用者可操作結果：** x', referencedIssues: [{ number: 12 }], updatedAt: 'now', ...over });
 const snapshot = (over = {}) => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0, ...over });
 const comment = (body, over = {}) => ({ author: 'pm-user', createdAt: '2026-10-16T01:00:00Z', body, ...over });
-const prReport = (over = {}) => render(buildPullRequestReport({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot(), reviews: ok([]), comments: ok([]), ...over }));
+const prReport = (over = {}) => render(buildPullRequestReport({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot(), reviews: ok([]), comments: ok([]), filesHeadVerified: true, ...over }));
 const issueReport = (over = {}) => render(buildIssueReport({ repository: 'o/r', issue: issue(), comments: ok([]), pullRequests: ok([pr()]), ...over }));
 
 test('an issue report shows the requirement, labels, related pull requests, discussion, and what is not verified', () => {
@@ -73,6 +73,9 @@ test('fork source and plain diff are shown only when the exact head is verified;
     assert.match(text, /Diff for this head: unknown/);
     assert.equal(text.includes('+new'), false);
   }
+  const moved = prReport({ files, filesHeadVerified: false });
+  assert.match(moved, /Diff for this head: unknown/);
+  assert.equal(moved.includes('+new'), false);
 });
 
 test('CI that belongs to another head, or could not be read, is unknown', () => {

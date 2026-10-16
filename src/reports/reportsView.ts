@@ -53,8 +53,9 @@ const realDeps: ReportDeps = {
   readerFor: (repository) => githubReaderFor(repository) as unknown as ReportReader | null
 };
 let deps: ReportDeps = realDeps;
+let readGeneration = 0;
 /** Replaces where reports are read from. Only the Extension Host test does this. */
-export function setReportDepsForTests(next: ReportDeps | undefined): void { deps = next ?? realDeps; }
+export function setReportDepsForTests(next: ReportDeps | undefined): void { deps = next ?? realDeps; readGeneration += 1; }
 
 const order: Record<Kind, number[]> = { issue: [], pullRequest: [] };
 
@@ -89,6 +90,7 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
 
   async getChildren(item?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (item) return [];
+    const generation = readGeneration;
     const what = this.kind === 'issue' ? 'Issues' : 'Pull requests';
     if (!vscode.workspace.isTrusted) return [new Message('Trust this workspace to read its GitHub work.')];
     const repository = await deps.repository();
@@ -102,9 +104,9 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [new Message(`${what} could not be read. Refresh to retry.`)];
     }
     // Only a complete answer is a list; an incomplete one is never shown as if it were the whole.
-    if (result.kind !== 'ok' && result.kind !== 'empty') { order[this.kind] = []; return [new Message(incompleteMessage(what, result.kind))]; }
+    if (result.kind !== 'ok' && result.kind !== 'empty') { if (generation === readGeneration) order[this.kind] = []; return [new Message(incompleteMessage(what, result.kind))]; }
     const items: any[] = Array.isArray(result.data) ? result.data.filter((entry) => entry && Number.isSafeInteger(entry.number)) : [];
-    order[this.kind] = items.map((entry) => entry.number);
+    if (generation === readGeneration) order[this.kind] = items.map((entry) => entry.number);
     if (items.length === 0) return [new Message(`No open ${what.toLowerCase()}.`)];
     return items.map((entry) => new Entry(this.kind, entry.number, entry.title, this.kind === 'issue'
       ? `${Array.isArray(entry.labels) && entry.labels.length ? entry.labels.slice(0, 2).map((label: unknown) => line(label, 20)).join(', ') : 'open'}`
@@ -136,9 +138,23 @@ export async function reportText(kind: Kind, number: number): Promise<string> {
       if (issue.kind !== 'ok' || !issue.data) return `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`;
       return render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests }));
     }
-    const [pullRequest, snapshot, reviews, comments, files] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number), reader.getPullRequestFiles(number)]);
+    const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
     if (pullRequest.kind !== 'ok' || !pullRequest.data) return `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`;
-    return render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files }));
+    // The files endpoint is keyed by PR number and has no head SHA. Read the head before and
+    // after the files, so a concurrent push cannot attach a new patch to the old report head.
+    let files: Result = { kind: 'not_read' };
+    let afterFiles: Result = { kind: 'not_read' };
+    try {
+      files = await reader.getPullRequestFiles(number);
+      afterFiles = await reader.getPullRequest(number);
+    } catch {
+      // Keep the description and review readable. The diff cannot be assigned to this head.
+    }
+    const beforeHead = pullRequest.data.headSha;
+    const filesHeadVerified = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) &&
+      afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
+      afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
+    return render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified }));
   } catch {
     return `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`;
   }

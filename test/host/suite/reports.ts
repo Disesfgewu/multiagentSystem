@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
-import { REPORT_COMMANDS, REPORT_SCHEME, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
+import { REPORT_COMMANDS, REPORT_SCHEME, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
 
 const HEAD = 'd'.repeat(40);
 
@@ -57,6 +57,20 @@ export async function runReportChecks(): Promise<string> {
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const prText = vscode.window.activeTextEditor?.document.getText() ?? '';
     for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'it cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+
+    // A push during the files request makes the patch's version unknowable; never label B's
+    // changed files as the diff for head A.
+    let headReads = 0;
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      getPullRequest: async () => ({ kind: 'ok', data: { number: 7, title: 'Changed while reading', state: 'open', headSha: ++headReads === 1 ? HEAD : 'e'.repeat(40), headRepository: 'external/reports' } }),
+      getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'new-head.ts', status: 'modified', patch: '+new-head-only' }] })
+    }) });
+    const movedHead = await reportText('pullRequest', 7);
+    assert.equal(headReads, 2);
+    assert.match(movedHead, /Diff for this head: unknown/);
+    assert.equal(movedHead.includes('new-head.ts'), false);
+    assert.equal(movedHead.includes('+new-head-only'), false);
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
 
     // a report cannot be written to a file
     await assert.rejects(Promise.resolve(vscode.workspace.fs.writeFile(reportUri('pullRequest', 7), Buffer.from('x'))));

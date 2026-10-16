@@ -111,9 +111,9 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
 }
 
 /**
- * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, files?: object }} input
+ * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, files?: object, filesHeadVerified?: boolean }} input
  */
-function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, files }) {
+function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, files, filesHeadVerified }) {
   const pr = pullRequest;
   const head = typeof pr.headSha === 'string' ? pr.headSha : null;
   const lines = [...header('Pull request', repository, pr)];
@@ -130,7 +130,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   lines.push('', 'CHANGED FILES AND DIFF (plain text preview)');
   const fileNote = readNote('Changed files', files);
   const fileItems = dataOf(files);
-  const sameHead = snapshot && snapshot.status === 'complete' && snapshot.consistent === true &&
+  const sameHead = filesHeadVerified === true && snapshot && snapshot.status === 'complete' && snapshot.consistent === true &&
     typeof snapshot.headSha === 'string' && head && snapshot.headSha.toLowerCase() === head.toLowerCase();
   if (!sameHead) lines.push('Diff for this head: unknown (the head changed during the read, or its version could not be verified).');
   else if (fileNote) lines.push(fileNote);
