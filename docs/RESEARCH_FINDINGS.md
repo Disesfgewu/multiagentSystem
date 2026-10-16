@@ -26,10 +26,16 @@
 
 查證失敗（`failed`）一定是未知；沒有答案保持 `unverified`。信心程度在未查證前上限為 `medium`。預印本、撤稿狀態未知、版本未知都會產生 `warnings`。
 
+## 查證證據介面
+
+`src/research/verifier.js` 仍是純比對模組，不連網，也不能證明注入的 fetcher 實際呼叫官方端點。fetcher 必須回傳 `{ status, source, identifier, fetchedAt, metadata? }`；DOI 的 `source` 固定為 `crossref-api`，arXiv 固定為 `arxiv-api`，識別碼必須等於請求值，取得時間必須是合法 UTC 時間。任一欄位缺漏、格式異常、來源或識別碼不符都成為 `invalid-evidence`，不會升級為 verified。
+
+標題只允許大小寫、空白與標點正規化後的**完整相等**，不接受子字串。發表日必須是合法且相同的完整日曆日期；只有年份或年月的來源精度不足，結果保持 unverified。同年但不同月日是 mismatch。`not-found` 是帶正確來源與識別碼的查無紀錄證據；連線錯誤或 `unavailable` 則是無法查證，兩者分開回報。
+
 ## 不可信資料
 
 每個發現都標為 `trust: 'untrusted-data'`。交給其他身份組時用 `wrapUntrusted`：每筆以 JSON 引用，`<`、`>`、`&` 以跳脫表示，欄位內容無法結束區塊、無法自成一行指令，也不複製摘要。它只是引用資料，**不得放進指令（instructions）或規則（forbid／require）層**；這個放置規則由後續 PR（#61 第 4 項）的注入端負責。
 
 ## 尚未包含
 
-身份組範本與權限（第 2 項）、對外查詢掃描（第 3 項）、研究域與跨域分享（第 4 項）、真實查證 fetcher（第 5 項）、MCP 允許清單（第 6 項）、候選 server 評估（第 7 項）。本 PR 只用合成資料，沒有任何真實論文來源、MCP server 或網路。
+身份組範本與權限（第 2 項）、對外查詢掃描（第 3 項）、研究域與跨域分享（第 4 項）、連到 Crossref／arXiv 官方端點且受 broker 管理的真實 fetcher（第 5 項）、MCP 允許清單（第 6 項）、候選 server 評估（第 7 項）。本 PR 只用合成證據測試純比對，沒有任何真實論文來源、MCP server 或網路。
