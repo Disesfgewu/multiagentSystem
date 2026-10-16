@@ -56,7 +56,7 @@ function gateLaunch({ policyRead, observations = [], now, running, approval } = 
 /** The limits as sentences, or "no limits". */
 function describePolicy(policyRead) {
   if (!policyRead || policyRead.ok !== true) return 'Limits: could not be read.';
-  if (policyRead.stored !== true) return 'Limits: none set. New agents on this account are never held back.';
+  if (policyRead.stored !== true) return 'Limits: none set. Use Set Account Limits to add a warning, pause level or running limit; new agents on this account are never held back.';
   const p = policyRead.policy;
   const parts = [];
   if (p.warnAtPercent !== undefined) parts.push(`warn at ${p.warnAtPercent}% used`);
@@ -72,11 +72,16 @@ function describeQuota(observations, now) {
   if (windows.length === 0) return ['Usage: unknown. No verified usage source is connected for this account, so no percentage is shown.'];
   return windows.map((w) => {
     const used = w.usedPercent === null ? 'unknown' : `${w.usedPercent}% used`;
-    const trust = w.gateEligible ? 'verified and current' : w.fresh ? 'estimate (not used to block)' : 'out of date (not used to block)';
-    const reset = w.resetsAt ? `, resets ${w.resetsAt}` : '';
-    return `Usage (${safe(w.window)}): ${used}, ${trust}${reset}. Read ${w.observedAt ?? 'at an unknown time'} from ${typeof w.source === 'string' ? w.source.slice(0, 60) : 'an unknown source'}.`;
+    const observedMs = Date.parse(w.observedAt);
+    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    const badTime = !Number.isFinite(observedMs) || !Number.isFinite(nowMs) || observedMs > nowMs;
+    const trust = badTime ? 'unverified time (not used to block)' : w.usedPercent === null ? 'invalid or missing reading (not used to block)' : w.gateEligible ? 'verified and current' : w.fresh ? 'estimate (not used to block)' : 'out of date (not used to block)';
+    const reset = w.resetsAt ? `, resets ${safeDetail(w.resetsAt, 40)}` : '';
+    return `Usage (${safe(w.window)}): ${used}, ${trust}${reset}. Read ${safeDetail(w.observedAt, 40) || 'at an unknown time'} from ${safeDetail(w.source, 60) || 'an unknown source'}.`;
   });
 }
+
+const safeDetail = (value, max) => typeof value === 'string' ? Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('') : '';
 
 /** Turns what a person typed into a stored policy, or the problems in plain words. */
 function policyFromInput({ warn, block, max, unknownQuota }) {

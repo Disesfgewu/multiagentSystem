@@ -130,8 +130,14 @@ async function accountFlow(workspace: string): Promise<void> {
   const item = entries.find((entry) => entry.label === 'Host Work Account');
   assert.ok(item, 'the persistent account view lists the created profile');
   assert.match(String(item?.description ?? ''), /Claude Code · identity unknown/);
+  assert.match(String(item?.description ?? ''), /limits not set/);
   assert.match(String(item?.tooltip ?? ''), /Limits: none set/);
+  assert.match(String(item?.tooltip ?? ''), /Set Account Limits/);
   assert.match(String(item?.tooltip ?? ''), /Usage: unknown/);
+  const overviewAccount = ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
+  assert.ok(overviewAccount, 'the overview lists each account even when no agent uses it');
+  assert.match(String(overviewAccount.description ?? ''), /Usage: unknown.*Limits: none set/);
+  assert.match(String(overviewAccount.tooltip ?? ''), /No verified usage source/);
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
@@ -194,6 +200,9 @@ async function accountFlow(workspace: string): Promise<void> {
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: freeStart.session?.id });
   const setLimits = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '70', block: '90', max: '1', unknownQuota: 'block' });
   assert.equal(setLimits.ok, true);
+  const overviewWithLimits = ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
+  assert.match(String(overviewWithLimits?.description ?? ''), /Limits: warn at 70% used/);
+  assert.match(String(overviewWithLimits?.tooltip ?? ''), /Usage: unknown/);
   const badLimits = await vscode.commands.executeCommand<{ ok: boolean; problems?: string[] }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '95', block: '90' });
   assert.deepEqual([badLimits.ok, badLimits.problems?.[0]], [false, 'The warning level cannot be higher than the pause level.']);
   const held = await gated('Gated');

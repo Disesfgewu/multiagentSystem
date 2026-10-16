@@ -2,12 +2,14 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService } from '../accounts/accountRuntime';
+import { limitLines } from '../accounts/quotaGateUi';
 import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor } from '../github/githubCommands';
 import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
 import { isGitHubWebUrl } from '../github/controller';
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
+const { cleanTitle } = require('./model') as { cleanTitle(value: unknown): string };
 const { presentAgent, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
   countRunningAgents(sessions: unknown): number;
   presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null };
@@ -64,6 +66,16 @@ class AgentRow extends Row {
   }
 }
 
+class AccountRow extends Row {
+  constructor(entry: { id: string; label: string; provider: string; policy: string; usage: string[] }) {
+    super(entry.label);
+    this.description = `${entry.provider} · ${entry.usage[0] ?? 'Usage: unknown.'} · ${entry.policy}`;
+    this.tooltip = [`Account: ${entry.label}`, `Provider: ${entry.provider}`, entry.policy, ...entry.usage].join('\n');
+    this.iconPath = new vscode.ThemeIcon('account');
+    this.command = { command: 'multiagentSystem.accounts.details', title: 'Account details', arguments: [entry.id] };
+  }
+}
+
 class Heading extends Row {
   constructor(text: string, description?: string) {
     super(text);
@@ -76,6 +88,7 @@ type Item = Row;
 
 export interface OverviewSnapshot {
   steps: ReturnType<typeof onboardingSteps>;
+  accounts: Array<{ id: string; label: string; provider: string; policy: string; usage: string[] }>;
   agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null }>;
   problems: number;
   notes: string[];
@@ -128,10 +141,14 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
   const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen }));
+  const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
+    const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
+    return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage };
+  })) : [];
   pullRequestUrls.clear();
   for (const agent of agents) if (agent.pullRequestUrl) pullRequestUrls.set(agent.id, agent.pullRequestUrl);
   const steps = onboardingSteps({ accounts: profiles ? profiles.length : null, roleGroups: roleGroups ? roleGroups.length : null, sessions: countRunningAgents(live) });
-  return { steps, agents, problems, notes };
+  return { steps, accounts: accountRows, agents, problems, notes };
 }
 
 class OverviewTree implements vscode.TreeDataProvider<Item> {
@@ -152,6 +169,10 @@ class OverviewTree implements vscode.TreeDataProvider<Item> {
       rows.push(...snapshot.steps.map((step) => new StepRow(step)));
     }
     for (const note of snapshot.notes) rows.push(new Heading(note));
+    if (snapshot.accounts.length > 0) {
+      rows.push(new Heading('Accounts', `${snapshot.accounts.length} profile${snapshot.accounts.length === 1 ? '' : 's'}`));
+      rows.push(...snapshot.accounts.map((entry) => new AccountRow(entry)));
+    }
     if (snapshot.agents.length > 0) {
       rows.push(new Heading('Agents', `${snapshot.agents.length} session${snapshot.agents.length === 1 ? '' : 's'}`));
       rows.push(...snapshot.agents.map((entry) => new AgentRow(entry)));
