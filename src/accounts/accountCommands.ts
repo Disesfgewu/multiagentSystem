@@ -4,10 +4,16 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
+import { runCommand, childEnvironment } from './identityRunner';
 
 const { PROVIDERS } = require('./profile') as { PROVIDERS: Record<string, { configEnvVar: string }> };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
-const { describeAccounts } = require('./profile-view') as { describeAccounts(input: { profiles: any[]; context: { repoRoot: string } }): any[] };
+const { checkAccountIdentity, describeCheck, splitFolderIssues } = require('./identity-check') as {
+  splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
+  checkAccountIdentity(input: Record<string, unknown>): Promise<{ ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any }>;
+  describeCheck(result: unknown): { summary: string; hint: string };
+};
+const { describeAccounts } = require('./profile-view') as { describeAccounts(input: { profiles: any[]; observations?: Map<string, unknown>; context: { repoRoot: string } }): any[] };
 
 export const ACCOUNT_VIEW = 'multiagentSystem.accountsView';
 export const ACCOUNT_COMMANDS = {
@@ -17,7 +23,8 @@ export const ACCOUNT_COMMANDS = {
   edit: 'multiagentSystem.accounts.edit',
   remove: 'multiagentSystem.accounts.remove',
   login: 'multiagentSystem.accounts.login',
-  launch: 'multiagentSystem.accounts.launch'
+  launch: 'multiagentSystem.accounts.launch',
+  check: 'multiagentSystem.accounts.check'
 } as const;
 
 const LOGIN_COMMANDS: Record<string, string> = {
@@ -38,6 +45,28 @@ export function openLoginTerminal(provider: string, profile: Record<string, any>
   terminal.show();
   if (execute) terminal.sendText(command);
   return { terminal, command };
+}
+
+type CheckResult = { ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any };
+// Results of the sign-in checks, kept only while this window is open. They hold a fingerprint and
+// a login method, never the CLI's output or an email address.
+const checkResults = new Map<string, CheckResult>();
+
+function observationsFor(profiles: Array<{ id: string }>): Map<string, { identity: unknown }> {
+  const observed = new Map<string, { identity: unknown }>();
+  for (const profile of profiles) {
+    const result = checkResults.get(profile.id);
+    if (result?.ok && result.identity) observed.set(profile.id, { identity: result.identity });
+  }
+  return observed;
+}
+
+function lastCheckedText(id: string): string {
+  const result = checkResults.get(id);
+  if (!result) return 'Sign-in has not been checked in this window. Use Check Sign-in.';
+  return result.ok
+    ? `Last checked ${result.checkedAt} (${result.source ?? 'unknown source'}).`
+    : `Last check ${result.checkedAt} could not confirm the sign-in: ${describeCheck(result).summary}`;
 }
 
 class AccountItem extends vscode.TreeItem {
@@ -86,7 +115,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     if (!loaded.ok) return [new AccountMessage(loaded.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel))];
     const rows: AccountTreeItem[] = [];
     if (loaded.profiles.length === 0) rows.push(new AccountMessage('No account profiles. Use Create Profile to add one.'));
-    const described = describeAccounts({ profiles: loaded.profiles, context: { repoRoot: result.store.repoRoot } });
+    const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
     rows.push(...loaded.profiles.map((profile: any, index: number) => {
       const status = described[index];
       const provider = builtIn.get(profile.provider)?.label ?? profile.provider;
@@ -95,6 +124,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
         : 'identity unknown';
       const issues = status.issues.map((issue: { hint: string }) => issue.hint);
       if (builtIn.capability(profile.provider, 'accountIsolation') !== 'verified') issues.push('Account isolation is not verified for this provider on this machine.');
+      issues.push(lastCheckedText(profile.id));
       return new AccountItem(profile.id, profile.label, provider, status.health, identity, issues);
     }));
     const labels = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
@@ -195,7 +225,8 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.edit, (id?: unknown) => edit(id, tree)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.remove, (id?: unknown) => remove(id, tree)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.login, (id?: unknown) => login(id)),
-    vscode.commands.registerCommand(ACCOUNT_COMMANDS.launch, (id?: unknown) => launch(id))
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.launch, (id?: unknown) => launch(id)),
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id))
   );
 }
 
@@ -228,11 +259,23 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
   const profile = loaded.profile;
   const provider = builtIn.get(profile.provider);
   const isolation = provider?.capabilities.accountIsolation ?? 'unknown';
+  const checked = checkResults.get(id);
+  const described = describeAccounts({ profiles: [profile], observations: observationsFor([profile]), context: { repoRoot: (result.store as { repoRoot: string }).repoRoot } })[0];
+  const identityLine = described.verifiedIdentity.state === 'verified'
+    ? `Service identity: confirmed by the CLI, fingerprint ${described.verifiedIdentity.fingerprint}`
+    : `Service identity: unknown${checked && !checked.ok ? ` (${describeCheck(checked).summary})` : checked?.identity && !checked.identity.loggedIn ? ' (the CLI says it is not signed in)' : ' (not checked yet, or the CLI did not confirm it)'}`;
+  const plan = checked?.ok && checked.identity?.plan?.value ? String(checked.identity.plan.value) : null;
+  const { folder: folderProblems, confirmation } = splitFolderIssues(described.issues);
   const lines = [
     `Account profile: ${profile.label}`,
     `Provider: ${provider?.label ?? profile.provider}`,
-    'Service identity: unknown (no live provider observation is connected yet)',
-    'Login method: unknown (no live provider observation is connected yet)',
+    `Configuration folder: ${folderProblems.length === 0 ? 'passes the safety checks' : `rejected: ${folderProblems.join(' ')}`}`,
+    `CLI confirmation of this folder: ${confirmation.length === 0 ? (checked?.ok && checked.identity?.configDirMatches === true ? 'confirmed' : 'unverified (the CLI has not said which folder it uses)') : `unverified: ${confirmation.join(' ')}`}`,
+    identityLine,
+    `Login method: ${described.loginMethod.state === 'reported' ? described.loginMethod.value : 'unknown'}`,
+    `Subscription plan: ${plan ?? 'unknown (the CLI did not report one)'}`,
+    `Health: ${described.health}`,
+    lastCheckedText(id),
     `Account isolation: ${isolation}`,
     'The label is user supplied and does not prove which account is signed in.'
   ];
@@ -314,7 +357,55 @@ async function login(value: unknown): Promise<void> {
     'Open Login Terminal'
   );
   if (answer !== 'Open Login Terminal') return;
-  openLoginTerminal(loaded.profile.provider, loaded.profile, prepared.env);
+  const opened = openLoginTerminal(loaded.profile.provider, loaded.profile, prepared.env);
+  // When the login terminal is closed the sign-in has most likely finished: check it once.
+  const watcher = vscode.window.onDidCloseTerminal((closed) => {
+    if (closed !== opened.terminal) return;
+    watcher.dispose();
+    void check(loaded.profile.id);
+  });
+  const next = await vscode.window.showInformationMessage(`Finish signing in inside the terminal, then check “${loaded.profile.label}”.`, 'I have signed in — check now');
+  if (next === 'I have signed in — check now') void check(loaded.profile.id);
+}
+
+/** Runs the provider's own status command in this profile's environment and shows the result in plain words. */
+async function check(value: unknown): Promise<CheckResult | undefined> {
+  const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean }) : {};
+  const interactive = options.interactive !== false;
+  const id = selectedId(options.id ?? value);
+  const profile = id || !interactive ? undefined : await chooseProfile();
+  const selected = profile ?? (id ? { id } : undefined);
+  if (!selected) return undefined;
+  const result = await accountService(() => sessions?.list() ?? []);
+  if (!result.ok) { if (interactive) void vscode.window.showErrorMessage(result.message); return undefined; }
+  const loaded = result.service.get(selected.id);
+  if (!loaded.ok) { if (interactive) void vscode.window.showErrorMessage(errorFor(loaded)); return undefined; }
+  const repoRoot = (result.store as { repoRoot: string }).repoRoot;
+  const prepared = await launchEnvironment(loaded.profile.id, loaded.profile.provider, () => sessions?.list() ?? []);
+  let outcome: CheckResult;
+  if (!prepared.ok) {
+    outcome = { ok: false, state: 'unknown', reason: 'profile-rejected', checkedAt: new Date().toISOString(), source: null, identity: null };
+  } else {
+    const run = () => checkAccountIdentity({ profile: loaded.profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: runCommand });
+    outcome = interactive
+      ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking sign-in for “${loaded.profile.label}”…` }, run)
+      : await run();
+  }
+  checkResults.set(loaded.profile.id, outcome);
+  currentTree?.refresh();
+  if (!interactive) return outcome;
+  const words = describeCheck(outcome);
+  const confirmed = outcome.ok && outcome.identity?.loggedIn === true && outcome.identity?.subject?.confidence === 'actual' && outcome.identity.anomalies.length === 0;
+  const message = `“${loaded.profile.label}”: ${words.summary} ${words.hint}`;
+  if (confirmed) {
+    const answer = await vscode.window.showInformationMessage(message, 'Start Session with This Account');
+    if (answer === 'Start Session with This Account') void vscode.commands.executeCommand(ACCOUNT_COMMANDS.launch, loaded.profile.id);
+  } else {
+    const answer = await vscode.window.showWarningMessage(message, 'Check Again', 'Open Login Terminal');
+    if (answer === 'Check Again') void check(loaded.profile.id);
+    if (answer === 'Open Login Terminal') void vscode.commands.executeCommand(ACCOUNT_COMMANDS.login, loaded.profile.id);
+  }
+  return outcome;
 }
 
 async function launch(value: unknown): Promise<void> {
