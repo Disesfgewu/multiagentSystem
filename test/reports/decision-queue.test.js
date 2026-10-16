@@ -16,8 +16,10 @@ test('only a complete, deliberately marked owner report is displayed; old versio
   assert.equal(pmReport({ kind: 'empty' }, 'owner/repo', A).state, 'missing');
   assert.equal(pmReport({ kind: 'partial', data: comments.data }, 'owner/repo', A).state, 'unknown');
   for (const broken of [marked({ ...data, risks: undefined }), marked({ ...data, secret: 'x' }), `${MARKER}\nnot-json`]) {
-    assert.equal(pmReport({ kind: 'ok', data: [comment('owner', broken)] }, 'owner/repo', A).state, 'missing');
+    assert.equal(pmReport({ kind: 'ok', data: [comment('owner', broken)] }, 'owner/repo', A).state, 'unknown');
   }
+  assert.equal(pmReport({ kind: 'empty', data: [comment('owner', marked())] }, 'owner/repo', A).state, 'unknown');
+  assert.equal(pmReport({ kind: 'ok', data: [comment('owner', marked()), comment('owner', `${MARKER}\nnot-json`)] }, 'owner/repo', A).state, 'unknown', 'a broken newer report cannot revive an older one');
   const hostile = pmReport({ kind: 'ok', data: [comment('owner', marked({ ...data, risks: 'bad\u202E\nname' }))] }, 'owner/repo', A);
   assert.equal(hostile.fields.risks.includes('\u202E'), false);
   assert.equal(hostile.fields.risks.includes('\n'), false);

@@ -87,7 +87,7 @@ function header(kind, repository, item) {
 const PM_LABELS = Object.freeze({ operableResult: 'User can', solution: 'Solution', alternatives: 'Alternatives', acceptanceGap: 'Acceptance gap', risks: 'Risks', recommendedAction: 'Recommended action', evidenceTime: 'Evidence time', evidenceVersion: 'Evidence version' });
 function pmReportLines(comments, repository, version) {
   const result = pmReport(comments, repository, version);
-  if (result.state === 'unknown') return ['PM REPORT', 'Unknown: comments could not be read completely.'];
+  if (result.state === 'unknown') return ['PM REPORT', result.reason === 'invalid-pm-report' ? 'Unknown: the newest marked PM report has an invalid format.' : 'Unknown: comments could not be read completely.'];
   if (result.state === 'missing') return ['PM REPORT', 'Pending: no structured PM report was found. Ordinary comments are not a PM report.'];
   return ['PM REPORT', `Declared by repository owner · ${result.state === 'current' ? 'evidence version matches this report' : 'STALE: evidence version does not match this report'}`,
     ...FIELDS.map((key) => `${PM_LABELS[key]}: ${block(result.fields[key], 2000)}`)];
