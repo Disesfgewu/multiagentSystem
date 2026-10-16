@@ -98,6 +98,11 @@ export async function runReportChecks(): Promise<string> {
     assert.match((await labels('issue'))[0], /could not be read/);
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => ({ kind: 'empty', data: [] }) }) });
     assert.deepEqual(await labels('issue'), ['No open issues.']);
+    for (const answer of [{ kind: 'ok' }, { kind: 'ok', data: [null] }, { kind: 'ok', data: [{ number: 0, title: 'bad' }] }, { kind: 'empty', data: [{ number: 99, title: 'bad' }] }]) {
+      setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => answer }) });
+      assert.match((await labels('issue'))[0], /could not be read \(invalid\)/);
+      assert.equal((await labels('issue')).some((label) => label.includes('No open issues.')), false);
+    }
     setReportDepsForTests({ repository: async () => null, readerFor: () => null });
     assert.match((await labels('issue'))[0], /Open a project folder that has a GitHub origin/);
 

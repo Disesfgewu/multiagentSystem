@@ -104,8 +104,12 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [new Message(`${what} could not be read. Refresh to retry.`)];
     }
     // Only a complete answer is a list; an incomplete one is never shown as if it were the whole.
-    if (result.kind !== 'ok' && result.kind !== 'empty') { if (generation === readGeneration) order[this.kind] = []; return [new Message(incompleteMessage(what, result.kind))]; }
-    const items: any[] = Array.isArray(result.data) ? result.data.filter((entry) => entry && Number.isSafeInteger(entry.number)) : [];
+    if (!result || (result.kind !== 'ok' && result.kind !== 'empty')) { if (generation === readGeneration) order[this.kind] = []; return [new Message(incompleteMessage(what, result?.kind ?? 'invalid'))]; }
+    const malformed = result.kind === 'ok'
+      ? !Array.isArray(result.data) || result.data.some((entry: any) => !entry || !Number.isSafeInteger(entry.number) || entry.number < 1)
+      : result.data !== undefined && (!Array.isArray(result.data) || result.data.length !== 0);
+    if (malformed) { if (generation === readGeneration) order[this.kind] = []; return [new Message(incompleteMessage(what, 'invalid'))]; }
+    const items: any[] = result.kind === 'empty' ? [] : result.data;
     if (generation === readGeneration) order[this.kind] = items.map((entry) => entry.number);
     if (items.length === 0) return [new Message(`No open ${what.toLowerCase()}.`)];
     return items.map((entry) => new Entry(this.kind, entry.number, entry.title, this.kind === 'issue'
