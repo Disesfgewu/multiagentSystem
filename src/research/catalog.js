@@ -3,7 +3,10 @@
 // Research Tools Catalog: pinned, verified, read-only MCP specifications.
 //
 // Shaped by five security principles:
-//  1. Pinned versions and verifiable source integrity: dynamic 'latest' and synthetic hashes are forbidden.
+//  1. Pinned versions: a dynamic 'latest'/'next' version string is rejected. The integrity field must
+//     be shaped like a sha256 digest (`sha256:` + 64 hex chars); this module checks only that shape,
+//     never whether the digest is genuine or matches the actual published asset — a fabricated digest
+//     of the right shape passes here and must be checked against the real release before any install.
 //  2. Shell and code execution prevention: commands must be argument arrays, strictly forbidding
 //     shell binaries, eval/code flags (-c, -e), and unpinned dynamic package runners.
 //  3. Strict read-only constraint: tools provided by research servers must be marked read-only.
@@ -29,6 +32,13 @@ const FORBIDDEN_SHELL_NAMES = Object.freeze([
 ]);
 
 const FORBIDDEN_EVAL_FLAGS = Object.freeze(['-c', '-e', '--eval', '/c']);
+
+// A dynamic package runner resolves and fetches its target package at the moment it is invoked,
+// not at the moment this catalog item was reviewed: `npx some-package` with no `-y` still resolves
+// whatever version the registry currently serves under that name, exactly like `npx -y`. There is no
+// flag that makes a runner invocation pinned; only a command that names a locally present, hash-
+// verified executable directly is. The whole category is rejected, not just the `-y`/`--yes` shortcut.
+const FORBIDDEN_DYNAMIC_RUNNERS = Object.freeze(['npx', 'uvx']);
 
 const FORBIDDEN_COMMAND_TOKENS = Object.freeze([
   'latest', 'next', 'curl', 'wget', 'fetch', 'postinstall',
@@ -89,6 +99,9 @@ function validateCommand(commandArray) {
   if (FORBIDDEN_SHELL_NAMES.includes(execBasename)) {
     fail('shell-executable-forbidden');
   }
+  if (FORBIDDEN_DYNAMIC_RUNNERS.includes(execBasename)) {
+    fail('dynamic-package-runner-forbidden');
+  }
 
   for (let i = 0; i < cleanArgs.length; i++) {
     const token = cleanArgs[i].toLowerCase();
@@ -96,11 +109,6 @@ function validateCommand(commandArray) {
     // Check forbidden eval flags (e.g. node -e, python -c)
     if (FORBIDDEN_EVAL_FLAGS.includes(token)) {
       fail('eval-flag-forbidden');
-    }
-
-    // Check dynamic package runners (npx -y, uvx without pinned version)
-    if ((execBasename === 'npx' || execBasename === 'uvx') && (token === '-y' || token === '--yes')) {
-      fail('dynamic-package-runner-forbidden');
     }
 
     for (const forbidden of FORBIDDEN_COMMAND_TOKENS) {

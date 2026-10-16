@@ -12,7 +12,7 @@
 1. **唯一真實來源約束**：
    - 嚴格限定於使用者指定的精確倉庫（`sysprog21/zhtw-mcp`、`blazickjp/arxiv-mcp-server`、`github/github-mcp-server`），不得以同名套件、社群 fork 或推測之 npm 套件代替。
 2. **拒絕動態安裝與供應鏈攻擊**：
-   - 嚴禁使用 `npx -y <pkg>@latest` 或任何動態抓取最新版本的形式。
+   - 整個 `npx`／`uvx` 套件執行器類別一律拒絕作為啟動指令，不只是拒絕 `-y`／`--yes`：沒有旗標的 `npx some-package` 在執行當下仍會向登錄檢索「目前」版本，與加了 `-y` 沒有本質差異，兩者都不是鎖定建置。
    - 啟動指令必須為靜態參數陣列（`[command, ...args]`），嚴禁經由 shell 字串拼接，亦嚴禁包含 eval 標誌（如 `-e`, `-c`）或 shell 直譯器（`/bin/bash`, `cmd.exe`, `powershell`）。
 3. **區分「自我宣告」與「沙箱強制」**：
    - 工具定義中的 `readOnly: true` 僅屬 schema 層級的自我宣告，**執行階段目前尚未獲得沙箱強制（`sandboxEnforced: false`）**，文件與程式碼均不得宣稱「已受系統限制」。
@@ -27,14 +27,17 @@
 ### 1. 繁體中文語意校正工具：`zhtw-mcp`
 - **精確倉庫來源**：`https://github.com/sysprog21/zhtw-mcp.git`
 - **開源授權**：**MIT**（核對自倉庫根目錄 `Cargo.toml`）
-- **官方版本與 Commit 狀態**：
+- **官方版本與 Commit 狀態**（三筆各自獨立的證據，不得互相假設為同一次建置）：
   - Crate 版本：`0.1.0`（`Cargo.toml`）。
-  - Release / Tag 狀態：官方發布 tag 為動態 `latest`，對應之固定 commit SHA 為 **`0485df42b26e08e7e9d00da0a5c773ca99bedbd7`**（2026-10-11）。
-  - **版本鎖定依據**：因官方尚未釋出固定 SemVer tag（如 `v0.1.0`），本專案若啟用必須以固定 commit `0485df42b26e...` 鎖定，不得直接依賴動態 `latest` tag。
-- **發行資產與雜湊證據**：
+  - `latest` release（id `376195416`）：這是**可變動**的標籤，其 `target_commitish` 為 `0c3b70fa731f192dd8fe7be1ac5a2344cf105d81`（擷取時點 2026-10-16）。這個 release 之後若改指到其他 commit，此欄位會跟著變。
+  - 另一次先前查核取得的固定 commit SHA `0485df42b26e08e7e9d00da0a5c773ca99bedbd7`（2026-10-11）：這是獨立查核得到的一個 commit，**未證實與上述 `latest` release 的 `target_commitish` 相同建置**；在沒有 immutable release provenance（例如官方對應的固定 SemVer tag）之前，兩者都只能分開記錄，不能互相取代或視為等價。
+  - **版本鎖定依據**：官方尚未釋出固定 SemVer tag（如 `v0.1.0`）。若本專案要啟用，必須明確鎖定其中一個已核實的 commit SHA，而不是依賴會變動的 `latest` 標籤；哪一個 commit 才是「要鎖定的版本」仍待決策者核定，本文件不擅自選定。
+- **發行資產與雜湊證據**（每筆都附資產 ID 與建立時間，供日後核對是否被置換）：
+  - macOS arm64：`zhtw-mcp-aarch64-apple-darwin.tar.gz`（asset id `629384222`，官方 digest `sha256:a0b555fb47253e580eb095d438368c6af0018cf90fffa0dbb979f081e28d084a`，`created_at` `2026-10-11T00:47:28Z`，屬於上述 `latest` release）。
   - Windows x86_64: `zhtw-mcp-x86_64-pc-windows-msvc.tar.gz`（官方 digest: `sha256:5a0725835205a75d1ec57e13cf58e1b363488de9acdb250df372d7843105c71f`）。
   - Linux x86_64: `zhtw-mcp-x86_64-unknown-linux-gnu.tar.gz`（官方 digest: `sha256:d67c8426c066631e6cd570d5e6b540ea717a15160fd9691936fa394fe7f48db4`）。
-  - **macOS (arm64/x86_64)**：官方 release 目前**無獨立預編譯二進位資產**，macOS 下二進位雜湊為 **未驗證（unverified，需本機由原始碼編譯驗收）**。
+  - **macOS x86_64**：尚未在本次核對中找到對應資產；維持**未驗證**，不得寫成「不存在」。
+  - 這些資產全部屬於同一個 `latest` release（id `376195416`），彼此可視為同一次發布的一組建置；但這個 release 本身與上方「獨立查核取得」的 commit `0485df42...` 之間，**沒有建立起官方 immutable 對應關係前，仍視為未驗證**。
 - **實際暴露之 Tools**：
   - `zhtw`：針對繁體中文（臺灣教育部標準與兩岸用語對照）的統一文字校正與檢核工具。
   - 工具性質：純文字輸入與診斷輸出，不直接修改原始碼檔案。
@@ -52,13 +55,15 @@
 - **發行資產與雜湊證據**：
   - PyPI 套件識別碼：`arxiv-mcp-server==0.8.2`。
   - 套件二進位／原始碼發行檔雜湊：**待下載後核實完整性雜湊 (unverified)**，禁止預先編造虛構 SHA。
-- **實際暴露之 Tools**：
-  - 唯讀檢索類（允許候選）：
-    - `search` / `search_papers`：依關鍵字或主題搜尋 arXiv 論文元資料。
+- **實際暴露之 Tools**（精確名稱核對自鎖定 commit `572e301` 的原始碼，不是模組名或猜測）：
+  - 唯讀檢索類（候選授權對象）：
+    - `search_papers`：依關鍵字或主題搜尋 arXiv 論文元資料。
     - `get_abstract`：檢索指定 arXiv 論文之官方摘要與發布資訊。
-    - `read_paper` / `paper_outline`：讀取論文段落大綱。
+    - `search_paper_text`：在已下載的本機快取論文全文中搜尋字串。
+    - `read_paper`、`get_paper_outline`、`read_paper_section`：讀取論文全文、大綱或指定段落。
   - 磁碟寫入類（**嚴格禁止授權給模型**）：
-    - `download`：將 PDF 下載至本地快取路徑（涉及本地檔案寫入）。
+    - `download_paper`：將 PDF 下載並轉存至本地快取路徑（涉及本地檔案寫入）。
+  - **工作流程缺口（必須記錄，不得略過）**：`read_paper`、`get_paper_outline`、`read_paper_section`、`search_paper_text` 都讀取本機先前由 `download_paper`建立的快取，不會即時連線抓取論文全文。只要 `download_paper`（寫入工具）未被授權給模型，研究人員身份組就**無法讀到任何尚未被下載過的新論文全文**，只能用 `search_papers`／`get_abstract` 取得元資料與摘要。這是目前候選規格下的真實限制，不是待補的細節；若要支援全文閱讀，需要另立一個經人工核准、範圍受限、寫入目標固定於私有快取目錄的下載管道，超出本 PR 範圍。
 - **憑證與環境需求**：
   - 可選環境變數：`ARXIV_STORAGE_PATH`（非必要金鑰）。遵守 arXiv API 訪問規範（每 3 秒至多 1 次）。
 - **實機驗證狀態**：**待實機驗證 (unverified)**。

@@ -133,6 +133,16 @@ test('rejects dynamic package runners (npx -y)', () => {
   );
 });
 
+test('rejects the whole dynamic runner category, not just its -y/--yes shortcut: an unpinned invocation still resolves whatever the registry currently serves', () => {
+  for (const command of [['npx', 'some-package'], ['npx', '--yes', 'some-package'], ['uvx', 'some-package'], ['UVX', 'some-package'], ['/usr/local/bin/npx', 'some-package']]) {
+    assert.throws(
+      () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command }),
+      (err) => err instanceof CatalogError && err.code === 'dynamic-package-runner-forbidden',
+      JSON.stringify(command)
+    );
+  }
+});
+
 test('rejects forbidden tokens in command to avoid downloads or arbitrary scripts', () => {
   assert.throws(
     () => validateCatalogItem({ ...SAMPLE_GITHUB_ITEM, command: ['curl', 'https://example.com'] }),
