@@ -74,8 +74,9 @@ function describeQuota(observations, now) {
     const used = w.usedPercent === null ? 'unknown' : `${w.usedPercent}% used`;
     const observedMs = Date.parse(w.observedAt);
     const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
-    const badTime = !Number.isFinite(observedMs) || !Number.isFinite(nowMs) || observedMs > nowMs;
-    const trust = badTime ? 'unverified time (not used to block)' : w.usedPercent === null ? 'invalid or missing reading (not used to block)' : w.gateEligible ? 'verified and current' : w.fresh ? 'estimate (not used to block)' : 'out of date (not used to block)';
+    const futureTime = Number.isFinite(observedMs) && Number.isFinite(nowMs) && observedMs > nowMs;
+    const invalidTime = !Number.isFinite(observedMs) || !Number.isFinite(nowMs);
+    const trust = futureTime ? 'timestamp is in the future (not used to block)' : invalidTime ? 'invalid read time (not used to block)' : w.usedPercent === null ? 'invalid or missing reading (not used to block)' : w.gateEligible ? 'verified and current' : w.fresh && w.confidence === 'estimated' ? 'estimate (not used to block)' : w.fresh ? 'source unverified (not used to block)' : 'out of date (not used to block)';
     const reset = w.resetsAt ? `, resets ${safeDetail(w.resetsAt, 40)}` : '';
     return `Usage (${safe(w.window)}): ${used}, ${trust}${reset}. Read ${safeDetail(w.observedAt, 40) || 'at an unknown time'} from ${safeDetail(w.source, 60) || 'an unknown source'}.`;
   });

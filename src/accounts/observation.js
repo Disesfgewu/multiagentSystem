@@ -65,6 +65,7 @@ function observe(field, value, options) {
 // observedAt + validForMs, which for quota readings never passes the reset.
 function isGateEligible(observation, now) {
   if (observation.confidence !== CONFIDENCE.ACTUAL) return false;
+  if (typeof observation.source !== 'string' || observation.source.trim() === '') return false;
   return isFresh(observation, now);
 }
 

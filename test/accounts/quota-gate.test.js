@@ -111,9 +111,10 @@ test('usage is unknown when no verified source exists, and a reading is shown wi
   assert.match(lines.find((line) => line.includes('(old)')), /out of date \(not used to block\)/);
   assert.equal(describeQuota([reading('x', null)], NOW)[0].includes('unknown'), true);
   const future = describeQuota([reading('future', 99, { observedAt: new Date(NOW.getTime() + 60_000) })], NOW)[0];
-  assert.match(future, /Usage \(future\): unknown, unverified time/);
+  assert.match(future, /Usage \(future\): unknown, timestamp is in the future/);
   assert.equal(future.includes('99%'), false);
   assert.match(describeQuota([reading('invalid', NaN)], NOW)[0], /invalid or missing reading/);
+  assert.match(describeQuota([reading('unverified', 95, { source: null })], NOW)[0], /source unverified \(not used to block\)/);
   const hostile = describeQuota([reading('safe', 10, { source: 'evil\u202E\ncommand' })], NOW)[0];
   assert.equal(hostile.includes('\u202E'), false);
   assert.equal(hostile.includes('\n'), false);
