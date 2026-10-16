@@ -8,10 +8,10 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
   const issues = [{ number: 12, title: 'Read reports in the editor', state: 'open', labels: ['mvp'], assignees: [], body: 'The user reads a report without a number.', author: 'pm-user' }, { number: 13, title: 'Second issue', state: 'open', labels: [], assignees: [], body: 'Another.', author: 'pm-user' }];
   const prs = [{ number: 7, title: 'Add reports', state: 'open', draft: false, headRef: 'feat/reports', headRepository: 'external/reports', headSha: HEAD, baseRef: 'main', author: 'external-worker', body: 'Refs #12', referencedIssues: [{ number: 12 }] }, { number: 8, title: 'Second PR', state: 'open', draft: true, headRef: 'feat/two', headRepository: 'host/repo', headSha: HEAD, baseRef: 'main', author: 'worker', body: 'x', referencedIssues: [] }];
   return {
-    listIssues: async () => ({ kind: 'ok', data: issues }),
+    listIssues: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: issues }),
     getIssue: async (n) => ({ kind: 'ok', data: issues.find((entry) => entry.number === n) }),
     getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'pm-user', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
-    listPullRequests: async () => ({ kind: 'ok', data: prs }),
+    listPullRequests: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: prs }),
     getPullRequest: async (n) => ({ kind: 'ok', data: prs.find((entry) => entry.number === n) }),
     getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
     getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0 }),
@@ -20,7 +20,12 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
   };
 }
 
-const labels = async (kind: 'issue' | 'pullRequest'): Promise<string[]> => ((await reportTreeForTests(kind).getChildren()) ?? []).map((item) => String(item.label));
+const labels = async (kind: 'issue' | 'pullRequest'): Promise<string[]> => {
+  const tree = reportTreeForTests(kind);
+  const roots = (await tree.getChildren()) ?? [];
+  const nested = (await Promise.all(roots.map((item) => tree.getChildren(item)))).flat().filter((item): item is vscode.TreeItem => Boolean(item));
+  return (nested.length ? nested : roots).map((item) => String(item.label));
+};
 
 // The report lists and the in-editor reports with a fake reader (no network). Reading is all they do.
 export async function runReportChecks(): Promise<string> {
@@ -34,7 +39,25 @@ export async function runReportChecks(): Promise<string> {
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
     assert.deepEqual(await labels('issue'), ['#12 Read reports in the editor', '#13 Second issue']);
     assert.deepEqual(await labels('pullRequest'), ['#7 Add reports', '#8 Second PR']);
-    const first = ((await reportTreeForTests('issue').getChildren()) ?? [])[0];
+    const issueSections = (await reportTreeForTests('issue').getChildren()) ?? [];
+    assert.deepEqual(issueSections.map((item) => String(item.label)), ['待我決策／待補證據 (2)', '要求修改 (0)', '已通過 (0)', '已處理 (0)']);
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      listPullRequests: async (filter) => filter.state === 'closed'
+        ? { kind: 'ok', data: [{ number: 9, title: 'Closed PR', state: 'closed', headSha: HEAD }] }
+        : { kind: 'ok', data: [{ number: 7, title: 'Approved PR', state: 'open', headSha: HEAD }, { number: 8, title: 'Changes PR', state: 'open', headSha: HEAD }] },
+      getPullRequestSnapshot: async (number) => ({ status: 'complete', consistent: true, headSha: HEAD,
+        approval: { status: number === 7 ? 'approved' : 'changes_requested', headSha: HEAD },
+        checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD } })
+    }) });
+    const decided = (await reportTreeForTests('pullRequest').getChildren()) ?? [];
+    assert.deepEqual(decided.map((item) => String(item.label)), ['待我決策／待補證據 (0)', '要求修改 (1)', '已通過 (1)', '已處理 (1)']);
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: 'e'.repeat(40), approval: { status: 'approved', headSha: 'e'.repeat(40) }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: 'e'.repeat(40) } })
+    }) });
+    const stale = (await reportTreeForTests('pullRequest').getChildren()) ?? [];
+    assert.match(String(stale[0].label), /待我決策／待補證據 \(2\)/, 'old-head pass remains pending');
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
+    const first = ((await reportTreeForTests('issue').getChildren(issueSections[0])) ?? [])[0];
     assert.equal((first.command as { command?: string }).command, REPORT_COMMANDS.open, 'a list entry opens its report');
 
     // a report opens in the editor with no number typed and no browser
@@ -42,7 +65,7 @@ export async function runReportChecks(): Promise<string> {
     assert.equal(opened.ok, true);
     const issueText = vscode.window.activeTextEditor?.document.getText() ?? '';
     assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, REPORT_SCHEME);
-    for (const part of ['Issue #12: Read reports in the editor', 'REQUIREMENT AND SCOPE', 'The user reads a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports', 'None can be made here yet', 'NOT VERIFIED']) assert.ok(issueText.includes(part), part);
+    for (const part of ['Issue #12: Read reports in the editor', 'REQUIREMENT AND SCOPE', 'The user reads a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports', 'A private note can be saved locally', 'NOT VERIFIED']) assert.ok(issueText.includes(part), part);
 
     // reading through the list: next and previous wrap around; each is a different report
     const next = await vscode.commands.executeCommand<{ ok: boolean; number?: number }>(REPORT_COMMANDS.next);
@@ -52,11 +75,19 @@ export async function runReportChecks(): Promise<string> {
     assert.equal(wrapped.number, 12);
     const back = await vscode.commands.executeCommand<{ number?: number }>(REPORT_COMMANDS.previous);
     assert.equal(back.number, 13);
+    const returnToList = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.backToList);
+    assert.equal(returnToList.ok, true);
+    assert.deepEqual(await labels('issue'), ['#12 Read reports in the editor', '#13 Second issue'], 'returning keeps the list position and contents');
 
     // a pull request report ties the verdict and CI to the latest head
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const prText = vscode.window.activeTextEditor?.document.getText() ?? '';
-    for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'it cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+    for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'It cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+    const saved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Please add a second test', interactive: false });
+    assert.equal(saved.ok, true, 'feedback is written only to the private store');
+    const feedbackStatus = await reportText('pullRequest', 7);
+    assert.match(feedbackStatus, /LOCAL FEEDBACK\nSaved only on this machine.*Nothing was sent to GitHub\./);
+    assert.equal(feedbackStatus.includes('Please add a second test'), false, 'private feedback is never put into the report text');
 
     // A push during the files request makes the patch's version unknowable; never label B's
     // changed files as the diff for head A.
@@ -118,11 +149,11 @@ export async function runReportChecks(): Promise<string> {
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => { throw new Error('network down'); } }) });
     assert.match((await labels('issue'))[0], /could not be read/);
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => ({ kind: 'empty', data: [] }) }) });
-    assert.deepEqual(await labels('issue'), ['No open issues.']);
+    assert.deepEqual(await labels('issue'), ['No issues were reported.']);
     for (const answer of [{ kind: 'ok' }, { kind: 'ok', data: [null] }, { kind: 'ok', data: [{ number: 0, title: 'bad' }] }, { kind: 'empty', data: [{ number: 99, title: 'bad' }] }]) {
       setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => answer }) });
       assert.match((await labels('issue'))[0], /could not be read \(invalid\)/);
-      assert.equal((await labels('issue')).some((label) => label.includes('No open issues.')), false);
+      assert.equal((await labels('issue')).some((label) => label.includes('No issues were reported.')), false);
     }
     setReportDepsForTests({ repository: async () => null, readerFor: () => null });
     assert.match((await labels('issue'))[0], /Open a project folder that has a GitHub origin/);

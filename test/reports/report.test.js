@@ -17,7 +17,8 @@ const issueReport = (over = {}) => render(buildIssueReport({ repository: 'o/r', 
 
 test('an issue report shows the requirement, labels, related pull requests, discussion, and what is not verified', () => {
   const text = issueReport({ comments: ok([comment('Scope is the read-only part.')]) });
-  for (const part of ['Issue #12: Build the report view', 'Repository: o/r · State: open', 'Labels: mvp, ready', 'Assigned to: (nobody)', 'REQUIREMENT AND SCOPE', 'The user must read a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports (open, branch feat/x)', 'DISCUSSION AND PM COMMENTS', 'Scope is the read-only part.', 'DECISIONS', 'None can be made here yet', 'NOT VERIFIED']) assert.ok(text.includes(part), part);
+  for (const part of ['Issue #12: Build the report view', 'Repository: o/r · State: open', 'Labels: mvp, ready', 'Assigned to: (nobody)', 'REQUIREMENT AND SCOPE', 'The user must read a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports (open, branch feat/x)', 'DISCUSSION AND PM COMMENTS', 'Scope is the read-only part.', 'DECISIONS', 'A private note can be saved locally', 'NOT VERIFIED']) assert.ok(text.includes(part), part);
+  assert.match(text, /PM REPORT\nPending: no structured PM report/);
   for (const item of WHAT_IS_NOT_VERIFIED) assert.ok(text.includes(item));
 });
 
@@ -46,7 +47,7 @@ test('comments that could not be read are unknown, empty ones say no comments', 
 
 test('a pull request report ties review and CI to the latest head', () => {
   const text = prReport();
-  for (const part of ['Pull request #7: Add reports', 'Source: this repository branch', 'Head repository: o/r · Branch: feat/x → main', `Latest head: ${HEAD}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'it cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
+  for (const part of ['Pull request #7: Add reports', 'Source: this repository branch', 'Head repository: o/r · Branch: feat/x → main', `Latest head: ${HEAD}`, 'Refers to: Issue #12', 'WHAT THIS CHANGES', 'REVIEW AND CI (for the latest head)', 'Formal approval on the latest head: not_approved (no_approval)', 'CI for this head: passing (required: passing)', 'Unresolved review threads: 0', 'No formal reviews.', 'No comments.', 'It cannot approve, request changes or merge']) assert.ok(text.includes(part), part);
 });
 
 test('a complete empty reviews result keeps the rest of the pull request readable', () => {
