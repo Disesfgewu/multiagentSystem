@@ -186,19 +186,22 @@ export function registerReports(context: vscode.ExtensionContext): void {
   const content = new ReportContent();
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };
   testTrees = context.extensionMode === vscode.ExtensionMode.Test ? trees : undefined;
+  const refresh = (): void => {
+    trees.issue.refresh();
+    trees.pullRequest.refresh();
+    for (const document of vscode.workspace.textDocuments) {
+      if (document.uri.scheme === REPORT_SCHEME) content.changed.fire(document.uri);
+    }
+  };
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, content),
     vscode.window.createTreeView(REPORT_VIEWS.issues, { treeDataProvider: trees.issue }),
     vscode.window.createTreeView(REPORT_VIEWS.pullRequests, { treeDataProvider: trees.pullRequest }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => { trees.issue.refresh(); trees.pullRequest.refresh(); }),
+    vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.open, open),
     vscode.commands.registerCommand(REPORT_COMMANDS.next, () => step(1)),
     vscode.commands.registerCommand(REPORT_COMMANDS.previous, () => step(-1)),
-    vscode.commands.registerCommand(REPORT_COMMANDS.refresh, () => {
-      trees.issue.refresh();
-      trees.pullRequest.refresh();
-      for (const document of vscode.workspace.textDocuments) if (document.uri.scheme === REPORT_SCHEME) content.changed.fire(document.uri);
-    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.refresh, refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.back, async () => {
       // Back to the agents: close the report that is open and bring the overview forward.
       if (activeTarget()) await vscode.commands.executeCommand('workbench.action.closeActiveEditor');

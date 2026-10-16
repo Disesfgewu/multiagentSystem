@@ -86,9 +86,24 @@ export async function runReportChecks(): Promise<string> {
     setReportDepsForTests({ repository: async () => null, readerFor: () => null });
     assert.match((await labels('issue'))[0], /Open a project folder that has a GitHub origin/);
 
-    // an item that cannot be read is said so inside the report
+    // An already opened virtual document must be read again on Refresh, including failures.
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
+    const report = await vscode.workspace.openTextDocument(reportUri('issue', 12));
+    assert.match(report.getText(), /Issue #12: Read reports in the editor/);
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ getIssue: async () => ({ kind: 'not_found' }) }) });
-    const missing = (await vscode.workspace.openTextDocument(reportUri('issue', 12))).getText();
+    const refreshed = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => { listener.dispose(); reject(new Error('Report refresh did not update the open document.')); }, 5000);
+      const listener = vscode.workspace.onDidChangeTextDocument((event) => {
+        if (event.document.uri.toString() !== report.uri.toString()) return;
+        const updated = event.document.getText();
+        if (!updated.includes('not_found')) return;
+        clearTimeout(timeout);
+        listener.dispose();
+        resolve(updated);
+      });
+    });
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    const missing = await refreshed;
     assert.match(missing, /Issue #12 could not be read \(not_found\)/);
   } finally {
     setReportDepsForTests(undefined);
