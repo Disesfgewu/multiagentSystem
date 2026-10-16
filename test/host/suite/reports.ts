@@ -70,6 +70,27 @@ export async function runReportChecks(): Promise<string> {
     assert.match(movedHead, /Diff for this head: unknown/);
     assert.equal(movedHead.includes('new-head.ts'), false);
     assert.equal(movedHead.includes('+new-head-only'), false);
+    // The adapter caches reads by default. Force both the files and the second head read,
+    // otherwise the version check may compare cached A to cached A while GitHub is on B.
+    let forcedFiles = false;
+    let forcedHead = false;
+    let cacheHeadReads = 0;
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      getPullRequest: async (_number, opts) => {
+        cacheHeadReads += 1;
+        if (cacheHeadReads > 1) forcedHead = opts?.forceRefresh === true;
+        return { kind: 'ok', data: { number: 7, title: 'Cached head', state: 'open', headSha: opts?.forceRefresh ? 'e'.repeat(40) : HEAD, headRepository: 'external/reports' } };
+      },
+      getPullRequestFiles: async (_number, opts) => {
+        forcedFiles = opts?.forceRefresh === true;
+        return { kind: 'ok', data: [{ filename: opts?.forceRefresh ? 'new-head.ts' : 'old-cache.ts', status: 'modified', patch: '+new-head-only' }] };
+      }
+    }) });
+    const cachedHead = await reportText('pullRequest', 7);
+    assert.equal(forcedFiles, true);
+    assert.equal(forcedHead, true);
+    assert.match(cachedHead, /Diff for this head: unknown/);
+    assert.equal(cachedHead.includes('new-head.ts'), false);
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
 
     // a report cannot be written to a file

@@ -28,8 +28,8 @@ export interface ReportReader {
   getIssue(number: number): Promise<Result>;
   getIssueComments(number: number): Promise<Result>;
   listPullRequests(filter: { state: 'open' }): Promise<Result>;
-  getPullRequest(number: number): Promise<Result>;
-  getPullRequestFiles(number: number): Promise<Result>;
+  getPullRequest(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
+  getPullRequestFiles(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
   getPullRequestSnapshot(number: number): Promise<any>;
   getReviews(number: number): Promise<Result>;
 }
@@ -149,8 +149,8 @@ export async function reportText(kind: Kind, number: number): Promise<string> {
     let files: Result = { kind: 'not_read' };
     let afterFiles: Result = { kind: 'not_read' };
     try {
-      files = await reader.getPullRequestFiles(number);
-      afterFiles = await reader.getPullRequest(number);
+      files = await reader.getPullRequestFiles(number, { forceRefresh: true });
+      afterFiles = await reader.getPullRequest(number, { forceRefresh: true });
     } catch {
       // Keep the description and review readable. The diff cannot be assigned to this head.
     }
