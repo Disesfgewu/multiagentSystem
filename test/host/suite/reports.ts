@@ -87,6 +87,30 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: true });
     const diffEditor = vscode.window.activeTextEditor;
     assert.match(diffEditor?.document.lineAt(diffEditor.selection.active.line).text ?? '', /CHANGED FILES AND DIFF/, 'the title action locates the in-editor diff preview');
+
+    // a single file's diff can be opened on its own, syntax-highlighted, from the report that is open
+    const prReportUri = diffEditor!.document.uri;
+    const fileDiff = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.openFileDiff, { reportUri: prReportUri.toString(), filename: 'src/report.ts' });
+    assert.equal(fileDiff.ok, true);
+    const fileDiffEditor = vscode.window.activeTextEditor;
+    assert.equal(fileDiffEditor?.document.languageId, 'diff', 'the single-file diff is syntax-highlighted as a diff');
+    const fileDiffText = fileDiffEditor?.document.getText() ?? '';
+    assert.match(fileDiffText, /src\/report\.ts \(modified\)/);
+    assert.match(fileDiffText, /\+new/);
+    assert.equal(fileDiffText.includes('CHANGED FILES AND DIFF'), false, 'only the one file is shown, not the whole report');
+    // an unknown file name, or a report that is no longer open, explains itself rather than throwing
+    const unknownFile = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.openFileDiff, { reportUri: prReportUri.toString(), filename: 'no-such-file.ts' });
+    assert.equal(unknownFile.ok, true);
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /No changed-file entry named "no-such-file\.ts" was found/);
+    const staleReportUri = reportUri('pullRequest', 8);
+    const staleFileDiff = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.openFileDiff, { reportUri: staleReportUri.toString(), filename: 'src/report.ts' });
+    assert.equal(staleFileDiff.ok, true);
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /is no longer open/);
+    for (const bad of [undefined, null, {}, { reportUri: prReportUri.toString() }, { filename: 'x' }, { reportUri: 'not-a-report:x', filename: 'x' }]) {
+      const result = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.openFileDiff, bad);
+      assert.equal(result.ok, false, JSON.stringify(bad));
+    }
+    await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const saved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Please add a second test', interactive: false });
     assert.equal(saved.ok, true, 'feedback is written only to the private store');
     const feedbackStatus = await reportText('pullRequest', 7);
