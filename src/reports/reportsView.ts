@@ -128,19 +128,29 @@ const incompleteMessage = (what: string, kind: string): string => ({
 class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  private view: vscode.TreeView<vscode.TreeItem> | undefined;
   constructor(private readonly kind: Kind) {}
+  /** The badge is set here, not at creation, because `createTreeView` needs this provider first. */
+  setView(view: vscode.TreeView<vscode.TreeItem>): void { this.view = view; }
   refresh(): void { order[this.kind] = []; this.changed.fire(undefined); }
   getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
+
+  // No source, or a source that could not be read in full, means the count is unknown: the badge is
+  // cleared rather than showing a stale or guessed number. Only a complete, de-duplicated read sets it.
+  private setBadge(count: number | null): void {
+    if (!this.view) return;
+    this.view.badge = count !== null && count > 0 ? { value: count, tooltip: `${count} item(s) need a decision or more evidence` } : undefined;
+  }
 
   async getChildren(item?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (item) return item instanceof Category ? item.entries : [];
     const generation = readGeneration;
     const what = this.kind === 'issue' ? 'Issues' : 'Pull requests';
-    if (!vscode.workspace.isTrusted) return [new Message('Trust this workspace to read its GitHub work.')];
+    if (!vscode.workspace.isTrusted) { this.setBadge(null); return [new Message('Trust this workspace to read its GitHub work.')]; }
     const repository = await deps.repository();
-    if (!repository) return [new Message('Open a project folder that has a GitHub origin to read its reports.')];
+    if (!repository) { this.setBadge(null); return [new Message('Open a project folder that has a GitHub origin to read its reports.')]; }
     const reader = deps.readerFor(repository);
-    if (!reader) return [new Message('GitHub could not be reached for this project.')];
+    if (!reader) { this.setBadge(null); return [new Message('GitHub could not be reached for this project.')]; }
     let result: Result;
     let closed: Result;
     try {
@@ -148,6 +158,7 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
         ? await Promise.all([reader.listIssues({ state: 'open' }), reader.listIssues({ state: 'closed' })])
         : await Promise.all([reader.listPullRequests({ state: 'open' }), reader.listPullRequests({ state: 'closed' })]);
     } catch {
+      this.setBadge(null);
       return [new Message(`${what} could not be read. Refresh to retry.`)];
     }
     // Only a complete answer is a list; an incomplete one is never shown as if it were the whole.
@@ -160,11 +171,12 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
     const closedItems = itemsOf(closed);
     if (!openItems || !closedItems) {
       if (generation === readGeneration) order[this.kind] = [];
+      this.setBadge(null);
       const failed = openItems === null ? result : closed;
       return [new Message(incompleteMessage(what, failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid'))];
     }
     const all = [...openItems, ...closedItems];
-    if (new Set(all.map((entry) => entry.number)).size !== all.length) return [new Message(incompleteMessage(what, 'duplicate'))];
+    if (new Set(all.map((entry) => entry.number)).size !== all.length) { this.setBadge(null); return [new Message(incompleteMessage(what, 'duplicate'))]; }
     const rows: Record<string, Entry[]> = Object.fromEntries(CATEGORIES.map((category: string) => [category, []]));
     const snapshots = this.kind === 'pullRequest' ? await Promise.all(openItems.map(async (entry) => {
       try { return await reader.getPullRequestSnapshot(entry.number); } catch { return { status: 'unavailable' }; }
@@ -175,6 +187,9 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       rows[category].push(new Entry(this.kind, entry.number, entry.title, detail));
     }
     if (generation === readGeneration) order[this.kind] = CATEGORIES.flatMap((category: string) => rows[category].map((entry) => entry.number));
+    // "Needs a decision" is everything not yet passed or processed (closed/merged): pending plus
+    // explicit changes-requested, the two categories that still require the user's attention.
+    this.setBadge(rows.pending.length + rows.changes.length);
     if (all.length === 0) return [new Message(`No ${what.toLowerCase()} were reported.`)];
     return CATEGORIES.map((category: string) => new Category(rows[category], CATEGORY_LABELS[category]));
   }
@@ -344,6 +359,13 @@ export function reportTreeForTests(kind: Kind): vscode.TreeDataProvider<vscode.T
   return testTrees[kind];
 }
 
+let testViews: Record<Kind, vscode.TreeView<vscode.TreeItem>> | undefined;
+/** The activity-bar badge each list currently shows: how many items still need a decision or more evidence. */
+export function reportBadgeForTests(kind: Kind): number | undefined {
+  if (!testViews) throw new Error('The report lists are available only in Extension Host tests.');
+  return testViews[kind].badge?.value;
+}
+
 export function registerReports(context: vscode.ExtensionContext): void {
   const content = new ReportContent();
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };
@@ -355,12 +377,17 @@ export function registerReports(context: vscode.ExtensionContext): void {
       if (document.uri.scheme === REPORT_SCHEME) content.changed.fire(document.uri);
     }
   };
+  const issueView = vscode.window.createTreeView(REPORT_VIEWS.issues, { treeDataProvider: trees.issue });
+  const pullRequestView = vscode.window.createTreeView(REPORT_VIEWS.pullRequests, { treeDataProvider: trees.pullRequest });
+  trees.issue.setView(issueView);
+  trees.pullRequest.setView(pullRequestView);
+  testViews = context.extensionMode === vscode.ExtensionMode.Test ? { issue: issueView, pullRequest: pullRequestView } : undefined;
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, content),
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, new DiffContent(content)),
     vscode.languages.registerDocumentLinkProvider({ scheme: REPORT_SCHEME }, new ReportFileLinks(content)),
-    vscode.window.createTreeView(REPORT_VIEWS.issues, { treeDataProvider: trees.issue }),
-    vscode.window.createTreeView(REPORT_VIEWS.pullRequests, { treeDataProvider: trees.pullRequest }),
+    issueView,
+    pullRequestView,
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.open, open),
     vscode.commands.registerCommand(REPORT_COMMANDS.openFileDiff, openFileDiff),
