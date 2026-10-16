@@ -29,19 +29,18 @@ export async function resolveRoleForLaunch(id: string, provider: string): Promis
 export async function pickRoleForLaunch(provider: string): Promise<string | undefined> {
   const store = await openStore();
   if (!store) {
-    void vscode.window.showWarningMessage('Role groups could not be read, so this agent starts without one.');
-    return 'none';
+    throw Object.assign(new Error('Role groups could not be read.'), { code: 'role-group-unreadable' });
   }
   const listed = store.list('roleGroups');
-  if (!listed.ok) {
-    void vscode.window.showWarningMessage('Role groups could not be read, so this agent starts without one.');
-    return 'none';
+  if (!listed.ok || !Array.isArray(listed.items)) {
+    throw Object.assign(new Error('Role groups could not be read.'), { code: 'role-group-unreadable' });
   }
   const { choices, skipped } = roleChoices(listed.items, provider);
+  if (skipped > 0) throw Object.assign(new Error('Role groups could not be validated.'), { code: 'role-group-unreadable' });
   if (choices.length === 0 && skipped === 0) return 'none';
   const picked = await vscode.window.showQuickPick([
     { label: 'No role group', detail: 'The agent starts without any role rules from this extension.', id: 'none' },
     ...choices.map((choice) => ({ label: choice.name, description: choice.role, detail: 'Assigned to this new agent. Rules are not yet sent to the CLI; the preview shows their status.', id: choice.id }))
-  ], { placeHolder: skipped > 0 ? `Choose a role group (${skipped} unreadable ${skipped === 1 ? 'one is' : 'ones are'} not shown)` : 'Choose a role group for this agent', ignoreFocusOut: true });
+  ], { placeHolder: 'Choose a role group for this agent', ignoreFocusOut: true });
   return picked?.id;
 }

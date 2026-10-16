@@ -22,6 +22,7 @@ const { previewEffectiveRules, formatPreview } = require('./preview') as {
   formatPreview(value: unknown, options?: { injection?: unknown }): string;
 };
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
+const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates') as {
   describeRoleGroup(record: RoleRecord): string;
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
@@ -166,9 +167,8 @@ async function create(): Promise<void> {
       validateInput: (text) => /^[a-z][a-z0-9-]{0,31}$/.test(text) ? undefined : 'Use a lowercase role id such as researcher.' });
     if (!roleId) return;
   }
-  const provider = await vscode.window.showQuickPick(builtIn.list().map((item: { id: string; label: string }) => ({
-    label: item.label, id: item.id, detail: injectionStatus({ provider: item.id }).label
-  })), { placeHolder: fieldHelp('provider') ?? 'Choose the CLI provider', ignoreFocusOut: true });
+  const provider = await vscode.window.showQuickPick(roleProviderChoices(),
+    { placeHolder: fieldHelp('provider') ?? 'Choose the CLI provider', ignoreFocusOut: true });
   if (!provider) return;
   const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: template.defaultName,
     validateInput: (text) => text.trim() ? undefined : 'Enter a name.' });
@@ -223,15 +223,28 @@ async function edit(value: unknown): Promise<void> {
     if (!level) return;
     change = { kind: 'tool', tool: tool.label, level: level.label };
   } else if (action.value === 'account') {
-    const listed = await accountChoices(record.group.provider);
-    if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return; }
-    const choices: Array<{ label: string; description?: string; id: string | null }> = [
-      { label: 'No default account', id: null },
-      ...listed.profiles.map((profile) => ({ label: profile.label, id: profile.id }))
-    ];
-    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
-    if (!picked) return;
-    change = { kind: 'account', profileId: picked.id };
+    const isolation = builtIn.capability(record.group.provider, 'accountIsolation');
+    if (isolation === 'unknown' || isolation === 'unsupported') {
+      if (!record.group.defaultAccountProfileId) {
+        void vscode.window.showWarningMessage('Account isolation is not verified for this CLI, so a default account cannot be assigned.');
+        return;
+      }
+      const answer = await vscode.window.showWarningMessage(
+        'Account isolation is not verified for this CLI. Clear this role group’s unsupported default account?',
+        { modal: true }, 'Clear Default Account');
+      if (answer !== 'Clear Default Account') return;
+      change = { kind: 'account', profileId: null };
+    } else {
+      const listed = await accountChoices(record.group.provider);
+      if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return; }
+      const choices: Array<{ label: string; description?: string; id: string | null }> = [
+        { label: 'No default account', id: null },
+        ...listed.profiles.map((profile) => ({ label: profile.label, id: profile.id }))
+      ];
+      const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
+      if (!picked) return;
+      change = { kind: 'account', profileId: picked.id };
+    }
   } else if (action.value === 'memory') {
     const picked = await vscode.window.showQuickPick([
       { label: 'Off', detail: 'Do not use saved project notes for this role.', mode: 'off' },
@@ -335,22 +348,36 @@ async function startWithRole(sessions: SessionCommands, value: unknown): Promise
   const record = await chooseRecord(options.id ?? value);
   if (!record) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
   const group = record.group;
+  if (group.defaultAccountProfileId && !['verified', 'unverified'].includes(builtIn.capability(group.provider, 'accountIsolation'))) {
+    const message = 'This role group names a default account, but account isolation is not verified for its CLI. Clear the default account before starting it.';
+    if (interactive) void vscode.window.showErrorMessage(message);
+    return { ok: false, code: 'role-group-account-isolation-unknown', message };
+  }
   let accountProfileId: string | undefined = typeof options.accountProfileId === 'string' ? options.accountProfileId : undefined;
   if (options.accountProfileId === undefined && !interactive && group.defaultAccountProfileId) accountProfileId = group.defaultAccountProfileId;
   if (options.accountProfileId === undefined && interactive) {
-    const listed = await accountChoices(group.provider);
-    if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return { ok: false, code: 'storage-unavailable', message: 'Account profiles could not be read.' }; }
-    if (group.defaultAccountProfileId && !listed.profiles.some((profile) => profile.id === group.defaultAccountProfileId)) {
-      void vscode.window.showErrorMessage('This role group\'s default account is missing. Edit the role group and choose an available account.');
-      return { ok: false, code: 'default-profile-missing', message: 'This role group\'s default account is missing.' };
+    const isolation = builtIn.capability(group.provider, 'accountIsolation');
+    if (isolation === 'unknown' || isolation === 'unsupported') {
+      const answer = await vscode.window.showWarningMessage(
+        '此 provider 的帳號隔離未驗證；此身份組無法指派獨立帳號。',
+        { modal: true, detail: '將使用 CLI 預設登入；身份核實與額度資訊也維持未知。身份組規則需依預覽的注入狀態手動處理。' },
+        'Use CLI Default');
+      if (answer !== 'Use CLI Default') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    } else {
+      const listed = await accountChoices(group.provider);
+      if (!listed.ok) { void vscode.window.showErrorMessage(`Account profiles could not be read (${listed.reason}).`); return { ok: false, code: 'storage-unavailable', message: 'Account profiles could not be read.' }; }
+      if (group.defaultAccountProfileId && !listed.profiles.some((profile) => profile.id === group.defaultAccountProfileId)) {
+        void vscode.window.showErrorMessage('This role group\'s default account is missing. Edit the role group and choose an available account.');
+        return { ok: false, code: 'default-profile-missing', message: 'This role group\'s default account is missing.' };
+      }
+      const choices = [
+        ...listed.profiles.map((profile) => ({ label: profile.label, description: profile.id === group.defaultAccountProfileId ? 'this role\'s default account' : 'identity unknown until the CLI reports it', id: profile.id as string | undefined })),
+        { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: undefined as string | undefined }
+      ].sort((a, b) => Number(b.description === 'this role\'s default account') - Number(a.description === 'this role\'s default account'));
+      const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which account should “${group.name}” use?`, ignoreFocusOut: true });
+      if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+      accountProfileId = picked.id;
     }
-    const choices = [
-      ...listed.profiles.map((profile) => ({ label: profile.label, description: profile.id === group.defaultAccountProfileId ? 'this role\'s default account' : 'identity unknown until the CLI reports it', id: profile.id as string | undefined })),
-      { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: undefined as string | undefined }
-    ].sort((a, b) => Number(b.description === 'this role\'s default account') - Number(a.description === 'this role\'s default account'));
-    const picked = await vscode.window.showQuickPick(choices, { placeHolder: `Which account should “${group.name}” use?`, ignoreFocusOut: true });
-    if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-    accountProfileId = picked.id;
   }
   const folders = vscode.workspace.workspaceFolders ?? [];
   const cwd = options.cwd ?? (folders.length === 1 ? folders[0].uri.fsPath : undefined);

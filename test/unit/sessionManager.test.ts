@@ -119,6 +119,22 @@ test('a shell that merely exists is never reported as the CLI working', async ()
   assert.equal(describeState('terminal-open'), 'Shell open, CLI not started');
 });
 
+test('missing agy executable refuses launch before opening a terminal or saving a session', async () => {
+  const r = rig({ providers: { agy: 'agy' }, executableAvailable: () => false });
+  await rejectsWithCode(start(r, { provider: 'agy' }), 'executable-not-found');
+  assert.equal(r.terminals.length, 0);
+  assert.equal(r.manager.list().length, 0);
+  assert.equal(r.store.saves, 0);
+
+  // A shell-only view is still useful when the person wants to install the CLI there.
+  const shell = await start(r, { provider: 'agy', launch: false });
+  assert.equal(shell.state, 'terminal-open');
+  r.manager.handleTerminalClosed(r.terminals[0]);
+  await rejectsWithCode(r.manager.reopen(shell.id), 'executable-not-found');
+  assert.equal(r.terminals.length, 1);
+  assert.equal(r.manager.list().length, 1);
+});
+
 test('the selected account environment reaches its terminal and can be rebuilt for a reopened session', async () => {
   const r = rig();
   const env = { CLAUDE_CONFIG_DIR: '/private/accounts/work', ANTHROPIC_API_KEY: null };
