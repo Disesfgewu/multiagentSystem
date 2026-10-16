@@ -253,10 +253,44 @@ test('check names and times are shown as plain text, odd states are unknown, and
   assert.ok(many.includes('check-00'));
 });
 
-test('check detail is only part of the report when the review and CI read was complete', () => {
+test('check detail is shown even when the rest of the snapshot is only partial, but the overall review/merge conclusion stays unknown', () => {
   const text = prReport({ snapshot: { status: 'partial', checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [run('x', 'passing')], statuses: [] } } } });
-  assert.equal(text.includes('CHECKS ON THE LATEST HEAD'), false);
-  assert.equal(text.includes('- x · passing'), false);
+  assert.match(text, /Review and CI: unknown \(partial\)\. The read was not complete, so the overall review\/merge conclusion is unknown\./);
+  assert.ok(text.includes('CHECKS ON THE LATEST HEAD'));
+  assert.ok(text.includes('- x · passing'));
+});
+
+test('check detail is unknown, not merely absent, when there is no snapshot at all', () => {
+  const text = prReport({ snapshot: null });
+  const lines = text.split('\n');
+  const at = lines.indexOf('CHECKS ON THE LATEST HEAD');
+  assert.ok(at > 0);
+  assert.equal(lines[at + 1], 'Check details: unknown (not read).');
+});
+
+test('a source field that is not a list is unknown, never silently treated as no checks', () => {
+  const wrongType = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: 'not-a-list', statuses: [] } });
+  assert.match(wrongType, /Check details: unknown \(check run or commit status data was not shaped as a list\)\./);
+  assert.equal(wrongType.includes('No checks were reported'), false);
+  const wrongType2 = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('a', 'passing')], statuses: 42 } });
+  assert.match(wrongType2, /Check details: unknown \(check run or commit status data was not shaped as a list\)\./);
+});
+
+test('a complete read ("ok") with one source entirely missing is unknown, since "ok" claims both were read', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('a', 'passing')] } });
+  assert.match(text, /Check details: unknown \(one of the two sources is missing even though the read was reported complete\)\./);
+});
+
+test('a partial read with a missing source is fine, as long as the one present is a real list', () => {
+  const text = withChecks({ kind: 'partial', data: { headSha: HEAD, checkRuns: [run('a', 'passing', 'x')] } });
+  assert.match(text, /may be incomplete\./);
+  assert.match(text, /- a · passing/);
+});
+
+test('a check item carrying its own head is only trusted when it matches the latest head, even though the outer head matched', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('current', 'passing', 'x'), { ...run('stale', 'failing', 'x'), headSha: OLD }], statuses: [] } });
+  assert.ok(text.includes('- current · passing'));
+  assert.equal(text.includes('stale'), false);
 });
 
 test('an odd state is listed with the failing ones and the order stays stable', () => {

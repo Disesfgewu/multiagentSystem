@@ -89,7 +89,23 @@ function checkDetail(checks, head) {
   if (typeof data.headSha !== 'string' || !head || data.headSha.toLowerCase() !== head.toLowerCase()) {
     return [...out, `Check details: they belong to ${typeof data.headSha === 'string' ? data.headSha.slice(0, 12) : 'an unknown head'}, not the latest head ${head ? head.slice(0, 12) : 'unknown'}, so they are not shown.`];
   }
-  const items = [...(Array.isArray(data.checkRuns) ? data.checkRuns : []), ...(Array.isArray(data.statuses) ? data.statuses : [])].filter((item) => item && typeof item === 'object');
+  // Each source field is either absent (not fetched) or a proper list; anything else is a malformed
+  // read and must say so rather than quietly becoming "no checks". Absence of a field is only
+  // acceptable for a `partial` read (only one source was fetched) and only when the other one is a
+  // real list; `ok`/`empty` claim both sources were read, so both must be present lists.
+  const arrayOrAbsent = (value) => value === undefined || value === null || Array.isArray(value);
+  if (!arrayOrAbsent(data.checkRuns) || !arrayOrAbsent(data.statuses)) {
+    return [...out, 'Check details: unknown (check run or commit status data was not shaped as a list).'];
+  }
+  const haveRuns = Array.isArray(data.checkRuns);
+  const haveStatuses = Array.isArray(data.statuses);
+  if (!haveRuns && !haveStatuses) return [...out, 'Check details: unknown (neither source could be read).'];
+  if (checks.kind !== 'partial' && !(haveRuns && haveStatuses)) {
+    return [...out, 'Check details: unknown (one of the two sources is missing even though the read was reported complete).'];
+  }
+  const items = [...(haveRuns ? data.checkRuns : []), ...(haveStatuses ? data.statuses : [])]
+    .filter((item) => item && typeof item === 'object')
+    .filter((item) => typeof item.headSha !== 'string' || item.headSha.toLowerCase() === head.toLowerCase());
   if (checks.kind === 'partial') out.push('Only one of the two sources (check runs, commit statuses) could be read, so this list may be incomplete.');
   if (items.length === 0) return [...out, checks.kind === 'partial' ? 'No checks in the part that could be read. That is not a pass.' : 'No checks were reported for this head. That is not a pass.'];
   const rank = (item) => (Object.hasOwn(STATE_ORDER, item.state) ? STATE_ORDER[item.state] : 0);
@@ -185,7 +201,12 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   }
 
   lines.push('', 'REVIEW AND CI (for the latest head)');
-  if (!snapshot || snapshot.status !== 'complete') lines.push(`Review and CI: unknown (${line(snapshot && snapshot.status ? snapshot.status : 'not read', 30)}). The read was not complete, so nothing is concluded.`);
+  // The per-check detail below reads only `snapshot.checks` and verifies its own head and shape, so it
+  // is shown whenever that field is present, even when the rest of the snapshot (branch requirements,
+  // threads, reviews) made the overall read `partial`. One field missing must not hide a different,
+  // independently-verifiable field: the OVERALL review/merge conclusion still stays unknown below.
+  if (!snapshot || typeof snapshot !== 'object') lines.push('Review and CI: unknown (not read). The read was not complete, so nothing is concluded.');
+  else if (snapshot.status !== 'complete') lines.push(`Review and CI: unknown (${line(snapshot.status ?? 'not read', 30)}). The read was not complete, so the overall review/merge conclusion is unknown.`);
   else {
     const approval = snapshot.approval;
     lines.push(`Formal approval on the latest head: ${approval && typeof approval.status === 'string' ? line(approval.status, 40) : 'unknown'}${approval && approval.reason ? ` (${line(approval.reason, 60)})` : ''}`);
@@ -196,8 +217,8 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
       if (failing.length > 0) lines.push(`Failing: ${failing.join(', ')}`);
     } else lines.push('CI for this head: unknown (the checks read do not belong to the latest head, or could not be read).');
     lines.push(`Unresolved review threads: ${Number.isSafeInteger(snapshot.unresolvedThreads) ? snapshot.unresolvedThreads : 'unknown'}`);
-    lines.push(...checkDetail(snapshot.checks, head));
   }
+  lines.push(...checkDetail(snapshot && typeof snapshot === 'object' ? snapshot.checks : null, head));
   lines.push('', 'REVIEWS ON GITHUB');
   const reviewNote = readNote('Reviews', reviews);
   const reviewItems = dataOf(reviews);
