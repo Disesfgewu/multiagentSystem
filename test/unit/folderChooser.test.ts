@@ -8,6 +8,8 @@ import { chooseConfigFolder, settleChosenFolder, ChooserUi } from '../../src/acc
 // Real temporary folders and a scripted person: the chooser runs the real checks and the real
 // folder creation, and only the three questions are answered by the test.
 function world(t: { after(fn: () => void): void }) {
+  const oldMask = process.umask(0o077);
+  t.after(() => process.umask(oldMask));
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-chooser-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const homeDir = path.join(root, 'home');
@@ -37,7 +39,10 @@ test('choosing the recommended folder creates it outside the project and returns
   const { fake } = ui({ actions: ['create'] });
   const before = tree(w.repoRoot);
   const chosen = await chooseConfigFolder(base(w, fake));
-  assert.deepEqual(chosen, { ok: true, dir: path.join(w.homeDir, 'multiagent-accounts', 'claude-work'), created: true, madeFolders: [path.join(w.homeDir, 'multiagent-accounts'), path.join(w.homeDir, 'multiagent-accounts', 'claude-work')] });
+  assert.equal(chosen.ok, true);
+  assert.equal((chosen as { dir: string }).dir, path.join(w.homeDir, 'multiagent-accounts', 'claude-work'));
+  assert.deepEqual((chosen as { madeFolders: Array<{ path: string }> }).madeFolders.map((entry) => entry.path), [path.join(w.homeDir, 'multiagent-accounts'), path.join(w.homeDir, 'multiagent-accounts', 'claude-work')]);
+  assert.ok((chosen as { madeFolders: Array<{ dev: string; ino: string }> }).madeFolders.every((entry) => /^\d+$/.test(entry.dev) && /^\d+$/.test(entry.ino)), 'each made folder is recorded by device and inode');
   assert.ok(fs.statSync((chosen as { dir: string }).dir).isDirectory());
   assert.deepEqual(tree(w.repoRoot), before, 'nothing was made inside the project');
 });
@@ -189,7 +194,7 @@ test('a refused save keeps a folder with content, a folder the person chose, and
   const root = path.join(w.homeDir, 'multiagent-accounts');
   const profiles = [{ id: 'acct-1', provider: 'claude', label: 'Work', configDir: (first as { dir: string }).dir }];
   const second = await chooseConfigFolder(base(w, ui({ actions: ['create'] }).fake, { label: 'Personal', profiles }));
-  assert.deepEqual((second as { madeFolders: string[] }).madeFolders.length, 1, 'the root was already there');
+  assert.deepEqual((second as { madeFolders: unknown[] }).madeFolders.length, 1, 'the root was already there');
   fs.writeFileSync(path.join((second as { dir: string }).dir, 'login.json'), 'x');
   assert.deepEqual(settleChosenFolder(second, { ok: false }), []);
   assert.equal(fs.existsSync((second as { dir: string }).dir), true, 'content is never removed');

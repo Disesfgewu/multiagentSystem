@@ -34,8 +34,12 @@ const EXPLANATIONS = Object.freeze({
     message: 'This folder holds the account folders this extension creates. Each account needs its own folder inside it, not the folder itself.',
     fix: 'Use the recommended folder, or choose a new folder inside it.'
   },
+  'config-dir-too-open': {
+    message: 'This folder can be opened by other users of this computer. An account folder holds a sign-in, so it must be private to you.',
+    fix: 'Make the folder private (only you may open it), choose another folder, or use the recommended folder.'
+  },
   'recommended-root-unsafe': {
-    message: 'The folder where recommended account folders go already exists but is not private to you (it belongs to someone else, other users can change it, or it is a link).',
+    message: 'The folder where recommended account folders go already exists but is not private to you (it belongs to someone else, other users can open or change it, or it is a link).',
     fix: 'Remove or rename that folder yourself, or choose a different folder instead.'
   },
   'config-dir-rejected': {
@@ -150,6 +154,12 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
   const candidate = { id: 'candidate-profile', provider, label: typeof label === 'string' && label.trim() ? label : 'candidate', configDir };
   const validation = validateProfile(candidate, context);
   const problems = [...validation.problems];
+  if (validation.ok && process.platform !== 'win32') {
+    try {
+      const stat = fs.lstatSync(configDir);
+      if (stat.isDirectory() && (stat.mode & 0o077) !== 0) problems.push('config-dir-too-open');
+    } catch { /* a folder that does not exist yet is made private when it is created */ }
+  }
   if (validation.ok) {
     const conflicts = findConfigDirConflicts([...profiles, candidate], context).filter((entry) => entry.a === candidate.id || entry.b === candidate.id);
     for (const entry of conflicts) problems.push(`config-dir-conflict:${entry.kind}`);
@@ -172,7 +182,7 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
 }
 
 // A recommended root that already exists must be a real folder (not a link), owned by this user
-// and not writable by anyone else, or another user could swap an account folder for their own.
+// and closed to everyone else (no group or other permission), or another user could look into it or swap an account folder for their own.
 function existingRootProblem(parent, io) {
   let stat;
   try {
@@ -184,22 +194,33 @@ function existingRootProblem(parent, io) {
   if (typeof stat.isDirectory === 'function' && !stat.isDirectory()) return 'recommended-root-unsafe';
   if (process.platform !== 'win32') {
     if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return 'recommended-root-unsafe';
-    if ((stat.mode & 0o022) !== 0) return 'recommended-root-unsafe';
+    if ((stat.mode & 0o077) !== 0) return 'recommended-root-unsafe';
   }
   return null;
 }
 
+// Who a folder is, not just where: device and inode as text (exact for large numbers), so a folder that
+// was replaced after it was made is recognised as a different one.
+function identityOf(target, io) {
+  const stat = (io.lstatSync || fs.lstatSync)(target, { bigint: true });
+  return { path: target, dev: String(stat.dev), ino: String(stat.ino) };
+}
+
 /**
  * Removes folders a failed save left behind: only the ones listed (made by this extension a moment
- * ago), only while empty, deepest first. Anything that has content, or was not listed, stays.
+ * ago), only if each is still the very same folder (device and inode), still a real directory (a link
+ * is never followed or removed), and only while empty. Deepest first. Anything else stays.
  */
 function discardCreated(folders, io = fs) {
   const removed = [];
-  for (const target of [...(Array.isArray(folders) ? folders : [])].reverse()) {
+  for (const entry of [...(Array.isArray(folders) ? folders : [])].reverse()) {
+    if (!entry || typeof entry.path !== 'string' || typeof entry.dev !== 'string' || typeof entry.ino !== 'string') continue;
     try {
-      io.rmdirSync(target);
-      removed.push(target);
-    } catch { /* not empty, or already gone: leave it */ }
+      const stat = (io.lstatSync || fs.lstatSync)(entry.path, { bigint: true });
+      if (stat.isSymbolicLink() || !stat.isDirectory() || String(stat.dev) !== entry.dev || String(stat.ino) !== entry.ino) continue;
+      io.rmdirSync(entry.path);
+      removed.push(entry.path);
+    } catch { /* not empty, replaced, or already gone: leave it */ }
   }
   return removed;
 }
@@ -219,7 +240,7 @@ function createRecommendedFolder({ provider, label, suggestion, profiles = [], c
     for (const target of [suggestion.parent, suggestion.dir]) {
       try {
         io.mkdirSync(target, { mode: 0o700 });
-        made.push(target);
+        made.push(identityOf(target, io));
       } catch (error) {
         if (!error || error.code !== 'EEXIST') throw error;
         if (target === suggestion.dir) throw error;
@@ -227,11 +248,9 @@ function createRecommendedFolder({ provider, label, suggestion, profiles = [], c
     }
     const after = checkFolder({ provider, label, configDir: suggestion.dir, profiles, context });
     if (!after.ok) throw Object.assign(new Error('recheck-failed'), { items: after.items });
-    return { ok: true, created: true, dir: suggestion.dir, madeFolders: [...made] };
+    return { ok: true, created: true, dir: suggestion.dir, madeFolders: made };
   } catch (error) {
-    for (const target of made.reverse()) {
-      try { io.rmdirSync(target); } catch { /* only an empty folder we made is removed; anything else stays */ }
-    }
+    discardCreated(made, io);
     const items = error && error.items ? error.items : [explainProblem('config-dir-unresolvable')];
     return { ok: false, created: false, items };
   }
