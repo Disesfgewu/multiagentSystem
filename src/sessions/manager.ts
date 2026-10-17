@@ -389,7 +389,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.names.set(identity.id, name);
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
-    if (instructions?.method) this.instructionMethods.set(identity.id, instructions.method);
+    if (instructions?.method && instructions.method !== 'none') this.instructionMethods.set(identity.id, instructions.method);
     if (instructions?.plan) this.activePlans.set(identity.id, instructions.plan);
 
     if (instructions) {

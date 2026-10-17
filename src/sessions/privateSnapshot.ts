@@ -14,7 +14,7 @@ interface Access {
 }
 interface Envelope { scope: string; revision: number; records: SessionRecord[] }
 const COLLECTION = 'sessions';
-const KEYS = new Set(['id', 'repoId', 'roleGroupId', 'provider', 'accountProfileId', 'worktree', 'name', 'requestedModel']);
+const KEYS = new Set(['id', 'repoId', 'roleGroupId', 'provider', 'accountProfileId', 'worktree', 'name', 'requestedModel', 'instructionDigest', 'instructionMethod']);
 const fail = (code: string): never => { throw Object.assign(new Error(code), { code }); };
 const plain = (value: any): boolean => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -29,6 +29,8 @@ function validRecords(records: unknown): records is SessionRecord[] {
     for (const record of records) {
       if (!plain(record) || Object.keys(record).some((key) => !KEYS.has(key)) || cleanName(record.name) !== record.name) return false;
       normalizeRequestedModel(record.provider, record.requestedModel);
+      if (record.instructionDigest !== undefined && (typeof record.instructionDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.instructionDigest))) return false;
+      if (record.instructionMethod !== undefined && (typeof record.instructionMethod !== 'string' || !/^[a-z0-9-]+$/.test(record.instructionMethod))) return false;
     }
     SessionRegistry.restore(records);
     return true;
