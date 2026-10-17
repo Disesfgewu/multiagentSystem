@@ -61,6 +61,14 @@ export async function runPlanChecks(workspace: string): Promise<string> {
   assert.equal(currentTasks?.[0]?.label, 'M1-001 Task 1 updated', 'unsaved changes appear in Core Plan');
   const links = (await tree.getChildren(currentTasks?.[0])) ?? [];
   assert.deepEqual(links.map((link) => link.label), ['Issue #412', 'PR #407']);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'role:pm');
+  const pmSections = await tree.getChildren();
+  assert.equal(pmSections?.length, 1);
+  const pmTasks = await tree.getChildren(pmSections?.[0]);
+  assert.deepEqual(pmTasks?.map((item) => item.label), ['M1-001 Task 1 updated']);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'role:researcher');
+  assert.match(String((await tree.getChildren())?.[0]?.label), /No Role: Researcher TODOs/);
+  await vscode.commands.executeCommand(PLAN_COMMANDS.filter, 'all');
   const head = 'a'.repeat(40);
   setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => ({
     listIssues: async () => ({ kind: 'empty' }),

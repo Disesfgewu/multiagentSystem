@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parsePlan, planReportLinks } from '../../src/plan/parser';
+import { parsePlan, planOwners, planReportLinks } from '../../src/plan/parser';
 
 test('the project core plan has 65 unique decisions and traceable fields', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'docs', 'MASTER_PLAN.md'), 'utf8');
@@ -15,8 +15,16 @@ test('the project core plan has 65 unique decisions and traceable fields', () =>
   for (const task of tasks) {
     const line = source.split(/\r?\n/)[task.line];
     assert.ok(line.startsWith(`- [ ] ${task.id} `));
+    assert.ok((task.owners?.length ?? 0) > 0, `${task.id}: owners`);
     for (const field of ['負責：', '依賴：', '證據：', '下一決策：', '更新：']) assert.ok(line.includes(field), `${task.id}: ${field}`);
   }
+});
+
+test('role-group owners are parsed from Chinese and English owner fields', () => {
+  assert.deepEqual(planOwners('M1-001 title。負責：PM＋Worker；依賴：#106；'), ['pm', 'worker']);
+  assert.deepEqual(planOwners('M1-018 title。負責：Researcher＋Worker；依賴：#89；'), ['researcher', 'worker']);
+  assert.deepEqual(planOwners('DEC-001 title。Owner: Owner / QA; dependency: #1;'), ['owner', 'qa']);
+  assert.deepEqual(planOwners('M1-099 title without owner field'), []);
 });
 
 test('invalid and duplicate IDs are reported without making them clickable', () => {

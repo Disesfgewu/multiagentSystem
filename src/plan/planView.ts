@@ -108,8 +108,25 @@ Public project goals and decisions only. Keep agent runtime identities, account 
 `;
 
 type Node = SectionNode | TaskNode | MessageNode | ReportNode;
-type TaskFilter = 'all' | 'open' | 'done';
-const FILTER_LABELS: Record<TaskFilter, string> = { all: 'All TODOs', open: 'Open TODOs', done: 'Recorded TODOs' };
+export type TaskFilter = 'all' | 'open' | 'done' | 'role:pm' | 'role:worker' | 'role:researcher' | 'role:owner' | 'role:qa';
+const FILTER_LABELS: Record<TaskFilter, string> = {
+  all: 'All TODOs',
+  open: 'Open TODOs',
+  done: 'Recorded TODOs',
+  'role:pm': 'Role: PM',
+  'role:worker': 'Role: Developer',
+  'role:researcher': 'Role: Researcher',
+  'role:owner': 'Role: Decision Owner',
+  'role:qa': 'Role: QA'
+};
+
+function matchesTaskFilter(task: PlanTask, filter: TaskFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'open') return !task.done;
+  if (filter === 'done') return task.done;
+  if (filter.startsWith('role:')) return task.owners.includes(filter.slice(5));
+  return false;
+}
 
 class SectionNode extends vscode.TreeItem {
   constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[], readonly generation: number) {
@@ -184,10 +201,13 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
       if (parsed.errors.length > 5) rows.push(new MessageNode(`${parsed.errors.length - 5} more format errors; open the plan.`, PLAN_COMMANDS.open));
       if (parsed.sections.length) {
         for (const section of parsed.sections) {
-          const visible = section.tasks.filter((task) => this.filter === 'all' || (this.filter === 'done' ? task.done : !task.done));
+          const visible = section.tasks.filter((task) => matchesTaskFilter(task, this.filter));
           if (visible.length) rows.push(new SectionNode(section, visible, generation));
         }
-        if (rows.length === 0) rows.push(new MessageNode(`No ${this.filter === 'done' ? 'recorded' : 'open'} TODOs in this plan.`, PLAN_COMMANDS.filter));
+        if (rows.length === 0) {
+          const emptyWord = this.filter === 'done' ? 'recorded' : this.filter === 'open' ? 'open' : FILTER_LABELS[this.filter];
+          rows.push(new MessageNode(`No ${emptyWord} TODOs in this plan.`, PLAN_COMMANDS.filter));
+        }
       }
       else if (!parsed.errors.length) rows.push(new MessageNode('No numbered TODOs yet. Open the plan to add one.', PLAN_COMMANDS.open));
       return rows;
@@ -222,7 +242,7 @@ export function registerPlanView(context: vscode.ExtensionContext): void {
         })), { placeHolder: 'Show which Core Plan TODOs?' });
         selected = picked?.id;
       }
-      if (selected !== 'all' && selected !== 'open' && selected !== 'done') return;
+      if (!selected || !Object.hasOwn(FILTER_LABELS, selected)) return;
       tree.setFilter(selected);
       view.description = FILTER_LABELS[selected];
     }),
