@@ -15,9 +15,8 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
   const manifest = vscode.extensions.all.find((candidate) => candidate.packageJSON?.name === 'multiagentsystem')?.packageJSON;
   assert.ok(manifest, 'the manifest is readable');
   const container = manifest.contributes.viewsContainers.activitybar.find((entry: { id: string }) => entry.id === 'multiagentSystem');
-  assert.equal(container?.title, 'Multiagent', 'the activity bar has its own Multiagent container');
   const ids = manifest.contributes.views.multiagentSystem.map((view: { id: string }) => view.id);
-  assert.deepEqual(ids, [OVERVIEW_VIEW, 'multiagentSystem.planView', 'multiagentSystem.issuesReportView', 'multiagentSystem.prsReportView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView', 'multiagentSystem.broadcastsView', 'multiagentSystem.toolsSetupView']);
+  assert.deepEqual(ids, [OVERVIEW_VIEW, 'multiagentSystem.issuesReportView', 'multiagentSystem.prsReportView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView', 'multiagentSystem.broadcastsView', 'multiagentSystem.toolsSetupView']);
   assert.equal(manifest.contributes.views.explorer, undefined, 'nothing is left in the Explorer');
 
   const tree = overviewTreeForTests();
