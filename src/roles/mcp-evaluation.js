@@ -120,6 +120,15 @@ function evaluateMcpTools(rawCatalog, rawAllowlist, options = {}) {
         block(item.serverId, tool.name, 'capability not reviewed (unknown): treated as not allowed');
         continue;
       }
+      if (options.consentedServerIds !== undefined) {
+        const consented = Array.isArray(options.consentedServerIds)
+          ? options.consentedServerIds.includes(item.serverId)
+          : (options.consentedServerIds instanceof Set ? options.consentedServerIds.has(item.serverId) : false);
+        if (!consented) {
+          block(item.serverId, tool.name, 'user consent not granted (run Consent & Enable first)');
+          continue;
+        }
+      }
       const levels = needs.map((permission) => [permission, getEffectiveLevel(permissions, permission)]);
       const denied = levels.find(([, level]) => level === 'deny');
       if (denied) {

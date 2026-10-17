@@ -279,10 +279,74 @@ function filterAuthorizedTools(catalog, allowlist) {
   return Object.freeze(authorized);
 }
 
+/**
+ * Pinned candidate academic and research MCP tools from reviewed sources (docs/ACADEMIC_MCP_CATALOG.md).
+ * Strict boundaries:
+ *  - Pinned commit / version and SHA-256 integrity hash.
+ *  - Allowed open-source licenses (MIT, Apache-2.0).
+ *  - Shell and eval commands strictly forbidden.
+ *  - Self-declared read-only tools only (write tools prohibited).
+ *  - Secrets declared with secret: true only.
+ */
+const CANDIDATE_RESEARCH_TOOLS = Object.freeze([
+  validateCatalogItem({
+    serverId: 'zhtw-mcp',
+    name: 'Traditional Chinese Semantics & Terminology MCP Server',
+    description: 'Traditional Chinese text correction and terminology verification',
+    version: '0.1.0',
+    integrity: 'sha256:a0b555fb47253e580eb095d438368c6af0018cf90fffa0dbb979f081e28d084a',
+    source: 'https://github.com/sysprog21/zhtw-mcp.git',
+    license: 'MIT',
+    command: ['zhtw-mcp'],
+    tools: [
+      { name: 'zhtw', readOnly: true, description: 'Traditional Chinese text correction and terminology verification' }
+    ],
+    env: {}
+  }),
+  validateCatalogItem({
+    serverId: 'arxiv-mcp-server',
+    name: 'arXiv Research MCP Server',
+    description: 'Literature tool for arXiv search and paper section reading',
+    version: 'v0.8.2',
+    integrity: 'sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c',
+    source: 'https://github.com/blazickjp/arxiv-mcp-server.git',
+    license: 'Apache-2.0',
+    command: ['arxiv-mcp-server', '--storage-path', '/tmp/arxiv'],
+    tools: [
+      { name: 'search_papers', readOnly: true, description: 'Search arXiv papers by query' },
+      { name: 'get_abstract', readOnly: true, description: 'Get official arXiv paper abstract and metadata' },
+      { name: 'search_paper_text', readOnly: true, description: 'Search cached paper text' },
+      { name: 'read_paper', readOnly: true, description: 'Read paper full text from cache' },
+      { name: 'get_paper_outline', readOnly: true, description: 'Get paper outline from cache' },
+      { name: 'read_paper_section', readOnly: true, description: 'Read paper section from cache' }
+    ],
+    env: {}
+  }),
+  validateCatalogItem({
+    serverId: 'github-mcp-server',
+    name: 'GitHub Research MCP Server',
+    description: 'Read-only repository query and file content retrieval',
+    version: 'v2.0.2',
+    integrity: 'sha256:5d9b38511bffc84d2272eb6189129eb721c8900e45784d8ea7eaf25f8d3dd835',
+    source: 'https://github.com/github/github-mcp-server.git',
+    license: 'MIT',
+    command: ['github-mcp-server', 'stdio'],
+    tools: [
+      { name: 'get_file_contents', readOnly: true, description: 'Read file contents from repository' },
+      { name: 'search_code', readOnly: true, description: 'Search code across repositories' },
+      { name: 'search_repositories', readOnly: true, description: 'Search repositories' }
+    ],
+    env: {
+      GITHUB_PERSONAL_ACCESS_TOKEN: { secret: true }
+    }
+  })
+]);
+
 module.exports = {
   validateCatalogItem,
   validateCatalog,
   filterAuthorizedTools,
+  CANDIDATE_RESEARCH_TOOLS,
   CatalogError,
   ALLOWED_LICENSES,
   LIMITS
