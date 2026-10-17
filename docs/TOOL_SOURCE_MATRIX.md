@@ -49,3 +49,9 @@ Tools Setup 畫面會顯示 Git、`gh`、Claude Code、Codex CLI 與 agy 的狀�
 安裝位置由 VS Code 的擴充套件全域儲存目錄提供；每次操作先經 PrivateStore 的 repo 外驗證。安裝採 staging、不可變版本目錄與最後切換的指標檔，PATH 只指向目前驗證通過的受管 `gh`。ZIP 解壓使用 `fflate` 0.8.3，授權全文收錄於 `THIRD_PARTY_NOTICES.md`。
 
 Git、Claude Code、Codex CLI 與 agy 目前只報告 PATH 上是否找到命令；這不是來源、版本、登入、身份、額度或規則注入的證據，因此畫面明確顯示未準備或未驗證。本次在 macOS arm64 下載固定的官方 `gh` 資產，重新計算 SHA-256 並執行 `gh --version` 確認為 2.102.0；其餘三個平台、乾淨機器、登入、視覺與易用性仍待實機驗證。
+
+## Codex CLI 首次設定實作狀態（2026-10-17）
+
+Tools Setup 現在也可準備上表固定的 Codex CLI `rust-v0.163.0`。macOS x64／arm64 只接受精確的官方 `tar.gz` 資產與唯一預期 target 執行檔；原生 Windows x64／arm64 只接受精確的官方 `.exe` 資產。下載位址、版本、平台、架構、格式、資產名稱與 SHA-256 均寫死於程式，不從工作區或設定取得。下載、重試、受管路徑、原子切換與每次狀態重驗沿用 `gh` 的失敗關閉界線；只有保留的官方資產仍符合固定 SHA，且目前執行檔與該資產重新推導的內容相同，才顯示 Ready 並加入新 terminal 的 PATH。
+
+已在 macOS arm64 實際下載固定官方資產，重新計算 SHA-256 為 `61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10`，經本安裝器解出唯一的 `codex-aarch64-apple-darwin`，執行 `codex --version` 得到 `codex-cli 0.163.0`。沒有登入、沒有讀取登入資料，也沒有驗證身份、額度、規則注入、macOS x64、原生 Windows、乾淨機器、VSIX 安裝後流程、平台簽章、視覺與易用性。程式存在與 SHA 相符只代表受管執行檔已備妥，不代表登入或 provider 其他能力通過。

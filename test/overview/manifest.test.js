@@ -56,12 +56,14 @@ test('the overview activates the extension, and the extension never declares unt
   assert.equal(JSON.stringify(manifest).includes('untrustedWorkspaces'), false);
 });
 
-test('Tools Setup has refresh and a gh-only retry action, and activates the extension', () => {
+test('Tools Setup has refresh plus verified gh and Codex retry actions, and activates the extension', () => {
   const declared = new Set(contributes.commands.map((entry) => entry.command));
-  for (const command of ['multiagentSystem.setup.refresh', 'multiagentSystem.setup.retryGh']) assert.ok(declared.has(command), command);
+  for (const command of ['multiagentSystem.setup.refresh', 'multiagentSystem.setup.retryGh', 'multiagentSystem.setup.retryCodex']) assert.ok(declared.has(command), command);
   assert.ok(manifest.activationEvents.includes('onView:multiagentSystem.toolsSetupView'));
   const retry = contributes.menus['view/item/context'].filter((item) => item.command === 'multiagentSystem.setup.retryGh');
   assert.deepEqual(retry.map((item) => item.when), ['view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh']);
+  const retryCodex = contributes.menus['view/item/context'].filter((item) => item.command === 'multiagentSystem.setup.retryCodex');
+  assert.deepEqual(retryCodex.map((item) => item.when), ['view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupCodex']);
 });
 
 test('the report lists and the editor buttons for reading reports are declared', () => {
