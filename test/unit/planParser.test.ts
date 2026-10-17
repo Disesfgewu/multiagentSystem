@@ -33,14 +33,19 @@ test('one hundred TODOs remain addressable by source line', () => {
   assert.equal(parsed.sections[0].tasks[99].line, 101);
 });
 
-test('dependency and evidence links preserve Issue/PR kinds without guessing bare evidence', () => {
+test('dependency, ordinary evidence and acceptance links preserve kinds and precedence', () => {
   assert.deepEqual(planReportLinks('M1-001 title #999。負責：PM；依賴：#106、#111；證據：PR #112／#108 已合併，Issue #73；下一決策：#900；'), [
-    { kind: 'issue', number: 106 }, { kind: 'issue', number: 111 },
-    { kind: 'pullRequest', number: 112 }, { kind: 'pullRequest', number: 108 }, { kind: 'issue', number: 73 }
+    { kind: 'issue', number: 106, field: 'dependency' }, { kind: 'issue', number: 111, field: 'dependency' },
+    { kind: 'pullRequest', number: 112, field: 'evidence' }, { kind: 'pullRequest', number: 108, field: 'evidence' }, { kind: 'issue', number: 73, field: 'evidence' }
   ]);
-  assert.deepEqual(planReportLinks('dependency: Issue #12, PR #7; evidence: PR #7;'), [{ kind: 'issue', number: 12 }, { kind: 'pullRequest', number: 7 }]);
+  assert.deepEqual(planReportLinks('dependency: Issue #12, PR #7; evidence: PR #7;'), [{ kind: 'issue', number: 12, field: 'dependency' }, { kind: 'pullRequest', number: 7, field: 'evidence' }], 'the same reference named again as evidence upgrades from a plain dependency');
+  assert.deepEqual(planReportLinks('依賴：PR #7；證據：PR #7、#8；驗收依據：PR #7；acceptance: Issue #9;'), [
+    { kind: 'pullRequest', number: 7, field: 'acceptance' },
+    { kind: 'pullRequest', number: 8, field: 'evidence' },
+    { kind: 'issue', number: 9, field: 'acceptance' }
+  ]);
   assert.deepEqual(planReportLinks('證據：#123 待確認；依賴：#0、#9007199254740992；'), []);
   assert.deepEqual(planReportLinks('dependency: other/repo#12, https://github.com/o/r/issues/7#123;'), [], 'foreign shorthand and URL fragments must not become same-project links');
   assert.deepEqual(planReportLinks('evidence: [PR #7](https://github.com/other/repo/pull/7);'), [], 'Markdown labels must not redirect a foreign report into this project');
-  assert.deepEqual(parsePlan('## M1\n- [ ] M1-001 Task。負責：PM；依賴：#12；證據：PR #7；').sections[0].tasks[0].reports, [{ kind: 'issue', number: 12 }, { kind: 'pullRequest', number: 7 }]);
+  assert.deepEqual(parsePlan('## M1\n- [ ] M1-001 Task。負責：PM；依賴：#12；證據：PR #7；').sections[0].tasks[0].reports, [{ kind: 'issue', number: 12, field: 'dependency' }, { kind: 'pullRequest', number: 7, field: 'evidence' }]);
 });

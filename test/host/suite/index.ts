@@ -7,6 +7,7 @@ import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
+import { runSessionPersistenceChecks } from './sessionPersistence';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -175,17 +176,31 @@ async function accountFlow(workspace: string): Promise<void> {
   });
   assert.deepEqual([wrongProvider.ok, wrongProvider.code], [false, 'provider-mismatch']);
 
-  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string } }>('multiagentSystem.sessions.start', {
+  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string; requestedModel: string | null } }>('multiagentSystem.sessions.start', {
     interactive: false, provider: 'claude', name: 'Account Bound Session', cwd: workspace,
-    accountProfileId: created.profile.id, launch: false
+    accountProfileId: created.profile.id, requestedModel: 'sonnet', launch: false
   });
   assert.equal(started.ok, true);
   assert.equal(started.session?.accountProfileId, created.profile.id);
+  assert.equal(started.session?.requestedModel, 'sonnet');
   const orderedOverview = (await overviewTreeForTests().getChildren()) ?? [];
   const agentsHeading = orderedOverview.findIndex((entry) => entry.label === 'Agents');
   const accountsHeading = orderedOverview.findIndex((entry) => entry.label === 'Accounts');
   assert.ok(agentsHeading >= 0 && accountsHeading > agentsHeading, 'running agents remain ahead of account usage in the default overview');
+  const modelAgent = orderedOverview.find((entry) => entry.label === 'Account Bound Session');
+  assert.match(String(modelAgent?.tooltip), /Requested model: sonnet \(not confirmed\)/);
+  assert.match(String(modelAgent?.tooltip), /Actual model: unknown/);
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
+  const reopenedModel = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; requestedModel: string | null } }>('multiagentSystem.sessions.reopen', { interactive: false, id: started.session?.id, launch: false });
+  assert.equal(reopenedModel.ok, true);
+  assert.equal(reopenedModel.session?.requestedModel, 'sonnet');
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: reopenedModel.session?.id });
+  const terminalCount = vscode.window.terminals.length;
+  for (const [provider, requestedModel, expected] of [['claude', 'bad;command', 'invalid-model'], ['agy', 'example', 'model-selection-unsupported']]) {
+    const rejected = await vscode.commands.executeCommand<{ ok: boolean; code: string }>('multiagentSystem.sessions.start', { interactive: false, provider, requestedModel, name: 'Rejected model', cwd: workspace, launch: false });
+    assert.deepEqual([rejected.ok, rejected.code], [false, expected]);
+  }
+  assert.equal(vscode.window.terminals.length, terminalCount, 'invalid or unsupported model selection opens no terminal');
 
   // The sign-in check with no CLI available: the identity stays unknown, with a reason, and nothing is shown as ready.
   const emptyPath = fs.mkdtempSync(path.join(path.dirname(workspace), 'multiagent-empty-path-'));
@@ -587,11 +602,23 @@ export async function run(): Promise<void> {
   const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));
   await vscode.window.showTextDocument(visibleFile, vscode.ViewColumn.One);
   const before = new Set(vscode.window.terminals);
-  await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
-  const created = await waitFor(() => {
-    const added = vscode.window.terminals.filter((terminal) => !before.has(terminal));
-    return added.length >= EXPECTED_TITLES.length ? added : undefined;
-  }, 20000);
+  const realShowInformationMessage = vscode.window.showInformationMessage;
+  const infoMessages: string[] = [];
+  (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
+    infoMessages.push(message);
+    return (realShowInformationMessage as (...args: unknown[]) => Thenable<unknown>)(message, ...rest);
+  }) as typeof vscode.window.showInformationMessage;
+  let created: vscode.Terminal[];
+  try {
+    await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    created = await waitFor(() => {
+      const added = vscode.window.terminals.filter((terminal) => !before.has(terminal));
+      return added.length >= EXPECTED_TITLES.length ? added : undefined;
+    }, 20000);
+    assert.ok(infoMessages.some((message) => /Drag any terminal's tab/.test(message)), 'a fresh 2×2 group explains that the terminals can be dragged to rearrange them');
+  } finally {
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
+  }
 
   try {
     assert.deepEqual(created.map((terminal) => terminal.name).sort(), [...EXPECTED_TITLES].sort());
@@ -621,8 +648,18 @@ export async function run(): Promise<void> {
     const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
     await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
     const countBeforeRepeat = vscode.window.terminals.length;
-    await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    const repeatMessages: string[] = [];
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
+      repeatMessages.push(message);
+      return (realShowInformationMessage as (...args: unknown[]) => Thenable<unknown>)(message, ...rest);
+    }) as typeof vscode.window.showInformationMessage;
+    try {
+      await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    } finally {
+      (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
+    }
     assert.equal(vscode.window.terminals.length, countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
+    assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
   } finally {
@@ -631,6 +668,7 @@ export async function run(): Promise<void> {
 
   await sessionFlow(workspace);
   await accountFlow(workspace);
+  console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
   await broadcastFlow();
   await agyFlow(workspace);

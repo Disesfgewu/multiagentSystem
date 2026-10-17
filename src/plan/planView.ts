@@ -1,7 +1,88 @@
 import * as vscode from 'vscode';
-import { parsePlan, PlanSection, PlanTask } from './parser';
+import { parsePlan, PlanSection, PlanTask, PlanReportLink } from './parser';
 import { OVERVIEW_VIEW } from '../overview/overviewView';
 import { REPORT_COMMANDS } from '../reports/reportsView';
+import { WorktreeService } from '../projects/worktrees';
+import { githubReaderFor } from '../github/githubCommands';
+
+const { describeEvidence } = require('./evidence') as {
+  describeEvidence(input: { field: PlanReportLink['field']; done: boolean; kind: 'issue' | 'pullRequest'; number?: number; live: unknown }): { state: string; conflict: boolean };
+};
+
+export interface PlanEvidenceReader {
+  getIssue(number: number, options?: { forceRefresh?: boolean }): Promise<{ kind: string; data?: { number: number; state: string } }>;
+  getPullRequest(number: number, options?: { forceRefresh?: boolean }): Promise<{ kind: string; data?: { number: number; state: string; merged: boolean; draft: boolean; headSha: string } }>;
+}
+export interface PlanEvidenceDeps {
+  repository(): Promise<string | null>;
+  readerFor(repository: string): PlanEvidenceReader | null;
+  now(): Date;
+}
+const realPlanEvidenceDeps: PlanEvidenceDeps = {
+  async repository() {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !vscode.workspace.isTrusted) return null;
+    try {
+      const project = await WorktreeService.open(folder.uri.fsPath);
+      const name = typeof project.githubRepository === 'string' ? project.githubRepository.replace(/^github\.com\//i, '') : null;
+      return name && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(name) ? name : null;
+    } catch {
+      return null;
+    }
+  },
+  readerFor: (repository) => githubReaderFor(repository) as unknown as PlanEvidenceReader | null,
+  now: () => new Date()
+};
+let planEvidenceDeps: PlanEvidenceDeps = realPlanEvidenceDeps;
+let planReadGeneration = 0;
+/** Replaces where live Issue/PR state is read from. Only the Extension Host test does this. */
+export function setPlanEvidenceDepsForTests(next: PlanEvidenceDeps | undefined): void { planEvidenceDeps = next ?? realPlanEvidenceDeps; planReadGeneration += 1; }
+
+/**
+ * The live state of one Core Plan reference, read only when its TODO is expanded (never for every
+ * TODO at once). A read that fails, or a project with no connected GitHub repository, is unknown:
+ * it never promotes a dependency into a conflict, and it never clears one either.
+ */
+type EvidenceStatus = { state: string; conflict: boolean; readAt: string | null; repository: string | null; headSha: string | null };
+async function planEvidenceStatus(task: PlanTask, link: PlanReportLink, generation: number): Promise<EvidenceStatus> {
+  const unknown = (): EvidenceStatus => ({ ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, number: link.number, live: null }), readAt: null, repository: null, headSha: null });
+  // Every step here — finding the repository, getting a reader, reading the item — can fail or throw
+  // for reasons outside this module's control (no workspace, an untrusted workspace, a network error,
+  // a broken test double). None of that may crash the whole tree: it all collapses to "unknown".
+  try {
+    if (generation !== planReadGeneration) return unknown();
+    const deps = planEvidenceDeps;
+    const repository = await deps.repository();
+    const reader = repository ? deps.readerFor(repository) : null;
+    if (!reader) return unknown();
+    let live: unknown;
+    let headSha: string | null = null;
+    if (link.kind === 'issue') {
+      const result = await reader.getIssue(link.number, { forceRefresh: true });
+      live = result.kind === 'ok' ? result.data ?? null : null;
+    } else {
+      const result = await reader.getPullRequest(link.number, { forceRefresh: true });
+      if (result.kind !== 'ok' || !result.data) return unknown();
+      const after = await reader.getPullRequest(link.number, { forceRefresh: true });
+      if (after.kind !== 'ok' || !after.data || result.data.headSha !== after.data.headSha ||
+          describeEvidence({ field: link.field, done: task.done, kind: link.kind, number: link.number, live: after.data }).state === 'unknown') return unknown();
+      live = after.data;
+      headSha = after.data.headSha;
+    }
+    if (!live) return unknown();
+    const afterRepository = await deps.repository();
+    if (generation !== planReadGeneration || afterRepository !== repository) return unknown();
+    const described = describeEvidence({ field: link.field, done: task.done, kind: link.kind, number: link.number, live });
+    return described.state === 'unknown' ? unknown() : {
+      ...described,
+      readAt: deps.now().toISOString(),
+      repository,
+      headSha
+    };
+  } catch {
+    return unknown();
+  }
+}
 
 export const PLAN_VIEW = 'multiagentSystem.planView';
 export const PLAN_COMMANDS = {
@@ -31,14 +112,14 @@ type TaskFilter = 'all' | 'open' | 'done';
 const FILTER_LABELS: Record<TaskFilter, string> = { all: 'All TODOs', open: 'Open TODOs', done: 'Recorded TODOs' };
 
 class SectionNode extends vscode.TreeItem {
-  constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[]) {
+  constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[], readonly generation: number) {
     super(section.title, vscode.TreeItemCollapsibleState.Expanded);
     this.description = `${section.tasks.filter((task) => !task.done).length} open / ${section.tasks.length} total`;
     this.iconPath = new vscode.ThemeIcon('list-tree');
   }
 }
 class TaskNode extends vscode.TreeItem {
-  constructor(readonly task: PlanTask) {
+  constructor(readonly task: PlanTask, readonly generation: number) {
     super(`${task.id} ${task.title}`, vscode.TreeItemCollapsibleState.Collapsed);
     this.description = task.done ? 'recorded' : 'open';
     this.tooltip = task.title;
@@ -47,11 +128,18 @@ class TaskNode extends vscode.TreeItem {
   }
 }
 class ReportNode extends vscode.TreeItem {
-  constructor(kind: 'issue' | 'pullRequest', number: number) {
+  constructor(kind: 'issue' | 'pullRequest', number: number, field: PlanReportLink['field'], status: EvidenceStatus) {
     super(`${kind === 'issue' ? 'Issue' : 'PR'} #${number}`, vscode.TreeItemCollapsibleState.None);
-    this.description = 'Read report';
-    this.tooltip = 'Read the GitHub report inside this editor. This link does not certify that the TODO is complete.';
-    this.iconPath = new vscode.ThemeIcon(kind === 'issue' ? 'issues' : 'git-pull-request');
+    const fieldWord = field === 'acceptance' ? 'delivery acceptance evidence' : field === 'evidence' ? 'evidence (informational only)' : 'dependency (informational only)';
+    const provenance = status.repository ? ` · ${status.repository}${status.headSha ? ` · ${status.headSha}` : ''}` : '';
+    this.description = status.conflict ? `⚠ ${status.state}: needs human review${provenance}` : `${status.state}${provenance}`;
+    this.tooltip = [
+      `${fieldWord}, live state: ${status.state}${status.repository ? `; source: ${status.repository}` : ''}${status.headSha ? `; full PR head: ${status.headSha}` : ''}${status.readAt ? ` (read ${status.readAt})` : ' (not read: unavailable, changed while reading, or a stale request was discarded)'}.`,
+      status.conflict
+        ? 'The checkbox and this live state disagree. Nothing was changed automatically: decide and edit the plan yourself.'
+        : 'Read the GitHub report inside this editor. This link does not certify that the TODO is complete.'
+    ].join(' ');
+    this.iconPath = new vscode.ThemeIcon(status.conflict ? 'warning' : kind === 'issue' ? 'issues' : 'git-pull-request');
     this.command = { command: REPORT_COMMANDS.open, title: 'Read linked report', arguments: [{ kind, number }] };
   }
 }
@@ -70,27 +158,34 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   filter: TaskFilter = 'all';
-  refresh(): void { this.changed.fire(undefined); }
+  refresh(): void { planReadGeneration += 1; this.changed.fire(undefined); }
   setFilter(filter: TaskFilter): void { this.filter = filter; this.refresh(); }
   getTreeItem(node: Node): vscode.TreeItem { return node; }
   async getChildren(node?: Node): Promise<Node[]> {
-    if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task));
-    if (node instanceof TaskNode) return node.task.reports.length
-      ? node.task.reports.map((link) => new ReportNode(link.kind, link.number))
-      : [new MessageNode('待連結：在依賴／證據欄位加入 Issue #12 或 PR #7。')];
+    if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task, node.generation));
+    if (node instanceof TaskNode) {
+      if (!node.task.reports.length) return [new MessageNode('待連結：在依賴、證據或驗收依據欄位加入 Issue #12 或 PR #7。')];
+      // Fetched only now, for this one task's own (typically one or two) links, never for every
+      // TODO in the plan at once: expanding one TODO must not fan out a request per every TODO.
+      const generation = node.generation;
+      const statuses = await Promise.all(node.task.reports.map((link) => planEvidenceStatus(node.task, link, generation)));
+      return node.task.reports.map((link, index) => new ReportNode(link.kind, link.number, link.field, statuses[index]));
+    }
     if (node) return [];
+    const generation = planReadGeneration;
     const uri = planUri();
     if (!uri) return [new MessageNode('Open a project folder to read its core plan.')];
     try {
       const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
       const source = open ? open.getText() : new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      if (generation !== planReadGeneration || uri.toString() !== planUri()?.toString()) return [new MessageNode('The core plan changed while reading. Refresh to read the current plan.', PLAN_COMMANDS.refresh)];
       const parsed = parsePlan(source);
       const rows: Node[] = parsed.errors.slice(0, 5).map((error) => new MessageNode(error, PLAN_COMMANDS.open));
       if (parsed.errors.length > 5) rows.push(new MessageNode(`${parsed.errors.length - 5} more format errors; open the plan.`, PLAN_COMMANDS.open));
       if (parsed.sections.length) {
         for (const section of parsed.sections) {
           const visible = section.tasks.filter((task) => this.filter === 'all' || (this.filter === 'done' ? task.done : !task.done));
-          if (visible.length) rows.push(new SectionNode(section, visible));
+          if (visible.length) rows.push(new SectionNode(section, visible, generation));
         }
         if (rows.length === 0) rows.push(new MessageNode(`No ${this.filter === 'done' ? 'recorded' : 'open'} TODOs in this plan.`, PLAN_COMMANDS.filter));
       }
