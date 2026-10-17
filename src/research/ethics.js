@@ -349,7 +349,7 @@ async function deliverResearchFindings(findings, options = {}) {
   if (!validation.ok) {
     return validation;
   }
-  const payload = wrapUntrusted(processed);
+  const payload = wrapUntrusted(processed, options);
   return Object.freeze({
     ...validation,
     findings: Object.freeze(processed),
