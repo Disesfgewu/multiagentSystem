@@ -65,4 +65,15 @@ function codexRelease(platform = process.platform, arch = process.arch) {
   return asset ? Object.freeze({ tool: 'codex', version: CODEX_VERSION, platform, arch, ...asset }) : null;
 }
 
-module.exports = { GH_VERSION, GH_ASSETS, ghRelease, CODEX_VERSION, CODEX_ASSETS, codexRelease };
+/**
+ * agy CLI deployment support assessment (Refs #73, #94, docs/AGY_INVESTIGATION.md).
+ * Returns null for all platforms. Google Antigravity CLI does not publish fixed standalone
+ * release binaries with official SHA-256 metadata or redistribution terms that satisfy
+ * extension-managed automated deployment. The CLI must be installed manually by the user.
+ */
+function agyRelease(_platform = process.platform, _arch = process.arch) {
+  return null;
+}
+
+module.exports = { GH_VERSION, GH_ASSETS, ghRelease, CODEX_VERSION, CODEX_ASSETS, codexRelease, agyRelease };
+

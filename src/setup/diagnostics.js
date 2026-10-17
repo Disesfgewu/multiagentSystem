@@ -165,6 +165,7 @@ function diagnose({
   const runtime = checkRuntimeVersions({ vscodeVersion, nodeVersion });
   const ghTool = classifyManagedTool(managedTools.gh);
   const codexTool = classifyManagedTool(managedTools.codex);
+  const agyTool = classifyManagedTool(managedTools.agy || { state: 'unsupported', reason: 'unverified-source-and-terms' });
 
   const providers = builtIn.list().map((provider) => {
     const onPath = Boolean(executables[provider.id]);
@@ -329,7 +330,9 @@ function diagnose({
         summary: `Provider CLI '${provider.id}' is not installed on PATH${provider.id === 'codex' ? ' or in managed tools' : ''}.`,
         nextAction: provider.id === 'codex'
           ? 'Run Retry Verified Codex CLI Setup or install codex on PATH.'
-          : `Install '${provider.id}' on PATH before launching '${provider.id}' sessions.`,
+          : provider.id === 'agy'
+            ? 'Install official \'agy\' CLI on PATH manually (managed auto-deployment is unverified and unsupported).'
+            : `Install '${provider.id}' on PATH before launching '${provider.id}' sessions.`,
         command: provider.id === 'codex' ? 'multiagentSystem.setup.retryCodex' : 'multiagentSystem.setup.refresh'
       });
     }
@@ -397,7 +400,8 @@ function diagnose({
       gitOnPath: Boolean(executables.git),
       ghOnPath: Boolean(executables.gh),
       managedGh: ghTool,
-      managedCodex: codexTool
+      managedCodex: codexTool,
+      managedAgy: agyTool
     },
     providers,
     accounts,
@@ -438,6 +442,7 @@ function formatDiagnosticReport(report) {
     `- git on PATH: ${report.tools.gitOnPath ? 'yes' : 'no'}`,
     `- gh: managed=${report.tools.managedGh.state} (${report.tools.managedGh.category}${report.tools.managedGh.reason ? `:${report.tools.managedGh.reason}` : ''}), onPath=${report.tools.ghOnPath ? 'yes' : 'no'}`,
     `- codex (managed): ${report.tools.managedCodex.state} (${report.tools.managedCodex.category}${report.tools.managedCodex.reason ? `:${report.tools.managedCodex.reason}` : ''})`,
+    `- agy (managed): ${report.tools.managedAgy.state} (${report.tools.managedAgy.category}${report.tools.managedAgy.reason ? `:${report.tools.managedAgy.reason}` : ''})`,
     ''
   ];
 
