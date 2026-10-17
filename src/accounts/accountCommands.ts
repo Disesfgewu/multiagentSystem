@@ -5,7 +5,7 @@ import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
-import { editLimits, clearLimits, limitLines } from './quotaGateUi';
+import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
 
 const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
@@ -75,12 +75,12 @@ function lastCheckedText(id: string): string {
 }
 
 class AccountItem extends vscode.TreeItem {
-  constructor(override readonly id: string, label: string, provider: string, health: string, identity: string, issues: string[]) {
+  constructor(override readonly id: string, label: string, provider: string, health: string, identity: string, issues: string[], gateState: 'allow' | 'warn' | 'confirm' | 'block' | null = null) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = `${provider} · ${identity} · ${health}`;
     this.tooltip = issues.length ? issues.join('\n') : `${provider}: identity is unknown until a provider observation is available.`;
     this.contextValue = 'multiagentAccountProfile';
-    this.iconPath = new vscode.ThemeIcon(health === 'ready' ? 'account' : 'warning');
+    this.iconPath = new vscode.ThemeIcon(gateState === 'block' ? 'circle-slash' : gateState === 'confirm' ? 'question' : health === 'ready' ? 'account' : 'warning');
     this.command = { command: ACCOUNT_COMMANDS.details, title: 'Account details', arguments: [id] };
   }
 }
@@ -122,6 +122,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     if (loaded.profiles.length === 0) rows.push(new AccountMessage('No account profiles. Use Create Profile to add one.'));
     const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
     const limitText = await Promise.all(loaded.profiles.map((profile: any) => limitLines(profile.id, () => sessions?.list() ?? [])));
+    const gateStates = await Promise.all(loaded.profiles.map((profile: any) => currentGateState(profile.id, () => sessions?.list() ?? [])));
     rows.push(...loaded.profiles.map((profile: any, index: number) => {
       const status = described[index];
       const provider = builtIn.get(profile.provider)?.label ?? profile.provider;
@@ -132,9 +133,13 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
       if (builtIn.capability(profile.provider, 'accountIsolation') !== 'verified') issues.push('Account isolation is not verified for this provider on this machine.');
       issues.push(lastCheckedText(profile.id));
       issues.push(...limitText[index]);
-      const item = new AccountItem(profile.id, profile.label, provider, status.health, identity, issues);
+      const gateState = gateStates[index];
+      const item = new AccountItem(profile.id, profile.label, provider, status.health, identity, issues, gateState?.action ?? null);
       const policyLine = limitText[index][0] ?? 'Limits: could not be read.';
       item.description += policyLine.startsWith('Limits: none set.') ? ' · limits not set' : policyLine.startsWith('Limits: could not be read.') ? ' · limits unknown' : ' · limits set';
+      if (gateState?.action === 'block') item.description += ' · BLOCKED NOW';
+      else if (gateState?.action === 'confirm') item.description += ' · needs confirmation';
+      else if (gateState?.action === 'warn') item.description += ' · near limit';
       return item;
     }));
     const labels = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
