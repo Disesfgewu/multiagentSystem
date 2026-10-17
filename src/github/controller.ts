@@ -84,6 +84,7 @@ export interface GitHubReader {
 
 export interface GitHubAdapter {
   useRepository(repo: RepositoryRef): GitHubReader;
+  clearCache?(): void;
 }
 
 // ---- UI and dependencies ----------------------------------------------------
@@ -248,16 +249,31 @@ export function describeReadFailure(result: ReadResult<unknown>, what: string): 
       };
     case 'denied': {
       const reason = (result.reason && DENIED_REASONS[result.reason]) || 'access was refused';
+      if (result.reason === 'bad_credentials' || result.reason === 'credential_unavailable') {
+        return {
+          code: 'denied',
+          message: `GitHub refused access to ${what}: ${reason}. Session expired or invalid. Use "Multiagent: Sign In to GitHub" to sign in again.`
+        };
+      }
       return { code: 'denied', message: `GitHub refused access to ${what}: ${reason}. Use "Multiagent: Sign In to GitHub" or check the account's permissions.` };
     }
     case 'rate_limited': {
       const when = result.resetAt ? ` Try again after ${result.resetAt}.` : '';
-      return { code: 'rate-limited', message: `GitHub is rate limiting requests for ${what}.${when} Signing in raises the limit.` };
+      return {
+        code: 'rate-limited',
+        message: `GitHub is rate limiting requests for ${what}.${when} This is temporary and will recover automatically; your sign-in is intact.`
+      };
     }
     case 'transient':
-      return { code: 'transient', message: `GitHub did not answer reliably for ${what}. Nothing was changed; try again later.` };
+      return {
+        code: 'transient',
+        message: `GitHub did not answer reliably for ${what}. Nothing was changed; this is a temporary server or network issue and will retry automatically.`
+      };
     case 'offline':
-      return { code: 'offline', message: `Cannot reach GitHub to read ${what}. Check the connection and try again.` };
+      return {
+        code: 'offline',
+        message: `Cannot reach GitHub to read ${what}. Check the connection and try again. This is a network issue; your sign-in is intact.`
+      };
     case 'invalid':
       return { code: 'invalid-response', message: `GitHub's answer for ${what} could not be understood, so nothing is shown.` };
     case 'cancelled':

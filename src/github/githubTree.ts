@@ -11,6 +11,8 @@ export const GITHUB_TREE_COMMANDS = {
   openItem: 'multiagentSystem.github.openInEditor'
 } as const;
 
+const GITHUB_SIGN_IN_COMMAND = `${'multiagentSystem'}.github.signIn`;
+
 type Node = CategoryNode | EntryNode | MessageNode;
 
 class CategoryNode extends vscode.TreeItem {
@@ -36,9 +38,12 @@ class EntryNode extends vscode.TreeItem {
 }
 
 class MessageNode extends vscode.TreeItem {
-  constructor(message: string) {
+  constructor(message: string, commandId?: string) {
     super(message, vscode.TreeItemCollapsibleState.None);
     this.iconPath = new vscode.ThemeIcon('info');
+    if (commandId) {
+      this.command = { command: commandId, title: message };
+    }
   }
 }
 
@@ -57,7 +62,11 @@ export class GitHubTree implements vscode.TreeDataProvider<Node> {
   readonly onDidChangeTreeData = this.changed.event;
   private readonly categories: CategoryNode[] = [new CategoryNode('issues'), new CategoryNode('pullRequests')];
 
-  constructor(private readonly controller: GitHubController, private readonly adapter: () => GitHubAdapter) {}
+  constructor(
+    private readonly controller: GitHubController,
+    private readonly adapter: () => GitHubAdapter,
+    private readonly signInCommandId?: string
+  ) {}
 
   refresh(): void { this.changed.fire(undefined); }
 
@@ -72,7 +81,10 @@ export class GitHubTree implements vscode.TreeDataProvider<Node> {
     const label = `${repository.owner}/${repository.name}`;
     try {
       const result = await this.controller.browse({ interactive: false, repository: label, kind: node.category });
-      if (!result.ok) return [new MessageNode(result.message)];
+      if (!result.ok) {
+        const command = this.signInCommandId && result.message.includes('Sign In to GitHub') ? this.signInCommandId : undefined;
+        return [new MessageNode(result.message, command)];
+      }
       const entries: Node[] = result.items.map((item) => new EntryNode(node.category, label, item));
       if (result.note) entries.unshift(new MessageNode(result.note));
       if (entries.length === 0) entries.push(new MessageNode(`No open ${node.category === 'issues' ? 'issues' : 'pull requests'}.`));
@@ -95,7 +107,15 @@ export class GitHubTree implements vscode.TreeDataProvider<Node> {
       if (category === 'issues') {
         const result = await reader.getIssue(number);
         if (result.kind !== 'ok' || !result.data) {
-          void vscode.window.showErrorMessage(detailFailure('issue', label, number, describeReadFailure(result, 'issue').message));
+          const failureMsg = detailFailure('issue', label, number, describeReadFailure(result, 'issue').message);
+          if (this.signInCommandId && failureMsg.includes('Sign In to GitHub')) {
+            const cmd = this.signInCommandId;
+            void vscode.window.showErrorMessage(failureMsg, 'Sign In to GitHub').then((action) => {
+              if (action === 'Sign In to GitHub') void vscode.commands.executeCommand(cmd);
+            });
+          } else {
+            void vscode.window.showErrorMessage(failureMsg);
+          }
           return;
         }
         const issue: IssueSummary = result.data;
@@ -110,7 +130,15 @@ export class GitHubTree implements vscode.TreeDataProvider<Node> {
       } else {
         const [result, snapshot] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number)]);
         if (result.kind !== 'ok' || !result.data) {
-          void vscode.window.showErrorMessage(detailFailure('pull request', label, number, describeReadFailure(result, 'pull request').message));
+          const failureMsg = detailFailure('pull request', label, number, describeReadFailure(result, 'pull request').message);
+          if (this.signInCommandId && failureMsg.includes('Sign In to GitHub')) {
+            const cmd = this.signInCommandId;
+            void vscode.window.showErrorMessage(failureMsg, 'Sign In to GitHub').then((action) => {
+              if (action === 'Sign In to GitHub') void vscode.commands.executeCommand(cmd);
+            });
+          } else {
+            void vscode.window.showErrorMessage(failureMsg);
+          }
           return;
         }
         const pull: PullRequestSummary = result.data;

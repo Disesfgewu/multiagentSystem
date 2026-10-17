@@ -132,13 +132,27 @@ class Entry extends vscode.TreeItem {
   }
 }
 
-const incompleteMessage = (what: string, kind: string): string => ({
-  partial: `${what} could only be partly read, so the list is not shown. Refresh to retry.`,
-  truncated: `${what} are more than could be read at once, so the list is not shown as complete.`,
-  denied: `${what} could not be read: sign in to GitHub or check access.`,
-  rate_limited: `${what} could not be read: GitHub asked for a pause. Refresh later.`,
-  offline: `${what} could not be read: no connection.`
-} as Record<string, string>)[kind] ?? `${what} could not be read (${line(kind, 30)}). Refresh to retry.`;
+const incompleteMessage = (what: string, kind: string, reason?: string): string => {
+  if (kind === 'denied') {
+    if (reason === 'bad_credentials' || reason === 'credential_unavailable') {
+      return `${what} could not be read: GitHub session expired or invalid. Please sign in again.`;
+    }
+    return `${what} could not be read: sign in to GitHub or check access.`;
+  }
+  if (kind === 'rate_limited') {
+    return `${what} could not be read: GitHub rate limit reached (temporary; will resume automatically).`;
+  }
+  if (kind === 'transient') {
+    return `${what} could not be read: temporary GitHub server issue (will retry automatically).`;
+  }
+  if (kind === 'offline') {
+    return `${what} could not be read: no connection (temporary; check network).`;
+  }
+  return ({
+    partial: `${what} could only be partly read, so the list is not shown. Refresh to retry.`,
+    truncated: `${what} are more than could be read at once, so the list is not shown as complete.`
+  } as Record<string, string>)[kind] ?? `${what} could not be read (${line(kind, 30)}). Refresh to retry.`;
+};
 
 class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
   private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
@@ -188,7 +202,7 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (generation === readGeneration) order[this.kind] = [];
       this.setBadge(null);
       const failed = openItems === null ? result : closed;
-      return [new Message(incompleteMessage(what, failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid'))];
+      return [new Message(incompleteMessage(what, failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid', (failed as any)?.reason))];
     }
     const all = [...openItems, ...closedItems];
     if (new Set(all.map((entry) => entry.number)).size !== all.length) { this.setBadge(null); return [new Message(incompleteMessage(what, 'duplicate'))]; }

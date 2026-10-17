@@ -694,3 +694,24 @@ test('picking "read status" from the list shows the summary and opens nothing', 
   assert.match(ui.log.summaries[0].lines[0], /was not found, or this account cannot see it/);
   assert.deepEqual(ui.log.opened, []);
 });
+
+test('error messages distinguish session expiration from transient errors and rate limits', async () => {
+  const { github, controller } = rig();
+  github.on('GET', ISSUES, () => json(401, { message: 'Bad credentials' }));
+  const expired = await controller.browse({ interactive: true, repository: REPO, kind: 'issues' });
+  assert.equal(!expired.ok && expired.code, 'denied');
+  assert.match(!expired.ok ? expired.message : '', /Session expired or invalid.*Use "Multiagent: Sign In to GitHub"/);
+
+  const { github: gRate, controller: cRate } = rig();
+  gRate.on('GET', ISSUES, () => json(403, { message: 'rate limit' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1792000000' }));
+  const rateLimit = await cRate.browse({ interactive: true, repository: REPO, kind: 'issues' });
+  assert.equal(!rateLimit.ok && rateLimit.code, 'rate-limited');
+  assert.match(!rateLimit.ok ? rateLimit.message : '', /sign-in is intact/);
+  assert.doesNotMatch(!rateLimit.ok ? rateLimit.message : '', /Signing in raises the limit/);
+
+  const { github: gTransient, controller: cTransient } = rig();
+  gTransient.on('GET', ISSUES, () => json(500, { message: 'Server error' }));
+  const transient = await cTransient.browse({ interactive: true, repository: REPO, kind: 'issues' });
+  assert.equal(!transient.ok && transient.code, 'transient');
+  assert.match(!transient.ok ? transient.message : '', /temporary server or network issue.*retry automatically/);
+});
