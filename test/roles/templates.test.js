@@ -331,3 +331,24 @@ test('both views come from one evaluation, so they list the same tools', () => {
   assert.deepEqual(lines(preview), lines(summary));
   assert.ok(lines(summary).length >= 5);
 });
+
+test('research skills and academic ethics requirements are rendered in role preview and summary when requested', () => {
+  const record = build('researcher').record;
+  const options = { researchSkills: true };
+  const { summary, preview } = both(record, options);
+
+  for (const text of [summary, preview]) {
+    assert.match(text, /Approved research skills:/);
+    assert.match(text, /Paper Search & Screening \(paper-search v1\.0\.0\)/);
+    assert.match(text, /Citation & Provenance Verification \(citation-verify v1\.0\.0\)/);
+    assert.match(text, /Novelty & Related Work Comparison \(novelty-compare v1\.0\.0\)/);
+    assert.match(text, /Research Findings Delivery \(findings-deliver v1\.0\.0\)/);
+    assert.match(text, /Traditional Chinese Terminology Review \(zhtw-research v1\.0\.0\)/);
+    assert.match(text, /Academic ethics requirements:/);
+    assert.match(text, /1\. Citation Provenance/);
+    assert.match(text, /2\. Untrusted Literature Isolation/);
+    assert.match(text, /3\. Retraction & Correction Transparency/);
+    assert.match(text, /4\. Quote & Claim Veracity/);
+    assert.match(text, /5\. Privacy & Sensitive Content Containment/);
+  }
+});

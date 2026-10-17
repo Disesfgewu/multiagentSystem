@@ -19,7 +19,7 @@ const { selectRoleProfiles } = require('./account-choices') as {
 };
 const { previewEffectiveRules, formatPreview } = require('./preview') as {
   previewEffectiveRules(value: { roleGroup: RoleGroup; layers: RuleLayers }): { ok: boolean; digest?: string; problems: Array<{ code: string; path: string }> };
-  formatPreview(value: unknown, options?: { injection?: unknown; catalog?: unknown[]; allowlist?: Record<string, string[]> }): string;
+  formatPreview(value: unknown, options?: { injection?: unknown; catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string }): string;
 };
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
 const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
@@ -29,7 +29,7 @@ const { liveBroadcastRules, broadcastPreviewLines } = require('../broadcast/mode
   broadcastPreviewLines(items: unknown, context: { role: string; provider: string }, now: Date): string[];
 };
 const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates') as {
-  describeRoleGroup(record: RoleRecord, options?: { catalog?: unknown[]; allowlist?: Record<string, string[]> }): string;
+  describeRoleGroup(record: RoleRecord, options?: { catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string }): string;
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
   buildFromTemplate(input: { templateId: string; provider: string; name: string; role?: string; newId: string }): { ok: boolean; record?: RoleRecord; problems?: Array<{ code: string; path: string }> };
 };
@@ -180,8 +180,9 @@ async function create(): Promise<void> {
   if (!name) return;
   const built = buildFromTemplate({ templateId: template.id, provider: provider.id, name, role: roleId, newId: `role-${randomUUID()}` });
   if (!built.ok || !built.record) { void vscode.window.showErrorMessage('The role group could not be built from this template.'); return; }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const answer = await vscode.window.showInformationMessage(`Create role group “${built.record.group.name}”?`,
-    { modal: true, detail: describeRoleGroup(built.record) }, 'Create Role Group');
+    { modal: true, detail: describeRoleGroup(built.record, { includeResearchSkills: true, workspaceRoot }) }, 'Create Role Group');
   if (answer !== 'Create Role Group') return;
   const result = await saveRoleRecord(built.record);
   if (!result.ok) void vscode.window.showErrorMessage(`Could not save role group (${result.reason}).`);
@@ -325,13 +326,14 @@ export async function previewText(id: string): Promise<string> {
   ];
   const result = previewEffectiveRules({ roleGroup: loaded.record.group, layers: { ...loaded.record.layers, user: userLayer } });
   const status = injectionStatus({ provider: loaded.record.group.provider });
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   return [
     'PRIVATE — shown on this computer only. This holds the text of your instructions: do not paste it into GitHub, issues or logs.',
     'This preview is read-only and cannot be saved to a file.',
     ...(broadcastNote ? [broadcastNote] : []),
     ...(broadcasts.ok ? broadcastPreviewLines(broadcasts.items, broadcastContext, broadcastNow) : []),
     '',
-    formatPreview(result, { injection: status })
+    formatPreview(result, { injection: status, includeResearchSkills: true, workspaceRoot })
   ].join('\n');
 }
 

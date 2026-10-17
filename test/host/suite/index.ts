@@ -476,6 +476,88 @@ async function roleFlow(workspace: string): Promise<void> {
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
 }
 
+async function researchFlow(workspace: string): Promise<void> {
+  const { loadResearchSkills } = await import('../../../src/research/skills');
+  const { validateResearchDeliverable } = await import('../../../src/research/ethics');
+  const { fromToolRecord, createFinding, withVerification } = await import('../../../src/research/finding');
+
+  // 1. Workspace override defense: .skills in workspace is ignored and flagged
+  const suspectDir = path.join(workspace, '.skills');
+  fs.mkdirSync(suspectDir, { recursive: true });
+  fs.writeFileSync(path.join(suspectDir, 'adversarial-skill.json'), JSON.stringify({ id: 'injected' }));
+  try {
+    const loaded = loadResearchSkills({ workspaceRoot: workspace });
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.skills.length, 5, 'must only return the 5 built-in reviewed skills');
+    assert.deepEqual(loaded.warnings, ['workspace-skill-override-forbidden']);
+    assert.equal(loaded.skills.some((s: any) => s.id === 'injected'), false, 'injected workspace skill must not be loaded');
+  } finally {
+    fs.rmSync(suspectDir, { recursive: true, force: true });
+  }
+
+  // 2. Academic ethics deliverable verification: compliant vs hallucinated citation
+  const record = fromToolRecord({
+    id: '2401.99999',
+    idType: 'arxiv',
+    title: 'Formal Verification of Academic Ethics in Research Agents',
+    abstract: 'A pure model for literature provenance and untrusted content isolation.',
+    publishedAt: '2026-10-15T00:00:00Z',
+    sourceType: 'peer-reviewed',
+    retracted: false
+  }, {
+    serverId: 'arxiv-mcp-server',
+    toolName: 'get_abstract',
+    retrievedAt: '2026-10-17T12:00:00Z'
+  });
+
+  const compliantFinding = createFinding({
+    record,
+    claim: 'Research agents require provenance verification for citations.',
+    novelty: { value: 'known', reason: 'Existing literature matches our ethics framework.' }
+  });
+  const verifiedFinding = withVerification(compliantFinding, {
+    identifierExists: true,
+    titleMatches: true,
+    publishedAtMatches: true
+  });
+
+  const compliantOutcome = validateResearchDeliverable([verifiedFinding]);
+  assert.equal(compliantOutcome.ok, true);
+  assert.equal(compliantOutcome.code, 'compliant');
+
+  // Hallucinated citation rejection
+  const fakeFinding = { id: 'fake', claim: 'Invented finding', record: null, verification: 'verified' };
+  const hallucinatedOutcome = validateResearchDeliverable([fakeFinding]);
+  assert.equal(hallucinatedOutcome.ok, false);
+  assert.equal(hallucinatedOutcome.code, 'hallucinated-citation-detected');
+
+  // 3. Researcher role group virtual preview surfaces Approved research skills and Academic ethics requirements
+  const savedResearcher = await saveRoleRecord({
+    group: {
+      id: 'host-researcher',
+      name: 'Host Researcher',
+      role: 'researcher',
+      provider: 'claude',
+      version: 1,
+      defaultAccountProfileId: null,
+      allowedScope: { repositories: [], paths: [] },
+      toolPermissions: {},
+      memoryScope: { mode: 'off' },
+      rules: [{ id: 'host-researcher-rule', type: 'instruction', text: 'Verify citations against primary identifiers.', version: 1 }]
+    },
+    layers: {}
+  } as Parameters<typeof saveRoleRecord>[0]);
+  assert.equal(savedResearcher.ok, true, savedResearcher.reason);
+  const researcherPreviewDoc = await vscode.workspace.openTextDocument(previewUri('host-researcher'));
+  const researcherPreviewText = researcherPreviewDoc.getText();
+  assert.match(researcherPreviewText, /Approved research skills:/, 'researcher virtual preview includes approved research skills section');
+  assert.match(researcherPreviewText, /Paper Search & Screening/, 'researcher virtual preview lists built-in skills');
+  assert.match(researcherPreviewText, /Academic ethics requirements:/, 'researcher virtual preview includes academic ethics requirements section');
+  assert.match(researcherPreviewText, /Citation Provenance/, 'researcher virtual preview lists academic ethics rules');
+
+  console.log('host smoke: research skills and academic ethics guard enforce reviewed skills, workspace override defense, citation provenance, and researcher virtual preview');
+}
+
 async function agyFlow(workspace: string): Promise<void> {
   const capabilities = builtIn.get('agy')?.capabilities;
   assert.ok(capabilities);
@@ -659,6 +741,7 @@ export async function run(): Promise<void> {
   await accountFlow(workspace);
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
+  await researchFlow(workspace);
   await runBroadcastChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);

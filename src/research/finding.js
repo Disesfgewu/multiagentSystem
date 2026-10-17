@@ -258,4 +258,13 @@ function wrapUntrusted(findings) {
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { fromToolRecord, createFinding, withVerification, wrapUntrusted, FindingError, SOURCE_TYPES, NOVELTY, CONFIDENCE, VERIFICATION, LIMITS };
+function isToolRecord(record) {
+  return RECORDS.has(record);
+}
+
+function isAuthenticFinding(finding) {
+  return FINDINGS.has(finding);
+}
+
+module.exports = { fromToolRecord, createFinding, withVerification, wrapUntrusted, isToolRecord, isAuthenticFinding, FindingError, SOURCE_TYPES, NOVELTY, CONFIDENCE, VERIFICATION, LIMITS };
+

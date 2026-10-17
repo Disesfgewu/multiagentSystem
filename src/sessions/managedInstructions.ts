@@ -372,8 +372,10 @@ export function formatInstructionSummary(
 
   if (details.previewResult && details.previewResult.ok) {
     lines.push(formatPreview(details.previewResult, {
-      injection: { label: details.injectionStatusLabel ?? 'Prepared', state: 'sent-to-cli' }
-    }));
+      injection: { label: details.injectionStatusLabel ?? 'Prepared', state: 'sent-to-cli' },
+      includeResearchSkills: true,
+      workspaceRoot: snapshot.repoRoot
+    } as any));
   } else if (details.effectiveRules && details.effectiveRules.instructions.length > 0) {
     lines.push('Effective instructions:');
     for (const rule of details.effectiveRules.instructions) {
