@@ -11,22 +11,28 @@ const { builtIn } = require('../providers/registry');
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
-function renderContext({ roleGroup, rules, memories, omitted }) {
-  const lines = [`# Role: ${roleGroup.name}`];
-  const ruleLines = [...rules.instructions]
+/**
+ * @param {{ roleGroup?: any, rules?: any, memories?: any[], omitted?: any }} [input]
+ */
+function renderContext({ roleGroup, rules, memories = [], omitted } = {}) {
+  const lines = [roleGroup && typeof roleGroup.name === 'string' && roleGroup.name.trim() !== '' ? `# Role: ${roleGroup.name.trim()}` : '# Instructions'];
+  const instructions = rules && Array.isArray(rules.instructions) ? rules.instructions : [];
+  const forbids = rules && Array.isArray(rules.forbids) ? rules.forbids : [];
+  const requires = rules && Array.isArray(rules.requires) ? rules.requires : [];
+  const ruleLines = [...instructions]
     .sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer) || byCodeUnit(a.id, b.id))
     .map((rule) => `- ${rule.text}`);
-  if (rules.forbids.length > 0) {
-    ruleLines.push(`- Do not: ${rules.forbids.map((rule) => rule.key).sort().join(', ')}`);
+  if (forbids.length > 0) {
+    ruleLines.push(`- Do not: ${forbids.map((rule) => rule.key).sort().join(', ')}`);
   }
-  if (rules.requires.length > 0) {
-    ruleLines.push(`- Always: ${rules.requires.map((rule) => rule.key).sort().join(', ')}`);
+  if (requires.length > 0) {
+    ruleLines.push(`- Always: ${requires.map((rule) => rule.key).sort().join(', ')}`);
   }
   if (ruleLines.length > 0) lines.push('', '## Rules', ...ruleLines);
 
   // Stable ordering keeps the injected prefix identical between launches so the
   // provider's prompt cache can be reused.
-  const memoryLines = [...memories]
+  const memoryLines = [...(Array.isArray(memories) ? memories : [])]
     .sort((a, b) => byCodeUnit(a.id, b.id))
     .map((item) => `- ${item.content} (source: ${item.source.ref}; verified: ${item.verifiedAt.slice(0, 10)})`);
   // What the size limit left out is said, not dropped silently, so the model knows the list is partial.

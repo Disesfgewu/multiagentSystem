@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { SessionError, SessionRegistry } from './registry';
 import { modelArguments, normalizeRequestedModel } from '../providers/modelSelection';
+import { formatShellCommandLine } from '../terminals/shellCommand';
+import { cleanupSessionPlan } from './managedInstructions';
 
 // Session lifecycle on top of SessionRegistry. It does not import `vscode`: native terminals and
 // persistence are injected, so the behaviour is tested with fakes. Nothing here is sent to GitHub;
@@ -31,6 +33,8 @@ export interface SessionIdentity {
 export interface SessionRecord extends SessionIdentity {
   name: string;
   requestedModel?: string;
+  instructionDigest?: string;
+  instructionMethod?: string;
 }
 
 /**
@@ -45,6 +49,17 @@ export interface SessionSnapshotStore {
 
 export type SessionState = 'unknown' | 'terminal-open' | 'launch-requested' | 'cli-observed' | 'cli-exited' | 'terminal-closed';
 
+export type SessionInstructionState = 'prepared' | 'launch-requested' | 'cli-observed' | 'manual' | 'unsupported' | 'unknown' | 'none';
+
+export interface SessionInstructionsInput {
+  plan?: any;
+  digest?: string | null;
+  method?: string;
+  argv?: string[];
+  injectionState?: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
+  injectionStatusLabel?: string;
+}
+
 export interface SessionView extends SessionIdentity {
   name: string;
   /** A launch request, not a provider observation or an availability guarantee. */
@@ -54,6 +69,10 @@ export interface SessionView extends SessionIdentity {
   /** True only while this Extension Host holds a live terminal bound to the session. */
   terminalOpen: boolean;
   observedAt: string | null;
+  instructionState?: SessionInstructionState;
+  instructionStatusLabel?: string;
+  instructionDigest?: string | null;
+  instructionMethod?: string | null;
 }
 
 export interface ProviderEvent {
@@ -142,6 +161,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private registry: Registry;
   private readonly names = new Map<string, string>();
   private readonly models = new Map<string, string>();
+  private readonly instructionStates = new Map<string, SessionInstructionState>();
+  private readonly instructionLabels = new Map<string, string>();
+  private readonly instructionDigests = new Map<string, string>();
+  private readonly instructionMethods = new Map<string, string>();
+  private readonly activePlans = new Map<string, any>();
   private readonly bound = new Map<T, { id: string; token: string }>();
   private readonly handles = new Map<string, T>();
   // Saving is allowed only after the saved sessions were read successfully (or when there is no
@@ -202,10 +226,18 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     this.names.clear();
     this.models.clear();
+    this.instructionDigests.clear();
+    this.instructionMethods.clear();
     for (const record of records) {
       const name = cleanName(record.name);
       if (typeof record.id === 'string' && name !== null) this.names.set(record.id, name);
       if (typeof record.id === 'string' && typeof record.requestedModel === 'string') this.models.set(record.id, record.requestedModel);
+      if (typeof record.id === 'string' && typeof record.instructionDigest === 'string') this.instructionDigests.set(record.id, record.instructionDigest);
+      if (typeof record.id === 'string' && typeof record.instructionMethod === 'string') this.instructionMethods.set(record.id, record.instructionMethod);
+      if (typeof record.id === 'string') {
+        this.instructionStates.set(record.id, 'unknown');
+        this.instructionLabels.set(record.id, 'Instructions unknown (restored from previous session)');
+      }
     }
     this.loaded = true;
     return { restored: records.length };
@@ -253,7 +285,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       state: entry.state as SessionState,
       stateLabel: describeState(entry.state as SessionState),
       terminalOpen: this.handles.has(entry.id),
-      observedAt: entry.observedAt
+      observedAt: entry.observedAt,
+      instructionState: this.instructionStates.get(entry.id) ?? 'none',
+      instructionStatusLabel: this.instructionLabels.get(entry.id) ?? 'No instructions configured',
+      instructionDigest: this.instructionDigests.get(entry.id) ?? null,
+      instructionMethod: this.instructionMethods.get(entry.id) ?? null
     };
   }
 
@@ -264,7 +300,13 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       this.notifyBlocked();
       return;
     }
-    const records = this.registry.snapshot().map((identity) => ({ ...identity, name: this.names.get(identity.id) ?? '', ...(this.models.has(identity.id) ? { requestedModel: this.models.get(identity.id)! } : {}) }));
+    const records = this.registry.snapshot().map((identity) => ({
+      ...identity,
+      name: this.names.get(identity.id) ?? '',
+      ...(this.models.has(identity.id) ? { requestedModel: this.models.get(identity.id)! } : {}),
+      ...(this.instructionDigests.has(identity.id) ? { instructionDigest: this.instructionDigests.get(identity.id)! } : {}),
+      ...(this.instructionMethods.has(identity.id) ? { instructionMethod: this.instructionMethods.get(identity.id)! } : {})
+    }));
     try {
       await store.save(records);
     } catch {
@@ -281,11 +323,13 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     provider: string;
     name: string;
     cwd: string;
+    id?: string;
     roleGroupId?: string;
     accountProfileId?: string;
     env?: Record<string, string | null>;
     launch?: boolean;
     requestedModel?: string | null;
+    instructions?: SessionInstructionsInput;
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
     const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
@@ -297,23 +341,38 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     try {
       const project = await this.deps.resolveProject(input.cwd);
       const identity: SessionIdentity = {
-        id: (this.deps.newId ?? randomId)(),
+        id: input.id ?? (this.deps.newId ?? randomId)(),
         repoId: project.repoId,
         roleGroupId: input.roleGroupId ?? UNASSIGNED,
         provider: input.provider,
         accountProfileId: input.accountProfileId ?? UNASSIGNED,
         worktree: input.cwd
       };
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions);
       await this.persist();
       return this.view(identity.id);
+    } catch (error) {
+      if (input.instructions?.plan) {
+        cleanupSessionPlan(input.instructions.plan);
+      }
+      throw error;
     } finally {
       this.inFlight -= 1;
     }
   }
 
-  private open(identity: SessionIdentity, name: string, executable: string, launch: boolean, env?: Record<string, string | null>, requestedModel: string | null = null): SessionView {
-    const args = modelArguments(identity.provider, requestedModel);
+  private open(
+    identity: SessionIdentity,
+    name: string,
+    executable: string,
+    launch: boolean,
+    env?: Record<string, string | null>,
+    requestedModel: string | null = null,
+    instructions?: SessionInstructionsInput
+  ): SessionView {
+    const modelArgs = modelArguments(identity.provider, requestedModel);
+    const instructionArgs = instructions?.argv ?? [];
+    const allArgs = [...modelArgs, ...instructionArgs];
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
@@ -329,11 +388,32 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     this.names.set(identity.id, name);
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
+    if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
+    if (instructions?.method) this.instructionMethods.set(identity.id, instructions.method);
+    if (instructions?.plan) this.activePlans.set(identity.id, instructions.plan);
+
+    if (instructions) {
+      if (instructions.injectionState === 'manual') {
+        this.instructionStates.set(identity.id, 'manual');
+        this.instructionLabels.set(identity.id, instructions.injectionStatusLabel ?? 'Manual instructions paste required');
+      } else if (instructions.injectionState === 'unsupported') {
+        this.instructionStates.set(identity.id, 'unsupported');
+        this.instructionLabels.set(identity.id, instructions.injectionStatusLabel ?? 'Provider does not support instructions');
+      } else if (instructions.injectionState === 'prepared') {
+        this.instructionStates.set(identity.id, launch ? 'launch-requested' : 'prepared');
+        this.instructionLabels.set(identity.id, launch ? 'CLI launch requested with verified flag, awaiting CLI evidence' : 'Instructions prepared (shell not launched)');
+      } else {
+        this.instructionStates.set(identity.id, 'none');
+        this.instructionLabels.set(identity.id, 'No instructions configured');
+      }
+    }
+
     this.bound.set(terminal, { id: identity.id, token });
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      terminal.sendText([executable, ...args].join(' '), true);
+      const commandLine = formatShellCommandLine(executable, allArgs);
+      terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
     }
     return this.view(identity.id);
@@ -350,6 +430,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (!binding) return null;
     this.bound.delete(terminal);
     this.handles.delete(binding.id);
+    const plan = this.activePlans.get(binding.id);
+    if (plan) {
+      cleanupSessionPlan(plan);
+      this.activePlans.delete(binding.id);
+    }
     try {
       this.registry.terminalClosed(binding.id, binding.token);
     } catch (error) {
@@ -375,6 +460,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   stop(id: string): SessionView {
     const terminal = this.liveTerminal(id);
     const binding = this.bound.get(terminal);
+    const plan = this.activePlans.get(id);
+    if (plan) {
+      cleanupSessionPlan(plan);
+      this.activePlans.delete(id);
+    }
     try {
       if (binding) this.registry.terminalClosed(id, binding.token);
     } finally {
@@ -391,7 +481,16 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    * directory. The old session is kept as history and is never reused. The account cannot be
    * changed here: use `start` with another account for that.
    */
-  async reopen(id: string, options: { launch?: boolean; acknowledgeUnknown?: boolean; env?: Record<string, string | null> } = {}): Promise<SessionView> {
+  async reopen(
+    id: string,
+    options: {
+      newId?: string;
+      launch?: boolean;
+      acknowledgeUnknown?: boolean;
+      env?: Record<string, string | null>;
+      instructions?: SessionInstructionsInput;
+    } = {}
+  ): Promise<SessionView> {
     await this.ready();
     this.inFlight += 1;
     try {
@@ -404,26 +503,35 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
       const executable = this.executableFor(old.provider);
       const identity: SessionIdentity = {
-        id: (this.deps.newId ?? randomId)(),
+        id: options.newId ?? (this.deps.newId ?? randomId)(),
         repoId: old.repoId,
         roleGroupId: old.roleGroupId,
         provider: old.provider,
         accountProfileId: old.accountProfileId,
         worktree: old.worktree
       };
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions);
       await this.persist();
       return this.view(identity.id);
+    } catch (error) {
+      if (options.instructions?.plan) {
+        cleanupSessionPlan(options.instructions.plan);
+      }
+      throw error;
     } finally {
       this.inFlight -= 1;
     }
   }
 
   /** For provider adapters: a verified provider event confirms the CLI. Account and provider must match the session. */
-  observeCli(id: string, event: ProviderEvent): SessionView {
+  observeCli(id: string, event: ProviderEvent & { instructionEvidence?: boolean; digest?: string }): SessionView {
     const terminal = this.liveTerminal(id);
     const binding = this.bound.get(terminal) as { id: string; token: string };
     this.registry.observeCli(id, binding.token, event);
+    if (event.instructionEvidence === true || (event.digest && event.digest === this.instructionDigests.get(id))) {
+      this.instructionStates.set(id, 'cli-observed');
+      this.instructionLabels.set(id, 'CLI evidence recorded');
+    }
     return this.view(id);
   }
 
