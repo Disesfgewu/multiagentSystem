@@ -35,6 +35,7 @@ test('missing sources are shown as unknown, never filled in', () => {
   assert.equal(shown.description, 'unknown · unknown · unknown · terminal open, CLI not started');
   assert.equal(shown.problems, 2);
   assert.match(shown.tooltip.join('\n'), /Branch: unknown/);
+  assert.match(shown.tooltip.join('\n'), /Issue: unknown/);
   assert.match(shown.tooltip.join('\n'), /Pull request: unknown/);
   assert.match(shown.tooltip.join('\n'), /CI: unknown/);
   assert.match(shown.tooltip.join('\n'), /no verified source/);
@@ -148,6 +149,16 @@ test('a verified pull request and its checks appear in the row description, with
   const shown = presentAgent(built(), { name: 'A', providerLabel: 'P' });
   assert.match(shown.description, /· PR #12 · CI failing$/);
   assert.equal(shown.pullRequestUrl, 'https://github.com/o/r/pull/12');
+  assert.equal(shown.pullRequestNumber, 12);
+  assert.equal(shown.issueNumber, null);
+  assert.match(shown.tooltip.join('\n'), /Issue: unknown/);
+
+  const withIssue = JSON.parse(JSON.stringify(github));
+  withIssue.pullRequests[0].pullRequest.referencedIssues = [{ number: 99 }];
+  const shownWithIssue = presentAgent(built({ github: withIssue }), { name: 'A', providerLabel: 'P' });
+  assert.equal(shownWithIssue.issueNumber, 99);
+  assert.match(shownWithIssue.tooltip.join('\n'), /Issue: #99/);
+
   const draft = JSON.parse(JSON.stringify(github));
   draft.pullRequests[0].pullRequest.draft = true;
   assert.match(presentAgent(built({ github: draft }), { name: 'A' }).description, /PR #12 \(draft\) · CI failing/);

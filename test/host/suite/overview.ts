@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
-import { overviewTreeForTests, setJoinDepsForTests, OVERVIEW_VIEW, OVERVIEW_REFRESH, OVERVIEW_OPEN_PULL_REQUEST } from '../../../src/overview/overviewView';
+import { overviewTreeForTests, setJoinDepsForTests, OVERVIEW_VIEW, OVERVIEW_REFRESH, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT, OVERVIEW_SHOW_DIFF } from '../../../src/overview/overviewView';
+import { setReportDepsForTests } from '../../../src/reports/reportsView';
 
 interface Started { ok: boolean; session?: { id: string } }
 
@@ -9,6 +10,8 @@ interface Started { ok: boolean; session?: { id: string } }
 export async function runOverviewChecks(workspace: string): Promise<string> {
   const registered = await vscode.commands.getCommands(true);
   assert.ok(registered.includes(OVERVIEW_REFRESH), 'the overview refresh command is registered');
+  assert.ok(registered.includes(OVERVIEW_OPEN_REPORT), 'the overview open report command is registered');
+  assert.ok(registered.includes(OVERVIEW_SHOW_DIFF), 'the overview show diff command is registered');
   const manifest = vscode.extensions.all.find((candidate) => candidate.packageJSON?.name === 'multiagentsystem')?.packageJSON;
   assert.ok(manifest, 'the manifest is readable');
   const container = manifest.contributes.viewsContainers.activitybar.find((entry: { id: string }) => entry.id === 'multiagentSystem');
@@ -64,6 +67,32 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
       assert.equal(withPr?.contextValue, 'multiagentOverviewAgentLivePr');
       assert.match(String(withPr?.tooltip ?? ''), /Branch: feat\/host/);
       assert.match(String(withPr?.tooltip ?? ''), /Pull request: #5/);
+      assert.match(String(withPr?.tooltip ?? ''), /Issue: unknown/);
+
+      setJoinDepsForTests(fakeDeps({ kind: 'ok', data: [pullRequest({ referencedIssues: [{ number: 13 }] })] }) as never);
+      const withIssue = await rowNow();
+      assert.match(String(withIssue?.tooltip ?? ''), /Issue: #13/);
+
+      const fakeReportReader = {
+        listIssues: async () => ({ kind: 'ok', data: [] }),
+        getIssue: async () => ({ kind: 'ok', data: undefined }),
+        getIssueComments: async () => ({ kind: 'ok', data: [] }),
+        listPullRequests: async () => ({ kind: 'ok', data: [] }),
+        getPullRequest: async () => ({ kind: 'ok', data: { number: 5, title: 'Host PR', state: 'open', draft: false, headRef: 'feat/host', headSha: sha, headRepository: 'host/repo', body: 'Refs #13', referencedIssues: [{ number: 13 }] } }),
+        getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/overview.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
+        getPullRequestSnapshot: async () => ({ status: 'complete', headSha: sha, checksSummary: { state: 'passing', requiredState: 'passing', headSha: sha } }),
+        getReviews: async () => ({ kind: 'ok', data: [] })
+      };
+      setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReportReader });
+
+      const openReportResult = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(OVERVIEW_OPEN_REPORT, started.session?.id);
+      assert.equal(openReportResult?.ok, true, 'openReport opens the in-editor pull request report');
+      assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-report');
+      assert.match(vscode.window.activeTextEditor?.document.uri.path ?? '', /pull-request-5/);
+
+      const showDiffResult = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(OVERVIEW_SHOW_DIFF, started.session?.id);
+      assert.equal(showDiffResult?.ok, true, 'showDiff reveals the diff section of the pull request report');
+      assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-report');
 
       setJoinDepsForTests(fakeDeps({ kind: 'ok', data: [pullRequest({ headRepository: 'someone-else/fork' })] }) as never);
       const fork = await rowNow();
@@ -76,9 +105,14 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
       assert.match(String(partial?.tooltip ?? ''), /Pull request: unknown/);
     } finally {
       setJoinDepsForTests(undefined);
+      setReportDepsForTests(undefined);
     }
     const noUrl = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(OVERVIEW_OPEN_PULL_REQUEST, 'no-such-session');
     assert.deepEqual([noUrl.ok, noUrl.code], [false, 'no-pull-request']);
+    const noReport = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(OVERVIEW_OPEN_REPORT, 'no-such-session');
+    assert.deepEqual([noReport?.ok, noReport?.code], [false, 'no-pull-request']);
+    const noDiff = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(OVERVIEW_SHOW_DIFF, 'no-such-session');
+    assert.deepEqual([noDiff?.ok, noDiff?.code], [false, 'no-pull-request']);
   } finally {
     setJoinDepsForTests(undefined);
     for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name === 'Multiagent: Overview Session')) terminal.dispose();

@@ -26,6 +26,7 @@ test('joins session, role, account, branch, PR and CI; the link is built, not co
   assert.equal(r.account.label, 'Main');
   assert.deepEqual(r.pullRequest, { state: 'open', number: 7, title: 'T', draft: false, url: 'https://github.com/Owner/Repo/pull/7' });
   assert.deepEqual(r.ci, { state: 'known', value: 'passing', required: 'passing', headSha: SHA_A });
+  assert.deepEqual(r.issue, { state: 'unknown', reason: 'no-issue-linked' });
 });
 
 test('every missing source is unknown, never filled in', () => {
@@ -36,6 +37,7 @@ test('every missing source is unknown, never filled in', () => {
   assert.equal(r.sessionState.reason, 'not-observed');
   assert.equal(r.pullRequest.reason, 'no-branch');
   assert.equal(r.ci.state, 'unknown');
+  assert.equal(r.issue.reason, 'no-branch');
   assert.equal(JSON.stringify(r).includes('percent'), false);
 });
 
@@ -144,4 +146,45 @@ test('rows never carry the local worktree path', () => {
 test('empty sessions give an empty state; bad input throws', () => {
   assert.equal(buildOverview({ sessions: [] }).empty, 'no-sessions');
   assert.throws(() => buildOverview({}), TypeError);
+});
+
+test('linked issue is extracted from pull request references or branch name, and unknown when missing', () => {
+  // From pull request referencedIssues
+  const withPrIssue = row({ github: github([pr({ referencedIssues: [{ number: 42, closes: true }] })]) });
+  assert.deepEqual(withPrIssue.issue, { state: 'known', number: 42, numbers: [42], source: 'pull-request' });
+
+  // From branch name when PR has no referencedIssues
+  const withBranchIssue = row({
+    branches: { s1: 'feat/issue-13-terminal-guidance' },
+    github: github([pr({ headRef: 'feat/issue-13-terminal-guidance', referencedIssues: [] })])
+  });
+  assert.deepEqual(withBranchIssue.issue, { state: 'known', number: 13, numbers: [13], source: 'branch' });
+
+  // From branch name task pattern
+  const withTaskBranch = row({
+    branches: { s1: 'task/99-fix-bug' },
+    github: github([pr({ headRef: 'task/99-fix-bug' })])
+  });
+  assert.deepEqual(withTaskBranch.issue, { state: 'known', number: 99, numbers: [99], source: 'branch' });
+
+  // PR referencedIssues takes precedence over branch name
+  const precedence = row({
+    branches: { s1: 'feat/issue-13-diff' },
+    github: github([pr({ headRef: 'feat/issue-13-diff', referencedIssues: [{ number: 106 }] })])
+  });
+  assert.deepEqual(precedence.issue, { state: 'known', number: 106, numbers: [106], source: 'pull-request' });
+
+  // No PR, but branch has issue pattern
+  const noPrBranchIssue = row({
+    branches: { s1: 'feat/issue-20-quota' },
+    github: github([], 'empty')
+  });
+  assert.deepEqual(noPrBranchIssue.issue, { state: 'known', number: 20, numbers: [20], source: 'branch' });
+
+  // No issue in branch or PR
+  const noIssue = row({
+    branches: { s1: 'main' },
+    github: github([], 'empty')
+  });
+  assert.deepEqual(noIssue.issue, { state: 'unknown', reason: 'no-issue-linked' });
 });
