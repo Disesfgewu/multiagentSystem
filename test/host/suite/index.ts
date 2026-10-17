@@ -15,9 +15,10 @@ import { privateStorage } from '../../../src/storage/storageCommands';
 import { builtIn } from '../../../src/providers/registry';
 import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 import { createHash } from 'node:crypto';
-import { zipSync } from 'fflate';
+import { gzipSync, zipSync } from 'fflate';
 import { SETUP_COMMANDS, managedPathContributionForTests, setSetupDepsForTests, setupTreeForTests } from '../../../src/setup/setupView';
 import { GhRelease } from '../../../src/setup/managedGh';
+import { CodexRelease } from '../../../src/setup/managedCodex';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -253,18 +254,51 @@ async function setupFlow(): Promise<void> {
     url: `https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_${asset}.zip`,
     sha256: createHash('sha256').update(archive).digest('hex'), entry, executable
   };
-  let downloads = 0;
-  setSetupDepsForTests({ platform, arch, release, download: async () => { downloads += 1; return archive; } });
+  const codexExecutable = platform === 'win32' ? 'codex.exe' : 'codex';
+  const codexTarget = platform === 'darwin'
+    ? `${arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`
+    : `${arch === 'arm64' ? 'aarch64' : 'x86_64'}-pc-windows-msvc`;
+  const codexBytes = Buffer.from('synthetic managed codex; it is never executed');
+  const makeTar = (name: string, value: Uint8Array): Uint8Array => {
+    const header = new Uint8Array(512);
+    header.set(Buffer.from(name), 0);
+    header.set(Buffer.from(`${value.byteLength.toString(8).padStart(11, '0')}\0`), 124);
+    header[156] = 48;
+    const output = new Uint8Array(512 + Math.ceil(value.byteLength / 512) * 512 + 1024);
+    output.set(header); output.set(value, 512);
+    return output;
+  };
+  const codexAsset = platform === 'win32' ? codexBytes : gzipSync(makeTar(`codex-${codexTarget}`, codexBytes));
+  const codexRelease: CodexRelease = {
+    tool: 'codex', version: '0.163.0', platform, arch,
+    url: `https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-${codexTarget}${platform === 'win32' ? '.exe' : '.tar.gz'}`,
+    sha256: createHash('sha256').update(codexAsset).digest('hex'), format: platform === 'win32' ? 'raw' : 'tar.gz',
+    entry: platform === 'win32' ? null : `codex-${codexTarget}`, executable: codexExecutable
+  };
+  let downloads = 0; let codexDownloads = 0;
+  setSetupDepsForTests({
+    platform, arch, release, download: async () => { downloads += 1; return archive; }, codexRelease,
+    codexDownload: async () => { codexDownloads += 1; return codexAsset; }
+  });
   const before = (await setupTreeForTests().getChildren()) ?? [];
   assert.match(String(before.find((item) => String(item.label).includes('GitHub CLI'))?.description), /Needs setup/);
+  assert.match(String(before.find((item) => String(item.label) === 'Codex CLI')?.description), /Needs setup/);
   const result = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryGh);
   assert.deepEqual([result.state, result.version], ['ready', '2.102.0']);
+  const codexResult = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryCodex);
+  assert.deepEqual([codexResult.state, codexResult.version], ['ready', '0.163.0']);
   assert.equal(downloads, 1);
+  assert.equal(codexDownloads, 1);
   const after = (await setupTreeForTests().getChildren()) ?? [];
   const gh = after.find((item) => String(item.label).includes('GitHub CLI'));
   assert.match(String(gh?.description), /Ready · 2\.102\.0/);
+  const codex = after.find((item) => String(item.label) === 'Codex CLI');
+  assert.match(String(codex?.description), /Ready · 0\.163\.0/);
+  assert.match(String(codex?.tooltip), /Sign-in, identity, quota and rule injection are not implied/);
   assert.equal(String(gh?.tooltip).includes('synthetic managed gh'), false, 'status does not display binary content');
-  assert.ok(managedPathContributionForTests(), 'a verified managed bin directory is contributed to new native terminal PATHs');
+  const contributed = managedPathContributionForTests();
+  assert.ok(contributed, 'verified managed bin directories are contributed to new native terminal PATHs');
+  assert.equal(contributed.split(path.delimiter).length, 2, 'both verified gh and Codex directories remain on the managed PATH');
   if (platform !== 'win32') {
     const sentinel = process.env.MULTIAGENT_TEST_GH_SENTINEL;
     assert.ok(sentinel);
@@ -276,7 +310,7 @@ async function setupFlow(): Promise<void> {
       assert.equal(fs.readFileSync(sentinel, 'utf8'), 'synthetic');
     } finally { terminal.dispose(); }
   }
-  console.log('host smoke: Tools Setup installs a synthetic gh archive only after SHA-256 verification; real downloads and execution are not tested');
+  console.log('host smoke: Tools Setup installs synthetic gh and Codex assets only after SHA-256 verification; real downloads and execution are not tested');
 }
 
 async function roleFlow(workspace: string): Promise<void> {
