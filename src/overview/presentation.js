@@ -50,6 +50,8 @@ function presentAgent(row, session) {
     tooltip: [
       `Role: ${role}`,
       `Provider: ${provider}`,
+      `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
+      'Actual model: unknown (no provider model observation is connected)',
       `Account: ${account} (${identity})`,
       `State: ${stateText}`,
       `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
