@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { observe } = require('../../src/accounts/observation');
-const { gateLaunch, describePolicy, describeQuota, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
+const { gateLaunch, commitDispatch, describePolicy, describeQuota, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
+const { QuotaDispatcher } = require('../../src/accounts/quota-policy');
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
 const reading = (window, value, over = {}) => observe(`quota.${window}.used_percent`, value, { unit: 'percent', scope: 'account', source: 'synthetic', observedAt: new Date(NOW.getTime() - 60_000), validForMs: 600_000, ...over });
@@ -135,4 +136,66 @@ test('what a person types becomes a policy, or a list of plain problems', () => 
   assert.deepEqual(bad({ unknownQuota: 'allow' }), ['Choose what to do when usage is unknown.']);
   assert.equal(policyFromInput({ warn: 'NaN' }).ok, false);
   assert.equal(policyFromInput({ warn: 'Infinity' }).ok, false);
+});
+
+// ---- commitDispatch: the one call that actually grants access, atomically
+test('no stored policy never touches the dispatcher: nothing is reserved, release is a no-op', () => {
+  const dispatcher = new QuotaDispatcher();
+  const result = commitDispatch({ policyRead: { ok: true, stored: false }, now: NOW, dispatcher, accountKey: 'acct-1' });
+  assert.equal(result.ok, true);
+  assert.equal(dispatcher.running('acct-1'), 0);
+  result.release();
+  assert.equal(dispatcher.running('acct-1'), 0, 'releasing a no-op reservation changes nothing');
+});
+
+test('an unreadable policy is refused before the dispatcher is ever consulted', () => {
+  const dispatcher = new QuotaDispatcher();
+  const result = commitDispatch({ policyRead: { ok: false }, now: NOW, dispatcher, accountKey: 'acct-1' });
+  assert.deepEqual([result.ok, result.code], [false, 'quota-gate']);
+  assert.equal(dispatcher.running('acct-1'), 0);
+});
+
+test('two requests racing for the same real account cannot both take the last slot: only one commits', () => {
+  const dispatcher = new QuotaDispatcher();
+  const policyRead = stored({ maxConcurrent: 1 });
+  const commit = () => commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-1' });
+  // No await happens between these two calls: this is exactly the window a confirmation dialog could
+  // otherwise open up between an earlier read-only "is there room?" check and actually taking the slot.
+  const first = commit();
+  const second = commit();
+  assert.equal(first.ok, true);
+  assert.deepEqual([second.ok, second.code], [false, 'quota-gate']);
+  assert.match(second.ok ? '' : second.message, /took the last slot/);
+  assert.equal(dispatcher.running('acct-1'), 1, 'the refused request never took a slot');
+  first.release();
+  assert.equal(dispatcher.running('acct-1'), 0);
+  assert.equal(commit().ok, true, 'the freed slot can be taken by a later request');
+});
+
+test('releasing twice, or releasing a no-op outcome, changes nothing the second time', () => {
+  const dispatcher = new QuotaDispatcher();
+  const policyRead = stored({ maxConcurrent: 1 });
+  const result = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-1' });
+  assert.equal(result.ok, true);
+  result.release();
+  result.release();
+  assert.equal(dispatcher.running('acct-1'), 0, 'a double release does not free a slot that was never taken again');
+});
+
+test('approval is threaded through to the dispatcher: an account-wide confirm is still refused once the concurrency limit itself is hit', () => {
+  const dispatcher = new QuotaDispatcher();
+  const policyRead = stored({ maxConcurrent: 1 });
+  const first = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-1', approval: 'confirm' });
+  assert.equal(first.ok, true);
+  const second = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-1', approval: 'override' });
+  assert.equal(second.ok, false, 'a concurrency limit is never lifted by approval, even "override"');
+});
+
+test('different real accounts never share a slot', () => {
+  const dispatcher = new QuotaDispatcher();
+  const policyRead = stored({ maxConcurrent: 1 });
+  const a = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-a' });
+  const b = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-b' });
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
 });

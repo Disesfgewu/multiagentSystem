@@ -184,13 +184,13 @@ test('four sessions are independent: closing or stopping one does not touch the 
   assert.equal(r.terminals[0].disposed + r.terminals[3].disposed, 0);
 });
 
-test('closing a terminal records terminal-closed; events for unknown terminals and repeats are harmless', async () => {
+test('closing a terminal records terminal-closed, returns which session closed; events for unknown terminals and repeats are harmless', async () => {
   const r = rig();
   const session = await start(r);
-  r.manager.handleTerminalClosed(new FakeTerminal('stranger', '/x'));
+  assert.equal(r.manager.handleTerminalClosed(new FakeTerminal('stranger', '/x')), null, 'a terminal this manager never opened names no session');
   assert.equal(r.manager.get(session.id)?.state, 'launch-requested');
-  r.manager.handleTerminalClosed(r.terminals[0]);
-  r.manager.handleTerminalClosed(r.terminals[0]);
+  assert.equal(r.manager.handleTerminalClosed(r.terminals[0]), session.id, 'the closed session is returned, for a caller holding a per-session resource to release');
+  assert.equal(r.manager.handleTerminalClosed(r.terminals[0]), null, 'a repeat event for an already-closed terminal names no session');
   const closed = r.manager.get(session.id);
   assert.equal(closed?.state, 'terminal-closed');
   assert.equal(closed?.terminalOpen, false);

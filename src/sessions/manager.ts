@@ -326,10 +326,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     return this.view(identity.id);
   }
 
-  /** Forward every terminal-close event here. Events for terminals this manager does not track are ignored. */
-  handleTerminalClosed(terminal: T): void {
+  /**
+   * Forward every terminal-close event here. Events for terminals this manager does not track are
+   * ignored. Returns the session id that closed, so a caller holding a per-session resource (such
+   * as a quota dispatch reservation) can release exactly that one, or null when this event named no
+   * session of this manager's.
+   */
+  handleTerminalClosed(terminal: T): string | null {
     const binding = this.bound.get(terminal);
-    if (!binding) return;
+    if (!binding) return null;
     this.bound.delete(terminal);
     this.handles.delete(binding.id);
     try {
@@ -338,6 +343,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // A late event from a replaced terminal must not touch a newer attachment.
       if (!(error instanceof SessionError) || error.code !== 'stale-terminal-event') throw error;
     }
+    return binding.id;
   }
 
   private liveTerminal(id: string): T {

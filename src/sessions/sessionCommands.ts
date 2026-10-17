@@ -93,6 +93,11 @@ function workspaceFolder(): string | undefined {
 export function registerSessionCommands(context: vscode.ExtensionContext): SessionCommands {
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
+  // One quota-dispatch reservation per session that was gated through an account's limits, released
+  // exactly once when that session stops or its terminal closes. A session this map has no entry for
+  // either took no reservation (no limits set for its account, or none at all) or was already released.
+  const reservations = new Map<string, () => void>();
+  const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
   const manager = new SessionManager<vscode.Terminal>({
     terminals: {
       create: ({ name, cwd, env }) => vscode.window.createTerminal({ name, cwd, env, location: vscode.TerminalLocation.Editor })
@@ -165,6 +170,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   async function startWithAccount(input: SessionCommandOptions): Promise<SessionOutcome> {
     const interactive = input.interactive !== false;
+    // Set once a quota-gate reservation is taken; released on every exit path below except the one
+    // success path, which instead hands it off to this new session's own lifetime.
+    let release: (() => void) | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -180,6 +188,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (input.accountProfileId) {
         const gate = await gateAccountLaunch(input.accountProfileId, interactive, () => manager.list());
         if (!gate.ok) return gate.code === 'cancelled' ? { ok: false, code: 'cancelled', message: 'Cancelled.' } : failure(Object.assign(new Error(gate.message), { code: gate.code }), interactive);
+        release = gate.release;
         const prepared = await launchEnvironment(input.accountProfileId, provider, () => manager.list());
         if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
         if (interactive) {
@@ -201,10 +210,15 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         env,
         launch: input.launch
       });
+      if (release) { reservations.set(session.id, release); release = undefined; }
       changed.fire();
       return { ok: true, session };
     } catch (error) {
       return failure(error, interactive);
+    } finally {
+      // Reached only when a reservation was taken but the session it was for was never created
+      // (an error thrown, or the isolation confirmation declined): it must not leak.
+      release?.();
     }
   }
 
@@ -229,6 +243,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   async function act(action: 'focus' | 'stop' | 'reopen', value: unknown): Promise<SessionOutcome> {
     const input = options(value);
     const interactive = input.interactive !== false;
+    // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
+    let release: (() => void) | undefined;
     try {
       let id = input.id;
       if (!id) {
@@ -240,11 +256,18 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
       let session: SessionView;
       if (action === 'focus') session = manager.focus(id);
-      else if (action === 'stop') session = manager.stop(id);
-      else {
+      else if (action === 'stop') {
+        session = manager.stop(id);
+        releaseReservation(id);
+      } else {
         const prior = manager.list().find((entry) => entry.id === id);
         let env: Record<string, string | null> | undefined;
         if (prior && prior.accountProfileId !== 'unassigned') {
+          // A reopened session is a new launch on the same account and must clear the same
+          // concurrency limit as a fresh start; otherwise reopen could bypass it entirely.
+          const gate = await gateAccountLaunch(prior.accountProfileId, interactive, () => manager.list());
+          if (!gate.ok) return gate.code === 'cancelled' ? { ok: false, code: 'cancelled', message: 'Cancelled.' } : failure(Object.assign(new Error(gate.message), { code: gate.code }), interactive);
+          release = gate.release;
           const prepared = await launchEnvironment(prior.accountProfileId, prior.provider, () => manager.list());
           if (!prepared.ok) return failure(Object.assign(new Error(prepared.message), { code: prepared.code }), interactive);
           if (interactive) {
@@ -270,11 +293,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true, env });
         }
+        if (release) { reservations.set(session.id, release); release = undefined; }
       }
       changed.fire();
       return { ok: true, session };
     } catch (error) {
       return failure(error, interactive);
+    } finally {
+      release?.();
     }
   }
 
@@ -292,7 +318,11 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   }
 
   context.subscriptions.push(
-    vscode.window.onDidCloseTerminal((terminal) => { manager.handleTerminalClosed(terminal); changed.fire(); }),
+    vscode.window.onDidCloseTerminal((terminal) => {
+      const closedId = manager.handleTerminalClosed(terminal);
+      if (closedId) releaseReservation(closedId);
+      changed.fire();
+    }),
     vscode.commands.registerCommand(SESSION_COMMANDS.list, (value?: unknown) => list(value)),
     vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(options(value))),
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
