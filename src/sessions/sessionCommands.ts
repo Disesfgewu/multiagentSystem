@@ -8,6 +8,8 @@ import { SessionManager, SessionView } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
 import { normalizeRequestedModel, supportsModelSelection } from '../providers/modelSelection';
+import { PrivateSessionSnapshot, sessionWorkspaceKey } from './privateSnapshot';
+import { privateStorage } from '../storage/storageCommands';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { selectRoleProfiles } = require('../roles/account-choices') as {
@@ -99,6 +101,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
   const manager = new SessionManager<vscode.Terminal>({
+    store: new PrivateSessionSnapshot({
+      workspaceKey: () => sessionWorkspaceKey((vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.toString()), vscode.workspace.workspaceFile?.toString()),
+      use: async () => await privateStorage()?.use() ?? { ok: false }
+    }),
     terminals: {
       create: ({ name, cwd, env }) => vscode.window.createTerminal({ name, cwd, env, location: vscode.TerminalLocation.Editor })
     },
@@ -113,8 +119,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
     },
     terminalTitle,
-    // No private storage exists yet (#9), so sessions live only while this window is open.
-    onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved.'),
+    onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved. Existing saved records were left untouched. These sessions remain in this window only; reload the workspace before trying to save again.'),
     onPersistenceBlocked: () =>
       void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
   });
@@ -325,6 +330,6 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', value))
   );
 
-  void manager.initialize().catch((error) => failure(error, true));
+  void manager.initialize().then(() => changed.fire()).catch((error) => failure(error, true));
   return { launch, launchWithAccount: startWithAccount, list: () => manager.list(), onDidChange: (listener) => changed.event(listener) };
 }

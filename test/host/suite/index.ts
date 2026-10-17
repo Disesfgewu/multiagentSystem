@@ -7,6 +7,7 @@ import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
+import { runSessionPersistenceChecks } from './sessionPersistence';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -619,6 +620,7 @@ export async function run(): Promise<void> {
 
   await sessionFlow(workspace);
   await accountFlow(workspace);
+  console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
   await agyFlow(workspace);
 
