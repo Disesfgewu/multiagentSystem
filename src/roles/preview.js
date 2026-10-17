@@ -247,7 +247,7 @@ function formatPreview(preview, options = {}) {
     }
   }
   if (options && options.catalog !== undefined) {
-    const evaluation = evaluateMcpTools(options.catalog, options.allowlist, { permissions });
+    const evaluation = evaluateMcpTools(options.catalog, options.allowlist, { permissions, consentedServerIds: options.consentedServerIds });
     const mcpLines = formatMcpLines(evaluation, { bullet: '-' });
     if (mcpLines.length > 0) {
       lines.push('', ...mcpLines);

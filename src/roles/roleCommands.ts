@@ -19,7 +19,7 @@ const { selectRoleProfiles } = require('./account-choices') as {
 };
 const { previewEffectiveRules, formatPreview } = require('./preview') as {
   previewEffectiveRules(value: { roleGroup: RoleGroup; layers: RuleLayers }): { ok: boolean; digest?: string; problems: Array<{ code: string; path: string }> };
-  formatPreview(value: unknown, options?: { injection?: unknown; catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string }): string;
+  formatPreview(value: unknown, options?: { injection?: unknown; catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string; consentedServerIds?: string[] }): string;
 };
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
 const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
@@ -29,7 +29,7 @@ const { liveBroadcastRules, broadcastPreviewLines } = require('../broadcast/mode
   broadcastPreviewLines(items: unknown, context: { role: string; provider: string }, now: Date): string[];
 };
 const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates') as {
-  describeRoleGroup(record: RoleRecord, options?: { catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string }): string;
+  describeRoleGroup(record: RoleRecord, options?: { catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string; consentedServerIds?: string[] }): string;
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
   buildFromTemplate(input: { templateId: string; provider: string; name: string; role?: string; newId: string }): { ok: boolean; record?: RoleRecord; problems?: Array<{ code: string; path: string }> };
 };

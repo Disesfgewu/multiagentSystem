@@ -12,6 +12,9 @@ const { diagnose, formatDiagnosticReport } = require('./diagnostics') as {
   diagnose(input: Record<string, unknown>): Record<string, any>;
   formatDiagnosticReport(report: Record<string, any>): string;
 };
+const { listResearchTools } = require('../research/installer') as {
+  listResearchTools(deps: { store?: any; root?: string }): any[];
+};
 
 export const SETUP_VIEW = 'multiagentSystem.toolsSetupView';
 export const DIAGNOSTICS_SCHEME = 'multiagent-diagnostics';
@@ -118,12 +121,43 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       ? new ToolItem('Codex CLI', `Ready · ${codex.version}`, `Verified from the pinned OpenAI release asset. Source: ${codex.source}\nChecked: ${codex.verifiedAt}\nSign-in, identity, quota and rule injection are not implied.`, 'verified-filled', 'multiagentSetupCodex')
       : new ToolItem('Codex CLI', this.preparingCodex ? 'Preparing…' : codex.state === 'unsupported' ? 'Unavailable on this platform' : 'Needs setup', `Managed setup: ${codex.reason}. Retry uses only the pinned OpenAI release asset and verifies SHA-256 before use.`, this.preparingCodex ? 'sync~spin' : 'warning', 'multiagentSetupCodex');
     const observed = (name: string): string => executableAvailable(name) ? 'Found on PATH · not verified by setup' : 'Not prepared or verified';
+    let researchItems: vscode.TreeItem[] = [];
+    try {
+      const opened = await privateStorage()?.use();
+      const store = opened && opened.ok ? opened.store : undefined;
+      const researchRoot = path.join(this.context.globalStorageUri.fsPath, 'managed-tools', 'research');
+      const researchTools = listResearchTools({ store, root: researchRoot });
+      researchItems = researchTools.map((t: any) => {
+        const icon = t.consentStatus === 'consented' ? (t.installStatus === 'ready' ? 'verified-filled' : 'shield') : 'beaker';
+        const tooltip = [
+          `Research MCP Tool: ${t.name} (${t.serverId})`,
+          `Version: ${t.version}`,
+          `Source: ${t.source}`,
+          `License: ${t.license}`,
+          `Permissions: ${t.permissions.join(', ') || 'None (pure local computation)'}`,
+          `Status: ${t.statusLabel}`,
+          '',
+          'Right-click or use inline actions to Review & Consent or Inspect Manifest.'
+        ].join('\n');
+        return new ToolItem(
+          t.name,
+          `${t.version} · ${t.statusLabel}`,
+          tooltip,
+          icon,
+          `multiagentResearchTool_${t.serverId}`
+        );
+      });
+    } catch {
+      // Best-effort research tools display in setup view
+    }
+
     return [
       new ToolItem('Git', observed('git'), 'Required for worktrees. Managed deployment is still blocked by the macOS source gap and has not been implemented.', 'question'),
       ghItem,
       new ToolItem('Claude Code', observed('claude'), 'Provider tool. Direct asset and redistribution conditions are not verified, so setup does not download it.', 'question'),
       codexItem,
-      new ToolItem('agy', observed('agy'), 'Fixed official assets, integrity metadata and redistribution terms are unverified. Setup does not download it.', 'question')
+      new ToolItem('agy', observed('agy'), 'Fixed official assets, integrity metadata and redistribution terms are unverified. Setup does not download it.', 'question'),
+      ...researchItems
     ];
   }
 

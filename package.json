@@ -73,7 +73,12 @@
     "onCommand:multiagentSystem.setup.recoverStorageLock",
     "onCommand:multiagentSystem.setup.clearStorage",
     "onCommand:multiagentSystem.sessions.list",
-    "onCommand:multiagentSystem.storage.status"
+    "onCommand:multiagentSystem.storage.status",
+    "onCommand:multiagentSystem.research.listTools",
+    "onCommand:multiagentSystem.research.reviewAndConsent",
+    "onCommand:multiagentSystem.research.revokeConsent",
+    "onCommand:multiagentSystem.research.inspectTool",
+    "onCommand:multiagentSystem.research.prepareTool"
   ],
   "contributes": {
     "viewsContainers": {
@@ -267,7 +272,12 @@
       },
       { "command": "multiagentSystem.sessions.focus", "title": "Multiagent: Focus Session Terminal", "icon": "$(eye)" },
       { "command": "multiagentSystem.sessions.stop", "title": "Multiagent: Stop Session Terminal", "icon": "$(debug-stop)" },
-      { "command": "multiagentSystem.sessions.reopen", "title": "Multiagent: Reopen Session in a New Terminal", "icon": "$(debug-restart)" }
+      { "command": "multiagentSystem.sessions.reopen", "title": "Multiagent: Reopen Session in a New Terminal", "icon": "$(debug-restart)" },
+      { "command": "multiagentSystem.research.listTools", "title": "Multiagent: List Research MCP Tools" },
+      { "command": "multiagentSystem.research.reviewAndConsent", "title": "Multiagent: Review & Consent Research MCP Tool", "icon": "$(shield)" },
+      { "command": "multiagentSystem.research.revokeConsent", "title": "Multiagent: Revoke Research MCP Tool Consent", "icon": "$(discard)" },
+      { "command": "multiagentSystem.research.inspectTool", "title": "Multiagent: Inspect Research MCP Tool Security Manifest", "icon": "$(info)" },
+      { "command": "multiagentSystem.research.prepareTool", "title": "Multiagent: Prepare Consented Research MCP Tool" }
     ],
     "menus": {
       "editor/title": [
@@ -322,7 +332,9 @@
         { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
         { "command": "multiagentSystem.broadcasts.revoke", "when": "view == multiagentSystem.broadcastsView && viewItem == multiagentBroadcastActive", "group": "inline" },
         { "command": "multiagentSystem.setup.retryGh", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh", "group": "inline" },
-        { "command": "multiagentSystem.setup.retryCodex", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupCodex", "group": "inline" }
+        { "command": "multiagentSystem.setup.retryCodex", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupCodex", "group": "inline" },
+        { "command": "multiagentSystem.research.reviewAndConsent", "when": "view == multiagentSystem.toolsSetupView && viewItem =~ /^multiagentResearchTool_/", "group": "inline@1" },
+        { "command": "multiagentSystem.research.inspectTool", "when": "view == multiagentSystem.toolsSetupView && viewItem =~ /^multiagentResearchTool_/", "group": "inline@2" }
       ]
     }
   },

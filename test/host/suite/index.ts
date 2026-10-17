@@ -611,7 +611,57 @@ async function researchFlow(workspace: string): Promise<void> {
   const blockedDelivery = await deliverResearchFindings([injectedFinding]);
   assert.deepEqual([blockedDelivery.ok, blockedDelivery.code], [false, 'prompt-injection-detected'], 'deliverResearchFindings blocks paraphrased prompt injection');
 
-  console.log('host smoke: research skills and academic ethics guard enforce reviewed skills, workspace override defense, citation provenance, production injection blocking, and researcher virtual preview');
+  // 5. Consent-based research tool / MCP installer UI workflow (M2-011)
+  const initialTools = await vscode.commands.executeCommand<any[]>('multiagentSystem.research.listTools');
+  assert.ok(Array.isArray(initialTools), 'listTools returns catalog list');
+  assert.equal(initialTools.length, 3);
+  for (const t of initialTools) {
+    assert.equal(t.consentStatus, 'not-granted', `${t.serverId} must start unconsented`);
+  }
+
+  // Virtual document security manifest inspection
+  const manifestUri = vscode.Uri.parse('multiagent-research-tool:/arxiv-mcp-server');
+  const manifestDoc = await vscode.workspace.openTextDocument(manifestUri);
+  const manifestText = manifestDoc.getText();
+  assert.match(manifestText, /# Research MCP Tool Security Manifest: arXiv Research MCP Server/);
+  assert.match(manifestText, /Repository.*blazickjp\/arxiv-mcp-server\.git/);
+  assert.match(manifestText, /Version.*v0\.8\.2/);
+  assert.match(manifestText, /Integrity Digest.*sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c/);
+  assert.match(manifestText, /License.*Apache-2\.0/);
+  assert.match(manifestText, /Required Permissions/);
+  assert.match(manifestText, /network/);
+  assert.match(manifestText, /download_paper/);
+  assert.match(manifestText, /sandboxEnforced: false/);
+
+  // Preparation without consent fails closed with consent-required
+  const unconsentedPrepare = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.research.prepareTool', { serverId: 'arxiv-mcp-server' });
+  assert.deepEqual([unconsentedPrepare.ok, unconsentedPrepare.code], [false, 'consent-required'], 'preparing an unconsented tool is strictly refused');
+
+  // Explicit user consent grant
+  const consentResult = await vscode.commands.executeCommand<{ ok: boolean; serverId?: string }>('multiagentSystem.research.reviewAndConsent', { serverId: 'arxiv-mcp-server', interactive: false });
+  assert.equal(consentResult.ok, true);
+  assert.equal(consentResult.serverId, 'arxiv-mcp-server');
+
+  const afterConsent = await vscode.commands.executeCommand<any[]>('multiagentSystem.research.listTools');
+  const consentedArxiv = afterConsent.find((t: any) => t.serverId === 'arxiv-mcp-server');
+  assert.equal(consentedArxiv?.consentStatus, 'consented');
+
+  // Preparation after consent succeeds and creates verified executable
+  const preparedOutcome = await vscode.commands.executeCommand<{ ok: boolean; outcome?: any }>('multiagentSystem.research.prepareTool', { serverId: 'arxiv-mcp-server' });
+  assert.equal(preparedOutcome.ok, true);
+  assert.equal(preparedOutcome.outcome?.state, 'ready');
+  assert.ok(fs.existsSync(preparedOutcome.outcome?.executable));
+
+  // Revocation cleans up installed files and resets consent
+  const revokedOutcome = await vscode.commands.executeCommand<{ ok: boolean; status?: string }>('multiagentSystem.research.revokeConsent', { serverId: 'arxiv-mcp-server', interactive: false });
+  assert.equal(revokedOutcome.ok, true);
+  assert.equal(revokedOutcome.status, 'revoked');
+  assert.equal(fs.existsSync(preparedOutcome.outcome?.executable), false, 'installed binary is removed when consent is revoked');
+
+  const finalTools = await vscode.commands.executeCommand<any[]>('multiagentSystem.research.listTools');
+  assert.equal(finalTools.find((t: any) => t.serverId === 'arxiv-mcp-server')?.consentStatus, 'not-granted');
+
+  console.log('host smoke: research skills, academic ethics guard, and consent-based MCP installer workflow verified');
 }
 
 async function agyFlow(workspace: string): Promise<void> {

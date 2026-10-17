@@ -90,7 +90,7 @@ function describeRoleGroup(record, options = {}) {
   lines.push('', ENFORCEMENT_NOTE, 'Anything not listed above is denied.');
 
   if (options && options.catalog !== undefined) {
-    const evaluation = evaluateMcpTools(options.catalog, options.allowlist, { permissions: group.toolPermissions });
+    const evaluation = evaluateMcpTools(options.catalog, options.allowlist, { permissions: group.toolPermissions, consentedServerIds: options.consentedServerIds });
     const mcpLines = formatMcpLines(evaluation, { bullet: '•' });
     if (mcpLines.length > 0) {
       lines.push('', ...mcpLines);
