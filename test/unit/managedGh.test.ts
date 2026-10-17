@@ -67,6 +67,21 @@ test('hash mismatch, offline interruption and malformed archives fail closed and
   assert.equal((await manager.prepare()).state, 'ready', 'retry recovers without using an incomplete staging directory');
 });
 
+test('prepare() rejects an oversized download on its own, independent of whatever limit the injected downloader enforces', async (t) => {
+  // downloadHttps (the real downloader) aborts mid-stream once it has received more than maxBytes, so
+  // in the default configuration an oversized archive never reaches this point at all. But prepare()
+  // is also reachable with any downloader a caller supplies (tests, and potentially a future caller),
+  // so this check is this function's own, independent defense: it must not rely on the downloader
+  // having enforced the limit already. No valid zip or matching digest is needed: size is checked
+  // before either the entry is read or the hash is compared.
+  const root = world(t);
+  const oversized = new Uint8Array(64 * 1024 * 1024 + 1);
+  const manager = new ManagedGh({ root, release: release(), download: async () => oversized, newId: () => 'oversized' });
+  assert.deepEqual(await manager.prepare(), { state: 'missing', reason: 'download-or-install-failed' });
+  assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'installs')), false, 'nothing was installed from the oversized download');
+});
+
 test('a replaced binary or symlink is unknown/corrupt and never accepted from the pointer alone', async (t) => {
   const root = world(t);
   const manager = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'replace' });
