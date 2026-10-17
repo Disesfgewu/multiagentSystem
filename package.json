@@ -55,6 +55,9 @@
     "onCommand:multiagentSystem.roles.start",
     "onCommand:multiagentSystem.roles.remove",
     "onView:multiagentSystem.rolesView",
+    "onView:multiagentSystem.toolsSetupView",
+    "onCommand:multiagentSystem.setup.refresh",
+    "onCommand:multiagentSystem.setup.retryGh",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
@@ -72,7 +75,8 @@
         { "id": "multiagentSystem.prsReportView", "name": "PRs Report" },
         { "id": "multiagentSystem.githubView", "name": "GitHub" },
         { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
-        { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" }
+        { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" },
+        { "id": "multiagentSystem.toolsSetupView", "name": "Tools Setup" }
       ]
     },
     "viewsWelcome": [
@@ -103,6 +107,10 @@
       {
         "view": "multiagentSystem.rolesView",
         "contents": "No role groups yet. A role group says what an agent may do.\n[Create Role Group](command:multiagentSystem.roles.create)"
+      },
+      {
+        "view": "multiagentSystem.toolsSetupView",
+        "contents": "Tool status has not been read yet. Missing or unverified tools never count as ready.\n[Refresh](command:multiagentSystem.setup.refresh)"
       }
     ],
     "commands": [
@@ -113,6 +121,16 @@
       {
         "command": "multiagentSystem.launchAgent",
         "title": "Multiagent: Launch CLI Agent in Native Terminal"
+      },
+      {
+        "command": "multiagentSystem.setup.refresh",
+        "title": "Multiagent: Refresh Tools Setup",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "multiagentSystem.setup.retryGh",
+        "title": "Multiagent: Retry Verified GitHub CLI Setup",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "multiagentSystem.worktrees.list",
@@ -225,7 +243,8 @@
         { "command": "multiagentSystem.accounts.create", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
         { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
         { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
-        { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" }
+        { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
+        { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation" }
       ],
       "view/item/context": [
         { "command": "multiagentSystem.overview.openPullRequest", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgent(Live|Closed)Pr$/", "group": "inline@0" },
@@ -241,7 +260,8 @@
         { "command": "multiagentSystem.roles.start", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@0" },
         { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@1" },
         { "command": "multiagentSystem.roles.edit", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
-        { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" }
+        { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
+        { "command": "multiagentSystem.setup.retryGh", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh", "group": "inline" }
       ]
     }
   },
@@ -258,5 +278,8 @@
     "@types/vscode": "1.95.0",
     "@vscode/test-electron": "3.1.0",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "fflate": "0.8.3"
   }
 }

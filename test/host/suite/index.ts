@@ -14,6 +14,10 @@ import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SC
 import { privateStorage } from '../../../src/storage/storageCommands';
 import { builtIn } from '../../../src/providers/registry';
 import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
+import { createHash } from 'node:crypto';
+import { zipSync } from 'fflate';
+import { SETUP_COMMANDS, managedPathContributionForTests, setSetupDepsForTests, setupTreeForTests } from '../../../src/setup/setupView';
+import { GhRelease } from '../../../src/setup/managedGh';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -28,7 +32,8 @@ const COMMANDS = [
   'multiagentSystem.worktrees.remove',
   ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details, ACCOUNT_COMMANDS.limits,
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
-  ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove
+  ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove,
+  SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
 
@@ -234,6 +239,46 @@ async function accountFlow(workspace: string): Promise<void> {
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
+async function setupFlow(): Promise<void> {
+  const platform = process.platform;
+  const arch = process.arch;
+  assert.ok(['darwin', 'win32'].includes(platform) && ['x64', 'arm64'].includes(arch), 'Host setup test runs on a supported target');
+  const executable = platform === 'win32' ? 'gh.exe' : 'gh';
+  const asset = platform === 'darwin' ? (arch === 'arm64' ? 'macOS_arm64' : 'macOS_amd64') : (arch === 'arm64' ? 'windows_arm64' : 'windows_amd64');
+  const entry = `gh_2.102.0_${asset}/bin/${executable}`;
+  const bytes = Buffer.from(platform === 'win32' ? 'synthetic managed gh; it is never executed' : '#!/bin/sh\nprintf synthetic > "$MULTIAGENT_TEST_GH_SENTINEL"\n');
+  const archive = zipSync({ [entry]: bytes });
+  const release: GhRelease = {
+    tool: 'gh', version: '2.102.0', platform, arch,
+    url: `https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_${asset}.zip`,
+    sha256: createHash('sha256').update(archive).digest('hex'), entry, executable
+  };
+  let downloads = 0;
+  setSetupDepsForTests({ platform, arch, release, download: async () => { downloads += 1; return archive; } });
+  const before = (await setupTreeForTests().getChildren()) ?? [];
+  assert.match(String(before.find((item) => String(item.label).includes('GitHub CLI'))?.description), /Needs setup/);
+  const result = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryGh);
+  assert.deepEqual([result.state, result.version], ['ready', '2.102.0']);
+  assert.equal(downloads, 1);
+  const after = (await setupTreeForTests().getChildren()) ?? [];
+  const gh = after.find((item) => String(item.label).includes('GitHub CLI'));
+  assert.match(String(gh?.description), /Ready · 2\.102\.0/);
+  assert.equal(String(gh?.tooltip).includes('synthetic managed gh'), false, 'status does not display binary content');
+  assert.ok(managedPathContributionForTests(), 'a verified managed bin directory is contributed to new native terminal PATHs');
+  if (platform !== 'win32') {
+    const sentinel = process.env.MULTIAGENT_TEST_GH_SENTINEL;
+    assert.ok(sentinel);
+    const terminal = vscode.window.createTerminal({ name: 'Managed gh PATH check', location: vscode.TerminalLocation.Editor });
+    try {
+      terminal.show();
+      terminal.sendText('gh', true);
+      await waitFor(() => fs.existsSync(sentinel) ? true : undefined, 10000);
+      assert.equal(fs.readFileSync(sentinel, 'utf8'), 'synthetic');
+    } finally { terminal.dispose(); }
+  }
+  console.log('host smoke: Tools Setup installs a synthetic gh archive only after SHA-256 verification; real downloads and execution are not tested');
+}
+
 async function roleFlow(workspace: string): Promise<void> {
   const saved = await saveRoleRecord({
     group: {
@@ -367,6 +412,7 @@ async function agyFlow(workspace: string): Promise<void> {
   assert.equal(started.ok, true);
   assert.equal(started.session?.state, 'launch-requested', 'typing a CLI command is not proof it is working');
   assert.equal(started.session?.provider, 'agy');
+  await waitFor(() => vscode.window.terminals.find((terminal) => terminal.name === 'Multiagent: Agy Fake'), 10000);
   await waitFor(() => fs.existsSync(sentinel) ? true : undefined, 20000);
   assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'synthetic');
   if (started.session?.id) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session.id });
@@ -453,6 +499,7 @@ export async function run(): Promise<void> {
   console.log(await runOverviewChecks(workspace));
   console.log(await runPlanChecks(workspace));
   console.log(await runReportChecks());
+  await setupFlow();
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
   const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));

@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   const worktreeTarget = path.join(sandbox, 'worktrees 空白', 'feature-host');
   const fakeBin = path.join(sandbox, 'fake-cli-bin');
   const agySentinel = path.join(sandbox, 'agy-started.txt');
+  const ghSentinel = path.join(sandbox, 'gh-started.txt');
   fs.mkdirSync(fakeBin);
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(fakeBin, 'agy.cmd'), '@echo off\r\necho synthetic > "%MULTIAGENT_TEST_AGY_SENTINEL%"\r\n');
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
         MULTIAGENT_TEST_WORKSPACE: workspace,
         MULTIAGENT_TEST_WORKTREE: worktreeTarget,
         MULTIAGENT_TEST_AGY_SENTINEL: agySentinel,
+        MULTIAGENT_TEST_GH_SENTINEL: ghSentinel,
         PATH: testPath
       },
       launchArgs: [

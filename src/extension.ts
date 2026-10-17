@@ -10,6 +10,7 @@ import { registerPlanView } from './plan/planView';
 import { registerReports } from './reports/reportsView';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
 import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
+import { registerSetup } from './setup/setupView';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
@@ -67,6 +68,7 @@ let sessions: SessionCommands | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   registerStorageCommands(context);
+  registerSetup(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)
