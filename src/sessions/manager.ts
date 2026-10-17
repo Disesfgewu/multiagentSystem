@@ -508,13 +508,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     await this.ready();
     this.inFlight += 1;
     let identity: SessionIdentity | undefined;
+    let shouldCleanupPlanOnError = true;
     try {
       const old = this.registry.get(id);
       if (!old) throw new SessionError('session-not-found');
       if (this.handles.has(id)) throw new SessionError('session-still-open');
       // After a restart a terminal from before may still be running a CLI in this folder, and this
       // window cannot see it. Reopening then risks a second writer, so it needs an explicit yes.
-      if (old.state === 'unknown' && options.acknowledgeUnknown !== true) throw new SessionError('confirm-unknown-reopen');
+      if (old.state === 'unknown' && options.acknowledgeUnknown !== true) {
+        shouldCleanupPlanOnError = false;
+        throw new SessionError('confirm-unknown-reopen');
+      }
       if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
       const executable = this.executableFor(old.provider);
       identity = {
@@ -529,7 +533,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
-      if (options.instructions?.plan) {
+      if (shouldCleanupPlanOnError && options.instructions?.plan) {
         cleanupSessionPlan(options.instructions.plan);
       }
       if (identity) {
@@ -565,6 +569,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     const terminal = this.liveTerminal(id);
     const binding = this.bound.get(terminal) as { id: string; token: string };
     this.registry.cliExited(id, binding.token);
+    const plan = this.activePlans.get(id);
+    if (plan) {
+      cleanupSessionPlan(plan);
+      this.activePlans.delete(id);
+    }
+    const prevState = this.instructionStates.get(id);
+    if (prevState && prevState !== 'none') {
+      this.instructionLabels.set(id, 'CLI exited (instructions file cleaned up; reopen as new session to relaunch)');
+    }
     return this.view(id);
   }
 

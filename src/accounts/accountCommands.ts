@@ -93,11 +93,18 @@ class AccountMessage extends vscode.TreeItem {
 }
 
 class SessionItem extends vscode.TreeItem {
-  constructor(id: string, name: string, provider: string, account: string, state: string) {
+  constructor(id: string, name: string, provider: string, account: string, state: string, terminalOpen: boolean) {
     super(`Session: ${name}`, vscode.TreeItemCollapsibleState.None);
     this.description = `${provider} · ${account} · ${state}`;
-    this.contextValue = 'multiagentAccountSession';
-    this.iconPath = new vscode.ThemeIcon('terminal');
+    this.tooltip = [
+      `Session: ${name}`,
+      `Provider: ${provider}`,
+      `Account: ${account}`,
+      `Status: ${state}`,
+      terminalOpen ? 'Terminal: open in this window' : 'Terminal: not open in this window (click to reopen as a new session)'
+    ].join('\n');
+    this.contextValue = terminalOpen ? 'multiagentAccountSession' : 'multiagentAccountSessionClosed';
+    this.iconPath = new vscode.ThemeIcon(terminalOpen ? 'terminal' : 'debug-disconnect');
     this.command = { command: 'multiagentSystem.sessions.focus', title: 'Focus session terminal', arguments: [{ id }] };
   }
 }
@@ -115,9 +122,9 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     if (item) return [];
     const liveSessions = sessions?.list() ?? [];
     const result = await accountService(() => sessions?.list() ?? []);
-    if (!result.ok) return [new AccountMessage(result.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel))];
+    if (!result.ok) return [new AccountMessage(result.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel, entry.terminalOpen))];
     const loaded = result.service.list();
-    if (!loaded.ok) return [new AccountMessage(loaded.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel))];
+    if (!loaded.ok) return [new AccountMessage(loaded.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel, entry.terminalOpen))];
     const rows: AccountTreeItem[] = [];
     if (loaded.profiles.length === 0) rows.push(new AccountMessage('No account profiles. Use Create Profile to add one.'));
     const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
@@ -146,7 +153,8 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     rows.push(...liveSessions.map((entry) => new SessionItem(
       entry.id, entry.name, builtIn.get(entry.provider)?.label ?? entry.provider,
       labels.get(entry.accountProfileId) ?? (entry.accountProfileId === 'unassigned' ? 'unassigned' : 'profile missing'),
-      entry.stateLabel
+      entry.stateLabel,
+      entry.terminalOpen
     )));
     return rows;
   }

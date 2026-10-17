@@ -385,14 +385,71 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         id = picked.id;
       }
       let session: SessionView;
-      if (action === 'focus') session = manager.focus(id);
-      else if (action === 'stop') {
+      if (action === 'focus') {
+        try {
+          session = manager.focus(id);
+        } catch (error) {
+          if (interactive && (error as { code?: string })?.code === 'terminal-not-open') {
+            const target = manager.get(id);
+            const detail = target?.state === 'unknown'
+              ? 'This session was restored from an earlier window and has no attached terminal in this window.'
+              : 'Its terminal was closed.';
+            const answer = await vscode.window.showWarningMessage(
+              `${MESSAGES['terminal-not-open']} ${detail}`,
+              'Reopen as New Session'
+            );
+            if (answer === 'Reopen as New Session') {
+              return await act('reopen', { id, interactive: true });
+            }
+            return { ok: false, code: 'terminal-not-open', message: MESSAGES['terminal-not-open'] };
+          }
+          throw error;
+        }
+      } else if (action === 'stop') {
         session = manager.stop(id);
         releaseReservation(id);
       } else {
-        const prior = manager.list().find((entry) => entry.id === id);
+        let prior = manager.get(id) ?? undefined;
+        if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
+
+        // If the session still has an open terminal:
+        // - In interactive mode, if the CLI exited (`cli-exited`), offer to stop the remaining shell and reopen as a new session.
+        // - Otherwise fail fast before taking an account quota reservation or writing instruction files.
+        if (prior.terminalOpen) {
+          if (interactive && prior.state === 'cli-exited') {
+            const answer = await vscode.window.showWarningMessage(
+              'The CLI in this session has exited, but its shell terminal is still open.',
+              { modal: true, detail: 'Stop the old shell terminal and reopen as a new session with the same project, role group, provider, and account?' },
+              'Stop & Reopen'
+            );
+            if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+            prior = manager.stop(id);
+            releaseReservation(id);
+          } else {
+            throw Object.assign(new Error('session-still-open'), { code: 'session-still-open' });
+          }
+        }
+
+        // After a restart a terminal from before may still be running a CLI in this folder, and this
+        // window cannot see it. Ask for confirmation BEFORE taking account reservations or writing instruction files.
+        let acknowledgeUnknown = input.acknowledgeUnknown === true;
+        if (prior.state === 'unknown' && !acknowledgeUnknown) {
+          if (!interactive) throw Object.assign(new Error('confirm-unknown-reopen'), { code: 'confirm-unknown-reopen' });
+          const answer = await vscode.window.showWarningMessage(
+            'A terminal from before this window started may still be running in the same folder.',
+            { modal: true, detail: 'Opening another one could mean two agents writing to the same files. Check the terminals first.' },
+            'Open Anyway'
+          );
+          if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          acknowledgeUnknown = true;
+        }
+
+        if (!fs.existsSync(prior.worktree) || !fs.statSync(prior.worktree).isDirectory()) {
+          throw Object.assign(new Error('worktree-missing'), { code: 'worktree-missing' });
+        }
+
         let env: Record<string, string | null> | undefined;
-        if (prior && prior.accountProfileId !== 'unassigned') {
+        if (prior.accountProfileId !== 'unassigned') {
           // A reopened session is a new launch on the same account and must clear the same
           // concurrency limit as a fresh start; otherwise reopen could bypass it entirely.
           const gate = await gateAccountLaunch(prior.accountProfileId, interactive, () => manager.list());
@@ -415,12 +472,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const newSessionId = randomUUID();
         const openedStorage = await privateStorage()?.use();
         if (!openedStorage?.ok) {
-          if (prior && prior.roleGroupId !== 'unassigned') {
+          if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
             if (release) { release(); release = undefined; }
             return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
           }
-        } else if (prior) {
+        } else {
           const store = openedStorage.store as any;
           const privateDir = store.dir;
           const project = await resolveProject(prior.worktree);
@@ -478,19 +535,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           instructions = prep;
         }
 
-        try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown, env, instructions });
-        } catch (error) {
-          // The earlier terminal may still be running in the folder: ask before starting a second one.
-          if (!interactive || (error as { code?: string })?.code !== 'confirm-unknown-reopen') throw error;
-          const answer = await vscode.window.showWarningMessage(
-            'A terminal from before this window started may still be running in the same folder.',
-            { modal: true, detail: 'Opening another one could mean two agents writing to the same files. Check the terminals first.' },
-            'Open Anyway'
-          );
-          if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown: true, env, instructions });
-        }
+        session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env, instructions });
         if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       }
       changed.fire();
@@ -508,12 +553,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const picked = await pickSession('Sessions in this window (state is shown only when there is evidence)', () => true);
     if (!picked) return { ok: true, sessions: manager.list() };
     const actions = picked.terminalOpen
-      ? ['Focus Terminal', 'Stop Terminal', 'View Effective Instructions']
+      ? picked.state === 'cli-exited'
+        ? ['Focus Terminal', 'Stop & Reopen as New Session', 'Stop Terminal', 'View Effective Instructions']
+        : ['Focus Terminal', 'Stop Terminal', 'View Effective Instructions']
       : ['Reopen as New Session', 'View Effective Instructions'];
     const choice = await vscode.window.showQuickPick(actions, { placeHolder: `${picked.name}: ${picked.stateLabel}` });
     if (choice === 'Focus Terminal') await act('focus', { id: picked.id });
     else if (choice === 'Stop Terminal') await act('stop', { id: picked.id });
-    else if (choice === 'Reopen as New Session') await act('reopen', { id: picked.id });
+    else if (choice === 'Stop & Reopen as New Session' || choice === 'Reopen as New Session') await act('reopen', { id: picked.id });
     else if (choice === 'View Effective Instructions') {
       const text = [
         'PRIVATE — local session instructions snapshot. Do not publish this document.',
