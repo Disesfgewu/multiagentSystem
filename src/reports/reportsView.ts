@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { privateStorage } from '../storage/storageCommands';
+import { configurePublicFeedback, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
   readFeedback(store: unknown, target: Record<string, unknown>): { state: string; record?: { note: string; headSha: string | null; updatedAt: string; revision: number } };
@@ -36,7 +38,9 @@ export const REPORT_COMMANDS = {
   showDiff: 'multiagentSystem.reports.showDiff',
   openFileDiff: 'multiagentSystem.reports.openFileDiff',
   refresh: 'multiagentSystem.reports.refresh',
-  feedback: 'multiagentSystem.reports.feedback'
+  feedback: 'multiagentSystem.reports.feedback',
+  publicFeedback: 'multiagentSystem.reports.publicFeedback',
+  configurePublisher: 'multiagentSystem.reports.configurePublisher'
 } as const;
 
 type Kind = 'issue' | 'pullRequest';
@@ -207,7 +211,7 @@ export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }
 
-type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; files: ReportFile[] };
+type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; version: string; files: ReportFile[] };
 type ReportResult = { text: string; evidence: ReportEvidence | null };
 
 /** Builds one report and records exactly which repository/head its text represents. */
@@ -220,7 +224,8 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
     if (kind === 'issue') {
       const [issue, comments, pullRequests] = await Promise.all([reader.getIssue(number), reader.getIssueComments(number), reader.listPullRequests({ state: 'open' })]);
       if (issue.kind !== 'ok' || !issue.data) return { text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
-      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, files: [] } };
+      const version = createHash('sha256').update(`${issue.data.title}\0${issue.data.body ?? ''}`).digest('hex');
+      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, version, files: [] } };
     }
     const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
     if (pullRequest.kind !== 'ok' || !pullRequest.data) return { text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
@@ -240,7 +245,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
     const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
     const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified });
-    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, files: Array.isArray(built.files) ? built.files : [] } : null };
+    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
   } catch {
     return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
   }
@@ -367,6 +372,7 @@ export function reportBadgeForTests(kind: Kind): number | undefined {
 }
 
 export function registerReports(context: vscode.ExtensionContext): void {
+  setPublicFeedbackTestMode(context.extensionMode === vscode.ExtensionMode.Test);
   const content = new ReportContent();
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };
   testTrees = context.extensionMode === vscode.ExtensionMode.Test ? trees : undefined;
@@ -411,6 +417,32 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return { ok: true };
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.refresh, refresh),
+    vscode.commands.registerCommand(REPORT_COMMANDS.configurePublisher, async () => {
+      const result = await configurePublicFeedback();
+      if (result.ok) void vscode.window.showInformationMessage('Public feedback publisher configured in private storage.');
+      else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Could not configure public feedback: ${result.code ?? 'unknown'}.`);
+      return result;
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.publicFeedback, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { body?: unknown; interactive?: unknown } : {};
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
+      if (!target) return { ok: false, code: 'report-evidence-unavailable' };
+      const result = await sendPublicFeedback({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { body: input.body, interactive: input.interactive === false ? false : true });
+      if (result.ok) {
+        refresh();
+        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-sent' ? 'This exact public feedback was already sent.' : 'Public feedback sent and verified for this report.');
+      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (result.code === 'publisher-not-configured' || result.code === 'publisher-identity-changed') {
+          void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code}.`, 'Configure PM Publisher').then((picked) => {
+            if (picked === 'Configure PM Publisher') void vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher);
+          });
+        } else {
+          void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code ?? 'unknown'}.`);
+        }
+      }
+      return result;
+    }),
     vscode.commands.registerCommand(REPORT_COMMANDS.feedback, async (value?: unknown) => {
       const requested = value && typeof value === 'object' ? value as { kind?: unknown; number?: unknown; note?: unknown; interactive?: unknown } : {};
       const requestedKind = requested.kind === 'issue' || requested.kind === 'pullRequest' ? requested.kind : null;

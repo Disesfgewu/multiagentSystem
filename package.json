@@ -29,6 +29,8 @@
     "onView:multiagentSystem.prsReportView",
     "onCommand:multiagentSystem.reports.refresh",
     "onCommand:multiagentSystem.reports.feedback",
+    "onCommand:multiagentSystem.reports.publicFeedback",
+    "onCommand:multiagentSystem.reports.configurePublisher",
     "onCommand:multiagentSystem.reports.backToList",
     "onCommand:multiagentSystem.reports.showDiff",
     "onCommand:multiagentSystem.overview.refresh",
@@ -207,6 +209,8 @@
       { "command": "multiagentSystem.reports.showDiff", "title": "Multiagent: Show Changed Files and Diff", "icon": "$(diff)" },
       { "command": "multiagentSystem.reports.refresh", "title": "Multiagent: Refresh Reports", "icon": "$(refresh)" },
       { "command": "multiagentSystem.reports.feedback", "title": "Multiagent: Save Local Feedback on Report", "icon": "$(edit)" },
+      { "command": "multiagentSystem.reports.publicFeedback", "title": "Multiagent: Publish Feedback for Open Report", "icon": "$(comment-discussion)" },
+      { "command": "multiagentSystem.reports.configurePublisher", "title": "Multiagent: Configure Public Feedback Publisher" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
       { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
       { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details" },
@@ -245,7 +249,8 @@
         { "command": "multiagentSystem.reports.showDiff", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation" },
         { "command": "multiagentSystem.reports.previous", "when": "resourceScheme == multiagent-report", "group": "navigation@1" },
         { "command": "multiagentSystem.reports.next", "when": "resourceScheme == multiagent-report", "group": "navigation@2" },
-        { "command": "multiagentSystem.reports.feedback", "when": "resourceScheme == multiagent-report", "group": "navigation@3" }
+        { "command": "multiagentSystem.reports.feedback", "when": "resourceScheme == multiagent-report", "group": "navigation@3" },
+        { "command": "multiagentSystem.reports.publicFeedback", "when": "resourceScheme == multiagent-report", "group": "navigation@4" }
       ],
       "view/title": [
         { "command": "multiagentSystem.reports.refresh", "when": "view == multiagentSystem.issuesReportView || view == multiagentSystem.prsReportView", "group": "navigation" },

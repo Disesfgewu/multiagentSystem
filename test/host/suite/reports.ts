@@ -1,6 +1,8 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
+import { installPublicFeedbackTestOverrides } from '../../../src/reports/publicFeedback';
+import { privateStorage } from '../../../src/storage/storageCommands';
 
 const HEAD = 'd'.repeat(40);
 
@@ -118,6 +120,123 @@ export async function runReportChecks(): Promise<string> {
     const feedbackStatus = await reportText('pullRequest', 7);
     assert.match(feedbackStatus, /LOCAL FEEDBACK\nSaved only on this machine.*Nothing was sent to GitHub\./);
     assert.equal(feedbackStatus.includes('Please add a second test'), false, 'private feedback is never put into the report text');
+
+    const published: Array<{ number: number; body: string }> = [];
+    const previews: string[] = [];
+    const seenInitialDrafts: string[] = [];
+    const auth = { id: 'session', accessToken: 'x', account: { id: '42', label: 'pm-user' }, scopes: ['repo'] };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Before configuring publisher.', interactive: false }), { ok: false, code: 'publisher-not-configured' });
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      prompt: async (initialValue) => { seenInitialDrafts.push(initialValue); return 'Draft kept across cancel.'; },
+      confirm: async (message) => { previews.push(message); return true; },
+      comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher), { ok: true });
+
+    // Interactive preview shows target repo, PR number, current head SHA, and exact text; cancelling preserves the draft without copying private local feedback.
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      prompt: async (initialValue) => { seenInitialDrafts.push(initialValue); return 'Draft kept across cancel.'; },
+      confirm: async (message) => { previews.push(message); return false; },
+      comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
+    });
+    const cancelledPreview = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback);
+    assert.deepEqual(cancelledPreview, { ok: false, code: 'cancelled' });
+    assert.equal(seenInitialDrafts[0], '', 'public draft starts blank and never copies private local feedback');
+    assert.match(previews[previews.length - 1] ?? '', new RegExp(`host/repo PR #7 \\(head ${HEAD}\\)\\?\\n\\nDraft kept across cancel\\.`));
+    assert.equal(published.length, 0);
+
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      prompt: async (initialValue) => { seenInitialDrafts.push(initialValue); return undefined; },
+      confirm: async () => false,
+      comment: async () => ({ ok: false })
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback), { ok: false, code: 'cancelled' });
+    assert.equal(seenInitialDrafts[1], 'Draft kept across cancel.', 'cancelling preserves the user draft for the next attempt on the same head');
+
+    // Content scan blocks private local feedback notes, credentials, and machine paths; unreadable private references fail closed.
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      confirm: async () => true,
+      comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
+    });
+    for (const blockedBody of [
+      'Repeating private note: Please add a second test',
+      'Leaking token ghp_1234567890abcdefghijklmnopqrstuvwx12 in public',
+      'Leaking local path /Users/pm/private-notes.md in public'
+    ]) {
+      const blocked = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: blockedBody, interactive: false });
+      assert.deepEqual(blocked, { ok: false, code: 'content-blocked' }, blockedBody);
+    }
+    assert.equal(published.length, 0, 'blocked content never reaches the transport');
+    const openedStore = await privateStorage()?.use();
+    assert.equal(openedStore?.ok, true);
+    if (openedStore?.ok) {
+      openedStore.store.put('reportFeedback', 'corrupt-feedback', { note: '' });
+      try {
+        assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Valid public comment.', interactive: false }), { ok: false, code: 'private-reference-unreadable' });
+      } finally {
+        openedStore.store.delete('reportFeedback', 'corrupt-feedback');
+      }
+    }
+
+    // Sign-in, publisher identity, repository, and head changes before send are refused.
+    installPublicFeedbackTestOverrides({ session: async () => null, user: async () => ({ id: 42, login: 'pm-user' }), version: async (target) => target.version, repository: async () => 'host/repo', confirm: async () => true, comment: async () => ({ ok: true, number: 1 }) });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Valid public comment.', interactive: false }), { ok: false, code: 'github-sign-in-required' });
+    installPublicFeedbackTestOverrides({ session: async () => auth, user: async () => ({ id: 99, login: 'other-user' }), version: async (target) => target.version, repository: async () => 'host/repo', confirm: async () => true, comment: async () => ({ ok: true, number: 1 }) });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Valid public comment.', interactive: false }), { ok: false, code: 'publisher-identity-changed' });
+    installPublicFeedbackTestOverrides({ session: async () => auth, user: async () => ({ id: 42, login: 'pm-user' }), version: async (target) => target.version, repository: async () => 'other/repo', confirm: async () => true, comment: async () => ({ ok: true, number: 1 }) });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Valid public comment.', interactive: false }), { ok: false, code: 'report-context-changed' });
+    installPublicFeedbackTestOverrides({ session: async () => auth, user: async () => ({ id: 42, login: 'pm-user' }), version: async () => 'e'.repeat(40), repository: async () => 'host/repo', confirm: async () => true, comment: async () => ({ ok: true, number: 1 }) });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Valid public comment.', interactive: false }), { ok: false, code: 'report-context-changed' });
+
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      confirm: async () => true,
+      comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
+    });
+    const publicResult = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'Please add a public regression test.', interactive: false });
+    assert.deepEqual(publicResult, { ok: true });
+    assert.deepEqual(published, [{ number: 7, body: 'Please add a public regression test.' }], 'only the separate public draft reaches the broker transport');
+    assert.equal(JSON.stringify(published).includes('Please add a second test'), false, 'the private local note is never copied into public feedback');
+    const replay = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'changed retry text', interactive: false });
+    assert.deepEqual(replay, { ok: true, code: 'already-sent' });
+    assert.equal(published.length, 1, 'reopening and retrying a completed request does not post twice');
+
+    await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'issue', number: 12 });
+    const issuePrivateSaved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'issue', number: 12, note: 'Private issue note kept on this machine', interactive: false });
+    assert.equal(issuePrivateSaved.ok, true);
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      confirm: async () => true,
+      comment: async () => { throw new Error('synthetic uncertain response'); }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Leaking Private issue note kept on this machine', interactive: false }), { ok: false, code: 'content-blocked' });
+    const unknownSend = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'A distinct public issue comment.', interactive: false });
+    assert.deepEqual(unknownSend, { ok: false, code: 'outcome-unknown' });
+    const refusedRetry = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'A distinct public issue comment.', interactive: false });
+    assert.deepEqual(refusedRetry, { ok: false, code: 'outcome-unknown' }, 'an unknown write result is persisted and cannot be posted again after reopening');
+    await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
 
     // Feedback is bound to what the open report showed. A push while the input
     // box is open must not relabel A's note as if it had been written for B.
