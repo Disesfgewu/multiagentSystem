@@ -104,7 +104,14 @@ test('the scanner failing closed: throws, odd shapes, errors and incomplete scan
   assert.deepEqual([thrown.allowed, thrown.reason], [false, 'scanner-failed']);
   assert.equal(JSON.stringify(thrown).includes(TOKEN), false, 'an error message is never passed on');
 
-  for (const odd of [undefined, null, 'clear', 7, {}, { status: 'clear' }, { status: 'clear', findings: 'none' }, { status: 'unknown', blocked: false, findings: [] }, { status: 'clear', blocked: true, findings: [] }, { status: 'clear', findings: [] }]) {
+  for (const odd of [
+    undefined, null, 'clear', 7, {},
+    { status: 'clear' },
+    { status: 'clear', findings: 'none' },
+    { status: 'unknown', blocked: false, findings: [] },
+    { status: 'clear', blocked: true, findings: [] },
+    { status: 'clear', findings: [] }
+  ]) {
     const result = guardOutboundQuery('graph neural networks', { scan: () => odd });
     assert.equal(result.allowed, false, JSON.stringify(odd));
     assert.equal(result.reason, 'scanner-failed', JSON.stringify(odd));
@@ -115,6 +122,55 @@ test('the scanner failing closed: throws, odd shapes, errors and incomplete scan
   assert.equal(guardOutboundQuery('graph neural networks', { scan: clear }).allowed, true);
 });
 
+test('contradictory scanner results and corrupted scanner types fail closed with scanner-failed', () => {
+  // PM reproduction case: status says 'clear' but truncated and unscanned items are reported.
+  const pmCase = guardOutboundQuery('graph theory', {
+    scan: () => ({ status: 'clear', blocked: false, findings: [], truncated: true, unscanned: [{ reason: 'binary-content' }] })
+  });
+  assert.equal(pmCase.allowed, false);
+  assert.equal(pmCase.reason, 'scanner-failed');
+
+  const contradictory = [
+    { status: 'clear', blocked: false, findings: [], truncated: true },
+    { status: 'clear', blocked: false, findings: [], unscanned: [{ reason: 'binary-content' }] },
+    { status: 'clear', blocked: false, findings: [{ code: 'github-token', category: 'credential' }] },
+    { status: 'blocked', blocked: false, findings: [{ code: 'github-token', category: 'credential' }] },
+    { status: 'blocked', blocked: true, findings: [] },
+    { status: 'incomplete', blocked: false, findings: [] },
+    { status: 'incomplete', blocked: true, findings: [{ code: 'github-token', category: 'credential' }] }
+  ];
+  for (const item of contradictory) {
+    const res = guardOutboundQuery('graph theory', { scan: () => item });
+    assert.equal(res.allowed, false, JSON.stringify(item));
+    assert.equal(res.reason, 'scanner-failed', JSON.stringify(item));
+  }
+
+  const typeCorruptions = [
+    { status: 123, blocked: false, findings: [] },
+    { status: 'clear', blocked: 'false', findings: [] },
+    { status: 'clear', blocked: false, findings: 'none' },
+    { status: 'clear', blocked: false, findings: [], truncated: 'yes' },
+    { status: 'clear', blocked: false, findings: [], truncated: 1 },
+    { status: 'clear', blocked: false, findings: [], unscanned: 'none' },
+    { status: 'clear', blocked: false, findings: [], unscanned: null },
+    { status: 'clear', blocked: false, findings: [], unscanned: [null] },
+    { status: 'clear', blocked: false, findings: [], unscanned: ['binary-content'] },
+    { status: 'clear', blocked: false, findings: [], unmatchable: 'none' }
+  ];
+  for (const item of typeCorruptions) {
+    const res = guardOutboundQuery('graph theory', { scan: () => item });
+    assert.equal(res.allowed, false, JSON.stringify(item));
+    assert.equal(res.reason, 'scanner-failed', JSON.stringify(item));
+  }
+
+  // Consistent incomplete scan is refused with scan-incomplete.
+  const consistentIncomplete = guardOutboundQuery('graph theory', {
+    scan: () => ({ status: 'incomplete', blocked: true, findings: [], truncated: true, unscanned: [{ reason: 'binary-content' }] })
+  });
+  assert.equal(consistentIncomplete.allowed, false);
+  assert.equal(consistentIncomplete.reason, 'scan-incomplete');
+});
+
 test('only the query text is handed to the scanner, as one broker payload, with the private reference', () => {
   let seen;
   const memories = [{ id: 'm', content: 'x'.repeat(80) }];
@@ -123,13 +179,76 @@ test('only the query text is handed to the scanner, as one broker payload, with 
   assert.equal(seen.options.memories, memories);
 });
 
-test('findings from a custom scanner are reduced to code and category', () => {
+test('findings from a custom scanner are reduced to code and category, dropping hints and locations', () => {
   const result = guardOutboundQuery('graph neural networks', {
-    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: 'github-token', category: 'credential', hint: TOKEN, line: 1, column: 2, snippet: TOKEN }, null, { code: 5 }] })
+    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: 'github-token', category: 'credential', hint: TOKEN, line: 1, column: 2, snippet: TOKEN }] })
   });
+  assert.equal(result.allowed, false);
   assert.equal(result.reason, 'scan-blocked');
   assert.deepEqual(result.findings.map((f) => ({ ...f })), [{ code: 'github-token', category: 'credential' }]);
   assert.equal(JSON.stringify(result).includes(TOKEN), false);
+});
+
+test('findings with synthetic markers, arbitrary strings, query text or corrupted entries fail closed without leakage', () => {
+  const secretMarker = 'SYNTHETIC_MARKER_DO_NOT_LEAK_98765';
+  const secretQuery = 'sensitive query about project mercury';
+
+  // Unknown code or synthetic marker in code
+  const codeMarkerRes = guardOutboundQuery(secretQuery, {
+    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: secretMarker, category: 'credential' }] })
+  });
+  assert.equal(codeMarkerRes.allowed, false);
+  assert.equal(codeMarkerRes.reason, 'scanner-failed');
+  assert.deepEqual(codeMarkerRes.findings, []);
+  assert.equal(JSON.stringify(codeMarkerRes).includes(secretMarker), false);
+  assert.equal(JSON.stringify(codeMarkerRes).includes(secretQuery), false);
+
+  // Unknown category or synthetic marker in category
+  const catMarkerRes = guardOutboundQuery(secretQuery, {
+    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: 'github-token', category: secretMarker }] })
+  });
+  assert.equal(catMarkerRes.allowed, false);
+  assert.equal(catMarkerRes.reason, 'scanner-failed');
+  assert.deepEqual(catMarkerRes.findings, []);
+  assert.equal(JSON.stringify(catMarkerRes).includes(secretMarker), false);
+
+  // Query fragment passed into code or category
+  const queryInCodeRes = guardOutboundQuery(secretQuery, {
+    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: secretQuery, category: 'credential' }] })
+  });
+  assert.equal(queryInCodeRes.allowed, false);
+  assert.equal(queryInCodeRes.reason, 'scanner-failed');
+  assert.deepEqual(queryInCodeRes.findings, []);
+  assert.equal(JSON.stringify(queryInCodeRes).includes(secretQuery), false);
+
+  // Mismatched code and category (e.g. credential code claiming local-path category)
+  const mismatchRes = guardOutboundQuery('graph theory', {
+    scan: () => ({ status: 'blocked', blocked: true, findings: [{ code: 'github-token', category: 'local-path' }] })
+  });
+  assert.equal(mismatchRes.allowed, false);
+  assert.equal(mismatchRes.reason, 'scanner-failed');
+
+  // Corrupted / malformed finding items: null, numbers, control chars, overly long strings
+  for (const badFinding of [
+    null,
+    undefined,
+    5,
+    'not-an-object',
+    {},
+    { code: 5, category: 'credential' },
+    { code: 'github-token', category: 5 },
+    { code: '', category: 'credential' },
+    { code: 'github-token\u0000', category: 'credential' },
+    { code: 'github-token', category: 'credential\n' },
+    { code: 'a'.repeat(60), category: 'credential' }
+  ]) {
+    const res = guardOutboundQuery('graph theory', {
+      scan: () => ({ status: 'blocked', blocked: true, findings: [badFinding] })
+    });
+    assert.equal(res.allowed, false);
+    assert.equal(res.reason, 'scanner-failed');
+    assert.deepEqual(res.findings, []);
+  }
 });
 
 test('the module is pure: it imports only the scanner and touches no network, disk, process or environment', () => {

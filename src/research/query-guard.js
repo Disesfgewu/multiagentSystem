@@ -48,6 +48,32 @@ const REASONS = Object.freeze([
   'allowed'
 ]);
 
+// Whitelist of valid finding codes to categories produced by the publication scanner detectors.
+// Any finding whose code or category is not on this list, or contains control characters, is
+// rejected with scanner-failed so synthetic markers or query fragments never leak through findings.
+const KNOWN_FINDINGS = Object.freeze({
+  'private-key-block': 'credential',
+  'anthropic-key': 'credential',
+  'api-key': 'credential',
+  'github-token': 'credential',
+  'cloud-access-key': 'credential',
+  'slack-token': 'credential',
+  jwt: 'credential',
+  'bearer-token': 'credential',
+  'credential-assignment': 'credential',
+  'email-address': 'identifier',
+  uuid: 'identifier',
+  'home-path': 'local-path',
+  'local-absolute-path': 'local-path',
+  'known-value': 'known-value',
+  'memory-fragment': 'private-fragment',
+  'rule-fragment': 'private-fragment',
+  'sensitive-file-name': 'file-name'
+});
+
+const KNOWN_CODES = new Set(Object.keys(KNOWN_FINDINGS));
+const KNOWN_CATEGORIES = new Set(Object.values(KNOWN_FINDINGS));
+
 const result = (allowed, reason, categories = []) => Object.freeze({
   allowed,
   reason,
@@ -107,21 +133,93 @@ function guardOutboundQuery(query, options = {}) {
       rules: opts.rules,
       knownValues: opts.knownValues
     });
-    if (!scanned || typeof scanned !== 'object' || typeof scanned.status !== 'string' || !Array.isArray(scanned.findings)) {
+    if (!scanned || typeof scanned !== 'object' || Array.isArray(scanned)) {
       return refuse('scanner-failed');
     }
-    const findings = scanned.findings
-      .filter((finding) => finding && typeof finding.code === 'string' && typeof finding.category === 'string')
-      .map((finding) => Object.freeze({ code: finding.code, category: finding.category }));
-    if (scanned.status === 'error') return refuse('scanner-failed');
-    if (scanned.status === 'blocked' || scanned.findings.length > 0) return refuse('scan-blocked', findings);
-    if (scanned.status === 'incomplete') return refuse('scan-incomplete', findings);
-    if (scanned.status !== 'clear' || scanned.blocked !== false) return refuse('scanner-failed');
-    return result(true, 'allowed');
+    if (typeof scanned.status !== 'string' || typeof scanned.blocked !== 'boolean' || !Array.isArray(scanned.findings)) {
+      return refuse('scanner-failed');
+    }
+    if (scanned.truncated !== undefined && typeof scanned.truncated !== 'boolean') {
+      return refuse('scanner-failed');
+    }
+    if (scanned.unscanned !== undefined && !Array.isArray(scanned.unscanned)) {
+      return refuse('scanner-failed');
+    }
+    if (scanned.unmatchable !== undefined && !Array.isArray(scanned.unmatchable)) {
+      return refuse('scanner-failed');
+    }
+
+    const findings = [];
+    for (const finding of scanned.findings) {
+      if (!finding || typeof finding !== 'object' || Array.isArray(finding)) {
+        return refuse('scanner-failed');
+      }
+      if (typeof finding.code !== 'string' || typeof finding.category !== 'string') {
+        return refuse('scanner-failed');
+      }
+      if (finding.code.length === 0 || finding.code.length > 50 || finding.category.length === 0 || finding.category.length > 50) {
+        return refuse('scanner-failed');
+      }
+      if (CONTROL.test(finding.code) || CONTROL.test(finding.category)) {
+        return refuse('scanner-failed');
+      }
+      if (!KNOWN_CODES.has(finding.code) || !KNOWN_CATEGORIES.has(finding.category)) {
+        return refuse('scanner-failed');
+      }
+      if (KNOWN_FINDINGS[finding.code] !== finding.category) {
+        return refuse('scanner-failed');
+      }
+      findings.push(Object.freeze({ code: finding.code, category: finding.category }));
+    }
+
+    const isTruncated = scanned.truncated === true;
+    const hasUnscanned = Array.isArray(scanned.unscanned) && scanned.unscanned.length > 0;
+    if (Array.isArray(scanned.unscanned)) {
+      for (const item of scanned.unscanned) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return refuse('scanner-failed');
+        }
+      }
+    }
+
+    if (scanned.status === 'error') {
+      return refuse('scanner-failed');
+    }
+
+    if (scanned.status === 'clear') {
+      if (scanned.blocked !== false || findings.length > 0 || isTruncated || hasUnscanned) {
+        return refuse('scanner-failed');
+      }
+      return result(true, 'allowed');
+    }
+
+    if (scanned.status === 'blocked') {
+      if (scanned.blocked !== true || findings.length === 0) {
+        return refuse('scanner-failed');
+      }
+      return refuse('scan-blocked', findings);
+    }
+
+    if (scanned.status === 'incomplete') {
+      if (scanned.blocked !== true || findings.length > 0) {
+        return refuse('scanner-failed');
+      }
+      return refuse('scan-incomplete', findings);
+    }
+
+    return refuse('scanner-failed');
   } catch {
     // Never pass on an error, and never include its message (it could hold the query).
     return refuse('scanner-failed');
   }
 }
 
-module.exports = { guardOutboundQuery, MAX_QUERY_CHARS, LIMITATIONS, REASONS };
+module.exports = {
+  guardOutboundQuery,
+  MAX_QUERY_CHARS,
+  LIMITATIONS,
+  REASONS,
+  KNOWN_FINDINGS,
+  KNOWN_CODES,
+  KNOWN_CATEGORIES
+};
