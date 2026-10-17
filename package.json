@@ -58,6 +58,7 @@
     "onView:multiagentSystem.toolsSetupView",
     "onCommand:multiagentSystem.setup.refresh",
     "onCommand:multiagentSystem.setup.retryGh",
+    "onCommand:multiagentSystem.setup.retryCodex",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
@@ -130,6 +131,11 @@
       {
         "command": "multiagentSystem.setup.retryGh",
         "title": "Multiagent: Retry Verified GitHub CLI Setup",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "multiagentSystem.setup.retryCodex",
+        "title": "Multiagent: Retry Verified Codex CLI Setup",
         "icon": "$(cloud-download)"
       },
       {
@@ -261,7 +267,8 @@
         { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@1" },
         { "command": "multiagentSystem.roles.edit", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
         { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
-        { "command": "multiagentSystem.setup.retryGh", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh", "group": "inline" }
+        { "command": "multiagentSystem.setup.retryGh", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh", "group": "inline" },
+        { "command": "multiagentSystem.setup.retryCodex", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupCodex", "group": "inline" }
       ]
     }
   },
