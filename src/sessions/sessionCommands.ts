@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
@@ -10,6 +10,7 @@ import { builtIn } from '../providers/registry';
 import { normalizeRequestedModel, supportsModelSelection } from '../providers/modelSelection';
 import { PrivateSessionSnapshot, sessionWorkspaceKey } from './privateSnapshot';
 import { privateStorage } from '../storage/storageCommands';
+import { prepareInstructionSnapshot, isSnapshotStale, cleanupSessionPlan } from './managedInstructions';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { selectRoleProfiles } = require('../roles/account-choices') as {
@@ -97,9 +98,30 @@ function workspaceFolder(): string | undefined {
   return folders.length === 1 ? folders[0].uri.fsPath : undefined;
 }
 
+export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
+
+class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
+  private readonly docs = new Map<string, string>();
+  private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this.emitter.event;
+
+  set(id: string, content: string): vscode.Uri {
+    this.docs.set(id, content);
+    const uri = vscode.Uri.from({ scheme: INSTRUCTION_PREVIEW_SCHEME, path: '/instructions.txt', query: id });
+    this.emitter.fire(uri);
+    return uri;
+  }
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return this.docs.get(uri.query) ?? 'No instructions available or session closed.\n';
+  }
+}
+
 export function registerSessionCommands(context: vscode.ExtensionContext): SessionCommands {
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
+  const previewProvider = new InstructionPreviewProvider();
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(INSTRUCTION_PREVIEW_SCHEME, previewProvider));
   // One quota-dispatch reservation per account-bound session, including those with no limits, released
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
   // either has no account assigned, is still awaiting handoff, or was already released.
@@ -124,6 +146,16 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
     },
     terminalTitle,
+    detectShellType: () => {
+      const shell = (vscode.env.shell ?? '').toLowerCase();
+      if (shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe') || shell.endsWith('pwsh')) {
+        return 'powershell';
+      }
+      if (shell.endsWith('cmd.exe') || shell.endsWith('cmd')) {
+        return 'cmd';
+      }
+      return process.platform === 'win32' ? 'powershell' : 'posix';
+    },
     onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved. Existing saved records were left untouched. These sessions remain in this window only; reload the workspace before trying to save again.'),
     onPersistenceBlocked: () =>
       void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
@@ -230,7 +262,74 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
         env = prepared.env;
       }
+      let instructions: any;
+      const targetSessionId = randomUUID();
+      const openedStorage = await privateStorage()?.use();
+      if (!openedStorage?.ok) {
+        if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
+          const reason = openedStorage?.reason ?? 'storage-unavailable';
+          if (release) { release(); release = undefined; }
+          return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
+        }
+      } else {
+        const store = openedStorage.store as any;
+        const privateDir = store.dir;
+        const project = await resolveProject(cwd);
+        const prep = await prepareInstructionSnapshot({
+          store,
+          repoRoot: cwd,
+          repoId: project.repoId,
+          provider,
+          roleGroupId: input.roleGroupId,
+          accountProfileId: input.accountProfileId,
+          requestedModel,
+          targetSessionId,
+          privateDir
+        });
+        if (!prep.ok) {
+          if (release) { release(); release = undefined; }
+          return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
+        }
+        if (interactive && prep.digest) {
+          const answer = await vscode.window.showInformationMessage(
+            `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
+            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nInstructions written exclusively to managed session storage.` },
+            'Start Agent',
+            'View Instructions'
+          );
+          if (!answer) {
+            cleanupSessionPlan(prep.plan);
+            if (release) { release(); release = undefined; }
+            return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          }
+          if (answer === 'View Instructions') {
+            const uri = previewProvider.set(targetSessionId, prep.summaryText);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: true });
+            const proceed = await vscode.window.showInformationMessage(
+              'Confirm launching agent terminal with these effective instructions?',
+              { modal: true },
+              'Start Agent'
+            );
+            if (proceed !== 'Start Agent') {
+              cleanupSessionPlan(prep.plan);
+              if (release) { release(); release = undefined; }
+              return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+            }
+          }
+        }
+        const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: cwd });
+        if (staleCheck.stale) {
+          cleanupSessionPlan(prep.plan);
+          if (release) { release(); release = undefined; }
+          const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please start again.`;
+          if (interactive) void vscode.window.showErrorMessage(msg);
+          return { ok: false, code: 'stale-instructions', message: msg };
+        }
+        instructions = prep;
+      }
       const session = await manager.start({
+        id: targetSessionId,
         provider,
         name: input.name ?? '',
         cwd,
@@ -238,7 +337,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         roleGroupId: input.roleGroupId,
         requestedModel,
         env,
-        launch: input.launch
+        launch: input.launch,
+        instructions
       });
       if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       changed.fire();
@@ -262,7 +362,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       sessions.map((session) => ({
         label: session.name,
         description: `${session.provider} · ${session.stateLabel}`,
-        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · ${session.worktree}`,
+        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'} · ${session.worktree}`,
         session
       })),
       { placeHolder: placeholder, matchOnDescription: true, matchOnDetail: true }
@@ -310,8 +410,76 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           }
           env = prepared.env;
         }
+
+        let instructions: any;
+        const newSessionId = randomUUID();
+        const openedStorage = await privateStorage()?.use();
+        if (!openedStorage?.ok) {
+          if (prior && prior.roleGroupId !== 'unassigned') {
+            const reason = openedStorage?.reason ?? 'storage-unavailable';
+            if (release) { release(); release = undefined; }
+            return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
+          }
+        } else if (prior) {
+          const store = openedStorage.store as any;
+          const privateDir = store.dir;
+          const project = await resolveProject(prior.worktree);
+          const prep = await prepareInstructionSnapshot({
+            store,
+            repoRoot: prior.worktree,
+            repoId: project.repoId,
+            provider: prior.provider,
+            roleGroupId: prior.roleGroupId !== 'unassigned' ? prior.roleGroupId : undefined,
+            accountProfileId: prior.accountProfileId !== 'unassigned' ? prior.accountProfileId : undefined,
+            requestedModel: prior.requestedModel,
+            targetSessionId: newSessionId,
+            privateDir
+          });
+          if (!prep.ok) {
+            if (release) { release(); release = undefined; }
+            return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
+          }
+          if (interactive && prep.digest) {
+            const answer = await vscode.window.showInformationMessage(
+              `Reopening session with effective instructions (${prep.digest.slice(0, 16)}...).`,
+              { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}` },
+              'Reopen Session',
+              'View Instructions'
+            );
+            if (!answer) {
+              cleanupSessionPlan(prep.plan);
+              if (release) { release(); release = undefined; }
+              return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+            }
+            if (answer === 'View Instructions') {
+              const uri = previewProvider.set(newSessionId, prep.summaryText);
+              const doc = await vscode.workspace.openTextDocument(uri);
+              await vscode.window.showTextDocument(doc, { preview: true });
+              const proceed = await vscode.window.showInformationMessage(
+                'Confirm reopening agent terminal with these effective instructions?',
+                { modal: true },
+                'Reopen Session'
+              );
+              if (proceed !== 'Reopen Session') {
+                cleanupSessionPlan(prep.plan);
+                if (release) { release(); release = undefined; }
+                return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+              }
+            }
+          }
+          const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: prior.worktree });
+          if (staleCheck.stale) {
+            cleanupSessionPlan(prep.plan);
+            if (release) { release(); release = undefined; }
+            const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please reopen again.`;
+            if (interactive) void vscode.window.showErrorMessage(msg);
+            return { ok: false, code: 'stale-instructions', message: msg };
+          }
+          instructions = prep;
+        }
+
         try {
-          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown, env });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown, env, instructions });
         } catch (error) {
           // The earlier terminal may still be running in the folder: ask before starting a second one.
           if (!interactive || (error as { code?: string })?.code !== 'confirm-unknown-reopen') throw error;
@@ -321,7 +489,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             'Open Anyway'
           );
           if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-          session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true, env });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown: true, env, instructions });
         }
         if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       }
@@ -339,11 +507,29 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     if (input.interactive === false) return { ok: true, sessions: manager.list() };
     const picked = await pickSession('Sessions in this window (state is shown only when there is evidence)', () => true);
     if (!picked) return { ok: true, sessions: manager.list() };
-    const actions = picked.terminalOpen ? ['Focus Terminal', 'Stop Terminal'] : ['Reopen as New Session'];
+    const actions = picked.terminalOpen
+      ? ['Focus Terminal', 'Stop Terminal', 'View Effective Instructions']
+      : ['Reopen as New Session', 'View Effective Instructions'];
     const choice = await vscode.window.showQuickPick(actions, { placeHolder: `${picked.name}: ${picked.stateLabel}` });
     if (choice === 'Focus Terminal') await act('focus', { id: picked.id });
     else if (choice === 'Stop Terminal') await act('stop', { id: picked.id });
     else if (choice === 'Reopen as New Session') await act('reopen', { id: picked.id });
+    else if (choice === 'View Effective Instructions') {
+      const text = [
+        'PRIVATE — local session instructions snapshot. Do not publish this document.',
+        `Session ID: ${picked.id}`,
+        `Provider: ${picked.provider}`,
+        `Role group: ${picked.roleGroupId}`,
+        `Account: ${picked.accountProfileId}`,
+        `Requested model: ${picked.requestedModel ?? 'CLI default'}`,
+        `Instruction delivery: ${picked.instructionStatusLabel ?? 'unknown'}`,
+        `Instruction digest: ${picked.instructionDigest ?? 'none'}`,
+        `Method: ${picked.instructionMethod ?? 'none'}`
+      ].join('\n');
+      const uri = previewProvider.set(picked.id, text);
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc, { preview: true });
+    }
     return { ok: true, sessions: manager.list() };
   }
 

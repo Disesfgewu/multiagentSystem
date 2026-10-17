@@ -1,0 +1,122 @@
+'use strict';
+
+/**
+ * Shell command line formatting and quoting.
+ *
+ * This module is pure: it imports no vscode, starts no process, and makes no network calls.
+ * Its purpose is to format command lines safely so that paths with spaces, symbols, and
+ * special characters can be typed into a terminal shell without breaking or leaking,
+ * while strictly rejecting any control characters, newlines or carriage returns that could
+ * cause command injection.
+ */
+
+// Characters allowed in raw unquoted arguments across POSIX and Windows shells.
+const SAFE_UNQUOTED = /^[A-Za-z0-9._=:/@+-]+$/;
+
+// Control characters, null byte, carriage return and newline.
+// eslint-disable-next-line no-control-regex
+const UNSAFE_CONTROL = /[\u0000-\u001f\u007f]/;
+
+export type ShellType = 'posix' | 'powershell' | 'cmd';
+
+export interface ShellFormatOptions {
+  platform?: NodeJS.Platform;
+  shellType?: ShellType;
+}
+
+function resolveShellType(options: ShellFormatOptions = {}): ShellType {
+  if (options.shellType) return options.shellType;
+  const platform = options.platform ?? process.platform;
+  return platform === 'win32' ? 'powershell' : 'posix';
+}
+
+function assertNoControlChars(value: string, fieldName: string): void {
+  if (typeof value !== 'string') {
+    throw new TypeError(`${fieldName} must be a string`);
+  }
+  if (UNSAFE_CONTROL.test(value)) {
+    throw new TypeError(`Unsafe control characters or newlines in ${fieldName}`);
+  }
+}
+
+/**
+ * Quotes an argument for POSIX shells (sh, bash, zsh).
+ * Single quotes preserve the literal value of all characters within them.
+ * Internal single quotes are escaped via: '\''
+ */
+export function quotePosix(arg: string): string {
+  assertNoControlChars(arg, 'argument');
+  if (arg === '') return "''";
+  if (SAFE_UNQUOTED.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Quotes an argument for PowerShell (powershell.exe, pwsh).
+ * In PowerShell, single-quoted strings are verbatim literals.
+ * Internal single quotes are escaped by doubling them: ''
+ */
+export function quotePowerShell(arg: string): string {
+  assertNoControlChars(arg, 'argument');
+  if (arg === '') return "''";
+  if (SAFE_UNQUOTED.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Quotes an argument for Windows Command Prompt (cmd.exe).
+ * In cmd, double quotes are used: "..."
+ * Internal double quotes are escaped as: ""
+ */
+export function quoteCmd(arg: string): string {
+  assertNoControlChars(arg, 'argument');
+  if (arg === '') return '""';
+  if (SAFE_UNQUOTED.test(arg)) return arg;
+  // If argument contains % or ^ which cmd expands even inside quotes, reject for safety
+  if (/[%^]/.test(arg)) {
+    throw new TypeError('Unsafe cmd characters in argument');
+  }
+  return `"${arg.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Quotes an argument based on the specified shell type.
+ */
+export function quoteShellArg(arg: string, shellType: ShellType = 'posix'): string {
+  if (shellType === 'powershell') return quotePowerShell(arg);
+  if (shellType === 'cmd') return quoteCmd(arg);
+  return quotePosix(arg);
+}
+
+/**
+ * Safely formats an executable and its argument list into a single command line string.
+ */
+export function formatShellCommandLine(
+  executable: string,
+  args: string[] = [],
+  options: ShellFormatOptions = {}
+): string {
+  assertNoControlChars(executable, 'executable');
+  if (executable.trim() === '') {
+    throw new TypeError('executable must not be empty');
+  }
+
+  const shellType = resolveShellType(options);
+  const quotedArgs = args.map((arg) => quoteShellArg(arg, shellType));
+
+  if (shellType === 'powershell') {
+    const isQuotedExe = !SAFE_UNQUOTED.test(executable);
+    const formattedExe = isQuotedExe ? quotePowerShell(executable) : executable;
+    const prefix = isQuotedExe ? '& ' : '';
+    return `${prefix}${formattedExe}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`;
+  }
+
+  if (shellType === 'cmd') {
+    const formattedExe = quoteCmd(executable);
+    return `${formattedExe}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`;
+  }
+
+  // POSIX (default)
+  const formattedExe = quotePosix(executable);
+  return `${formattedExe}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`;
+}

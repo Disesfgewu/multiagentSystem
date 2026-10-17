@@ -7,7 +7,7 @@ import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
-import { runSessionPersistenceChecks } from './sessionPersistence';
+import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
@@ -660,6 +660,7 @@ export async function run(): Promise<void> {
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
   await runBroadcastChecks(workspace);
+  console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
