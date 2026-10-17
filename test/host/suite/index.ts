@@ -553,11 +553,23 @@ export async function run(): Promise<void> {
   const visibleFile = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspace, 'file.txt')));
   await vscode.window.showTextDocument(visibleFile, vscode.ViewColumn.One);
   const before = new Set(vscode.window.terminals);
-  await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
-  const created = await waitFor(() => {
-    const added = vscode.window.terminals.filter((terminal) => !before.has(terminal));
-    return added.length >= EXPECTED_TITLES.length ? added : undefined;
-  }, 20000);
+  const realShowInformationMessage = vscode.window.showInformationMessage;
+  const infoMessages: string[] = [];
+  (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
+    infoMessages.push(message);
+    return (realShowInformationMessage as (...args: unknown[]) => Thenable<unknown>)(message, ...rest);
+  }) as typeof vscode.window.showInformationMessage;
+  let created: vscode.Terminal[];
+  try {
+    await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    created = await waitFor(() => {
+      const added = vscode.window.terminals.filter((terminal) => !before.has(terminal));
+      return added.length >= EXPECTED_TITLES.length ? added : undefined;
+    }, 20000);
+    assert.ok(infoMessages.some((message) => /Drag any terminal's tab/.test(message)), 'a fresh 2×2 group explains that the terminals can be dragged to rearrange them');
+  } finally {
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
+  }
 
   try {
     assert.deepEqual(created.map((terminal) => terminal.name).sort(), [...EXPECTED_TITLES].sort());
@@ -587,8 +599,18 @@ export async function run(): Promise<void> {
     const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
     await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
     const countBeforeRepeat = vscode.window.terminals.length;
-    await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    const repeatMessages: string[] = [];
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
+      repeatMessages.push(message);
+      return (realShowInformationMessage as (...args: unknown[]) => Thenable<unknown>)(message, ...rest);
+    }) as typeof vscode.window.showInformationMessage;
+    try {
+      await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+    } finally {
+      (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
+    }
     assert.equal(vscode.window.terminals.length, countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
+    assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
   } finally {
