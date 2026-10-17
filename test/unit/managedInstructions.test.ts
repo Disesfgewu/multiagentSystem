@@ -359,3 +359,117 @@ test('SessionManager launches native terminal with safe injection arguments and 
   manager.stop(session.id);
   assert.equal(fs.existsSync(fileArg), false, 'injection file must be deleted upon session stop');
 });
+
+test('SessionManager cliExited cleans up instruction file and confirm-unknown-reopen preserves prepared instruction file for retry', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-sm-recovery-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = new FakeStore(privateDir);
+  store.put('roleGroups', 'worker-1', makeRoleRecord('worker-1', 1, 'worker'));
+
+  class SyntheticTerminal implements TerminalHandle {
+    sent: Array<{ text: string; newline?: boolean }> = [];
+    shown = 0;
+    disposed = 0;
+    constructor(readonly name: string, readonly cwd: string, readonly env?: Record<string, string | null>) {}
+    show() { this.shown += 1; }
+    sendText(text: string, newline?: boolean) { this.sent.push({ text, newline }); }
+    dispose() { this.disposed += 1; }
+  }
+
+  let savedRecords: any[] = [];
+  const terminals: SyntheticTerminal[] = [];
+  const makeManager = () => new SessionManager<SyntheticTerminal>({
+    store: {
+      load: async () => JSON.parse(JSON.stringify(savedRecords)),
+      save: async (records) => { savedRecords = JSON.parse(JSON.stringify(records)); }
+    },
+    terminals: {
+      create: (options) => {
+        const term = new SyntheticTerminal(options.name, options.cwd, options.env);
+        terminals.push(term);
+        return term;
+      }
+    },
+    providers: { claude: 'claude' },
+    resolveProject: async () => ({ repoId: 'owner/repo' }),
+    directoryExists: (p) => fs.existsSync(p)
+  });
+
+  const manager = makeManager();
+  await manager.initialize();
+
+  const prep1 = await prepareInstructionSnapshot({
+    store,
+    repoRoot,
+    repoId: 'owner/repo',
+    provider: 'claude',
+    roleGroupId: 'worker-1',
+    targetSessionId: 'session-exit-12345678',
+    privateDir
+  });
+  assert.equal(prep1.ok, true);
+  if (!prep1.ok) return;
+
+  const s1 = await manager.start({
+    id: 'session-exit-12345678',
+    provider: 'claude',
+    name: 'CLI Exited Session',
+    cwd: repoRoot,
+    roleGroupId: 'worker-1',
+    instructions: prep1
+  });
+  const file1 = prep1.argv[1];
+  assert.equal(fs.existsSync(file1), true);
+
+  // When CLI exits, its instruction file is cleaned up and status label reflects exit
+  const exited = manager.cliExited(s1.id);
+  assert.equal(exited.state, 'cli-exited');
+  assert.equal(fs.existsSync(file1), false, 'instruction file is cleaned up when CLI exits');
+  assert.match(exited.instructionStatusLabel ?? '', /CLI exited/);
+
+  // Now simulate restart: restore sessions into a fresh manager
+  const restoredManager = makeManager();
+  await restoredManager.initialize();
+  const restored = restoredManager.get(s1.id);
+  assert.equal(restored?.state, 'unknown');
+
+  const prep2 = await prepareInstructionSnapshot({
+    store,
+    repoRoot,
+    repoId: 'owner/repo',
+    provider: 'claude',
+    roleGroupId: 'worker-1',
+    targetSessionId: 'session-reopen-87654321',
+    privateDir
+  });
+  assert.equal(prep2.ok, true);
+  if (!prep2.ok) return;
+  const file2 = prep2.argv[1];
+  assert.equal(fs.existsSync(file2), true);
+
+  // Attempting reopen without acknowledgeUnknown throws confirm-unknown-reopen but MUST NOT delete prep2.plan
+  await assert.rejects(
+    restoredManager.reopen(s1.id, { newId: 'session-reopen-87654321', instructions: prep2 }),
+    (err: { code?: string }) => err.code === 'confirm-unknown-reopen'
+  );
+  assert.equal(fs.existsSync(file2), true, 'prepared instruction file survives confirm-unknown-reopen so retry can use it');
+
+  // Retrying with acknowledgeUnknown: true succeeds and uses the preserved instruction file
+  const reopened = await restoredManager.reopen(s1.id, {
+    newId: 'session-reopen-87654321',
+    acknowledgeUnknown: true,
+    instructions: prep2
+  });
+  assert.equal(reopened.id, 'session-reopen-87654321');
+  assert.equal(reopened.state, 'launch-requested');
+  assert.equal(fs.existsSync(file2), true);
+
+  restoredManager.stop(reopened.id);
+  assert.equal(fs.existsSync(file2), false);
+});
+

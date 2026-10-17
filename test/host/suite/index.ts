@@ -111,6 +111,26 @@ async function sessionFlow(workspace: string): Promise<void> {
   await waitForAsync(async () => (terminalNamed('Session B') ? undefined : true), 10000);
   assert.equal((await command('multiagentSystem.sessions.stop', { id: b.session?.id })).code, 'terminal-not-open');
 
+  // Interactive focus on a closed session offers 'Reopen as New Session' and reopens it cleanly.
+  const realShowWarningMessage = vscode.window.showWarningMessage;
+  try {
+    (vscode.window as { showWarningMessage: typeof vscode.window.showWarningMessage }).showWarningMessage = (async (message: string, ...rest: unknown[]) => {
+      if (typeof message === 'string' && message.includes('no open terminal in this window')) {
+        return 'Reopen as New Session';
+      }
+      return (realShowWarningMessage as any)(message, ...rest);
+    }) as typeof vscode.window.showWarningMessage;
+    const focusedClosed = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.focus', { id: b.session?.id, interactive: true, launch: false });
+    assert.equal(focusedClosed.ok, true, 'focusing a closed session interactively and choosing Reopen as New Session reopens it');
+    assert.notEqual(focusedClosed.session?.id, b.session?.id, 'reopened session has a new id');
+    assert.equal(focusedClosed.session?.terminalOpen, true);
+    if (focusedClosed.session?.id) {
+      await command('multiagentSystem.sessions.stop', { id: focusedClosed.session.id });
+    }
+  } finally {
+    (vscode.window as { showWarningMessage: typeof vscode.window.showWarningMessage }).showWarningMessage = realShowWarningMessage;
+  }
+
   for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name.startsWith('Multiagent: Session'))) terminal.dispose();
   console.log('host smoke: session start / close event / reopen as new session / focus / stop verified with real terminals');
 }
