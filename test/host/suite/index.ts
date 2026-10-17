@@ -172,17 +172,31 @@ async function accountFlow(workspace: string): Promise<void> {
   });
   assert.deepEqual([wrongProvider.ok, wrongProvider.code], [false, 'provider-mismatch']);
 
-  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string } }>('multiagentSystem.sessions.start', {
+  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string; requestedModel: string | null } }>('multiagentSystem.sessions.start', {
     interactive: false, provider: 'claude', name: 'Account Bound Session', cwd: workspace,
-    accountProfileId: created.profile.id, launch: false
+    accountProfileId: created.profile.id, requestedModel: 'sonnet', launch: false
   });
   assert.equal(started.ok, true);
   assert.equal(started.session?.accountProfileId, created.profile.id);
+  assert.equal(started.session?.requestedModel, 'sonnet');
   const orderedOverview = (await overviewTreeForTests().getChildren()) ?? [];
   const agentsHeading = orderedOverview.findIndex((entry) => entry.label === 'Agents');
   const accountsHeading = orderedOverview.findIndex((entry) => entry.label === 'Accounts');
   assert.ok(agentsHeading >= 0 && accountsHeading > agentsHeading, 'running agents remain ahead of account usage in the default overview');
+  const modelAgent = orderedOverview.find((entry) => entry.label === 'Account Bound Session');
+  assert.match(String(modelAgent?.tooltip), /Requested model: sonnet \(not confirmed\)/);
+  assert.match(String(modelAgent?.tooltip), /Actual model: unknown/);
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
+  const reopenedModel = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; requestedModel: string | null } }>('multiagentSystem.sessions.reopen', { interactive: false, id: started.session?.id, launch: false });
+  assert.equal(reopenedModel.ok, true);
+  assert.equal(reopenedModel.session?.requestedModel, 'sonnet');
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: reopenedModel.session?.id });
+  const terminalCount = vscode.window.terminals.length;
+  for (const [provider, requestedModel, expected] of [['claude', 'bad;command', 'invalid-model'], ['agy', 'example', 'model-selection-unsupported']]) {
+    const rejected = await vscode.commands.executeCommand<{ ok: boolean; code: string }>('multiagentSystem.sessions.start', { interactive: false, provider, requestedModel, name: 'Rejected model', cwd: workspace, launch: false });
+    assert.deepEqual([rejected.ok, rejected.code], [false, expected]);
+  }
+  assert.equal(vscode.window.terminals.length, terminalCount, 'invalid or unsupported model selection opens no terminal');
 
   // The sign-in check with no CLI available: the identity stays unknown, with a reason, and nothing is shown as ready.
   const emptyPath = fs.mkdtempSync(path.join(path.dirname(workspace), 'multiagent-empty-path-'));
