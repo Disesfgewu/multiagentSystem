@@ -81,6 +81,16 @@ function validateSkill(raw, options = {}) {
   const promptInstructions = limitedText(raw.promptInstructions, LIMITS.instructions, 'skill-instructions-invalid');
   const academicEthics = limitedText(raw.academicEthics, LIMITS.ethics, 'skill-ethics-invalid');
 
+  const { checkPromptInjection } = require('./ethics');
+  if (
+    checkPromptInjection(name).hasInjection ||
+    checkPromptInjection(summary).hasInjection ||
+    checkPromptInjection(promptInstructions).hasInjection ||
+    checkPromptInjection(academicEthics).hasInjection
+  ) {
+    fail('skill-prompt-injection-detected');
+  }
+
   if (!Array.isArray(raw.allowedTools)) fail('allowed-tools-invalid');
   const allowedTools = [];
 

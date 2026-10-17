@@ -36,6 +36,10 @@ const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates
 const { toolHelp, levelHelp, fieldHelp, ENFORCEMENT_NOTE } = require('./field-help') as {
   toolHelp(tool: string): string | null; levelHelp(level: string): string | null; fieldHelp(field: string): string | null; ENFORCEMENT_NOTE: string;
 };
+const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
+  checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
+  validateResearchDeliverable(deliverable: unknown, options?: { target?: string }): { ok: boolean; code: string };
+};
 
 type RuleLayer = 'platform' | 'user' | 'project' | 'roleGroup' | 'task';
 type Rule = { id: string; type: 'instruction' | 'forbid' | 'require'; text?: string; key?: string; version: number };
@@ -88,6 +92,26 @@ async function store(showError = true): Promise<Store | undefined> {
 }
 
 export async function saveRoleRecord(record: RoleRecord, expectedRevision?: number): Promise<{ ok: boolean; reason?: string }> {
+  if (!record || typeof record !== 'object') return { ok: false, reason: 'invalid-role-record' };
+  if ((record as any).researchFindings !== undefined) {
+    const deliverableCheck = validateResearchDeliverable((record as any).researchFindings, { target: 'instructions' });
+    if (!deliverableCheck.ok) return { ok: false, reason: deliverableCheck.code };
+  }
+  if (typeof record.group?.name === 'string' && checkPromptInjection(record.group.name).hasInjection) {
+    return { ok: false, reason: 'prompt-injection-detected' };
+  }
+  for (const rule of Array.isArray(record.group?.rules) ? record.group.rules : []) {
+    if (rule?.type === 'instruction' && typeof rule.text === 'string' && checkPromptInjection(rule.text).hasInjection) {
+      return { ok: false, reason: 'prompt-injection-detected' };
+    }
+  }
+  for (const list of Object.values(record.layers ?? {})) {
+    for (const rule of Array.isArray(list) ? list : []) {
+      if (rule?.type === 'instruction' && typeof rule.text === 'string' && checkPromptInjection(rule.text).hasInjection) {
+        return { ok: false, reason: 'prompt-injection-detected' };
+      }
+    }
+  }
   if (!validRecord(record)) return { ok: false, reason: 'invalid-role-record' };
   const opened = await store();
   if (!opened) return { ok: false, reason: 'storage-unavailable' };

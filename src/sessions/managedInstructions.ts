@@ -10,6 +10,10 @@ import { validateRoleGroup } from '../roles/role-group';
 import { checkRoleForLaunch } from '../roles/launch-role';
 import { BroadcastStore } from '../broadcast/store';
 import { isLive, appliesTo, broadcastRule, broadcastPreviewLines } from '../broadcast/model';
+const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
+  checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
+  validateResearchDeliverable(deliverable: unknown, options?: { target?: string }): { ok: boolean; code: string; problems?: Array<{ code: string; message: string }> };
+};
 
 export interface BroadcastBinding {
   id: string;
@@ -149,17 +153,39 @@ export async function prepareInstructionSnapshot(
   let digest: string | null = null;
   let previewResult: any = null;
 
+  if ((options as any).researchFindings !== undefined) {
+    const deliverableCheck = validateResearchDeliverable((options as any).researchFindings, { target: 'instructions' });
+    if (!deliverableCheck.ok) {
+      return { ok: false, code: deliverableCheck.code, message: 'External research findings cannot be elevated into session instructions.', problems: deliverableCheck.problems };
+    }
+  }
+
   if (group) {
     const userLayer = [...(layers.user ?? []), ...broadcastRules];
     const combinedLayers = { ...layers, user: userLayer };
     previewResult = previewEffectiveRules({ roleGroup: group, layers: combinedLayers });
     if (!previewResult.ok) {
-      return { ok: false, code: 'rule-composition-failed', message: 'Failed to compose effective rules.', problems: previewResult.problems };
+      const hasInjection = (previewResult.problems ?? []).some((p: any) => p.code === 'prompt-injection-detected');
+      return {
+        ok: false,
+        code: hasInjection ? 'prompt-injection-detected' : 'rule-composition-failed',
+        message: hasInjection ? 'Adversarial prompt injection detected in effective instructions.' : 'Failed to compose effective rules.',
+        problems: previewResult.problems
+      };
     }
     effectiveRules = previewResult.rules;
     permissions = previewResult.permissions;
     digest = previewResult.digest;
   } else if (broadcastRules.length > 0) {
+    for (const bRule of broadcastRules) {
+      if (typeof bRule.text === 'string' && checkPromptInjection(bRule.text).hasInjection) {
+        return {
+          ok: false,
+          code: 'prompt-injection-detected',
+          message: 'Adversarial prompt injection detected in broadcast instruction.'
+        };
+      }
+    }
     const resolved = resolveRules(broadcastRules);
     effectiveRules = {
       forbids: resolved.forbids,
