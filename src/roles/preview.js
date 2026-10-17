@@ -5,6 +5,7 @@ const { LAYERS, byCodeUnit, resolveRules } = require('../memory/rules');
 const { isPlainObject, label, validateRuleList } = require('./rule-input');
 const { TOOLS, validateRoleGroup } = require('./role-group');
 const { evaluateMcpTools, formatMcpLines } = require('./mcp-evaluation');
+const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics');
 
 // The layers a caller supplies. The role group's own layer comes from the group,
 // so it cannot be passed in here as well.
@@ -51,12 +52,20 @@ function derivedRules(group) {
 // layer and version of everything shown, and the tool permissions that result.
 //
 // Nothing is written anywhere, and no file in a repository is created or changed.
-function previewEffectiveRules({ roleGroup, layers } = {}) {
+function previewEffectiveRules({ roleGroup, layers, researchFindings } = {}) {
   const checked = validateRoleGroup(roleGroup);
   if (!checked.ok) return { ok: false, problems: checked.problems };
   const group = checked.group;
 
   const problems = [];
+  if (researchFindings !== undefined) {
+    const deliverableCheck = validateResearchDeliverable(researchFindings, { target: 'instructions' });
+    if (!deliverableCheck.ok) {
+      for (const p of deliverableCheck.problems) {
+        problems.push({ code: p.code, path: 'researchFindings' });
+      }
+    }
+  }
   const supplied = layers === undefined ? {} : layers;
   if (!isPlainObject(supplied)) return { ok: false, problems: [{ code: 'invalid-layers', path: 'layers' }] };
   for (const name of Object.keys(supplied)) {
@@ -67,9 +76,19 @@ function previewEffectiveRules({ roleGroup, layers } = {}) {
   for (const layer of SUPPLIED_LAYERS) {
     const list = validateRuleList(supplied[layer], { layer, path: `layers.${layer}` });
     for (const problem of list.problems) problems.push({ code: problem.code, path: problem.path, layer: problem.layer });
-    for (const rule of list.rules) entries.push({ ...rule, layer });
+    for (const rule of list.rules) {
+      if (rule.type === 'instruction' && checkPromptInjection(rule.text).hasInjection) {
+        problems.push({ code: 'prompt-injection-detected', path: `layers.${layer}`, layer });
+      }
+      entries.push({ ...rule, layer });
+    }
   }
-  for (const rule of group.rules) entries.push({ ...rule, layer: 'roleGroup' });
+  for (const rule of group.rules) {
+    if (rule.type === 'instruction' && checkPromptInjection(rule.text).hasInjection) {
+      problems.push({ code: 'prompt-injection-detected', path: 'rules', layer: 'roleGroup' });
+    }
+    entries.push({ ...rule, layer: 'roleGroup' });
+  }
   entries.push(...derivedRules(group));
 
   // One id means one rule. Letting two layers reuse an id would make the resolver

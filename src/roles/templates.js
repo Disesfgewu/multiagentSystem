@@ -5,6 +5,7 @@ const { builtIn } = require('../providers/registry');
 const { toolHelp, ENFORCEMENT_NOTE } = require('./field-help');
 const { injectionStatus } = require('./injection-status');
 const { evaluateMcpTools, formatMcpLines } = require('./mcp-evaluation');
+const { checkPromptInjection } = require('../research/ethics');
 
 // Starting points for a role group. Every tool is listed with an explicit level so a new tool can
 // never become available by omission; anything a template does not allow stays denied. The
@@ -60,6 +61,9 @@ function templateIds() {
 function buildFromTemplate({ templateId, provider, name, role, newId }) {
   if (typeof templateId !== 'string' || !Object.hasOwn(TEMPLATES, templateId)) return { ok: false, problems: [{ code: 'unknown-template', path: 'templateId' }] };
   if (!builtIn.has(provider)) return { ok: false, problems: [{ code: 'invalid-provider', path: 'provider' }] };
+  if (typeof name === 'string' && checkPromptInjection(name).hasInjection) {
+    return { ok: false, problems: [{ code: 'prompt-injection-detected', path: 'name' }] };
+  }
   const template = TEMPLATES[templateId];
   const group = {
     id: typeof newId === 'string' ? newId : `role-${Date.now().toString(36)}`,
