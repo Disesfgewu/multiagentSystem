@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, SCOPES } = require('../../src/broadcast/model');
+const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, SCOPES } = require('../../src/broadcast/model');
 const { resolveRules } = require('../../src/memory/rules');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -36,8 +36,8 @@ test('every required field is validated; a bad one names itself, several bad one
   assert.deepEqual(validateBroadcast(broadcast({ target: { scope: 'roleGroup', role: 'Not Valid' } })).problems, ['invalid-target']);
   assert.deepEqual(validateBroadcast(broadcast({ text: '' })).problems, ['invalid-text']);
   assert.deepEqual(validateBroadcast(broadcast({ text: '   ' })).problems, ['invalid-text']);
-  assert.deepEqual(validateBroadcast(broadcast({ text: 'x'.repeat(4001) })).problems, ['invalid-text']);
-  assert.equal(validateBroadcast(broadcast({ text: 'x'.repeat(4000) })).ok, true);
+  assert.deepEqual(validateBroadcast(broadcast({ text: 'x'.repeat(2001) })).problems, ['invalid-text']);
+  assert.equal(validateBroadcast(broadcast({ text: 'x'.repeat(2000) })).ok, true, 'matches rule-input.js\'s MAX_TEXT_CHARS exactly, so a stored broadcast can always compose');
   assert.deepEqual(validateBroadcast(broadcast({ createdAt: 'not-a-date' })).problems, ['invalid-created-at']);
   assert.deepEqual(validateBroadcast(broadcast({ createdAt: undefined })).problems, ['invalid-created-at']);
   assert.deepEqual(validateBroadcast(broadcast({ expiresAt: 'not-a-date' })).problems, ['invalid-expires-at']);
@@ -108,4 +108,28 @@ test('scanBroadcastText reuses the publish scanner on the broadcast text as a si
   assert.equal(withSecret.status, 'blocked');
   const withPath = scanBroadcastText('See /Users/someone/secret-project/notes.txt for context.');
   assert.equal(withPath.status, 'blocked');
+});
+
+test('liveBroadcastRules keeps only the broadcasts that are both live and targeted at this one agent, each once', () => {
+  const now = '2026-10-17T12:00:00.000Z';
+  const live = validateBroadcast(broadcast({ id: 'live-all', target: { scope: 'all' } })).broadcast;
+  const expired = validateBroadcast(broadcast({ id: 'expired', expiresAt: '2026-10-17T11:00:00.000Z' })).broadcast;
+  const revoked = validateBroadcast(broadcast({ id: 'revoked', revokedAt: '2026-10-17T11:00:00.000Z' })).broadcast;
+  const otherRole = validateBroadcast(broadcast({ id: 'other-role', target: { scope: 'roleGroup', role: 'pm' } })).broadcast;
+  const thisRole = validateBroadcast(broadcast({ id: 'this-role', target: { scope: 'roleGroup', role: 'worker' } })).broadcast;
+  const context = { role: 'worker', agentId: 'session-1', provider: 'claude' };
+  const rules = liveBroadcastRules([live, expired, revoked, otherRole, thisRole, null, 'not-an-object'], context, now);
+  assert.deepEqual(rules.map((rule) => rule.id).sort(), ['broadcast:live-all', 'broadcast:this-role'].sort());
+  // Duplicates by id (should never happen from a real store, but this must not double-apply one anyway).
+  assert.deepEqual(liveBroadcastRules([live, live], { role: 'worker' }, now).map((rule) => rule.id), ['broadcast:live-all']);
+  assert.deepEqual(liveBroadcastRules(undefined, context, now), []);
+  assert.deepEqual(liveBroadcastRules([], context, now), []);
+});
+
+test('a maximal broadcast actually composes: the text limit here is not just claimed to match rule-input.js, it is proven to', () => {
+  const { validateRuleList } = require('../../src/roles/rule-input');
+  const max = validateBroadcast(broadcast({ text: 'x'.repeat(2000) })).broadcast;
+  const rule = broadcastRule(max);
+  const checked = validateRuleList([rule], { layer: 'user', path: 'layers.user' });
+  assert.deepEqual(checked, { ok: true, rules: [{ id: rule.id, type: rule.type, text: rule.text, version: rule.version }], problems: [] });
 });

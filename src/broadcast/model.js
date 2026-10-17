@@ -16,7 +16,12 @@ const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ROLE = /^[a-z][a-z0-9-]{0,31}$/;
 const AGENT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const PROVIDER = /^[a-z][a-z0-9-]{0,31}$/;
-const TEXT_LIMIT = 4000;
+// Matches rule-input.js's MAX_TEXT_CHARS exactly: a broadcast turns into an instruction rule
+// (broadcastRule below), and that rule is validated by the same limit when it is composed into an
+// agent's effective rules. A longer broadcast could be stored here but would then always fail to
+// compose, which would be a confusing way to find out; the limit is enforced at the one point where
+// it can still be rejected with a clear reason, before anything is written.
+const TEXT_LIMIT = 2000;
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 const SCOPES = Object.freeze(['all', 'roleGroup', 'agent', 'provider']);
@@ -116,4 +121,22 @@ function broadcastRule(broadcast) {
   return Object.freeze({ id: `broadcast:${broadcast.id}`, layer: 'user', type: 'instruction', text: broadcast.text, version: broadcast.version });
 }
 
-module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, SCOPES };
+/**
+ * The `user`-layer rules a concrete agent's effective-rules preview should carry right now: only
+ * broadcasts that are both live (not expired or revoked) and targeted at this agent, each exactly
+ * once even if somehow duplicated in storage. Order does not matter: `resolveRules` sorts by layer
+ * and id itself.
+ */
+function liveBroadcastRules(broadcasts, context, now) {
+  const seen = new Set();
+  const rules = [];
+  for (const entry of Array.isArray(broadcasts) ? broadcasts : []) {
+    if (!entry || typeof entry !== 'object' || seen.has(entry.id)) continue;
+    if (!isLive(entry, now) || !appliesTo(entry, context)) continue;
+    seen.add(entry.id);
+    rules.push(broadcastRule(entry));
+  }
+  return rules;
+}
+
+module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, SCOPES };
