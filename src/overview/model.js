@@ -60,24 +60,62 @@ function checksField(checks, pullRequest) {
   return { state: 'known', value: checks.state, required: typeof checks.requiredState === 'string' ? checks.requiredState : 'unknown', headSha: pullRequest.headSha.toLowerCase() };
 }
 
+function issueField(pullRequestEntry, branch, githubReason) {
+  if (isPlain(pullRequestEntry) && isPlain(pullRequestEntry.pullRequest)) {
+    const raw = pullRequestEntry.pullRequest;
+    const refs = Array.isArray(raw.referencedIssues)
+      ? raw.referencedIssues.filter((entry) => entry && Number.isSafeInteger(entry.number) && entry.number > 0)
+      : [];
+    if (refs.length > 0) {
+      return {
+        state: 'known',
+        number: refs[0].number,
+        numbers: refs.map((entry) => entry.number),
+        source: 'pull-request'
+      };
+    }
+  }
+  if (typeof branch === 'string') {
+    const match = /(?:^|[-_/])(?:issue|task)[-_/](\d+)(?:[-_/]|$)/i.exec(branch);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (Number.isSafeInteger(num) && num > 0) {
+        return {
+          state: 'known',
+          number: num,
+          numbers: [num],
+          source: 'branch'
+        };
+      }
+    }
+  }
+  if (githubReason) return UNKNOWN(githubReason);
+  if (!branch) return UNKNOWN('no-branch');
+  return UNKNOWN('no-issue-linked');
+}
+
 const both = (reason) => ({ pullRequest: UNKNOWN(reason), ci: UNKNOWN(reason) });
+const allThree = (reason, branch) => ({ pullRequest: UNKNOWN(reason), ci: UNKNOWN(reason), issue: issueField(null, branch, reason) });
 
 function pullRequestField(branch, repository, github) {
-  if (!branch) return both('no-branch');
+  if (!branch) return allThree('no-branch', branch);
   const match = typeof repository === 'string' ? REPOSITORY.exec(repository) : null;
-  if (!match) return both('repository-unknown');
-  if (!isPlain(github) || !COMPLETE.has(github.kind)) return both(isPlain(github) && ['partial', 'truncated'].includes(github.kind) ? 'github-incomplete' : 'github-unavailable');
-  if (!Array.isArray(github.pullRequests)) return both('github-unavailable');
+  if (!match) return allThree('repository-unknown', branch);
+  if (!isPlain(github) || !COMPLETE.has(github.kind)) {
+    const reason = isPlain(github) && ['partial', 'truncated'].includes(github.kind) ? 'github-incomplete' : 'github-unavailable';
+    return allThree(reason, branch);
+  }
+  if (!Array.isArray(github.pullRequests)) return allThree('github-unavailable', branch);
 
   const sameBranch = github.pullRequests.filter((entry) => isPlain(entry?.pullRequest) && entry.pullRequest.headRef === branch && entry.pullRequest.state === 'open');
   const ours = sameBranch.filter((entry) => typeof entry.pullRequest.headRepository === 'string' && entry.pullRequest.headRepository.toLowerCase() === repository.toLowerCase());
   // A same-named branch that cannot be shown to be in this repository (a fork, or no repository
   // reported) is not "no pull request": it may or may not be this session's.
-  if (ours.length < sameBranch.length) return both('pull-request-repository-unverified');
-  if (ours.length === 0) return { pullRequest: { state: 'none' }, ci: UNKNOWN('no-pull-request') };
-  if (ours.length > 1) return both('ambiguous-branch');
+  if (ours.length < sameBranch.length) return allThree('pull-request-repository-unverified', branch);
+  if (ours.length === 0) return { pullRequest: { state: 'none' }, ci: UNKNOWN('no-pull-request'), issue: issueField(null, branch, null) };
+  if (ours.length > 1) return allThree('ambiguous-branch', branch);
   const [{ pullRequest, checks }] = ours;
-  if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number <= 0) return both('pull-request-unreadable');
+  if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number <= 0) return allThree('pull-request-unreadable', branch);
   return {
     pullRequest: {
       state: 'open',
@@ -87,12 +125,13 @@ function pullRequestField(branch, repository, github) {
       // built here from the repository and the number; a URL passed in is never trusted
       url: `https://github.com/${match[1]}/${match[2]}/pull/${pullRequest.number}`
     },
-    ci: checksField(checks, pullRequest)
+    ci: checksField(checks, pullRequest),
+    issue: issueField(ours[0], branch, null)
   };
 }
 
 function unreadableRow() {
-  return { sessionId: null, malformed: true, role: UNKNOWN('session-unreadable'), account: UNKNOWN('session-unreadable'), branch: UNKNOWN('session-unreadable'), sessionState: UNKNOWN('session-unreadable'), ...both('session-unreadable') };
+  return { sessionId: null, malformed: true, role: UNKNOWN('session-unreadable'), account: UNKNOWN('session-unreadable'), branch: UNKNOWN('session-unreadable'), sessionState: UNKNOWN('session-unreadable'), ...allThree('session-unreadable', null) };
 }
 
 /**

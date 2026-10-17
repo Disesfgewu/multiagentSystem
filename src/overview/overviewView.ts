@@ -12,7 +12,7 @@ const { buildOverview } = require('./model') as { buildOverview(input: Record<st
 const { cleanTitle } = require('./model') as { cleanTitle(value: unknown): string };
 const { presentAgent, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
   countRunningAgents(sessions: unknown): number;
-  presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null };
+  presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null; pullRequestNumber: number | null; issueNumber: number | null };
   onboardingSteps(counts: { accounts: number | null; roleGroups: number | null; sessions: number | null }): Array<{ id: string; title: string; done: boolean | 'unknown' | 'not-tracked'; command: string; button: string; missing: string }>;
   guideVisible(steps: unknown[]): boolean;
 };
@@ -21,10 +21,13 @@ const { describeAccounts } = require('../accounts/profile-view') as { describeAc
 export const OVERVIEW_VIEW = 'multiagentSystem.overviewView';
 export const OVERVIEW_REFRESH = 'multiagentSystem.overview.refresh';
 export const OVERVIEW_OPEN_PULL_REQUEST = 'multiagentSystem.overview.openPullRequest';
+export const OVERVIEW_OPEN_REPORT = 'multiagentSystem.overview.openReport';
+export const OVERVIEW_SHOW_DIFF = 'multiagentSystem.overview.showDiff';
 
 // The pull request address of each row, built by the model from the repository and the number. It is
 // the only address the open action can use, and it is checked again before it is opened.
 const pullRequestUrls = new Map<string, string>();
+const pullRequestNumbers = new Map<string, number>();
 
 let joinDeps: JoinDeps | undefined;
 /** Replaces how branches and pull requests are found. Only the Extension Host test does this. */
@@ -89,7 +92,7 @@ type Item = Row;
 export interface OverviewSnapshot {
   steps: ReturnType<typeof onboardingSteps>;
   accounts: Array<{ id: string; label: string; provider: string; policy: string; usage: string[] }>;
-  agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null }>;
+  agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null; pullRequestNumber?: number | null; issueNumber?: number | null }>;
   problems: number;
   notes: string[];
 }
@@ -146,7 +149,11 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
     return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage };
   })) : [];
   pullRequestUrls.clear();
-  for (const agent of agents) if (agent.pullRequestUrl) pullRequestUrls.set(agent.id, agent.pullRequestUrl);
+  pullRequestNumbers.clear();
+  for (const agent of agents) {
+    if (agent.pullRequestUrl) pullRequestUrls.set(agent.id, agent.pullRequestUrl);
+    if (agent.pullRequestNumber) pullRequestNumbers.set(agent.id, agent.pullRequestNumber);
+  }
   const steps = onboardingSteps({ accounts: profiles ? profiles.length : null, roleGroups: roleGroups ? roleGroups.length : null, sessions: countRunningAgents(live) });
   return { steps, accounts: accountRows, agents, problems, notes };
 }
@@ -207,6 +214,20 @@ export function registerOverview(context: vscode.ExtensionContext, sessions: Ses
       if (!url || !isGitHubWebUrl(url)) return { ok: false, code: 'no-pull-request', message: 'There is no verified pull request for this agent.' };
       const opened = await vscode.env.openExternal(vscode.Uri.parse(url, true));
       return { ok: true, url, opened };
+    }),
+    vscode.commands.registerCommand(OVERVIEW_OPEN_REPORT, async (value?: unknown) => {
+      const id = typeof value === 'string' ? value : value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' ? (value as { id: string }).id : undefined;
+      const number = id ? pullRequestNumbers.get(id) : undefined;
+      if (!number) return { ok: false, code: 'no-pull-request', message: 'There is no verified pull request for this agent.' };
+      return vscode.commands.executeCommand('multiagentSystem.reports.open', { kind: 'pullRequest', number });
+    }),
+    vscode.commands.registerCommand(OVERVIEW_SHOW_DIFF, async (value?: unknown) => {
+      const id = typeof value === 'string' ? value : value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' ? (value as { id: string }).id : undefined;
+      const number = id ? pullRequestNumbers.get(id) : undefined;
+      if (!number) return { ok: false, code: 'no-pull-request', message: 'There is no verified pull request for this agent.' };
+      const opened = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.reports.open', { kind: 'pullRequest', number });
+      if (!opened?.ok) return opened ?? { ok: false, code: 'open-failed' };
+      return vscode.commands.executeCommand<{ ok: boolean; code?: string }>('multiagentSystem.reports.showDiff');
     })
   );
 }

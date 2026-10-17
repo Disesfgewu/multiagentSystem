@@ -39,6 +39,7 @@ function presentAgent(row, session) {
   const account = row.account.state === 'known' ? shown(row.account.label) : UNKNOWN;
   const stateText = row.sessionState.state === 'known' ? (Object.hasOwn(STATE_TEXT, row.sessionState.value) ? STATE_TEXT[row.sessionState.value] : UNKNOWN) : 'state unknown';
   const identity = row.account.state === 'known' ? (row.account.verified ? 'identity verified by the CLI' : 'identity unknown') : 'account unknown';
+  const issue = row.issue && row.issue.state === 'known' ? `#${row.issue.number}` : UNKNOWN;
   const pr = row.pullRequest.state === 'open' ? `#${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}` : row.pullRequest.state === 'none' ? 'no open pull request' : UNKNOWN;
   const ci = row.ci.state === 'known' ? row.ci.value : UNKNOWN;
   const prText = row.pullRequest.state === 'open' ? ` · PR #${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}${row.ci.state === 'known' && CI_WORDS.includes(row.ci.value) ? ` · CI ${row.ci.value}` : ''}` : '';
@@ -47,6 +48,8 @@ function presentAgent(row, session) {
     label: name,
     description: `${role} · ${provider} · ${account} · ${stateText}${prText}`,
     pullRequestUrl: row.pullRequest.state === 'open' && typeof row.pullRequest.url === 'string' ? row.pullRequest.url : null,
+    pullRequestNumber: row.pullRequest.state === 'open' && Number.isSafeInteger(row.pullRequest.number) ? row.pullRequest.number : null,
+    issueNumber: row.issue && row.issue.state === 'known' && Number.isSafeInteger(row.issue.number) ? row.issue.number : null,
     tooltip: [
       `Role: ${role}`,
       `Provider: ${provider}`,
@@ -55,6 +58,7 @@ function presentAgent(row, session) {
       `Account: ${account} (${identity})`,
       `State: ${stateText}`,
       `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
+      `Issue: ${issue}`,
       `Pull request: ${pr}`,
       `CI: ${ci}`,
       ...(session?.instructionStatusLabel
