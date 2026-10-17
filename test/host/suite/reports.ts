@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
-import { installPublicFeedbackTestOverrides } from '../../../src/reports/publicFeedback';
+import { installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { privateStorage } from '../../../src/storage/storageCommands';
 
 const HEAD = 'd'.repeat(40);
@@ -126,6 +126,16 @@ export async function runReportChecks(): Promise<string> {
     const seenInitialDrafts: string[] = [];
     const auth = { id: 'session', accessToken: 'x', account: { id: '42', label: 'pm-user' }, scopes: ['repo'] };
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Before configuring publisher.', interactive: false }), { ok: false, code: 'publisher-not-configured' });
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => null,
+      confirm: async () => true
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher), { ok: false, code: 'no-workspace-repository' });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'pm', interactive: false }), { ok: false, code: 'no-workspace-repository' });
+
     installPublicFeedbackTestOverrides({
       session: async () => auth,
       user: async () => ({ id: 42, login: 'pm-user' }),
@@ -311,6 +321,20 @@ export async function runReportChecks(): Promise<string> {
     assert.equal(mergesSent.length, 0);
 
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'invalid', interactive: false }), { ok: false, code: 'invalid-merge-authority' });
+
+    // Interactive confirmation is required: cancelling the confirmation dialog cancels the change
+    installPublicFeedbackTestOverrides({
+      repository: async () => 'host/repo',
+      confirm: async () => false,
+      pickMergeAuthority: async () => 'pm'
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'pm', interactive: true }), { ok: false, code: 'cancelled' });
+
+    installPublicFeedbackTestOverrides({
+      repository: async () => 'host/repo',
+      confirm: async () => true,
+      pickMergeAuthority: async () => 'pm'
+    });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'pm', interactive: false }), { ok: true, mode: 'pm' });
     assert.match(await reportText('pullRequest', 7), /MERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval/);
 

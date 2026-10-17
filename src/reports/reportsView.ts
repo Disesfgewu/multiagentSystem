@@ -435,26 +435,30 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.configureMergeAuthority, async (value?: unknown) => {
+      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { mode?: unknown; interactive?: unknown } : {};
-      const result = await configureMergeAuthority({ mode: input.mode, interactive: input.interactive === false ? false : true });
+      const interactive = isTest ? (input.interactive === false ? false : true) : true;
+      const result = await configureMergeAuthority({ mode: input.mode, interactive });
       if (result.ok) {
         refresh();
-        if (input.interactive !== false) void vscode.window.showInformationMessage(`Pull request merge authority set to "${result.mode}".`);
-      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (interactive) void vscode.window.showInformationMessage(`Pull request merge authority set to "${result.mode}".`);
+      } else if (interactive && result.code !== 'cancelled') {
         void vscode.window.showErrorMessage(`Could not configure pull request merge authority: ${result.code ?? 'unknown'}.`);
       }
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.publicFeedback, async (value?: unknown) => {
+      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { body?: unknown; interactive?: unknown } : {};
+      const interactive = isTest ? (input.interactive === false ? false : true) : true;
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target) return { ok: false, code: 'report-evidence-unavailable' };
-      const result = await sendPublicFeedback({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { body: input.body, interactive: input.interactive === false ? false : true });
+      const result = await sendPublicFeedback({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { body: input.body, interactive });
       if (result.ok) {
         refresh();
-        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-sent' ? 'This exact public feedback was already sent.' : 'Public feedback sent and verified for this report.');
-      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-sent' ? 'This exact public feedback was already sent.' : 'Public feedback sent and verified for this report.');
+      } else if (interactive && result.code !== 'cancelled') {
         if (result.code === 'publisher-not-configured' || result.code === 'publisher-identity-changed') {
           void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code}.`, 'Configure PM Publisher').then((picked) => {
             if (picked === 'Configure PM Publisher') void vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher);
@@ -466,29 +470,33 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.reviewPullRequest, async (value?: unknown) => {
+      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { decision?: unknown; body?: unknown; interactive?: unknown } : {};
+      const interactive = isTest ? (input.interactive === false ? false : true) : true;
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
-      const result = await reviewPullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { decision: input.decision, body: input.body, interactive: input.interactive === false ? false : true });
+      const result = await reviewPullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { decision: input.decision, body: input.body, interactive });
       if (result.ok) {
         refresh();
-        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : 'Formal pull request review submitted and verified for this head.');
-      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : 'Formal pull request review submitted and verified for this head.');
+      } else if (interactive && result.code !== 'cancelled') {
         void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
       }
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.mergePullRequest, async (value?: unknown) => {
+      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { interactive?: unknown } : {};
+      const interactive = isTest ? (input.interactive === false ? false : true) : true;
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
-      const result = await mergePullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive: input.interactive === false ? false : true });
+      const result = await mergePullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive });
       if (result.ok) {
         refresh();
-        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
-      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
+      } else if (interactive && result.code !== 'cancelled') {
         if (result.code === 'human-merge-required') {
           void vscode.window.showErrorMessage('Pull request merge was refused: human-merge-required (default merge authority is Human only).', 'Configure Merge Authority').then((picked) => {
             if (picked === 'Configure Merge Authority') void vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority);
@@ -500,7 +508,9 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.feedback, async (value?: unknown) => {
+      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const requested = value && typeof value === 'object' ? value as { kind?: unknown; number?: unknown; note?: unknown; interactive?: unknown } : {};
+      const interactive = isTest ? (requested.interactive === false ? false : true) : true;
       const requestedKind = requested.kind === 'issue' || requested.kind === 'pullRequest' ? requested.kind : null;
       const requestedNumber = typeof requested.number === 'number' && Number.isSafeInteger(requested.number) && requested.number > 0 ? requested.number : null;
       const target: { kind: Kind; number: number } | null = requestedKind && requestedNumber !== null ? { kind: requestedKind, number: requestedNumber } : activeTarget();
@@ -514,7 +524,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const key = { repository, kind: target.kind, number: target.number };
       const current = readFeedback(opened.store, key);
       if (current.state === 'unknown') return { ok: false, code: 'feedback-unreadable' };
-      const note = requested.interactive === false ? requested.note : await (deps.promptFeedback?.(current.record?.note ?? '') ?? realDeps.promptFeedback!(current.record?.note ?? ''));
+      const note = !interactive ? requested.note : await (deps.promptFeedback?.(current.record?.note ?? '') ?? realDeps.promptFeedback!(current.record?.note ?? ''));
       if (note === undefined) return { ok: false, code: 'cancelled' };
       const currentRepository = await deps.repository();
       if (currentRepository !== repository) return { ok: false, code: 'report-context-changed' };
@@ -529,7 +539,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const saved = saveFeedback(opened.store, key, { note, headSha }, current.record?.revision ?? null);
       if (!saved.ok) return { ok: false, code: saved.reason ?? 'feedback-save-failed' };
       content.changed.fire(reportUri(target.kind, target.number));
-      if (requested.interactive !== false) void vscode.window.showInformationMessage('Feedback saved only on this machine. Nothing was sent to GitHub.');
+      if (interactive) void vscode.window.showInformationMessage('Feedback saved only on this machine. Nothing was sent to GitHub.');
       return { ok: true };
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.back, async () => {
