@@ -5,6 +5,7 @@ import { registerGitHubCommands } from './github/githubCommands';
 import { registerStorageCommands } from './storage/storageCommands';
 import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { registerRoleCommands } from './roles/roleCommands';
+import { registerBroadcastCommands } from './broadcast/commands';
 import { registerOverview } from './overview/overviewView';
 import { registerPlanView } from './plan/planView';
 import { registerReports } from './reports/reportsView';
@@ -79,6 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerPlanView(context);
   registerReports(context);
   registerRoleCommands(context, sessions);
+  registerBroadcastCommands(context, sessions);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
 }

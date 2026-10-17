@@ -1,0 +1,257 @@
+import { randomUUID } from 'node:crypto';
+import * as vscode from 'vscode';
+import { privateStorage } from '../storage/storageCommands';
+import { SessionCommands } from '../sessions/sessionCommands';
+
+const { BroadcastStore } = require('./store') as {
+  BroadcastStore: new (store: Store) => {
+    list(): { ok: boolean; items?: Broadcast[]; reason?: string };
+    create(raw: unknown): { ok: boolean; broadcast?: Broadcast; reason?: string; problems?: string[]; scan?: unknown };
+    revoke(id: string, revokedAt: string): { ok: boolean; broadcast?: Broadcast; reason?: string };
+  };
+};
+const { scanBroadcastText, isLive, targetLabel, broadcastStatus, formatBroadcast } = require('./model') as {
+  scanBroadcastText(text: string): { status: string };
+  isLive(broadcast: Broadcast, now: Date): boolean;
+  targetLabel(target: Target): string;
+  broadcastStatus(broadcast: Broadcast, now: Date): string;
+  formatBroadcast(broadcast: Broadcast, now: Date): string;
+};
+const { roleProviderChoices } = require('../roles/provider-choices') as {
+  roleProviderChoices(): Array<{ id: string; label: string; detail: string }>;
+};
+
+type Target = { scope: 'all' } | { scope: 'roleGroup'; role: string } | { scope: 'provider'; provider: string } | { scope: 'agent'; agentId: string };
+type Broadcast = { id: string; version: number; target: Target; text: string; createdAt: string; expiresAt: string | null; revokedAt: string | null };
+type Store = { get(collection: string, id: string): any; list(collection: string): any; transact(work: (tx: any) => unknown): any };
+
+export const BROADCAST_VIEW = 'multiagentSystem.broadcastsView';
+export const BROADCAST_SCHEME = 'multiagent-broadcast';
+export const BROADCAST_COMMANDS = {
+  refresh: 'multiagentSystem.broadcasts.refresh',
+  send: 'multiagentSystem.broadcasts.send',
+  revoke: 'multiagentSystem.broadcasts.revoke',
+  details: 'multiagentSystem.broadcasts.details'
+} as const;
+
+const ROLE_ID = /^[a-z][a-z0-9-]{0,31}$/;
+const EXPIRY_CHOICES: Array<{ label: string; detail: string; hours: number | null }> = [
+  { label: 'Until revoked', detail: 'Remains a local notice until revoked; CLI delivery is unknown.', hours: null },
+  { label: '1 hour', detail: '', hours: 1 },
+  { label: '4 hours', detail: '', hours: 4 },
+  { label: '24 hours', detail: '', hours: 24 }
+];
+
+async function store(showError = true): Promise<Store | undefined> {
+  const handle = privateStorage();
+  const opened = await handle?.use();
+  if (!opened?.ok) {
+    if (showError) void vscode.window.showErrorMessage(`Private broadcast storage is unavailable (${String(opened?.reason ?? 'unknown')}).`);
+    return undefined;
+  }
+  return opened.store as Store;
+}
+
+class BroadcastItem extends vscode.TreeItem {
+  constructor(readonly broadcast: Broadcast, now: Date) {
+    super(broadcast.text.length > 60 ? `${broadcast.text.slice(0, 60)}…` : broadcast.text, vscode.TreeItemCollapsibleState.None);
+    const status = broadcastStatus(broadcast, now);
+    this.description = `${targetLabel(broadcast.target)} · ${status} · delivery unknown`;
+    this.tooltip = [
+      `Sent: ${broadcast.createdAt}`,
+      `Target: ${targetLabel(broadcast.target)}`,
+      `Status: ${status}`,
+      broadcast.expiresAt ? `Expires: ${broadcast.expiresAt}` : 'No expiry: stays in effect until revoked',
+      broadcast.revokedAt ? `Revoked: ${broadcast.revokedAt}` : null,
+      '',
+      `Version: ${broadcast.version}`,
+      'Saved locally and included in matching role previews only. Session launch and CLI delivery are not connected.',
+      '',
+      broadcast.text
+    ].filter((line): line is string => line !== null).join('\n');
+    this.iconPath = new vscode.ThemeIcon(status === 'active' ? 'megaphone' : status === 'revoked' ? 'circle-slash' : 'clock');
+    this.contextValue = status === 'active' ? 'multiagentBroadcastActive' : 'multiagentBroadcast';
+    this.command = { command: BROADCAST_COMMANDS.details, title: 'Read full local notice', arguments: [broadcast.id] };
+  }
+}
+
+class MessageItem extends vscode.TreeItem {
+  constructor(message: string) {
+    super(message, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon('info');
+  }
+}
+
+class BroadcastTree implements vscode.TreeDataProvider<vscode.TreeItem> {
+  private readonly changed = new vscode.EventEmitter<vscode.TreeItem | undefined>();
+  readonly onDidChangeTreeData = this.changed.event;
+  refresh(): void { this.changed.fire(undefined); detailsProvider?.refresh(); }
+  getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
+  async getChildren(): Promise<vscode.TreeItem[]> {
+    const opened = await store(false);
+    if (!opened) return [new MessageItem('Private broadcast storage is unavailable.')];
+    const listed = new BroadcastStore(opened).list();
+    if (!listed.ok) return [new MessageItem(`Broadcasts could not be read (${listed.reason ?? 'unknown'}).`)];
+    const items = listed.items ?? [];
+    if (items.length === 0) return [new MessageItem('No local broadcast notices yet. Use "Create Broadcast Notice" to add one; CLI delivery is not connected.')];
+    const now = new Date();
+    return [...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)).map((broadcast) => new BroadcastItem(broadcast, now));
+  }
+}
+
+let testTree: BroadcastTree | undefined;
+export function broadcastTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
+  if (!testTree) throw new Error('The broadcast list is only exposed in Extension Host tests.');
+  return testTree;
+}
+
+/**
+ * Sends one broadcast. This is the only place a broadcast can be created, and it takes no arguments
+ * at all: target, text and expiry are always collected here, from this one interactive dialog
+ * sequence, in this VS Code window, every single time. There is no way to call this with a target or
+ * text already filled in, because accepting one would reopen exactly the self-declared-role bypass
+ * the product forbids — a command that can be driven by a pre-filled payload is a command that
+ * something other than the person at this keyboard could trigger.
+ */
+async function send(sessions: SessionCommands): Promise<void> {
+  const scopeChoice = await vscode.window.showQuickPick([
+    { label: 'Every agent', detail: 'Applies to all providers and role groups.', value: 'all' as const },
+    { label: 'A role group', detail: 'Applies only to agents with this role (e.g. pm, worker, researcher).', value: 'roleGroup' as const },
+    { label: 'A provider', detail: 'Targets agents using this CLI.', value: 'provider' as const },
+    { label: 'An open session', detail: 'Record a notice for one session. This does not deliver it to the CLI.', value: 'agent' as const }
+  ], { placeHolder: 'Who should receive this broadcast?', ignoreFocusOut: true });
+  if (!scopeChoice) return;
+
+  let target: Target;
+  if (scopeChoice.value === 'roleGroup') {
+    const role = await vscode.window.showInputBox({
+      prompt: 'Role id (e.g. pm, worker, researcher)', ignoreFocusOut: true,
+      validateInput: (value) => ROLE_ID.test(value) ? undefined : 'Use a lowercase role id, such as worker.'
+    });
+    if (!role) return;
+    target = { scope: 'roleGroup', role };
+  } else if (scopeChoice.value === 'agent') {
+    const available = sessions.list().filter((session) => session.terminalOpen);
+    if (available.length === 0) { void vscode.window.showInformationMessage('No managed sessions have an open terminal.'); return; }
+    const selected = await vscode.window.showQuickPick(available.map((session) => ({ label: session.name, description: `${session.provider} · ${session.stateLabel}`, id: session.id })), { placeHolder: 'Which session should this local notice target?', ignoreFocusOut: true });
+    if (!selected) return;
+    target = { scope: 'agent', agentId: selected.id };
+  } else if (scopeChoice.value === 'provider') {
+    const provider = await vscode.window.showQuickPick(roleProviderChoices(), { placeHolder: 'Which provider?', ignoreFocusOut: true });
+    if (!provider) return;
+    target = { scope: 'provider', provider: provider.id };
+  } else {
+    target = { scope: 'all' };
+  }
+
+  const text = await vscode.window.showInputBox({
+    prompt: `Local notice for ${targetLabel(target)}. Saved and previewed only; CLI delivery is not connected.`,
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      if (trimmed === '') return 'Enter the broadcast text.';
+      if (Array.from(trimmed).length > 2000) return 'Keep the broadcast to 2000 characters or fewer.';
+      if (scanBroadcastText(trimmed).status !== 'clear') return 'This text was blocked by the content scan (it may contain a credential, local path or other private fragment).';
+      return undefined;
+    }
+  });
+  if (!text) return;
+
+  const expiry = await vscode.window.showQuickPick(EXPIRY_CHOICES, { placeHolder: 'How long should this broadcast stay in effect?', ignoreFocusOut: true });
+  if (!expiry) return;
+
+  const now = new Date();
+  const expiresAt = expiry.hours === null ? null : new Date(now.getTime() + expiry.hours * 60 * 60 * 1000).toISOString();
+  const confirmed = await vscode.window.showWarningMessage(
+    'Save this local broadcast notice?',
+    { modal: true, detail: `Target: ${targetLabel(target)}\nExpires: ${expiresAt ?? 'until revoked'}\n\n${text.trim()}\n\nSaved locally and shown in matching role previews. No session launch or CLI delivery is connected; delivery remains unknown.` },
+    'Save Notice'
+  );
+  if (confirmed !== 'Save Notice') return;
+
+  const opened = await store();
+  if (!opened) return;
+  const created = new BroadcastStore(opened).create({
+    id: randomUUID(), version: 1, target, text: text.trim(), createdAt: now.toISOString(), expiresAt, revokedAt: null
+  });
+  if (!created.ok) {
+    void vscode.window.showErrorMessage(`The broadcast could not be sent (${created.reason ?? 'unknown'}).`);
+    return;
+  }
+  currentTree?.refresh();
+  void vscode.window.showInformationMessage(`Local notice saved for ${targetLabel(target)}. CLI delivery is unknown.`);
+}
+
+/**
+ * Revokes one broadcast. Like `send`, this takes no payload: the broadcast to revoke is always
+ * chosen from a list presented right here, never passed in by a caller.
+ */
+async function revoke(): Promise<void> {
+  const opened = await store();
+  if (!opened) return;
+  const broadcasts = new BroadcastStore(opened);
+  const listed = broadcasts.list();
+  if (!listed.ok) { void vscode.window.showErrorMessage(`Broadcasts could not be read (${listed.reason ?? 'unknown'}).`); return; }
+  const now = new Date();
+  const active = (listed.items ?? []).filter((broadcast) => isLive(broadcast, now));
+  if (active.length === 0) { void vscode.window.showInformationMessage('There are no active broadcasts to revoke.'); return; }
+  const picked = await vscode.window.showQuickPick(
+    active.map((broadcast) => ({ label: broadcast.text.length > 60 ? `${broadcast.text.slice(0, 60)}…` : broadcast.text, description: targetLabel(broadcast.target), id: broadcast.id })),
+    { placeHolder: 'Which broadcast should be revoked?', ignoreFocusOut: true }
+  );
+  if (!picked) return;
+  const selected = active.find((broadcast) => broadcast.id === picked.id);
+  if (!selected) return;
+  const confirmed = await vscode.window.showWarningMessage(
+    'Revoke this local notice?', { modal: true, detail: `Target: ${targetLabel(selected.target)}\nVersion: ${selected.version}\n\n${selected.text}\n\nIt will no longer appear in current matching previews. This cannot be undone. No CLI delivery or withdrawal is connected.` }, 'Revoke'
+  );
+  if (confirmed !== 'Revoke') return;
+  const latestStore = await store();
+  if (!latestStore) return;
+  const result = new BroadcastStore(latestStore).revoke(picked.id, new Date().toISOString());
+  if (!result.ok) { void vscode.window.showErrorMessage(`The broadcast could not be revoked (${result.reason ?? 'unknown'}).`); return; }
+  currentTree?.refresh();
+  void vscode.window.showInformationMessage('Broadcast revoked.');
+}
+
+let currentTree: BroadcastTree | undefined;
+let detailsProvider: BroadcastDetails | undefined;
+
+class BroadcastDetails implements vscode.TextDocumentContentProvider {
+  readonly changed = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this.changed.event;
+  refresh(): void {
+    for (const document of vscode.workspace.textDocuments) if (document.uri.scheme === BROADCAST_SCHEME) this.changed.fire(document.uri);
+  }
+  async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+    const match = /^[a-z0-9][a-z0-9-]{0,63}$/.exec(uri.query)?.[0];
+    if (!match || match !== uri.query) return 'No valid local notice was selected.\n';
+    const opened = await store(false);
+    if (!opened) return 'Private broadcast storage is unavailable.\n';
+    const listed = new BroadcastStore(opened).list();
+    if (!listed.ok) return 'Local notices could not be read.\n';
+    const broadcast = listed.items?.find((item) => item.id === match);
+    return broadcast ? formatBroadcast(broadcast, new Date()) : 'This local notice is unavailable.\n';
+  }
+}
+
+export function registerBroadcastCommands(context: vscode.ExtensionContext, sessions: SessionCommands): void {
+  const tree = new BroadcastTree();
+  const provider = new BroadcastDetails();
+  detailsProvider = provider;
+  currentTree = tree;
+  testTree = context.extensionMode === vscode.ExtensionMode.Test ? tree : undefined;
+  context.subscriptions.push(
+    vscode.window.createTreeView(BROADCAST_VIEW, { treeDataProvider: tree }),
+    vscode.workspace.registerTextDocumentContentProvider(BROADCAST_SCHEME, provider),
+    provider.changed,
+    vscode.commands.registerCommand(BROADCAST_COMMANDS.details, async (id?: unknown) => {
+      if (typeof id !== 'string') return;
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.from({ scheme: BROADCAST_SCHEME, path: '/local-notice.txt', query: id }));
+      await vscode.window.showTextDocument(document, { preview: true });
+    }),
+    vscode.commands.registerCommand(BROADCAST_COMMANDS.refresh, () => tree.refresh()),
+    vscode.commands.registerCommand(BROADCAST_COMMANDS.send, () => send(sessions)),
+    vscode.commands.registerCommand(BROADCAST_COMMANDS.revoke, revoke)
+  );
+}

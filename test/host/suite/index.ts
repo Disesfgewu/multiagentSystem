@@ -9,11 +9,14 @@ import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
+import { runBroadcastChecks } from './broadcasts';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
-import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
+import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, previewText, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
+import { BroadcastStore } from '../../../src/broadcast/store';
+import { BROADCAST_COMMANDS } from '../../../src/broadcast/commands';
 import { builtIn } from '../../../src/providers/registry';
 import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 import { createHash } from 'node:crypto';
@@ -36,6 +39,7 @@ const COMMANDS = [
   ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details, ACCOUNT_COMMANDS.limits,
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
   ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove,
+  BROADCAST_COMMANDS.refresh, BROADCAST_COMMANDS.send, BROADCAST_COMMANDS.revoke, BROADCAST_COMMANDS.details,
   SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
@@ -362,6 +366,28 @@ async function roleFlow(workspace: string): Promise<void> {
   assert.match(text, /PRIVATE/);
   assert.doesNotMatch(text, /applied|sent to the CLI \(evidence/i, 'nothing is claimed as applied');
 
+  // A live, applicable administrator broadcast appears in the preview as a `user`-layer instruction
+  // (stronger than the role group's own rules); one targeted at a different role group does not; a
+  // revoked one stops appearing; a broadcast store that cannot be read says so and never silently
+  // drops the note.
+  {
+    const broadcastHandle = await privateStorage()?.use();
+    assert.equal(broadcastHandle?.ok, true);
+    const broadcasts = new BroadcastStore(broadcastHandle.store);
+    const createdAt = new Date().toISOString();
+    const forEveryone = broadcasts.create({ id: 'stand-down', version: 1, target: { scope: 'all' }, text: 'Stop non-M1 work.', createdAt, expiresAt: null, revokedAt: null });
+    assert.equal(forEveryone.ok, true, JSON.stringify(forEveryone));
+    const forWorker = broadcasts.create({ id: 'worker-only', version: 1, target: { scope: 'roleGroup', role: 'worker' }, text: 'Rebase before pushing.', createdAt, expiresAt: null, revokedAt: null });
+    assert.equal(forWorker.ok, true);
+    const pmTextWithBroadcast = await previewText('host-pm');
+    assert.match(pmTextWithBroadcast, /Stop non-M1 work\. {2}\[user v1; broadcast:stand-down\]/, 'a broadcast for everyone is a user-layer instruction');
+    assert.equal(pmTextWithBroadcast.includes('Rebase before pushing.'), false, 'a broadcast for a different role group does not appear here');
+    assert.equal(broadcasts.revoke('stand-down', new Date().toISOString()).ok, true);
+    const pmTextAfterRevoke = await previewText('host-pm');
+    assert.equal(pmTextAfterRevoke.includes('Stop non-M1 work.'), false, 'a revoked broadcast no longer appears');
+    assert.equal(pmTextAfterRevoke.includes('Administrator broadcasts: unknown'), false, 'a successful (even if empty) read is not reported as unknown');
+  }
+
   // The preview is a virtual document: it has no file behind it, so it cannot be saved into a repository.
   const shown = vscode.window.activeTextEditor?.document;
   assert.equal(shown?.uri.scheme, PREVIEW_SCHEME);
@@ -633,6 +659,7 @@ export async function run(): Promise<void> {
   await accountFlow(workspace);
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
+  await runBroadcastChecks(workspace);
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
