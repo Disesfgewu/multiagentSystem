@@ -99,4 +99,72 @@ function guideVisible(steps) {
   return steps.some((step) => step.done === false || step.done === UNKNOWN);
 }
 
-module.exports = { presentAgent, onboardingSteps, guideVisible, countRunningAgents, UNKNOWN, STATE_TEXT };
+/**
+ * One line per account in the Multiagent Overview.
+ * Displays provider, current gate status (BLOCKED NOW, needs confirmation, near limit, or usage reading),
+ * and configured limits. If new agents are blocked or need confirmation, the reason and remedy are visible.
+ *
+ * @param {{
+ *   id: string,
+ *   label: string,
+ *   provider: string,
+ *   policy: string,
+ *   usage: string[],
+ *   gate?: { action: 'allow' | 'warn' | 'confirm' | 'block', line: string, reason?: string } | null
+ * }} entry
+ */
+function presentAccount(entry) {
+  const id = typeof entry?.id === 'string' ? entry.id : '';
+  const label = shown(entry?.label, 'Account');
+  const provider = shown(entry?.provider, 'Provider unknown');
+  const policy = typeof entry?.policy === 'string' && entry.policy.trim() !== '' ? shown(entry.policy, 'Limits: could not be read.') : 'Limits: could not be read.';
+  const usage = Array.isArray(entry?.usage) ? entry.usage : [];
+  const gate = entry?.gate && typeof entry.gate === 'object' ? entry.gate : null;
+  const action = gate && typeof gate.action === 'string' ? gate.action : 'allow';
+  const reason = typeof gate?.reason === 'string' && gate.reason.trim() !== '' ? shown(gate.reason, null) : null;
+
+  let icon = 'account';
+  let contextValue = 'multiagentOverviewAccount';
+  let gateStatus = '';
+
+  if (action === 'block') {
+    icon = 'circle-slash';
+    contextValue = 'multiagentOverviewAccountBlocked';
+    gateStatus = ` · BLOCKED NOW${reason ? `: ${reason}` : ''}`;
+  } else if (action === 'confirm') {
+    icon = 'question';
+    contextValue = 'multiagentOverviewAccountConfirm';
+    gateStatus = ` · needs confirmation${reason ? `: ${reason}` : ''}`;
+  } else if (action === 'warn') {
+    icon = 'warning';
+    contextValue = 'multiagentOverviewAccountWarn';
+    gateStatus = ` · near limit${reason ? `: ${reason}` : ''}`;
+  }
+
+  const description = gateStatus
+    ? `${provider}${gateStatus} · ${policy}`
+    : `${provider} · ${usage[0] ?? 'Usage: unknown.'} · ${policy}`;
+
+  const tooltip = [
+    `Account: ${label}`,
+    `Provider: ${provider}`,
+    ...(action === 'block' ? [`Status: BLOCKED NOW${reason ? ` (${reason})` : ''}`, 'Action: Click Set Account Limits to change limits, or close active sessions.'] : []),
+    ...(action === 'confirm' ? [`Status: Needs confirmation${reason ? ` (${reason})` : ''}`, 'Action: Click Set Account Limits to change limits, or confirm when starting.'] : []),
+    ...(action === 'warn' ? [`Status: Near limit${reason ? ` (${reason})` : ''}`] : []),
+    policy,
+    ...usage
+  ];
+
+  return {
+    id,
+    label,
+    description,
+    tooltip,
+    icon,
+    contextValue,
+    gateAction: action,
+    blockedReason: action === 'block' ? (reason ?? 'new agents held back') : null
+  };
+}
+
+module.exports = { presentAgent, presentAccount, onboardingSteps, guideVisible, countRunningAgents, UNKNOWN, STATE_TEXT };

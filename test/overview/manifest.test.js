@@ -44,12 +44,23 @@ test('every command used by a menu is declared, and the overview row actions exi
   const declared = new Set(contributes.commands.map((entry) => entry.command));
   for (const menu of Object.values(contributes.menus)) for (const item of menu) assert.ok(declared.has(item.command), `${item.command} is used in a menu but not declared`);
   const overview = contributes.menus['view/item/context'].filter((item) => item.when.includes('multiagentSystem.overviewView'));
-  assert.deepEqual(overview.map((item) => item.command).sort(), ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff', 'multiagentSystem.sessions.focus', 'multiagentSystem.sessions.reopen', 'multiagentSystem.sessions.stop']);
-  for (const item of overview) assert.match(item.when, /viewItem =~ \/\^multiagentOverviewAgent/);
+  const agentOverview = overview.filter((item) => item.when.includes('multiagentOverviewAgent'));
+  assert.deepEqual(agentOverview.map((item) => item.command).sort(), ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff', 'multiagentSystem.sessions.focus', 'multiagentSystem.sessions.reopen', 'multiagentSystem.sessions.stop']);
+  for (const item of agentOverview) assert.match(item.when, /viewItem =~ \/\^multiagentOverviewAgent/);
   for (const cmd of ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff']) {
-    const item = overview.find((entry) => entry.command === cmd);
+    const item = agentOverview.find((entry) => entry.command === cmd);
     assert.match(item.when, /\(Live\|Closed\)Pr\$/, `${cmd} appears only on rows that have a verified pull request`);
   }
+  const accountOverview = overview.filter((item) => item.when.includes('multiagentOverviewAccount'));
+  assert.deepEqual(accountOverview.map((item) => item.command).sort(), [
+    'multiagentSystem.accounts.check',
+    'multiagentSystem.accounts.details',
+    'multiagentSystem.accounts.edit',
+    'multiagentSystem.accounts.launch',
+    'multiagentSystem.accounts.limits',
+    'multiagentSystem.accounts.login'
+  ]);
+  for (const item of accountOverview) assert.match(item.when, /viewItem =~ \/\^multiagentOverviewAccount/);
 });
 
 test('the overview activates the extension, and the extension never declares untrusted-workspace support', () => {

@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { ACCOUNT_COMMANDS, accountTreeForTests } from '../../../src/accounts/accountCommands';
+import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { privateStorage } from '../../../src/storage/storageCommands';
 
 type Outcome = { ok: boolean; code?: string; message?: string; session?: { id: string; state: string; terminalOpen: boolean }; sessions?: Array<{ id: string; terminalOpen: boolean }> };
@@ -48,6 +49,21 @@ export async function runQuotaDispatchChecks(workspace: string, accountProfileId
     const blocked = (await accountTreeForTests().getChildren())?.find((row) => row.id === accountProfileId);
     assert.match(String(blocked?.description), /BLOCKED NOW/);
     assert.match(String(blocked?.tooltip), /1 agent is already running/);
+
+    const overviewRows = (await overviewTreeForTests().getChildren()) ?? [];
+    const overviewBlocked = overviewRows.find((row) => (row as any).id === accountProfileId);
+    assert.ok(overviewBlocked, 'the blocked account appears in the Overview');
+    assert.match(String(overviewBlocked?.description), /BLOCKED NOW: 1 agent is already running on this account, and the limit is 1\./);
+    assert.match(String(overviewBlocked?.tooltip), /Status: BLOCKED NOW \(1 agent is already running on this account, and the limit is 1\.\)/);
+    assert.match(String(overviewBlocked?.tooltip), /Action: Click Set Account Limits to change limits, or close active sessions\./);
+    assert.equal(overviewBlocked?.contextValue, 'multiagentOverviewAccountBlocked');
+    assert.equal((overviewBlocked?.iconPath as vscode.ThemeIcon)?.id, 'circle-slash');
+
+    // Test direct operation: details command accepts tree item reference directly
+    await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, overviewBlocked);
+    assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-account');
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account profile:/);
+
     await policy(true);
     await policy();
     assert.equal((await start('After resetting limits', true)).ok, false, 'clearing and setting limits does not forget the active session');

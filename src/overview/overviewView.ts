@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService } from '../accounts/accountRuntime';
-import { limitLines } from '../accounts/quotaGateUi';
+import { limitLines, currentGateState, CurrentGate } from '../accounts/quotaGateUi';
 import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor } from '../github/githubCommands';
 import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
@@ -10,9 +10,10 @@ import { isGitHubWebUrl } from '../github/controller';
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
 const { cleanTitle } = require('./model') as { cleanTitle(value: unknown): string };
-const { presentAgent, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
+const { presentAgent, presentAccount, onboardingSteps, guideVisible, countRunningAgents } = require('./presentation') as {
   countRunningAgents(sessions: unknown): number;
   presentAgent(row: any, session: any): { id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null; pullRequestNumber: number | null; issueNumber: number | null };
+  presentAccount(entry: any): { id: string; label: string; description: string; tooltip: string[]; icon: string; contextValue: string; gateAction: string; blockedReason: string | null };
   onboardingSteps(counts: { accounts: number | null; roleGroups: number | null; sessions: number | null }): Array<{ id: string; title: string; done: boolean | 'unknown' | 'not-tracked'; command: string; button: string; missing: string }>;
   guideVisible(steps: unknown[]): boolean;
 };
@@ -70,11 +71,14 @@ class AgentRow extends Row {
 }
 
 class AccountRow extends Row {
-  constructor(entry: { id: string; label: string; provider: string; policy: string; usage: string[] }) {
-    super(entry.label);
-    this.description = `${entry.provider} · ${entry.usage[0] ?? 'Usage: unknown.'} · ${entry.policy}`;
-    this.tooltip = [`Account: ${entry.label}`, `Provider: ${entry.provider}`, entry.policy, ...entry.usage].join('\n');
-    this.iconPath = new vscode.ThemeIcon('account');
+  constructor(entry: { id: string; label: string; provider: string; policy: string; usage: string[]; gate?: CurrentGate | null }) {
+    const presented = presentAccount(entry);
+    super(presented.label);
+    this.id = presented.id;
+    this.description = presented.description;
+    this.tooltip = presented.tooltip.join('\n');
+    this.iconPath = new vscode.ThemeIcon(presented.icon);
+    this.contextValue = presented.contextValue;
     this.command = { command: 'multiagentSystem.accounts.details', title: 'Account details', arguments: [entry.id] };
   }
 }
@@ -91,7 +95,7 @@ type Item = Row;
 
 export interface OverviewSnapshot {
   steps: ReturnType<typeof onboardingSteps>;
-  accounts: Array<{ id: string; label: string; provider: string; policy: string; usage: string[] }>;
+  accounts: Array<{ id: string; label: string; provider: string; policy: string; usage: string[]; gate?: CurrentGate | null }>;
   agents: Array<{ id: string; label: string; description: string; tooltip: string[]; terminalOpen: boolean; pullRequestUrl: string | null; pullRequestNumber?: number | null; issueNumber?: number | null }>;
   problems: number;
   notes: string[];
@@ -146,7 +150,8 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel }));
   const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
-    return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage };
+    const gate = await currentGateState(profile.id, () => sessions.list());
+    return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage, gate };
   })) : [];
   pullRequestUrls.clear();
   pullRequestNumbers.clear();
