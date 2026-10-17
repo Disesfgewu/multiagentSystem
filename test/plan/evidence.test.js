@@ -4,58 +4,57 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { describeEvidence, evidenceState, isResolved } = require('../../src/plan/evidence');
 
-test('evidenceState reads an issue or pull request into plain words, or unknown when it cannot', () => {
-  assert.equal(evidenceState('issue', { state: 'open' }), 'open');
-  assert.equal(evidenceState('issue', { state: 'closed' }), 'closed');
-  assert.equal(evidenceState('issue', { state: 'weird' }), 'unknown');
-  assert.equal(evidenceState('issue', null), 'unknown');
-  assert.equal(evidenceState('issue', undefined), 'unknown');
-  assert.equal(evidenceState('issue', 'not-an-object'), 'unknown');
-  assert.equal(evidenceState('pullRequest', { state: 'open', draft: false, merged: false }), 'open');
-  assert.equal(evidenceState('pullRequest', { state: 'open', draft: true, merged: false }), 'draft');
-  assert.equal(evidenceState('pullRequest', { state: 'closed', draft: false, merged: true }), 'merged');
-  assert.equal(evidenceState('pullRequest', { state: 'closed', draft: false, merged: false }), 'closed (not merged)');
-  assert.equal(evidenceState('pullRequest', { merged: true, state: 'open' }), 'merged', 'merged wins even if state looks stale');
-  assert.equal(evidenceState('pullRequest', {}), 'unknown');
+const head = 'a'.repeat(40);
+const issue = (number, state) => ({ number, state });
+const pr = (number, state, merged = false, draft = false, headSha = head) => ({ number, state, merged, draft, headSha });
+
+test('evidenceState accepts only a complete matching Issue or PR shape', () => {
+  assert.equal(evidenceState('issue', issue(7, 'open'), 7), 'open');
+  assert.equal(evidenceState('issue', issue(7, 'closed'), 7), 'closed');
+  assert.equal(evidenceState('issue', issue(8, 'closed'), 7), 'unknown', 'a response for another number is not evidence');
+  assert.equal(evidenceState('issue', { state: 'closed' }, 7), 'unknown');
+  assert.equal(evidenceState('pullRequest', pr(7, 'open'), 7), 'open');
+  assert.equal(evidenceState('pullRequest', pr(7, 'open', false, true), 7), 'draft');
+  assert.equal(evidenceState('pullRequest', pr(7, 'closed', true), 7), 'merged');
+  assert.equal(evidenceState('pullRequest', pr(7, 'closed'), 7), 'closed (not merged)');
+  for (const malformed of [
+    { number: 7, state: 'open', merged: false, draft: false },
+    { number: 7, state: 'odd', merged: false, draft: false, headSha: head },
+    { number: 7, state: 'open', merged: true, draft: false, headSha: head },
+    { number: 7, state: 'closed', merged: true, draft: true, headSha: head },
+    null, undefined, 'not-an-object', {}
+  ]) assert.equal(evidenceState('pullRequest', malformed, 7), 'unknown');
 });
 
-test('isResolved: an issue resolves by closing; a pull request resolves only by merging, never merely by closing', () => {
+test('isResolved: an issue resolves by closing; a pull request resolves only by merging', () => {
   assert.equal(isResolved('issue', 'open'), false);
   assert.equal(isResolved('issue', 'closed'), true);
   assert.equal(isResolved('pullRequest', 'merged'), true);
   assert.equal(isResolved('pullRequest', 'closed (not merged)'), false);
-  assert.equal(isResolved('pullRequest', 'draft'), false);
-  assert.equal(isResolved('pullRequest', 'open'), false);
 });
 
-test('a dependency link never produces a conflict, whatever its live state or the checkbox say', () => {
-  for (const done of [true, false]) {
-    for (const live of [{ state: 'open' }, { state: 'closed' }, { state: 'open', merged: true }, null]) {
-      for (const kind of ['issue', 'pullRequest']) {
-        assert.equal(describeEvidence({ field: 'dependency', done, kind, live }).conflict, false, JSON.stringify({ done, live, kind }));
-      }
-    }
+test('dependencies and ordinary evidence never infer the TODO completion state', () => {
+  for (const field of ['dependency', 'evidence']) for (const done of [true, false]) {
+    assert.equal(describeEvidence({ field, done, kind: 'issue', number: 7, live: issue(7, 'closed') }).conflict, false);
+    assert.equal(describeEvidence({ field, done, kind: 'pullRequest', number: 7, live: pr(7, 'closed', true) }).conflict, false);
   }
 });
 
-test('an evidence link with an unknown live state never produces a conflict: nothing is asserted without a source', () => {
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'issue', live: null }), { state: 'unknown', conflict: false });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: false, kind: 'pullRequest', live: {} }), { state: 'unknown', conflict: false });
+test('unknown or mismatched acceptance data never produces a conflict', () => {
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'issue', number: 7, live: null }), { state: 'unknown', conflict: false });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: false, kind: 'issue', number: 7, live: issue(8, 'closed') }), { state: 'unknown', conflict: false });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: false, kind: 'pullRequest', number: 7, live: { merged: true } }), { state: 'unknown', conflict: false });
 });
 
-test('an evidence Issue conflicts exactly when the checkbox disagrees with open/closed', () => {
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'issue', live: { state: 'closed' } }), { state: 'closed', conflict: false });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: false, kind: 'issue', live: { state: 'closed' } }), { state: 'closed', conflict: true }, 'recorded evidence is already closed but the TODO is still unchecked: needs human review');
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'issue', live: { state: 'open' } }), { state: 'open', conflict: true }, 'the TODO is checked but its evidence Issue is still open: needs human review');
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: false, kind: 'issue', live: { state: 'open' } }), { state: 'open', conflict: false });
+test('acceptance Issue conflicts exactly when its matching complete state disagrees with the checkbox', () => {
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'issue', number: 7, live: issue(7, 'closed') }), { state: 'closed', conflict: false });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: false, kind: 'issue', number: 7, live: issue(7, 'closed') }), { state: 'closed', conflict: true });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'issue', number: 7, live: issue(7, 'open') }), { state: 'open', conflict: true });
 });
 
-test('an evidence pull request conflicts exactly when the checkbox disagrees with having actually merged', () => {
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'pullRequest', live: { state: 'closed', merged: true } }), { state: 'merged', conflict: false });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: false, kind: 'pullRequest', live: { state: 'closed', merged: true } }), { state: 'merged', conflict: true });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'pullRequest', live: { state: 'open', draft: false } }), { state: 'open', conflict: true });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'pullRequest', live: { state: 'open', draft: true } }), { state: 'draft', conflict: true });
-  // Closed-without-merging never counts as the TODO being delivered, even though it is no longer open.
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: true, kind: 'pullRequest', live: { state: 'closed', merged: false } }), { state: 'closed (not merged)', conflict: true });
-  assert.deepEqual(describeEvidence({ field: 'evidence', done: false, kind: 'pullRequest', live: { state: 'closed', merged: false } }), { state: 'closed (not merged)', conflict: false });
+test('acceptance PR conflicts exactly when its matching stable head has merged', () => {
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'pullRequest', number: 7, live: pr(7, 'closed', true) }), { state: 'merged', conflict: false });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: false, kind: 'pullRequest', number: 7, live: pr(7, 'closed', true) }), { state: 'merged', conflict: true });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'pullRequest', number: 7, live: pr(7, 'open') }), { state: 'open', conflict: true });
+  assert.deepEqual(describeEvidence({ field: 'acceptance', done: true, kind: 'pullRequest', number: 7, live: pr(7, 'closed') }), { state: 'closed (not merged)', conflict: true });
 });

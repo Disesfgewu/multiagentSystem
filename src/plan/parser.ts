@@ -5,10 +5,9 @@ export interface PlanTask {
   line: number;
   reports: PlanReportLink[];
 }
-// `field` says which labelled field this reference came from. Only 'evidence' links may ever be
-// compared against live GitHub state to flag a conflict with the checkbox: a 'dependency' link is
-// informational only, and a dependency Issue being open must never be read as this TODO failing.
-export interface PlanReportLink { kind: 'issue' | 'pullRequest'; number: number; field: 'dependency' | 'evidence' }
+// `field` says which labelled field this reference came from. Only explicit acceptance links may
+// flag a conflict with the checkbox; dependencies and ordinary evidence remain informational.
+export interface PlanReportLink { kind: 'issue' | 'pullRequest'; number: number; field: 'dependency' | 'evidence' | 'acceptance' }
 export interface PlanSection {
   title: string;
   tasks: PlanTask[];
@@ -20,15 +19,16 @@ export interface PlanParse {
 const TASK = /^- \[([ x])\] ([A-Z]+[0-9]*-[0-9]{3}) (.+)$/;
 const CANDIDATE = /^- \[[^\]]*\]/;
 
-/** Only labelled dependency/evidence fields are links. Bare evidence numbers are ambiguous. */
+/** Only labelled dependency/evidence/acceptance fields are links. Bare numbers are ambiguous. */
 export function planReportLinks(source: string): PlanReportLink[] {
   const reports: PlanReportLink[] = [];
   const index = new Map<string, PlanReportLink>();
   // A Markdown link can target another repository even when its label says PR #7.
   const localText = source.replace(/\[[^\]]*\]\([^)]*\)/g, '');
-  for (const field of localText.matchAll(/(?:依賴|dependency|證據|evidence)[:：]\s*([^;；\n]*)/gi)) {
+  for (const field of localText.matchAll(/(?:驗收依據|acceptance|依賴|dependency|證據|evidence)[:：]\s*([^;；\n]*)/gi)) {
     const dependency = /^(?:依賴|dependency)/i.test(field[0]);
-    const fieldKind: PlanReportLink['field'] = dependency ? 'dependency' : 'evidence';
+    const acceptance = /^(?:驗收依據|acceptance)/i.test(field[0]);
+    const fieldKind: PlanReportLink['field'] = dependency ? 'dependency' : acceptance ? 'acceptance' : 'evidence';
     let previousKind: PlanReportLink['kind'] | undefined;
     let previousEnd = 0;
     for (const ref of field[1].matchAll(/(?<![A-Za-z0-9_/.:-])(?:\b(PR|Issues?|Pull Request)\s*)?#\s*([1-9][0-9]*)\b/gi)) {
@@ -45,10 +45,9 @@ export function planReportLinks(source: string): PlanReportLink[] {
         const link: PlanReportLink = { kind, number, field: fieldKind };
         index.set(key, link);
         reports.push(link);
-      } else if (existing.field === 'dependency' && fieldKind === 'evidence') {
-        // The same reference named again, more specifically, as this TODO's own acceptance
-        // evidence: it now participates in the conflict check, not just as a plain dependency.
-        existing.field = 'evidence';
+      } else if (fieldKind === 'acceptance' || (existing.field === 'dependency' && fieldKind === 'evidence')) {
+        // Acceptance is the strongest meaning; ordinary evidence is stronger than dependency.
+        existing.field = fieldKind;
       }
     }
   }
