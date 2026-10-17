@@ -109,6 +109,24 @@ export async function runPlanChecks(workspace: string): Promise<string> {
     assert.equal(String(mergedWhileUnchecked[1]?.tooltip).includes('disagree'), true);
     assert.equal(mergedWhileUnchecked[1]?.iconPath instanceof vscode.ThemeIcon && (mergedWhileUnchecked[1].iconPath as vscode.ThemeIcon).id, 'warning');
 
+    // A merge can change state without changing head. The final read is authoritative.
+    let sameHeadReads = 0;
+    setPlanEvidenceDepsForTests({ repository: async () => 'host/repo', readerFor: () => ({
+      getIssue: async (number) => ({ kind: 'ok', data: { number, state: 'closed' } }),
+      getPullRequest: async () => ({ kind: 'ok', data: sameHeadReads++ === 0
+        ? { ...prState, state: 'open', merged: false }
+        : prState })
+    }), now: () => new Date() });
+    const sameHeadMerge = (await tree.getChildren(await firstTask())) ?? [];
+    assert.match(String(sameHeadMerge[1]?.description), /^⚠ merged: needs human review/, 'same-head open to merged uses the last validated response');
+
+    setPlanEvidenceDepsForTests({ repository: async () => 'host/repo', readerFor: () => evidenceReader, now: () => new Date() });
+    const beforeRefreshSections = await tree.getChildren();
+    await vscode.commands.executeCommand(PLAN_COMMANDS.refresh);
+    const oldSectionTasks = await tree.getChildren(beforeRefreshSections?.[0]);
+    const oldSectionEvidence = (await tree.getChildren(oldSectionTasks?.[0])) ?? [];
+    assert.equal(oldSectionEvidence[1]?.description, 'unknown', 'expanding a stale section must not stamp its old TODO snapshot with the current generation');
+
     let transitionReads = 0;
     setPlanEvidenceDepsForTests({ repository: async () => 'host/repo', readerFor: () => ({
       getIssue: async (number) => ({ kind: 'ok', data: { number, state: 'closed' } }),
@@ -144,10 +162,14 @@ export async function runPlanChecks(workspace: string): Promise<string> {
     const afterWorkspaceSwitch = await delayedRead(() => { switchedRepository = 'other/repo'; }, () => switchedRepository);
     assert.equal(afterWorkspaceSwitch[1]?.description, 'unknown', 'a repository change discards the old project answer');
 
+    let beforeCheckboxSections = await tree.getChildren();
     const checkedEdit = new vscode.WorkspaceEdit();
     checkedEdit.replace(uri, new vscode.Range(2, 0, 2, '- [ ] M1-001 Task 1 updated。負責：PM；依賴：#412；驗收依據：PR #407；'.length), '- [x] M1-001 Task 1 updated。負責：PM；依賴：#412；驗收依據：PR #407；');
-    const afterCheckboxChange = await delayedRead(async () => { assert.equal(await vscode.workspace.applyEdit(checkedEdit), true); });
+    const afterCheckboxChange = await delayedRead(async () => { beforeCheckboxSections = await tree.getChildren(); assert.equal(await vscode.workspace.applyEdit(checkedEdit), true); });
     assert.equal(afterCheckboxChange[1]?.description, 'unknown', 'a checkbox edit discards the answer for the old TODO snapshot');
+    const checkboxOldTasks = await tree.getChildren(beforeCheckboxSections?.[0]);
+    const checkboxOldEvidence = (await tree.getChildren(checkboxOldTasks?.[0])) ?? [];
+    assert.equal(checkboxOldEvidence[1]?.description, 'unknown', 'a section captured before a checkbox edit remains stale when expanded afterwards');
     // A stale section snapshot still carries the old checkbox; re-fetch from the root to pick it up.
     setPlanEvidenceDepsForTests({ repository: async () => 'host/repo', readerFor: () => evidenceReader, now: () => new Date() });
     const freshSections = await tree.getChildren();

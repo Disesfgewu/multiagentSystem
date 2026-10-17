@@ -18,6 +18,7 @@ function evidenceState(kind, live, expectedNumber) {
     if (live.state === 'open') return 'open';
     return 'unknown';
   }
+  if (kind !== 'pullRequest') return 'unknown';
   if ((live.state !== 'open' && live.state !== 'closed') || typeof live.merged !== 'boolean' ||
       typeof live.draft !== 'boolean' || typeof live.headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(live.headSha)) return 'unknown';
   if (live.merged === true && live.state === 'closed' && live.draft === false) return 'merged';

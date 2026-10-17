@@ -14,6 +14,7 @@ test('evidenceState accepts only a complete matching Issue or PR shape', () => {
   assert.equal(evidenceState('issue', issue(8, 'closed'), 7), 'unknown', 'a response for another number is not evidence');
   assert.equal(evidenceState('issue', { state: 'closed' }, 7), 'unknown');
   assert.equal(evidenceState('pullRequest', pr(7, 'open'), 7), 'open');
+  assert.equal(evidenceState('unknown', pr(7, 'closed', true), 7), 'unknown');
   assert.equal(evidenceState('pullRequest', pr(7, 'open', false, true), 7), 'draft');
   assert.equal(evidenceState('pullRequest', pr(7, 'closed', true), 7), 'merged');
   assert.equal(evidenceState('pullRequest', pr(7, 'closed'), 7), 'closed (not merged)');

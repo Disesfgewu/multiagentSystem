@@ -50,6 +50,7 @@ async function planEvidenceStatus(task: PlanTask, link: PlanReportLink, generati
   // for reasons outside this module's control (no workspace, an untrusted workspace, a network error,
   // a broken test double). None of that may crash the whole tree: it all collapses to "unknown".
   try {
+    if (generation !== planReadGeneration) return unknown();
     const deps = planEvidenceDeps;
     const repository = await deps.repository();
     const reader = repository ? deps.readerFor(repository) : null;
@@ -65,8 +66,8 @@ async function planEvidenceStatus(task: PlanTask, link: PlanReportLink, generati
       const after = await reader.getPullRequest(link.number, { forceRefresh: true });
       if (after.kind !== 'ok' || !after.data || result.data.headSha !== after.data.headSha ||
           describeEvidence({ field: link.field, done: task.done, kind: link.kind, number: link.number, live: after.data }).state === 'unknown') return unknown();
-      live = result.data;
-      headSha = result.data.headSha;
+      live = after.data;
+      headSha = after.data.headSha;
     }
     if (!live) return unknown();
     const afterRepository = await deps.repository();
@@ -111,7 +112,7 @@ type TaskFilter = 'all' | 'open' | 'done';
 const FILTER_LABELS: Record<TaskFilter, string> = { all: 'All TODOs', open: 'Open TODOs', done: 'Recorded TODOs' };
 
 class SectionNode extends vscode.TreeItem {
-  constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[]) {
+  constructor(readonly section: PlanSection, readonly visibleTasks: PlanTask[], readonly generation: number) {
     super(section.title, vscode.TreeItemCollapsibleState.Expanded);
     this.description = `${section.tasks.filter((task) => !task.done).length} open / ${section.tasks.length} total`;
     this.iconPath = new vscode.ThemeIcon('list-tree');
@@ -161,7 +162,7 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
   setFilter(filter: TaskFilter): void { this.filter = filter; this.refresh(); }
   getTreeItem(node: Node): vscode.TreeItem { return node; }
   async getChildren(node?: Node): Promise<Node[]> {
-    if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task, planReadGeneration));
+    if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task, node.generation));
     if (node instanceof TaskNode) {
       if (!node.task.reports.length) return [new MessageNode('待連結：在依賴、證據或驗收依據欄位加入 Issue #12 或 PR #7。')];
       // Fetched only now, for this one task's own (typically one or two) links, never for every
@@ -171,18 +172,20 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
       return node.task.reports.map((link, index) => new ReportNode(link.kind, link.number, link.field, statuses[index]));
     }
     if (node) return [];
+    const generation = planReadGeneration;
     const uri = planUri();
     if (!uri) return [new MessageNode('Open a project folder to read its core plan.')];
     try {
       const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
       const source = open ? open.getText() : new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      if (generation !== planReadGeneration || uri.toString() !== planUri()?.toString()) return [new MessageNode('The core plan changed while reading. Refresh to read the current plan.', PLAN_COMMANDS.refresh)];
       const parsed = parsePlan(source);
       const rows: Node[] = parsed.errors.slice(0, 5).map((error) => new MessageNode(error, PLAN_COMMANDS.open));
       if (parsed.errors.length > 5) rows.push(new MessageNode(`${parsed.errors.length - 5} more format errors; open the plan.`, PLAN_COMMANDS.open));
       if (parsed.sections.length) {
         for (const section of parsed.sections) {
           const visible = section.tasks.filter((task) => this.filter === 'all' || (this.filter === 'done' ? task.done : !task.done));
-          if (visible.length) rows.push(new SectionNode(section, visible));
+          if (visible.length) rows.push(new SectionNode(section, visible, generation));
         }
         if (rows.length === 0) rows.push(new MessageNode(`No ${this.filter === 'done' ? 'recorded' : 'open'} TODOs in this plan.`, PLAN_COMMANDS.filter));
       }
