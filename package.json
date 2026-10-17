@@ -55,6 +55,10 @@
     "onCommand:multiagentSystem.roles.start",
     "onCommand:multiagentSystem.roles.remove",
     "onView:multiagentSystem.rolesView",
+    "onCommand:multiagentSystem.broadcasts.refresh",
+    "onCommand:multiagentSystem.broadcasts.send",
+    "onCommand:multiagentSystem.broadcasts.revoke",
+    "onView:multiagentSystem.broadcastsView",
     "onView:multiagentSystem.toolsSetupView",
     "onCommand:multiagentSystem.setup.refresh",
     "onCommand:multiagentSystem.setup.retryGh",
@@ -77,6 +81,7 @@
         { "id": "multiagentSystem.githubView", "name": "GitHub" },
         { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
         { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" },
+        { "id": "multiagentSystem.broadcastsView", "name": "Administrator Broadcasts" },
         { "id": "multiagentSystem.toolsSetupView", "name": "Tools Setup" }
       ]
     },
@@ -108,6 +113,10 @@
       {
         "view": "multiagentSystem.rolesView",
         "contents": "No role groups yet. A role group says what an agent may do.\n[Create Role Group](command:multiagentSystem.roles.create)"
+      },
+      {
+        "view": "multiagentSystem.broadcastsView",
+        "contents": "Local broadcast notices are stored on this computer and shown in matching role previews. Session launch and CLI delivery are not connected.\n[Create Broadcast Notice](command:multiagentSystem.broadcasts.send)"
       },
       {
         "view": "multiagentSystem.toolsSetupView",
@@ -213,6 +222,10 @@
       { "command": "multiagentSystem.roles.start", "title": "Multiagent: Start Agent with This Role Group", "icon": "$(play)" },
       { "command": "multiagentSystem.roles.preview", "title": "Multiagent: Preview Effective Rules" },
       { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
+      { "command": "multiagentSystem.broadcasts.refresh", "title": "Multiagent: Refresh Broadcasts", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.broadcasts.send", "title": "Multiagent: Create Broadcast Notice", "icon": "$(megaphone)" },
+      { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
+      { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
       {
         "command": "multiagentSystem.storage.status",
         "title": "Multiagent: Show Private Storage Status"
@@ -250,6 +263,8 @@
         { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
         { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
+        { "command": "multiagentSystem.broadcasts.send", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
+        { "command": "multiagentSystem.broadcasts.refresh", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation" }
       ],
       "view/item/context": [
@@ -267,6 +282,7 @@
         { "command": "multiagentSystem.roles.preview", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "inline@1" },
         { "command": "multiagentSystem.roles.edit", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
         { "command": "multiagentSystem.roles.remove", "when": "view == multiagentSystem.rolesView && viewItem == multiagentRoleGroup", "group": "management" },
+        { "command": "multiagentSystem.broadcasts.revoke", "when": "view == multiagentSystem.broadcastsView && viewItem == multiagentBroadcastActive", "group": "inline" },
         { "command": "multiagentSystem.setup.retryGh", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupGh", "group": "inline" },
         { "command": "multiagentSystem.setup.retryCodex", "when": "view == multiagentSystem.toolsSetupView && viewItem == multiagentSetupCodex", "group": "inline" }
       ]
