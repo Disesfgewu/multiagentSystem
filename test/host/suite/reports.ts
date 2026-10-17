@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
-import { REPORT_COMMANDS, REPORT_SCHEME, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
+import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
 
 const HEAD = 'd'.repeat(40);
 
@@ -41,6 +41,7 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(await labels('pullRequest'), ['#7 Add reports', '#8 Second PR']);
     const issueSections = (await reportTreeForTests('issue').getChildren()) ?? [];
     assert.deepEqual(issueSections.map((item) => String(item.label)), ['待我決策／待補證據 (2)', '要求修改 (0)', '已通過 (0)', '已處理 (0)']);
+    assert.equal(reportBadgeForTests('issue'), 2, 'the activity-bar badge counts items that still need a decision');
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
       listPullRequests: async (filter) => filter.state === 'closed'
         ? { kind: 'ok', data: [{ number: 9, title: 'Closed PR', state: 'closed', headSha: HEAD }] }
@@ -51,6 +52,7 @@ export async function runReportChecks(): Promise<string> {
     }) });
     const decided = (await reportTreeForTests('pullRequest').getChildren()) ?? [];
     assert.deepEqual(decided.map((item) => String(item.label)), ['待我決策／待補證據 (0)', '要求修改 (1)', '已通過 (1)', '已處理 (1)']);
+    assert.equal(reportBadgeForTests('pullRequest'), 1, 'a changes-requested PR still needs a decision; a passed or processed one does not count');
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
       getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: 'e'.repeat(40), approval: { status: 'approved', headSha: 'e'.repeat(40) }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: 'e'.repeat(40) } })
     }) });
@@ -191,15 +193,17 @@ export async function runReportChecks(): Promise<string> {
       assert.deepEqual([result.ok, result.code], [false, 'invalid-report'], JSON.stringify(bad));
     }
 
-    // an incomplete or failed list is never shown as the whole list
+    // an incomplete or failed list is never shown as the whole list, and its count is not guessed either
     for (const kind of ['partial', 'truncated', 'denied', 'offline', 'rate_limited', 'invalid']) {
       setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => ({ kind, data: [{ number: 99, title: 'Must not appear' }] }) }) });
       const shown = await labels('issue');
       assert.equal(shown.length, 1, kind);
       assert.equal(shown.some((label) => label.includes('99')), false, kind);
+      assert.equal(reportBadgeForTests('issue'), undefined, kind);
     }
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => { throw new Error('network down'); } }) });
     assert.match((await labels('issue'))[0], /could not be read/);
+    assert.equal(reportBadgeForTests('issue'), undefined, 'a failed read clears a previously shown count, rather than leaving it stale');
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => ({ kind: 'empty', data: [] }) }) });
     assert.deepEqual(await labels('issue'), ['No issues were reported.']);
     for (const answer of [{ kind: 'ok' }, { kind: 'ok', data: [null] }, { kind: 'ok', data: [{ number: 0, title: 'bad' }] }, { kind: 'empty', data: [{ number: 99, title: 'bad' }] }]) {
