@@ -39,12 +39,6 @@
     "onCommand:multiagentSystem.overview.refresh",
     "onCommand:multiagentSystem.overview.openReport",
     "onCommand:multiagentSystem.overview.showDiff",
-    "onView:multiagentSystem.planView",
-    "onCommand:multiagentSystem.plan.open",
-    "onCommand:multiagentSystem.plan.create",
-    "onCommand:multiagentSystem.plan.refresh",
-    "onCommand:multiagentSystem.plan.filter",
-    "onCommand:multiagentSystem.plan.returnToOverview",
     "onCommand:multiagentSystem.accounts.refresh",
     "onCommand:multiagentSystem.accounts.create",
     "onCommand:multiagentSystem.accounts.details",
@@ -91,7 +85,6 @@
     "views": {
       "multiagentSystem": [
         { "id": "multiagentSystem.overviewView", "name": "Overview" },
-        { "id": "multiagentSystem.planView", "name": "Core Plan" },
         { "id": "multiagentSystem.issuesReportView", "name": "Issues Report" },
         { "id": "multiagentSystem.prsReportView", "name": "PRs Report" },
         { "id": "multiagentSystem.githubView", "name": "GitHub" },
@@ -105,10 +98,6 @@
       {
         "view": "multiagentSystem.overviewView",
         "contents": "No agents yet. Nothing here is running until you start it.\n[Create Account](command:multiagentSystem.accounts.create)\n[Create Role Group](command:multiagentSystem.roles.create)\n[Open Four Native Terminals](command:multiagentSystem.openTerminalGroup)"
-      },
-      {
-        "view": "multiagentSystem.planView",
-        "contents": "This project has no core plan yet. Create docs/MASTER_PLAN.md, then add numbered TODOs.\n[Create Core Plan](command:multiagentSystem.plan.create)\n[Refresh](command:multiagentSystem.plan.refresh)"
       },
       {
         "view": "multiagentSystem.issuesReportView",
@@ -226,11 +215,6 @@
         "title": "Multiagent: Open GitHub Item in Editor"
       },
       { "command": "multiagentSystem.overview.refresh", "title": "Multiagent: Refresh Overview", "icon": "$(refresh)" },
-      { "command": "multiagentSystem.plan.open", "title": "Multiagent: Open Core Plan" },
-      { "command": "multiagentSystem.plan.create", "title": "Multiagent: Create Core Plan", "icon": "$(add)" },
-      { "command": "multiagentSystem.plan.refresh", "title": "Multiagent: Refresh Core Plan", "icon": "$(refresh)" },
-      { "command": "multiagentSystem.plan.filter", "title": "Multiagent: Filter Core Plan TODOs", "icon": "$(filter)" },
-      { "command": "multiagentSystem.plan.returnToOverview", "title": "Multiagent: Return to Agent Overview", "icon": "$(arrow-left)" },
       { "command": "multiagentSystem.overview.openReport", "title": "Multiagent: Read Pull Request Report in Editor", "icon": "$(file-text)" },
       { "command": "multiagentSystem.overview.showDiff", "title": "Multiagent: Show Pull Request Diff in Editor", "icon": "$(diff)" },
       { "command": "multiagentSystem.overview.openPullRequest", "title": "Multiagent: Open This Agent's Pull Request on GitHub", "icon": "$(git-pull-request)" },
@@ -298,10 +282,6 @@
       "view/title": [
         { "command": "multiagentSystem.reports.refresh", "when": "view == multiagentSystem.issuesReportView || view == multiagentSystem.prsReportView", "group": "navigation" },
         { "command": "multiagentSystem.overview.refresh", "when": "view == multiagentSystem.overviewView", "group": "navigation" },
-        { "command": "multiagentSystem.plan.create", "when": "view == multiagentSystem.planView", "group": "navigation@1" },
-        { "command": "multiagentSystem.plan.refresh", "when": "view == multiagentSystem.planView", "group": "navigation@2" },
-        { "command": "multiagentSystem.plan.filter", "when": "view == multiagentSystem.planView", "group": "navigation@3" },
-        { "command": "multiagentSystem.plan.returnToOverview", "when": "view == multiagentSystem.planView", "group": "navigation@4" },
         {
           "command": "multiagentSystem.github.refreshView",
           "when": "view == multiagentSystem.githubView",

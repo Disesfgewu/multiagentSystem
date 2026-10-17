@@ -5,7 +5,6 @@ import * as vscode from 'vscode';
 import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
-import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
@@ -771,7 +770,6 @@ export async function run(): Promise<void> {
   assert.ok(workspace, 'the test workspace path is provided');
   console.log(await runStorageChecks(registered, workspace));
   console.log(await runOverviewChecks(workspace));
-  console.log(await runPlanChecks(workspace));
   console.log(await runReportChecks());
   await setupFlow();
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
