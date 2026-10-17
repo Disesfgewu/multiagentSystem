@@ -3,6 +3,7 @@ export interface PlanTask {
   title: string;
   done: boolean;
   line: number;
+  owners: string[];
   reports: PlanReportLink[];
 }
 // `field` says which labelled field this reference came from. Only explicit acceptance links may
@@ -18,6 +19,36 @@ export interface PlanParse {
 }
 const TASK = /^- \[([ x])\] ([A-Z]+[0-9]*-[0-9]{3}) (.+)$/;
 const CANDIDATE = /^- \[[^\]]*\]/;
+
+const ROLE_MAP: Record<string, string> = {
+  pm: 'pm',
+  '開發': 'worker',
+  developer: 'worker',
+  worker: 'worker',
+  dev: 'worker',
+  '研究': 'researcher',
+  researcher: 'researcher',
+  research: 'researcher',
+  '使用者': 'owner',
+  user: 'owner',
+  owner: 'owner',
+  'project owner': 'owner',
+  qa: 'qa',
+  '安全': 'security',
+  security: 'security'
+};
+
+export function planOwners(source: string): string[] {
+  const match = /(?:負責|owner)[:：]\s*([^;；。\n]+)/i.exec(source);
+  if (!match) return [];
+  const raw = match[1].trim();
+  const owners = new Set<string>();
+  for (const part of raw.split(/[/／、,，+＋&及與]+/).map((item) => item.trim().toLowerCase()).filter(Boolean)) {
+    const mapped = ROLE_MAP[part] ?? (/^[a-z][a-z0-9-]{0,31}$/.test(part) ? part : undefined);
+    if (mapped) owners.add(mapped);
+  }
+  return [...owners];
+}
 
 /** Only labelled dependency/evidence/acceptance fields are links. Bare numbers are ambiguous. */
 export function planReportLinks(source: string): PlanReportLink[] {
@@ -78,7 +109,7 @@ export function parsePlan(source: string): PlanParse {
     }
     seen.add(match[2]);
     const title = match[3].split('。負責：')[0].trim();
-    section.tasks.push({ id: match[2], title: title.slice(0, 180), done: match[1] === 'x', line: index, reports: planReportLinks(line) });
+    section.tasks.push({ id: match[2], title: title.slice(0, 180), done: match[1] === 'x', line: index, owners: planOwners(line), reports: planReportLinks(line) });
   });
   return { sections: sections.filter((entry) => entry.tasks.length > 0), errors };
 }
