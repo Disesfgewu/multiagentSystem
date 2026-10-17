@@ -200,3 +200,116 @@ test('long titles are cut to a fixed length', () => {
   assert.ok(text.split('\n')[0].length <= 'Pull request #7: '.length + 300);
   assert.ok(issueReport({ issue: issue({ title: 'y'.repeat(5000) }) }).split('\n')[0].length <= 'Issue #12: '.length + 300);
 });
+
+// ---- check detail on the latest head
+const run = (name, state, completedAt = null) => ({ source: 'check_run', name, state, completedAt });
+const withChecks = (checks) => prReport({ snapshot: snapshot({ checks }) });
+
+test('every check on the latest head is listed with its state and finish time, failing first', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('unit tests', 'passing', '2026-10-16T01:00:00Z'), run('host smoke', 'failing', '2026-10-16T01:05:00Z'), run('lint', 'pending', null)], statuses: [run('legacy status', 'passing', null)] } });
+  const lines = text.split('\n');
+  const at = lines.indexOf('CHECKS ON THE LATEST HEAD');
+  assert.ok(at > 0);
+  assert.deepEqual(lines.slice(at + 1, at + 5), [
+    '- host smoke · failing · finished 2026-10-16T01:05:00Z',
+    '- lint · pending · not finished',
+    '- legacy status · passing · finish time unknown',
+    '- unit tests · passing · finished 2026-10-16T01:00:00Z'
+  ]);
+});
+
+test('checks that are missing, unreadable or for another head never read as a pass', () => {
+  assert.match(withChecks(undefined), /Check details: unknown \(not read\)\./);
+  assert.match(withChecks(null), /Check details: unknown \(not read\)\./);
+  for (const kind of ['denied', 'offline', 'rate_limited', 'invalid', 'truncated', 'weird']) assert.match(withChecks({ kind, data: { headSha: HEAD, checkRuns: [run('a', 'passing')], statuses: [] } }), new RegExp(`Check details: unknown \\(${kind}\\)\\.`), kind);
+  assert.match(withChecks({ kind: 'ok' }), /Check details: unknown \(no data\)\./);
+  const foreign = withChecks({ kind: 'ok', data: { headSha: OLD, checkRuns: [run('old passing run', 'passing')], statuses: [] } });
+  assert.match(foreign, /Check details: they belong to bbbbbbbbbbbb, not the latest head aaaaaaaaaaaa, so they are not shown\./);
+  assert.equal(foreign.includes('old passing run'), false);
+  assert.match(withChecks({ kind: 'ok', data: { checkRuns: [], statuses: [] } }), /belong to an unknown head/);
+  assert.match(withChecks({ kind: 'ok', data: { headSha: HEAD.toUpperCase(), checkRuns: [run('upper', 'passing')], statuses: [] } }), /- upper · passing/);
+});
+
+test('no checks at all is said to be not a pass, and a partial read says the list may be incomplete', () => {
+  assert.match(withChecks({ kind: 'empty', data: { headSha: HEAD, checkRuns: [], statuses: [] } }), /No checks were reported for this head\. That is not a pass\./);
+  const partialEmpty = withChecks({ kind: 'partial', data: { headSha: HEAD, checkRuns: [], statuses: [] } });
+  assert.match(partialEmpty, /Only one of the two sources .* may be incomplete\./);
+  assert.match(partialEmpty, /No checks in the part that could be read\. That is not a pass\./);
+  const partial = withChecks({ kind: 'partial', data: { headSha: HEAD, checkRuns: [run('built', 'passing')], statuses: [] } });
+  assert.match(partial, /may be incomplete\./);
+  assert.match(partial, /- built · passing/);
+});
+
+test('check names and times are shown as plain text, while malformed items make the detail unknown', () => {
+  const evil = `${cp(0x202e)}run${cp(0)}\nname`;
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run(evil, 'passing', '2026-10-16T01:00:00Z')], statuses: [] } });
+  assert.equal(new RegExp(`[${cp(0x202e)}${cp(0)}]`).test(text), false);
+  assert.match(text, /- run name · passing · finished 2026-10-16T01:00:00Z/);
+  for (const malformed of [null, 'broken', run('odd', 'great'), { name: null, state: 'passing', completedAt: null }, run('bad date', 'passing', '2025-99-99'), run('impossible day', 'passing', '2025-02-30T01:00:00Z')]) {
+    const report = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [malformed], statuses: [] } });
+    assert.match(report, /Check details: unknown \(a check item was malformed or belonged to another head\)\./);
+    assert.equal(report.includes('No checks were reported'), false);
+  }
+  const many = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: Array.from({ length: 55 }, (_, i) => run(`check-${String(i).padStart(2, '0')}`, 'passing', '2026-10-16T01:00:00Z')), statuses: [] } });
+  assert.match(many, /\(15 more checks are not shown\)/);
+  assert.equal(many.includes('check-54'), false);
+  assert.ok(many.includes('check-00'));
+});
+
+test('check detail is shown even when the rest of the snapshot is only partial, but the overall review/merge conclusion stays unknown', () => {
+  const text = prReport({ snapshot: { status: 'partial', consistent: true, headSha: HEAD, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [run('x', 'passing')], statuses: [] } } } });
+  assert.match(text, /Review and CI: unknown \(partial\)\. The read was not complete, so the overall review\/merge conclusion is unknown\./);
+  assert.ok(text.includes('CHECKS ON THE LATEST HEAD'));
+  assert.ok(text.includes('- x · passing'));
+});
+
+test('check detail is unknown, not merely absent, when there is no snapshot at all', () => {
+  const text = prReport({ snapshot: null });
+  const lines = text.split('\n');
+  const at = lines.indexOf('CHECKS ON THE LATEST HEAD');
+  assert.ok(at > 0);
+  assert.equal(lines[at + 1], 'Check details: unknown (not read).');
+});
+
+test('a source field that is not a list is unknown, never silently treated as no checks', () => {
+  const wrongType = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: 'not-a-list', statuses: [] } });
+  assert.match(wrongType, /Check details: unknown \(check run or commit status data was not shaped as a list\)\./);
+  assert.equal(wrongType.includes('No checks were reported'), false);
+  const wrongType2 = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('a', 'passing')], statuses: 42 } });
+  assert.match(wrongType2, /Check details: unknown \(check run or commit status data was not shaped as a list\)\./);
+});
+
+test('a complete read ("ok") with one source entirely missing is unknown, since "ok" claims both were read', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('a', 'passing')] } });
+  assert.match(text, /Check details: unknown \(one of the two sources is missing even though the read was reported complete\)\./);
+});
+
+test('a partial read with a missing source is fine, as long as the one present is a real list', () => {
+  const text = withChecks({ kind: 'partial', data: { headSha: HEAD, checkRuns: [run('a', 'passing')] } });
+  assert.match(text, /may be incomplete\./);
+  assert.match(text, /- a · passing/);
+});
+
+test('a check item carrying its own head is only trusted when it matches the latest head, even though the outer head matched', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('current', 'passing'), { ...run('stale', 'failing'), headSha: OLD }], statuses: [] } });
+  assert.match(text, /Check details: unknown \(a check item was malformed or belonged to another head\)\./);
+  assert.equal(text.includes('stale'), false);
+  assert.equal(text.includes('- current · passing'), false, 'a foreign item makes the whole read incomplete');
+});
+
+test('valid states keep a stable failing, pending, passing order', () => {
+  const text = withChecks({ kind: 'ok', data: { headSha: HEAD, checkRuns: [run('a-pass', 'passing'), run('b-fail', 'failing'), run('c-pending', 'pending')], statuses: [] } });
+  const at = text.split('\n').indexOf('CHECKS ON THE LATEST HEAD');
+  assert.deepEqual(text.split('\n').slice(at + 1, at + 4).map((l) => l.split(' · ')[0]), ['- b-fail', '- c-pending', '- a-pass']);
+});
+
+test('an inconsistent or foreign snapshot never promotes its checks as latest-head evidence', () => {
+  for (const changed of [
+    { status: 'partial', consistent: false, headSha: OLD, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [run('old-pass', 'passing')], statuses: [] } } },
+    { status: 'partial', consistent: true, headSha: OLD, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [run('old-pass', 'passing')], statuses: [] } } }
+  ]) {
+    const text = prReport({ snapshot: changed });
+    assert.match(text, /Check details: unknown \(the snapshot was not consistently read from the latest head\)\./);
+    assert.equal(text.includes('old-pass'), false);
+  }
+});
