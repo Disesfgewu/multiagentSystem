@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { privateStorage } from '../storage/storageCommands';
-import { configurePublicFeedback, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
+import { configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
   readFeedback(store: unknown, target: Record<string, unknown>): { state: string; record?: { note: string; headSha: string | null; updatedAt: string; revision: number } };
@@ -40,7 +40,10 @@ export const REPORT_COMMANDS = {
   refresh: 'multiagentSystem.reports.refresh',
   feedback: 'multiagentSystem.reports.feedback',
   publicFeedback: 'multiagentSystem.reports.publicFeedback',
-  configurePublisher: 'multiagentSystem.reports.configurePublisher'
+  reviewPullRequest: 'multiagentSystem.reports.reviewPullRequest',
+  mergePullRequest: 'multiagentSystem.reports.mergePullRequest',
+  configurePublisher: 'multiagentSystem.reports.configurePublisher',
+  configureMergeAuthority: 'multiagentSystem.reports.configureMergeAuthority'
 } as const;
 
 type Kind = 'issue' | 'pullRequest';
@@ -91,13 +94,21 @@ async function localFeedback(repository: string, kind: Kind, number: number): Pr
   } catch { return { state: 'unknown' }; }
 }
 
+async function mergeAuthoritySection(): Promise<string> {
+  const mode = await readMergeAuthority();
+  if (mode === 'pm') return '\nMERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval, passing CI, resolved threads, supported branch rules, and a clear publication scan.\n';
+  if (mode === 'human') return '\nMERGE AUTHORITY\nHuman only (default): PM merge is refused.\n';
+  return '\nMERGE AUTHORITY\nUnknown: merge authority policy could not be read from private storage (fails closed).\n';
+}
+
 async function withFeedback(report: string, repository: string, kind: Kind, number: number, currentHead: string | null): Promise<string> {
   const found = await localFeedback(repository, kind, number);
-  if (found.state === 'unknown') return `${report}\nLOCAL FEEDBACK\nUnknown: private feedback could not be read.\n`;
-  if (found.state === 'missing') return `${report}\nLOCAL FEEDBACK\nNone saved on this machine. Nothing was sent to GitHub.\n`;
+  const authority = kind === 'pullRequest' ? await mergeAuthoritySection() : '';
+  if (found.state === 'unknown') return `${report}\nLOCAL FEEDBACK\nUnknown: private feedback could not be read.\n${authority}`;
+  if (found.state === 'missing') return `${report}\nLOCAL FEEDBACK\nNone saved on this machine. Nothing was sent to GitHub.\n${authority}`;
   const record = found.record!;
   const stale = kind === 'pullRequest' && record.headSha !== currentHead;
-  return `${report}\nLOCAL FEEDBACK\nSaved only on this machine${stale ? ' · STALE: written for another head' : ''}. Nothing was sent to GitHub. Open Save Local Feedback to read or edit the private note.\n`;
+  return `${report}\nLOCAL FEEDBACK\nSaved only on this machine${stale ? ' · STALE: written for another head' : ''}. Nothing was sent to GitHub. Open Save Local Feedback to read or edit the private note.\n${authority}`;
 }
 
 class Message extends vscode.TreeItem {
@@ -423,6 +434,17 @@ export function registerReports(context: vscode.ExtensionContext): void {
       else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Could not configure public feedback: ${result.code ?? 'unknown'}.`);
       return result;
     }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.configureMergeAuthority, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { mode?: unknown; interactive?: unknown } : {};
+      const result = await configureMergeAuthority({ mode: input.mode, interactive: input.interactive === false ? false : true });
+      if (result.ok) {
+        refresh();
+        if (input.interactive !== false) void vscode.window.showInformationMessage(`Pull request merge authority set to "${result.mode}".`);
+      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        void vscode.window.showErrorMessage(`Could not configure pull request merge authority: ${result.code ?? 'unknown'}.`);
+      }
+      return result;
+    }),
     vscode.commands.registerCommand(REPORT_COMMANDS.publicFeedback, async (value?: unknown) => {
       const input = value && typeof value === 'object' ? value as { body?: unknown; interactive?: unknown } : {};
       const uri = vscode.window.activeTextEditor?.document.uri;
@@ -439,6 +461,40 @@ export function registerReports(context: vscode.ExtensionContext): void {
           });
         } else {
           void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code ?? 'unknown'}.`);
+        }
+      }
+      return result;
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.reviewPullRequest, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { decision?: unknown; body?: unknown; interactive?: unknown } : {};
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
+      if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
+      const result = await reviewPullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { decision: input.decision, body: input.body, interactive: input.interactive === false ? false : true });
+      if (result.ok) {
+        refresh();
+        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : 'Formal pull request review submitted and verified for this head.');
+      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
+      }
+      return result;
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.mergePullRequest, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { interactive?: unknown } : {};
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
+      if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
+      const result = await mergePullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive: input.interactive === false ? false : true });
+      if (result.ok) {
+        refresh();
+        if (input.interactive !== false) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
+      } else if (input.interactive !== false && result.code !== 'cancelled') {
+        if (result.code === 'human-merge-required') {
+          void vscode.window.showErrorMessage('Pull request merge was refused: human-merge-required (default merge authority is Human only).', 'Configure Merge Authority').then((picked) => {
+            if (picked === 'Configure Merge Authority') void vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority);
+          });
+        } else {
+          void vscode.window.showErrorMessage(`Pull request was not merged: ${result.code ?? 'unknown'}.`);
         }
       }
       return result;

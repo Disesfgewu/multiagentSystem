@@ -220,7 +220,148 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(replay, { ok: true, code: 'already-sent' });
     assert.equal(published.length, 1, 'reopening and retrying a completed request does not post twice');
 
+    // Formal PR review and guarded PR merge from the open report via Broker
+    assert.match(await reportText('pullRequest', 7), /MERGE AUTHORITY\nHuman only \(default\): PM merge is refused\./);
+    const reviewsSent: Array<{ number: number; decision: string; body: string; expectedHeadSha: string }> = [];
+    const mergesSent: Array<{ number: number; expectedHeadSha: string; commitTitle: string; commitMessage: string }> = [];
+    const completeSnapshot = (over: Record<string, any> = {}) => ({
+      repository: { owner: 'host', name: 'repo' },
+      number: 7,
+      status: 'complete',
+      consistent: true,
+      headSha: HEAD,
+      pullRequest: {
+        kind: 'ok',
+        data: {
+          number: 7, state: 'open', merged: false, draft: false, author: 'external-worker',
+          title: 'Add reports', body: 'Refs #12', headSha: HEAD, mergeable: true, baseRef: 'main',
+          ...(over.pr ?? {})
+        }
+      },
+      reviews: { kind: 'ok', data: [] },
+      approval: {
+        status: 'approved', reason: 'approved_on_current_head', headSha: HEAD,
+        currentApprovals: [{ reviewer: 'pm-user', reviewId: 1, commitId: HEAD }],
+        staleApprovals: [], changesRequested: [], selfApprovalsIgnored: []
+      },
+      checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{}], statuses: [] } },
+      checksSummary: { headSha: HEAD, state: 'passing', requiredState: 'passing', counts: { passing: 1, failing: 0, pending: 0 }, failing: [], pending: [], missingRequired: [] },
+      threads: { kind: 'empty', data: { headSha: HEAD, threads: [], unresolvedCount: 0 } },
+      unresolvedThreads: 0,
+      requirements: {
+        kind: 'ok',
+        data: {
+          complete: true, ruleTypes: ['pull_request', 'required_status_checks'],
+          requireCodeOwnerReview: false, requireLastPushApproval: false, strictStatusChecks: false
+        }
+      },
+      ...over
+    });
+
+    // Self-review of PM's own PR is refused by publish-policy via Broker
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot({ pr: { author: 'pm-user' } }),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      review: async (_session, _repository, number, decision, body, expectedHeadSha) => {
+        reviewsSent.push({ number, decision, body, expectedHeadSha });
+        return { ok: true, number: 501 };
+      }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Self-approval attempt.', interactive: false }), { ok: false, code: 'self-review-forbidden' });
+    assert.equal(reviewsSent.length, 0);
+
+    // Formal PR review blocks private feedback leakage and succeeds for a distinct author on the open head
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot(),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      review: async (_session, _repository, number, decision, body, expectedHeadSha) => {
+        reviewsSent.push({ number, decision, body, expectedHeadSha });
+        return { ok: true, number: 501 };
+      }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Leaking private note: Please add a second test', interactive: false }), { ok: false, code: 'content-blocked' });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', interactive: false }), { ok: true });
+    assert.deepEqual(reviewsSent, [{ number: 7, decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', expectedHeadSha: HEAD }]);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Duplicate review attempt.', interactive: false }), { ok: true, code: 'already-reviewed' });
+    assert.equal(reviewsSent.length, 1);
+
+    // Guarded PR merge: refused under default 'human' merge authority, then enforced when 'pm' authority is configured
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot(),
+      publication: async (_target, headSha) => ({ kind: 'ok', data: { complete: true, number: 7, headSha, diff: 'diff --git a/src/report.ts b/src/report.ts\n@@ -1 +1 @@\n-old\n+new\n' } }),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      merge: async (_session, _repository, number, expectedHeadSha, commitTitle, commitMessage) => {
+        mergesSent.push({ number, expectedHeadSha, commitTitle, commitMessage });
+        return { ok: true, sha: HEAD };
+      }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'human-merge-required' });
+    assert.equal(mergesSent.length, 0);
+
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'invalid', interactive: false }), { ok: false, code: 'invalid-merge-authority' });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'pm', interactive: false }), { ok: true, mode: 'pm' });
+    assert.match(await reportText('pullRequest', 7), /MERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval/);
+
+    // Failing CI or secret in diff blocks merge even under 'pm' authority
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot({ checksSummary: { headSha: HEAD, state: 'failing', requiredState: 'failing', counts: { passing: 0, failing: 1, pending: 0 }, failing: ['host smoke'], pending: [], missingRequired: [] } }),
+      publication: async (_target, headSha) => ({ kind: 'ok', data: { complete: true, number: 7, headSha, diff: 'diff --git a/src/report.ts b/src/report.ts\n+new\n' } }),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      merge: async () => ({ ok: true, sha: HEAD })
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'ci-failing' });
+
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot(),
+      publication: async (_target, headSha) => ({ kind: 'ok', data: { complete: true, number: 7, headSha, diff: '+const token = "ghp_1234567890abcdefghijklmnopqrstuvwx12";\n' } }),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      merge: async () => ({ ok: true, sha: HEAD })
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'publication-blocked' });
+
+    // Clean snapshot + clean publication merges and records idempotency
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot(),
+      publication: async (_target, headSha) => ({ kind: 'ok', data: { complete: true, number: 7, headSha, diff: 'diff --git a/src/report.ts b/src/report.ts\n@@ -1 +1 @@\n-old\n+new\n' } }),
+      authorId: async (_auth, login) => (login === 'pm-user' ? '42' : '77'),
+      merge: async (_session, _repository, number, expectedHeadSha, commitTitle, commitMessage) => {
+        mergesSent.push({ number, expectedHeadSha, commitTitle, commitMessage });
+        return { ok: true, sha: HEAD };
+      }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: true });
+    assert.deepEqual(mergesSent, [{ number: 7, expectedHeadSha: HEAD, commitTitle: 'Add reports', commitMessage: 'Refs #12' }]);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: true, code: 'already-merged' });
+    assert.equal(mergesSent.length, 1);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'human', interactive: false }), { ok: true, mode: 'human' });
+
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'issue', number: 12 });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Not a PR', interactive: false }), { ok: false, code: 'no-pr-report-open' });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'no-pr-report-open' });
     const issuePrivateSaved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'issue', number: 12, note: 'Private issue note kept on this machine', interactive: false });
     assert.equal(issuePrivateSaved.ok, true);
     installPublicFeedbackTestOverrides({
