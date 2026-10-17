@@ -2,6 +2,29 @@
 
 const { decideDispatch, summarizeQuota, validatePolicy, DEFAULT_POLICY } = require('./quota-policy');
 
+/**
+ * Decides and, in the same step, atomically reserves a dispatch slot through `dispatcher`. This is
+ * the one call that actually GRANTS a launch (made once, right when access is about to be given,
+ * never for an earlier read-only preview that only decides what dialog to show): two callers racing
+ * to reserve the last slot cannot both succeed, because `dispatcher.reserve` decides and records in
+ * one synchronous step. Even an account with no stored policy takes a tracking slot, so setting
+ * limits later counts its already-open sessions. With no policy the reservation has no limits
+ * and needs no quota confirmation; an unreadable policy still refuses the launch.
+ *
+ * @param {{ policyRead: object, observations?: object[], now: Date, dispatcher: object, accountKey: string, approval?: string }} input
+ * @returns {{ ok: true, release: () => void } | { ok: false, code: string, message: string }}
+ */
+function commitDispatch({ policyRead, observations = [], now, dispatcher, accountKey, approval } = {}) {
+  if (!policyRead || policyRead.ok !== true) {
+    return { ok: false, code: 'quota-gate', message: 'The limits saved for this account could not be read, so no new agent was started.' };
+  }
+  const constrained = policyRead.stored === true;
+  const reserved = dispatcher.reserve({ accountKey, policy: constrained ? policyRead.policy : DEFAULT_POLICY, observations: constrained ? observations : [], now, approval: constrained ? approval : 'override' });
+  if (!reserved.allowed) return { ok: false, code: 'quota-gate', message: reserved.reasons.map(wordsFor).join(' ') };
+  let released = false;
+  return { ok: true, release: () => { if (!released) { released = true; dispatcher.release(reserved.reservation); } } };
+}
+
 // What the person sees about an account's limits, in plain words, and the gate that runs before a new
 // session starts on an account. The decision itself is `decideDispatch` (quota-policy.js); this module
 // adds the part that turns it into an action and into sentences. An account with no stored policy has no
@@ -84,6 +107,23 @@ function describeQuota(observations, now) {
 
 const safeDetail = (value, max) => typeof value === 'string' ? Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('') : '';
 
+/**
+ * What starting a new agent on this account would do right now, in plain words, with a pointer to
+ * the one action (Set Account Limits) that can change it. Takes a `gateLaunch` result directly, so a
+ * caller computes the decision once and can both act on it and describe it from the same object; this
+ * never re-decides anything on its own.
+ *
+ * @param {{ action: 'allow'|'warn'|'confirm'|'block', lines: string[] }} decision
+ * @returns {string}
+ */
+function describeCurrentState(decision) {
+  const reason = decision.lines[0];
+  if (decision.action === 'allow') return 'Right now: a new agent on this account would start.';
+  if (decision.action === 'warn') return `Right now: a new agent would start with a warning. ${reason ?? ''}`.trim();
+  if (decision.action === 'confirm') return `Right now: a new agent would need your confirmation. ${reason ?? ''} Use Set Account Limits to change this.`.trim();
+  return `Right now: a new agent would be held back. ${reason ?? ''} Use Set Account Limits to change this.`.trim();
+}
+
 /** Turns what a person typed into a stored policy, or the problems in plain words. */
 function policyFromInput({ warn, block, max, unknownQuota }) {
   const number = (text) => (typeof text === 'string' && text.trim() !== '' ? Number(text.trim()) : undefined);
@@ -105,4 +145,4 @@ function policyFromInput({ warn, block, max, unknownQuota }) {
   return { ok: false, problems: checked.problems.map((code) => words[code] ?? 'The limits are not valid.') };
 }
 
-module.exports = { gateLaunch, describePolicy, describeQuota, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };
+module.exports = { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };

@@ -8,6 +8,7 @@ import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks } from './sessionPersistence';
+import { runQuotaDispatchChecks } from './quotaDispatch';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -236,6 +237,12 @@ async function accountFlow(workspace: string): Promise<void> {
   const overviewWithLimits = ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
   assert.match(String(overviewWithLimits?.description ?? ''), /Limits: warn at 70% used/);
   assert.match(String(overviewWithLimits?.tooltip ?? ''), /Usage: unknown/);
+  // With no verified usage and `unknownQuota: 'block'` stored, a new agent on this account would be
+  // held back right now — the account list must say so persistently, not only inside the one-off
+  // dialog a launch attempt shows.
+  const blockedItem = ((await accountTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
+  assert.match(String(blockedItem?.description ?? ''), /BLOCKED NOW/);
+  assert.match(String(blockedItem?.tooltip ?? ''), /Right now: a new agent would be held back\..*Use Set Account Limits to change this\./);
   const badLimits = await vscode.commands.executeCommand<{ ok: boolean; problems?: string[] }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '95', block: '90' });
   assert.deepEqual([badLimits.ok, badLimits.problems?.[0]], [false, 'The warning level cannot be higher than the pause level.']);
   const held = await gated('Gated');
@@ -249,9 +256,13 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.doesNotMatch(limitText, /\d+% used, verified/, 'no usage percentage is invented');
   const cleared = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, clear: true });
   assert.equal(cleared.ok, true);
+  const clearedItem = ((await accountTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
+  assert.equal(String(clearedItem?.description ?? '').includes('BLOCKED NOW'), false, 'clearing the limits lifts the shown hold, not just the actual one');
+  assert.equal(String(clearedItem?.tooltip ?? '').includes('Right now:'), false, 'with no stored policy there is nothing to report a current gate state for');
   const lifted = await gated('Lifted');
   assert.equal(lifted.ok, true, 'clearing the limits lifts the hold');
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: lifted.session?.id });
+  await runQuotaDispatchChecks(workspace, created.profile.id);
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 
