@@ -7,7 +7,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { SessionManager, SessionView } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
-import { normalizeRequestedModel, supportsModelSelection } from '../providers/modelSelection';
+import { normalizeRequestedModel, supportsModelSelection, knownModelsForProvider } from '../providers/modelSelection';
 import { PrivateSessionSnapshot, sessionWorkspaceKey } from './privateSnapshot';
 import { privateStorage } from '../storage/storageCommands';
 import { prepareInstructionSnapshot, isSnapshotStale, cleanupSessionPlan } from './managedInstructions';
@@ -222,20 +222,45 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       let env: Record<string, string | null> | undefined;
       let requestedModel = input.requestedModel;
       if (requestedModel === undefined && interactive && supportsModelSelection(provider)) {
-        const choice = await vscode.window.showQuickPick([
-          { label: 'Use CLI default model', custom: false, description: 'The actual model remains unknown until the CLI reports it' },
-          { label: 'Request a model', custom: true, description: 'Enter a provider model ID or alias; account availability is not checked' }
-        ], { placeHolder: 'Model for this new agent session' });
+        const known = knownModelsForProvider(provider);
+        interface ModelPickItem extends vscode.QuickPickItem {
+          modelId: string | null;
+          custom?: boolean;
+        }
+        const items: ModelPickItem[] = [
+          {
+            label: 'Use CLI default model',
+            modelId: null,
+            description: 'The actual model remains unknown until the CLI reports it'
+          },
+          ...known.map((m) => ({
+            label: m.label,
+            modelId: m.id,
+            description: m.description,
+            detail: m.detail
+          })),
+          {
+            label: 'Enter custom model ID…',
+            modelId: '__custom__',
+            custom: true,
+            description: 'Enter another provider model ID or alias; account availability is not checked'
+          }
+        ];
+        const choice = await vscode.window.showQuickPick(items, {
+          placeHolder: `Select a model for ${provider} CLI session`
+        });
         if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-        requestedModel = null;
         if (choice.custom) {
           const entered = await vscode.window.showInputBox({
             prompt: 'Model ID or alias for this new session. The CLI decides whether your account can use it.',
+            placeHolder: provider === 'claude' ? 'claude-3-7-sonnet-20250219' : 'o3-mini',
             ignoreFocusOut: true,
             validateInput: (value) => { try { normalizeRequestedModel(provider, value); return undefined; } catch { return MESSAGES['invalid-model']; } }
           });
           if (entered === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           requestedModel = entered;
+        } else {
+          requestedModel = choice.modelId;
         }
       }
       requestedModel = normalizeRequestedModel(provider, requestedModel);
