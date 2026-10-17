@@ -96,6 +96,7 @@ export interface ManagerDeps<T extends TerminalHandle> {
   newToken?: () => string;
   now?: () => string;
   terminalTitle?: (name: string) => string;
+  detectShellType?: () => 'posix' | 'powershell' | 'cmd';
   /** Called when saving fails. Receives no details: they could contain local paths. */
   onPersistError?: () => void;
   /**
@@ -338,9 +339,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (typeof input.cwd !== 'string' || !this.deps.directoryExists(input.cwd)) throw new SessionError('worktree-missing');
     await this.ready();
     this.inFlight += 1;
+    let identity: SessionIdentity | undefined;
     try {
       const project = await this.deps.resolveProject(input.cwd);
-      const identity: SessionIdentity = {
+      identity = {
         id: input.id ?? (this.deps.newId ?? randomId)(),
         repoId: project.repoId,
         roleGroupId: input.roleGroupId ?? UNASSIGNED,
@@ -354,6 +356,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     } catch (error) {
       if (input.instructions?.plan) {
         cleanupSessionPlan(input.instructions.plan);
+      }
+      if (identity) {
+        this.activePlans.delete(identity.id);
+        if (this.handles.has(identity.id)) {
+          const term = this.handles.get(identity.id);
+          this.handles.delete(identity.id);
+          if (term) {
+            this.bound.delete(term);
+            term.dispose();
+          }
+        }
       }
       throw error;
     } finally {
@@ -412,7 +425,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const commandLine = formatShellCommandLine(executable, allArgs);
+      const shellType = this.deps.detectShellType?.();
+      const commandLine = formatShellCommandLine(executable, allArgs, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
     }
@@ -493,6 +507,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   ): Promise<SessionView> {
     await this.ready();
     this.inFlight += 1;
+    let identity: SessionIdentity | undefined;
     try {
       const old = this.registry.get(id);
       if (!old) throw new SessionError('session-not-found');
@@ -502,7 +517,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (old.state === 'unknown' && options.acknowledgeUnknown !== true) throw new SessionError('confirm-unknown-reopen');
       if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
       const executable = this.executableFor(old.provider);
-      const identity: SessionIdentity = {
+      identity = {
         id: options.newId ?? (this.deps.newId ?? randomId)(),
         repoId: old.repoId,
         roleGroupId: old.roleGroupId,
@@ -516,6 +531,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     } catch (error) {
       if (options.instructions?.plan) {
         cleanupSessionPlan(options.instructions.plan);
+      }
+      if (identity) {
+        this.activePlans.delete(identity.id);
+        if (this.handles.has(identity.id)) {
+          const term = this.handles.get(identity.id);
+          this.handles.delete(identity.id);
+          if (term) {
+            this.bound.delete(term);
+            term.dispose();
+          }
+        }
       }
       throw error;
     } finally {

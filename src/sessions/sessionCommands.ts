@@ -98,9 +98,30 @@ function workspaceFolder(): string | undefined {
   return folders.length === 1 ? folders[0].uri.fsPath : undefined;
 }
 
+export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
+
+class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
+  private readonly docs = new Map<string, string>();
+  private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this.emitter.event;
+
+  set(id: string, content: string): vscode.Uri {
+    this.docs.set(id, content);
+    const uri = vscode.Uri.from({ scheme: INSTRUCTION_PREVIEW_SCHEME, path: '/instructions.txt', query: id });
+    this.emitter.fire(uri);
+    return uri;
+  }
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return this.docs.get(uri.query) ?? 'No instructions available or session closed.\n';
+  }
+}
+
 export function registerSessionCommands(context: vscode.ExtensionContext): SessionCommands {
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
+  const previewProvider = new InstructionPreviewProvider();
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(INSTRUCTION_PREVIEW_SCHEME, previewProvider));
   // One quota-dispatch reservation per account-bound session, including those with no limits, released
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
   // either has no account assigned, is still awaiting handoff, or was already released.
@@ -125,6 +146,16 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
     },
     terminalTitle,
+    detectShellType: () => {
+      const shell = (vscode.env.shell ?? '').toLowerCase();
+      if (shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe') || shell.endsWith('pwsh')) {
+        return 'powershell';
+      }
+      if (shell.endsWith('cmd.exe') || shell.endsWith('cmd')) {
+        return 'cmd';
+      }
+      return process.platform === 'win32' ? 'powershell' : 'posix';
+    },
     onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved. Existing saved records were left untouched. These sessions remain in this window only; reload the workspace before trying to save again.'),
     onPersistenceBlocked: () =>
       void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
@@ -234,7 +265,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       let instructions: any;
       const targetSessionId = randomUUID();
       const openedStorage = await privateStorage()?.use();
-      if (openedStorage?.ok) {
+      if (!openedStorage?.ok) {
+        if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
+          const reason = openedStorage?.reason ?? 'storage-unavailable';
+          if (release) { release(); release = undefined; }
+          return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
+        }
+      } else {
         const store = openedStorage.store as any;
         const privateDir = store.dir;
         const project = await resolveProject(cwd);
@@ -250,6 +287,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           privateDir
         });
         if (!prep.ok) {
+          if (release) { release(); release = undefined; }
           return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
         }
         if (interactive && prep.digest) {
@@ -261,13 +299,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           );
           if (!answer) {
             cleanupSessionPlan(prep.plan);
+            if (release) { release(); release = undefined; }
             return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           }
           if (answer === 'View Instructions') {
-            const doc = await vscode.workspace.openTextDocument({
-              content: prep.summaryText,
-              language: 'markdown'
-            });
+            const uri = previewProvider.set(targetSessionId, prep.summaryText);
+            const doc = await vscode.workspace.openTextDocument(uri);
             await vscode.window.showTextDocument(doc, { preview: true });
             const proceed = await vscode.window.showInformationMessage(
               'Confirm launching agent terminal with these effective instructions?',
@@ -276,6 +313,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (proceed !== 'Start Agent') {
               cleanupSessionPlan(prep.plan);
+              if (release) { release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
           }
@@ -283,6 +321,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: cwd });
         if (staleCheck.stale) {
           cleanupSessionPlan(prep.plan);
+          if (release) { release(); release = undefined; }
           const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please start again.`;
           if (interactive) void vscode.window.showErrorMessage(msg);
           return { ok: false, code: 'stale-instructions', message: msg };
@@ -375,7 +414,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         let instructions: any;
         const newSessionId = randomUUID();
         const openedStorage = await privateStorage()?.use();
-        if (openedStorage?.ok && prior) {
+        if (!openedStorage?.ok) {
+          if (prior && prior.roleGroupId !== 'unassigned') {
+            const reason = openedStorage?.reason ?? 'storage-unavailable';
+            if (release) { release(); release = undefined; }
+            return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
+          }
+        } else if (prior) {
           const store = openedStorage.store as any;
           const privateDir = store.dir;
           const project = await resolveProject(prior.worktree);
@@ -391,6 +436,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             privateDir
           });
           if (!prep.ok) {
+            if (release) { release(); release = undefined; }
             return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
           }
           if (interactive && prep.digest) {
@@ -402,13 +448,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (!answer) {
               cleanupSessionPlan(prep.plan);
+              if (release) { release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
             if (answer === 'View Instructions') {
-              const doc = await vscode.workspace.openTextDocument({
-                content: prep.summaryText,
-                language: 'markdown'
-              });
+              const uri = previewProvider.set(newSessionId, prep.summaryText);
+              const doc = await vscode.workspace.openTextDocument(uri);
               await vscode.window.showTextDocument(doc, { preview: true });
               const proceed = await vscode.window.showInformationMessage(
                 'Confirm reopening agent terminal with these effective instructions?',
@@ -417,6 +462,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
               );
               if (proceed !== 'Reopen Session') {
                 cleanupSessionPlan(prep.plan);
+                if (release) { release(); release = undefined; }
                 return { ok: false, code: 'cancelled', message: 'Cancelled.' };
               }
             }
@@ -424,6 +470,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: prior.worktree });
           if (staleCheck.stale) {
             cleanupSessionPlan(prep.plan);
+            if (release) { release(); release = undefined; }
             const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please reopen again.`;
             if (interactive) void vscode.window.showErrorMessage(msg);
             return { ok: false, code: 'stale-instructions', message: msg };
@@ -479,7 +526,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         `Instruction digest: ${picked.instructionDigest ?? 'none'}`,
         `Method: ${picked.instructionMethod ?? 'none'}`
       ].join('\n');
-      const doc = await vscode.workspace.openTextDocument({ content: text, language: 'markdown' });
+      const uri = previewProvider.set(picked.id, text);
+      const doc = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(doc, { preview: true });
     }
     return { ok: true, sessions: manager.list() };

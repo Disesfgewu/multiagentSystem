@@ -22,6 +22,7 @@ export interface InstructionSnapshot {
   repoId: string;
   provider: string;
   roleGroupId: string;
+  role?: string;
   roleGroupVersion: number | null;
   accountProfileId: string;
   requestedModel: string | null;
@@ -225,6 +226,7 @@ export async function prepareInstructionSnapshot(
     repoId,
     provider,
     roleGroupId: group ? group.id : 'unassigned',
+    role: group?.role,
     roleGroupVersion: group ? group.version : null,
     accountProfileId: options.accountProfileId ?? 'unassigned',
     requestedModel: options.requestedModel ?? null,
@@ -312,7 +314,7 @@ export async function isSnapshotStale(
   for (const item of currentItems) {
     if (boundIds.has(item.id)) continue;
     if (!isLive(item, now)) continue;
-    if (appliesTo(item, { provider: snapshot.provider, agentId: snapshot.targetSessionId })) {
+    if (appliesTo(item, { role: snapshot.role, provider: snapshot.provider, agentId: snapshot.targetSessionId })) {
       return { stale: true, reason: 'broadcast-added' };
     }
   }
