@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { measureInjection, evaluateChecks, summarizeUsage, assessSavingsClaim, renderReport, TOKEN_FIELDS, MIN_TASKS_FOR_CLAIM } = require('../../src/memory/eval');
+const { measureInjection, evaluateChecks, summarizeUsage, assessSavingsClaim, renderReport, TOKEN_FIELDS, MIN_TASKS_FOR_CLAIM, MAX_TOKEN_VALUE } = require('../../src/memory/eval');
 const suite = require('../../src/memory/eval-suite');
 const { run } = require('../../scripts/memory-eval');
 
@@ -21,7 +21,7 @@ const quality = (on, off) => ({ byArm: { on, off } });
 const good = { pass: 10, fail: 0, notRun: 0, passRate: 1 };
 const claimOf = (over = {}) => {
   const taskIds = over.taskIds || ids(MIN_TASKS_FOR_CLAIM);
-  return assessSavingsClaim({ usage: summarizeUsage({ records: over.records || fullUsage(taskIds), taskIds }), quality: over.quality || quality(good, good), taskCount: taskIds.length, real: 'real' in over ? over.real : true });
+  return assessSavingsClaim({ usage: summarizeUsage({ records: over.records || fullUsage(taskIds), taskIds }), quality: over.quality || quality(good, good), real: 'real' in over ? over.real : true });
 };
 
 test('the synthetic run is reproducible and states that it is synthetic', () => {
@@ -94,6 +94,7 @@ test('usage records: bad values, unknown sources, estimates without a method, ch
   for (const bad of [
     rec('both', 'a', 'input_tokens', 1), rec('on', '', 'input_tokens', 1), rec('on', 'a', 'input_chars', 1), rec('on', 'a', 'cost_usd', 1),
     rec('on', 'a', 'input_tokens', -1), rec('on', 'a', 'input_tokens', NaN), rec('on', 'a', 'input_tokens', '5'), rec('on', 'a', 'input_tokens', Infinity),
+    rec('on', 'a', 'input_tokens', -Infinity), rec('on', 'a', 'input_tokens', 1e308), rec('on', 'a', 'input_tokens', 1.5), rec('on', 'a', 'input_tokens', Number.MAX_SAFE_INTEGER + 1),
     rec('on', 'a', 'input_tokens', 1, { source: 'guess' }), rec('on', 'a', 'input_tokens', 1, { source: 'estimated' }), rec('on', 'a', 'input_tokens', 1, { source: 'estimated', method: '  ' }),
     rec('on', 'a', 'input_tokens', 1, { billing: 'free' }), null, 'x'
   ]) {
@@ -180,7 +181,7 @@ test('the report has a fixed shape, names sources, never turns characters into t
 test('a supported claim still says a sum of tokens is not a cost', () => {
   const taskIds = ids(MIN_TASKS_FOR_CLAIM);
   const usage = summarizeUsage({ records: fullUsage(taskIds), taskIds });
-  const claim = assessSavingsClaim({ usage, quality: quality(good, good), taskCount: taskIds.length, real: true });
+  const claim = assessSavingsClaim({ usage, quality: quality(good, good), real: true });
   const text = renderReport({ suiteId: 's', real: true, runs: [], quality: quality(good, good), usage, claim });
   assert.match(text, /Supported: total token use was lower/);
   assert.match(text, /not a cost/);
@@ -292,4 +293,87 @@ test('the report masks the names of shared privacy domains', () => {
   const text = renderReport({ suiteId: 's', real: false, runs: [run1], quality: quality(good, good), usage: summarizeUsage({ records: [], taskIds: ['t'] }), claim: { supported: false, reasons: ['x'] } });
   assert.equal(text.includes('someone-private'), false);
   assert.match(text, /domain-[0-9a-f]{8}/);
+});
+
+test('task count is bound to taskIds and cannot be passed by caller (Refs #22)', () => {
+  const taskIds3 = ids(3);
+  const usage3 = summarizeUsage({ records: fullUsage(taskIds3), taskIds: taskIds3 });
+
+  // Caller passing taskCount is strictly forbidden and throws TypeError
+  assert.throws(() => assessSavingsClaim({ usage: usage3, quality: quality(good, good), taskCount: 10, real: true }), TypeError);
+  assert.throws(() => assessSavingsClaim({ usage: usage3, quality: quality(good, good), taskCount: 3, real: true }), TypeError);
+  assert.throws(() => assessSavingsClaim({ usage: usage3, quality: quality(good, good), taskCount: 0, real: true }), TypeError);
+
+  // Without caller taskCount, 3 tasks in taskIds produces too-few-tasks and is not supported
+  const claim3 = assessSavingsClaim({ usage: usage3, quality: quality(good, good), real: true });
+  assert.equal(claim3.supported, false);
+  assert.deepEqual(claim3.reasons, ['too-few-tasks']);
+
+  // Exactly 10 tasks is supported when other criteria are met
+  const taskIds10 = ids(10);
+  const usage10 = summarizeUsage({ records: fullUsage(taskIds10), taskIds: taskIds10 });
+  const claim10 = assessSavingsClaim({ usage: usage10, quality: quality(good, good), real: true });
+  assert.equal(claim10.supported, true);
+  assert.deepEqual(claim10.reasons, []);
+
+  // summarizeUsage rejects non-unique or invalid taskIds
+  assert.throws(() => summarizeUsage({ records: [], taskIds: ['t01', 't01'] }), TypeError);
+  assert.throws(() => summarizeUsage({ records: [], taskIds: ['t01', ''] }), TypeError);
+  assert.throws(() => summarizeUsage({ records: [], taskIds: ['t01', 123] }), TypeError);
+
+  // assessSavingsClaim rejects usage without taskIds
+  assert.throws(() => assessSavingsClaim({ usage: {}, quality: quality(good, good), real: true }), TypeError);
+  assert.throws(() => assessSavingsClaim({ usage: { taskIds: 'not-an-array' }, quality: quality(good, good), real: true }), TypeError);
+});
+
+test('token values must be safe integers with finite upper bound; 1e308 and overflow are invalid (Refs #22)', () => {
+  const taskIds = ids(10);
+
+  // 1e308, floats, non-safe integers are flagged as invalid-value
+  const result1e308 = summarizeUsage({ records: [rec('on', 't01', 'input_tokens', 1e308)], taskIds });
+  assert.deepEqual(result1e308.problems, ['invalid-value']);
+
+  const resultFloat = summarizeUsage({ records: [rec('on', 't01', 'input_tokens', 12.34)], taskIds });
+  assert.deepEqual(resultFloat.problems, ['invalid-value']);
+
+  const resultHuge = summarizeUsage({ records: [rec('on', 't01', 'input_tokens', Number.MAX_SAFE_INTEGER + 1)], taskIds });
+  assert.deepEqual(resultHuge.problems, ['invalid-value']);
+
+  // Two 1e308 records do not sum to Infinity and cannot judge SUPPORTED
+  const recordsWith1e308 = [
+    ...fullUsage(taskIds),
+    rec('off', 't01', 'input_tokens', 1e308),
+    rec('off', 't02', 'input_tokens', 1e308)
+  ];
+  const claim1e308 = claimOf({ records: recordsWith1e308, taskIds });
+  assert.equal(claim1e308.supported, false);
+  assert.ok(claim1e308.reasons.includes('invalid-usage-records'));
+
+  // Summation overflow within a field in summarizeUsage flags invalid-value
+  const halfMax = Math.floor(MAX_TOKEN_VALUE / 2) + 1000;
+  const overflowRecords = [
+    rec('on', 't01', 'input_tokens', halfMax),
+    rec('on', 't02', 'input_tokens', halfMax)
+  ];
+  const overflowUsage = summarizeUsage({ records: overflowRecords, taskIds });
+  assert.ok(overflowUsage.problems.includes('invalid-value'));
+  assert.equal(overflowUsage.summary.on.api.input_tokens.complete, false);
+  assert.equal(overflowUsage.summary.on.api.input_tokens.providerReported, null);
+
+  // Summation overflow in estimated records also flags invalid-value
+  const estOverflowRecords = [
+    rec('on', 't01', 'input_tokens', halfMax, { source: 'estimated', method: 'm' }),
+    rec('on', 't02', 'input_tokens', halfMax, { source: 'estimated', method: 'm' })
+  ];
+  const estOverflowUsage = summarizeUsage({ records: estOverflowRecords, taskIds });
+  assert.ok(estOverflowUsage.problems.includes('invalid-value'));
+  assert.equal(estOverflowUsage.summary.on.api.input_tokens.estimated, null);
+
+  // Even if forged totals with Infinity or unsafe integers reach assessSavingsClaim, it refuses the claim
+  const forgedUsage = summarizeUsage({ records: fullUsage(taskIds), taskIds });
+  forgedUsage.summary.off.api.input_tokens.providerReported = Infinity;
+  forgedUsage.summary.on.api.input_tokens.providerReported = 1e308;
+  const forgedClaim = assessSavingsClaim({ usage: forgedUsage, quality: quality(good, good), real: true });
+  assert.equal(forgedClaim.supported, false);
+  assert.ok(forgedClaim.reasons.includes('invalid-usage-records'));
 });

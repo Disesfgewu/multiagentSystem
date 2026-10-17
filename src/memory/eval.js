@@ -88,9 +88,11 @@ function evaluateChecks({ tasks, runs, outputs = {} }) {
   return { results, byArm };
 }
 
+const MAX_TOKEN_VALUE = Number.MAX_SAFE_INTEGER;
+
 function checkRecord(record) {
   if (!isPlain(record) || !ARMS.includes(record.arm) || !text(record.taskId) || !TOKEN_FIELDS.includes(record.field)) return 'invalid-record';
-  if (typeof record.value !== 'number' || !Number.isFinite(record.value) || record.value < 0) return 'invalid-value';
+  if (typeof record.value !== 'number' || !Number.isSafeInteger(record.value) || record.value < 0 || record.value > MAX_TOKEN_VALUE) return 'invalid-value';
   if (!SOURCES.includes(record.source)) return 'unknown-source';
   if (record.source === 'estimated' && !text(record.method)) return 'estimate-without-method';
   if (record.billing !== undefined && !BILLING.includes(record.billing)) return 'invalid-billing';
@@ -102,12 +104,17 @@ function checkRecord(record) {
  * A total is `complete` only when every task has a provider-reported value for the field; a missing
  * value is reported as missing (never as zero); estimates are counted apart and keep their method.
  * Billing modes are summarized separately and never added together.
+ * Task count is strictly bound to taskIds.
  */
 function summarizeUsage({ records = [], taskIds }) {
   if (!Array.isArray(records) || !Array.isArray(taskIds)) throw new TypeError('records and taskIds must be lists');
+  const known = new Set();
+  for (const id of taskIds) {
+    if (!text(id) || known.has(id)) throw new TypeError('taskIds must be a list of unique non-empty strings');
+    known.add(id);
+  }
   const problems = [];
   const valid = [];
-  const known = new Set(taskIds);
   const seen = new Set();
   for (const record of records) {
     const problem = checkRecord(record);
@@ -130,31 +137,61 @@ function summarizeUsage({ records = [], taskIds }) {
       for (const field of TOKEN_FIELDS) {
         const mine = valid.filter((record) => record.arm === arm && record.billing === billing && record.field === field);
         const reportedTasks = new Set(mine.filter((record) => record.source === 'provider-reported').map((record) => record.taskId));
-        const reported = mine.filter((record) => record.source === 'provider-reported').reduce((sum, record) => sum + record.value, 0);
+        const providerReportedList = mine.filter((record) => record.source === 'provider-reported');
+        let reported = 0;
+        let reportedOverflow = false;
+        for (const record of providerReportedList) {
+          reported += record.value;
+          if (!Number.isSafeInteger(reported) || reported > MAX_TOKEN_VALUE) {
+            reportedOverflow = true;
+            break;
+          }
+        }
+        if (reportedOverflow) problems.push('invalid-value');
+
         const estimated = mine.filter((record) => record.source === 'estimated');
+        let estimatedSum = 0;
+        let estimatedOverflow = false;
+        for (const record of estimated) {
+          estimatedSum += record.value;
+          if (!Number.isSafeInteger(estimatedSum) || estimatedSum > MAX_TOKEN_VALUE) {
+            estimatedOverflow = true;
+            break;
+          }
+        }
+        if (estimatedOverflow) problems.push('invalid-value');
+
         summary[arm][billing][field] = {
-          providerReported: reportedTasks.size === 0 ? null : reported,
-          estimated: estimated.length === 0 ? null : estimated.reduce((sum, record) => sum + record.value, 0),
+          providerReported: reportedOverflow || reportedTasks.size === 0 ? null : reported,
+          estimated: estimatedOverflow || estimated.length === 0 ? null : estimatedSum,
           estimateMethods: [...new Set(estimated.map((record) => record.method))].sort(byCodeUnit),
           tasksWithProviderValue: reportedTasks.size,
           tasksWithoutProviderValue: taskIds.filter((id) => !reportedTasks.has(id)).length,
-          complete: taskIds.length > 0 && taskIds.every((id) => reportedTasks.has(id))
+          complete: !reportedOverflow && taskIds.length > 0 && taskIds.every((id) => reportedTasks.has(id))
         };
       }
     }
   }
-  return { billings, summary, problems };
+  return { billings, summary, problems, taskIds: [...taskIds], taskCount: taskIds.length };
 }
 
 /**
  * Decides whether "memory lowers total token use" may be said. It may only when the evidence is
  * real, complete, in a single known billing mode, lower for the memory arm including the cost of
  * building and retrieving memory, and quality did not regress. Otherwise it says why not.
+ * taskCount is determined strictly by the task list; caller-passed taskCount is rejected.
  */
-function assessSavingsClaim({ usage, quality, taskCount, real }) {
+function assessSavingsClaim({ usage, quality, real, ...rest } = {}) {
+  if ('taskCount' in rest && rest.taskCount !== undefined) {
+    throw new TypeError('taskCount must not be passed; task count is determined by the task list');
+  }
+  if (!isPlain(usage) || !Array.isArray(usage.taskIds)) {
+    throw new TypeError('usage must be a summary containing taskIds');
+  }
+  const taskCount = usage.taskIds.length;
   const reasons = [];
   if (real !== true) reasons.push('no-real-measurement');
-  if (!Number.isInteger(taskCount) || taskCount < MIN_TASKS_FOR_CLAIM) reasons.push('too-few-tasks');
+  if (taskCount < MIN_TASKS_FOR_CLAIM) reasons.push('too-few-tasks');
   if (usage.problems.length > 0) reasons.push('invalid-usage-records');
   const known = usage.billings.filter((billing) => billing !== 'unknown');
   if (usage.billings.length !== 1 || known.length !== 1) reasons.push(usage.billings.length === 0 ? 'no-usage' : 'billing-mixed-or-unknown');
@@ -162,12 +199,21 @@ function assessSavingsClaim({ usage, quality, taskCount, real }) {
   let totals = null;
   if (usage.billings.length === 1) {
     const billing = usage.billings[0];
+    let overflow = false;
     const sum = (arm) => {
       let total = 0;
       for (const field of ['input_tokens', 'output_tokens']) {
         const entry = usage.summary[arm][billing][field];
         if (!entry.complete) { reasons.push(`${arm}-${field}-incomplete`); continue; }
+        if (!Number.isSafeInteger(entry.providerReported) || entry.providerReported < 0 || entry.providerReported > MAX_TOKEN_VALUE) {
+          overflow = true;
+          reasons.push('invalid-usage-records');
+          continue;
+        }
         total += entry.providerReported;
+        if (!Number.isSafeInteger(total) || total > MAX_TOKEN_VALUE) {
+          overflow = true;
+        }
       }
       for (const field of ['cache_read_tokens', 'cache_write_tokens', 'memory_build_tokens', 'memory_retrieval_tokens']) {
         const entry = usage.summary[arm][billing][field];
@@ -180,15 +226,33 @@ function assessSavingsClaim({ usage, quality, taskCount, real }) {
         if (required && entry.providerReported === null) reasons.push(`${arm}-${field}-missing`);
         else if (entry.providerReported !== null) {
           if (!entry.complete) reasons.push(`${arm}-${field}-incomplete`);
+          if (!Number.isSafeInteger(entry.providerReported) || entry.providerReported < 0 || entry.providerReported > MAX_TOKEN_VALUE) {
+            overflow = true;
+            reasons.push('invalid-usage-records');
+            continue;
+          }
           total += entry.providerReported;
+          if (!Number.isSafeInteger(total) || total > MAX_TOKEN_VALUE) {
+            overflow = true;
+          }
         }
+      }
+      if (overflow || !Number.isSafeInteger(total) || total < 0 || total > MAX_TOKEN_VALUE) {
+        reasons.push('invalid-usage-records');
       }
       return total;
     };
     totals = { off: sum('off'), on: sum('on') };
-    if (totals.on >= totals.off) reasons.push('total-not-lower');
+    const validTotals = !overflow &&
+      Number.isSafeInteger(totals.off) && totals.off >= 0 && totals.off <= MAX_TOKEN_VALUE &&
+      Number.isSafeInteger(totals.on) && totals.on >= 0 && totals.on <= MAX_TOKEN_VALUE;
+    if (!validTotals) {
+      reasons.push('invalid-usage-records');
+    } else if (totals.on >= totals.off) {
+      reasons.push('total-not-lower');
+    }
   }
-  if (ARMS.some((arm) => quality.byArm[arm].passRate === null)) reasons.push('quality-not-measured');
+  if (!quality || !quality.byArm || ARMS.some((arm) => !quality.byArm[arm] || quality.byArm[arm].passRate === null)) reasons.push('quality-not-measured');
   else if (quality.byArm.on.passRate < quality.byArm.off.passRate || quality.byArm.on.fail > quality.byArm.off.fail) reasons.push('quality-regressed');
 
   const unique = [...new Set(reasons)].sort(byCodeUnit);
@@ -234,4 +298,4 @@ function renderReport({ suiteId, real, runs, quality, usage, claim, notes = [] }
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { measureInjection, evaluateChecks, summarizeUsage, assessSavingsClaim, renderReport, ARMS, TOKEN_FIELDS, MIN_TASKS_FOR_CLAIM };
+module.exports = { measureInjection, evaluateChecks, summarizeUsage, assessSavingsClaim, renderReport, ARMS, TOKEN_FIELDS, MIN_TASKS_FOR_CLAIM, MAX_TOKEN_VALUE };

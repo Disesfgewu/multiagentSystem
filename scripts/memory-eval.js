@@ -29,7 +29,7 @@ function run({ usageRecords = [], budgetChars } = {}) {
     const quality = evaluateChecks({ tasks: suite.tasks, runs });
     const taskIds = suite.tasks.map((task) => task.id);
     const usage = summarizeUsage({ records: usageRecords, taskIds });
-    const claim = assessSavingsClaim({ usage, quality, taskCount: taskIds.length, real: false });
+    const claim = assessSavingsClaim({ usage, quality, real: false });
     return { runs, quality, usage, claim, report: renderReport({ suiteId: suite.suiteId, real: false, runs, quality, usage, claim, notes: ['The suite is synthetic and fixed; it measures injected size and machine checks only.'] }) };
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
