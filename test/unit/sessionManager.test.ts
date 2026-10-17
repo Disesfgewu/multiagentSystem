@@ -10,6 +10,44 @@ import {
   describeState
 } from '../../src/sessions/manager';
 
+test('a requested model is launched, kept on reopen and stored as a request rather than an observation', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const session = await r.manager.start({ provider: 'claude', name: 'Model choice', cwd: '/synthetic/project', requestedModel: 'sonnet' });
+  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude --model sonnet', newline: true }]);
+  assert.equal(session.requestedModel, 'sonnet');
+  assert.equal(session.state, 'launch-requested');
+  assert.equal(session.observedAt, null, 'a model request is not evidence that the CLI used it');
+  r.manager.stop(session.id);
+  const reopened = await r.manager.reopen(session.id);
+  assert.equal(reopened.requestedModel, 'sonnet');
+  assert.deepEqual(r.terminals[1].sent, [{ text: 'claude --model sonnet', newline: true }]);
+  const restored = rig({}, r.store);
+  await restored.manager.initialize();
+  assert.equal(restored.manager.get(reopened.id)?.requestedModel, 'sonnet');
+  assert.equal(restored.manager.get(reopened.id)?.state, 'unknown');
+});
+
+test('invalid or unsupported model requests never create terminals, including shell-only starts', async () => {
+  for (const requestedModel of ['bad;echo', '--dangerously-bypass-approvals-and-sandbox', 'bad\ncommand']) {
+    const r = rig();
+    await assert.rejects(r.manager.start({ provider: 'codex', name: 'Bad', cwd: '/synthetic/project', requestedModel, launch: false }), { code: 'invalid-model' });
+    assert.equal(r.terminals.length, 0);
+  }
+  const r = rig({ providers: { agy: 'agy' } });
+  await assert.rejects(r.manager.start({ provider: 'agy', name: 'Unknown flags', cwd: '/synthetic/project', requestedModel: 'model' }), { code: 'model-selection-unsupported' });
+  assert.equal(r.terminals.length, 0);
+});
+
+test('an invalid saved model blocks restoration without overwriting private records', async () => {
+  const store = new MemoryStore();
+  store.saved = [{ ...identityRecord('old'), requestedModel: 'bad;echo' }];
+  const r = rig({}, store);
+  await assert.rejects(r.manager.initialize(), { code: 'invalid-snapshot' });
+  assert.equal(store.saves, 0);
+  assert.equal(store.saved[0].requestedModel, 'bad;echo');
+});
+
 class FakeTerminal implements TerminalHandle {
   sent: Array<{ text: string; newline: boolean | undefined }> = [];
   shown: Array<boolean | undefined> = [];

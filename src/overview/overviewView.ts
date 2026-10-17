@@ -140,7 +140,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   }
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
-  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen }));
+  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel }));
   const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
     return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage };
