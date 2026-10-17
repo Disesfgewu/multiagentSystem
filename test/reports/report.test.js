@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED } = require('../../src/reports/report');
+const { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, fileBulletLines } = require('../../src/reports/report');
 const { issueEvidenceVersion, MARKER } = require('../../src/reports/decision-queue');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -13,7 +13,8 @@ const issue = (over = {}) => ({ number: 12, title: 'Build the report view', stat
 const pr = (over = {}) => ({ number: 7, title: 'Add reports', state: 'open', draft: false, merged: false, author: 'worker', headSha: HEAD, headRef: 'feat/x', headRepository: 'o/r', baseRef: 'main', body: 'Refs #12\n\n**使用者可操作結果：** x', referencedIssues: [{ number: 12 }], updatedAt: 'now', ...over });
 const snapshot = (over = {}) => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0, ...over });
 const comment = (body, over = {}) => ({ author: 'pm-user', createdAt: '2026-10-16T01:00:00Z', body, ...over });
-const prReport = (over = {}) => render(buildPullRequestReport({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot(), reviews: ok([]), comments: ok([]), filesHeadVerified: true, ...over }));
+const buildPr = (over = {}) => buildPullRequestReport({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot(), reviews: ok([]), comments: ok([]), filesHeadVerified: true, ...over });
+const prReport = (over = {}) => render(buildPr(over));
 const issueReport = (over = {}) => render(buildIssueReport({ repository: 'o/r', issue: issue(), comments: ok([]), pullRequests: ok([pr()]), ...over }));
 
 test('an issue report shows the requirement, labels, related pull requests, discussion, and what is not verified', () => {
@@ -86,6 +87,33 @@ test('fork source and plain diff are shown only when the exact head is verified;
   const moved = prReport({ files, filesHeadVerified: false });
   assert.match(moved, /Diff for this head: unknown/);
   assert.equal(moved.includes('+new'), false);
+});
+
+test('the structured file list exposed alongside the report matches exactly what the plain-text diff shows', () => {
+  const files = ok([{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }, { filename: 'README.md', status: 'added', additions: 1, deletions: 0 }]);
+  const built = buildPr({ files });
+  assert.deepEqual(built.files, [
+    { filename: 'src/x.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' },
+    { filename: 'README.md', status: 'added', patch: null }
+  ]);
+});
+
+test('the structured file list is empty whenever the plain-text diff itself is unknown or absent', () => {
+  const files = ok([{ filename: 'src/x.ts', status: 'modified', patch: '+x' }]);
+  assert.deepEqual(buildPr({ files, filesHeadVerified: false }).files, []);
+  assert.deepEqual(buildPr({ snapshot: snapshot({ headSha: OLD }), files }).files, []);
+  assert.deepEqual(buildPr({ files: { kind: 'truncated', data: files.data } }).files, []);
+  assert.deepEqual(buildPr({ files: { kind: 'empty' } }).files, []);
+});
+
+test('the structured file list never exceeds the 12 files actually rendered, and text is cleaned the same way', () => {
+  const many = ok(Array.from({ length: 20 }, (_, i) => ({ filename: `file-${i}.ts`, status: 'modified', patch: `+line-${i}` })));
+  const built = buildPr({ files: many });
+  assert.equal(built.files.length, 12);
+  assert.equal(built.files[0].filename, 'file-0.ts');
+  const evil = ok([{ filename: `a${cp(0x202e)}b`, status: 'modified', patch: '+x' }]);
+  const dirty = buildPr({ files: evil });
+  assert.equal(dirty.files[0].filename.includes(cp(0x202e)), false);
 });
 
 test('CI that belongs to another head, or could not be read, is unknown', () => {
@@ -312,4 +340,35 @@ test('an inconsistent or foreign snapshot never promotes its checks as latest-he
     assert.match(text, /Check details: unknown \(the snapshot was not consistently read from the latest head\)\./);
     assert.equal(text.includes('old-pass'), false);
   }
+});
+
+// ---- fileBulletLines: which rendered lines can become "open this file's diff" links
+test('a changed-file bullet is found only when its captured name is one of the known files', () => {
+  const lines = ['intro', '- src/x.ts (modified; +1/-1)', '@@ -1 +1 @@', '-old', '+new', '- README.md (added; +1/-0)'];
+  assert.deepEqual(fileBulletLines(lines, ['src/x.ts', 'README.md']), [
+    { lineNumber: 1, filename: 'src/x.ts' },
+    { lineNumber: 5, filename: 'README.md' }
+  ]);
+});
+
+test('a bullet-shaped line is ignored unless its name was already known to be a file this report rendered', () => {
+  const lines = ['- src/x.ts (modified; +1/-1)', '- not-a-real-file.ts (modified; +1/-1)'];
+  assert.deepEqual(fileBulletLines(lines, ['src/x.ts']), [{ lineNumber: 0, filename: 'src/x.ts' }]);
+});
+
+test('a removed source line that happens to look like a bullet is not mistaken for a file heading', () => {
+  // A removed line of code, "-    the thing (a comment)", can coincidentally match the bullet shape;
+  // it must still be rejected because its captured text is not a real filename from this report.
+  const lines = ['-    the thing (a comment)', '- src/x.ts (modified; +1/-1)'];
+  assert.deepEqual(fileBulletLines(lines, ['src/x.ts']), [{ lineNumber: 1, filename: 'src/x.ts' }]);
+  // Even in the pathological case where a diff removes a line that is byte-for-byte identical to a
+  // real bullet for a REAL file in the list, fileBulletLines cannot and does not try to tell the two
+  // apart (it only matches text, not position in the document); this is a known, accepted limitation
+  // documented at the call site, not a silent one.
+});
+
+test('fileBulletLines never throws on non-string, missing or empty input', () => {
+  assert.deepEqual(fileBulletLines([], ['x']), []);
+  assert.deepEqual(fileBulletLines([null, undefined, 42, {}], ['x']), []);
+  assert.deepEqual(fileBulletLines(['- x ()'], []), []);
 });

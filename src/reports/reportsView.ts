@@ -14,15 +14,18 @@ const { classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS } = requ
   CATEGORY_LABELS: Record<string, string>;
 };
 
-const { buildIssueReport, buildPullRequestReport, neighbour, render, line } = require('./report') as {
+type ReportFile = { filename: string; status: string; patch: string | null };
+const { buildIssueReport, buildPullRequestReport, neighbour, render, line, fileBulletLines } = require('./report') as {
   buildIssueReport(input: Record<string, unknown>): { title: string; lines: string[] };
-  buildPullRequestReport(input: Record<string, unknown>): { title: string; lines: string[] };
+  buildPullRequestReport(input: Record<string, unknown>): { title: string; lines: string[]; files?: ReportFile[] };
   neighbour(numbers: number[], current: number, step: number): number | null;
   render(report: { lines: string[] }): string;
   line(value: unknown, limit?: number): string;
+  fileBulletLines(lines: string[], filenames: string[]): Array<{ lineNumber: number; filename: string }>;
 };
 
 export const REPORT_SCHEME = 'multiagent-report';
+export const DIFF_SCHEME = 'multiagent-report-diff';
 export const REPORT_VIEWS = { issues: 'multiagentSystem.issuesReportView', pullRequests: 'multiagentSystem.prsReportView' } as const;
 export const REPORT_COMMANDS = {
   open: 'multiagentSystem.reports.open',
@@ -31,6 +34,7 @@ export const REPORT_COMMANDS = {
   back: 'multiagentSystem.reports.backToOverview',
   backToList: 'multiagentSystem.reports.backToList',
   showDiff: 'multiagentSystem.reports.showDiff',
+  openFileDiff: 'multiagentSystem.reports.openFileDiff',
   refresh: 'multiagentSystem.reports.refresh',
   feedback: 'multiagentSystem.reports.feedback'
 } as const;
@@ -188,7 +192,7 @@ export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }
 
-type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null };
+type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; files: ReportFile[] };
 type ReportResult = { text: string; evidence: ReportEvidence | null };
 
 /** Builds one report and records exactly which repository/head its text represents. */
@@ -201,7 +205,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
     if (kind === 'issue') {
       const [issue, comments, pullRequests] = await Promise.all([reader.getIssue(number), reader.getIssueComments(number), reader.listPullRequests({ state: 'open' })]);
       if (issue.kind !== 'ok' || !issue.data) return { text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
-      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null } };
+      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, files: [] } };
     }
     const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
     if (pullRequest.kind !== 'ok' || !pullRequest.data) return { text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
@@ -220,7 +224,8 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
     const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
-    return { text: await withFeedback(render(buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified })), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha } : null };
+    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified });
+    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, files: Array.isArray(built.files) ? built.files : [] } : null };
   } catch {
     return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
   }
@@ -242,6 +247,71 @@ class ReportContent implements vscode.TextDocumentContentProvider {
     else this.evidence.delete(uri.toString());
     return result.text;
   }
+}
+
+function diffUri(reportUri: vscode.Uri, filename: string): vscode.Uri {
+  const base = filename.split('/').pop() || 'file';
+  return vscode.Uri.from({ scheme: DIFF_SCHEME, path: `/${base}.diff`, query: `report=${encodeURIComponent(reportUri.toString())}&file=${encodeURIComponent(filename)}` });
+}
+
+function parseDiffUri(uri: vscode.Uri): { reportUri: string; filename: string } | null {
+  const params = new URLSearchParams(uri.query);
+  const reportUri = params.get('report');
+  const filename = params.get('file');
+  return reportUri && filename ? { reportUri, filename } : null;
+}
+
+/**
+ * One file's unified diff, rendered on its own so it can be opened from a link in the PR report
+ * without hunting through a 12-file preview. Reads the same cached file list the open report used,
+ * never a fresh fetch: a link always shows the patch for the head the report is currently displaying.
+ */
+class DiffContent implements vscode.TextDocumentContentProvider {
+  constructor(private readonly content: ReportContent) {}
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    const target = parseDiffUri(uri);
+    if (!target) return 'This diff address is not valid.\n';
+    const evidence = this.content.evidenceFor(vscode.Uri.parse(target.reportUri));
+    if (!evidence) return 'The pull request report this diff came from is no longer open. Open the report again and click the file once more.\n';
+    const file = evidence.files.find((entry) => entry.filename === target.filename);
+    if (!file) return `No changed-file entry named "${target.filename}" was found in the currently shown report. It may have been refreshed since this diff was opened.\n`;
+    const header = `${file.filename} (${file.status}) — from the pull request report currently open, head ${evidence.headSha ?? 'unknown'}.\n\n`;
+    return header + (file.patch !== null ? file.patch : 'Patch unavailable (binary file or GitHub omitted it).\n');
+  }
+}
+
+/** Turns each "CHANGED FILES AND DIFF" bullet into a link to that one file's diff, syntax-highlighted on its own. */
+class ReportFileLinks implements vscode.DocumentLinkProvider {
+  constructor(private readonly content: ReportContent) {}
+  provideDocumentLinks(document: vscode.TextDocument): vscode.DocumentLink[] {
+    if (document.uri.scheme !== REPORT_SCHEME) return [];
+    const target = parse(document.uri);
+    if (!target || target.kind !== 'pullRequest') return [];
+    const evidence = this.content.evidenceFor(document.uri);
+    if (!evidence || evidence.files.length === 0) return [];
+    const lines: string[] = [];
+    for (let i = 0; i < document.lineCount; i += 1) lines.push(document.lineAt(i).text);
+    return fileBulletLines(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename }) => {
+      const text = lines[lineNumber];
+      const start = text.indexOf(filename);
+      const range = new vscode.Range(lineNumber, start, lineNumber, start + filename.length);
+      return new vscode.DocumentLink(range, vscode.Uri.parse(
+        `command:${REPORT_COMMANDS.openFileDiff}?${encodeURIComponent(JSON.stringify({ reportUri: document.uri.toString(), filename }))}`
+      ));
+    });
+  }
+}
+
+async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: string }> {
+  const input = value && typeof value === 'object' ? (value as { reportUri?: unknown; filename?: unknown }) : {};
+  if (typeof input.reportUri !== 'string' || typeof input.filename !== 'string') return { ok: false, code: 'invalid-file-diff' };
+  let reportUri: vscode.Uri;
+  try { reportUri = vscode.Uri.parse(input.reportUri); } catch { return { ok: false, code: 'invalid-file-diff' }; }
+  if (reportUri.scheme !== REPORT_SCHEME) return { ok: false, code: 'invalid-file-diff' };
+  const document = await vscode.workspace.openTextDocument(diffUri(reportUri, input.filename));
+  await vscode.languages.setTextDocumentLanguage(document, 'diff');
+  await vscode.window.showTextDocument(document, { preview: true });
+  return { ok: true };
 }
 
 function activeTarget(): { kind: Kind; number: number } | null {
@@ -287,10 +357,13 @@ export function registerReports(context: vscode.ExtensionContext): void {
   };
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, content),
+    vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, new DiffContent(content)),
+    vscode.languages.registerDocumentLinkProvider({ scheme: REPORT_SCHEME }, new ReportFileLinks(content)),
     vscode.window.createTreeView(REPORT_VIEWS.issues, { treeDataProvider: trees.issue }),
     vscode.window.createTreeView(REPORT_VIEWS.pullRequests, { treeDataProvider: trees.pullRequest }),
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.open, open),
+    vscode.commands.registerCommand(REPORT_COMMANDS.openFileDiff, openFileDiff),
     vscode.commands.registerCommand(REPORT_COMMANDS.next, () => step(1)),
     vscode.commands.registerCommand(REPORT_COMMANDS.previous, () => step(-1)),
     vscode.commands.registerCommand(REPORT_COMMANDS.backToList, async () => {

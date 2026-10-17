@@ -209,6 +209,9 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   const fileItems = dataOf(files);
   const sameHead = filesHeadVerified === true && snapshot && snapshot.status === 'complete' && snapshot.consistent === true &&
     typeof snapshot.headSha === 'string' && head && snapshot.headSha.toLowerCase() === head.toLowerCase();
+  // Exposed to the caller unchanged from what is rendered (same slice, same text), so a "open this
+  // file's diff" command shows exactly the patch the reader is looking at, never a different head's.
+  let shownFiles = [];
   if (!sameHead) lines.push('Diff for this head: unknown (the head changed during the read, or its version could not be verified).');
   else if (fileNote) lines.push(fileNote);
   else if (fileItems.length === 0) lines.push('No changed files were reported.');
@@ -221,7 +224,9 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
       const additions = Number.isSafeInteger(file && file.additions) ? file.additions : 'unknown';
       const deletions = Number.isSafeInteger(file && file.deletions) ? file.deletions : 'unknown';
       lines.push(`- ${name} (${status}; +${additions}/-${deletions})`);
-      lines.push(file && typeof file.patch === 'string' ? block(file.patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
+      const patch = file && typeof file.patch === 'string' ? file.patch : null;
+      lines.push(patch !== null ? block(patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
+      shownFiles.push({ filename: name, status, patch });
     }
   }
 
@@ -260,11 +265,26 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   else lines.push(...commentLines(comments, head));
   lines.push('', 'DECISIONS', 'A private note can be saved locally. It cannot approve, request changes or merge; nothing is sent to GitHub.');
   lines.push('', 'NOT VERIFIED', ...WHAT_IS_NOT_VERIFIED.map((text) => `- ${text}`));
-  return { title: `Pull request #${pr.number}`, lines };
+  return { title: `Pull request #${pr.number}`, lines, files: shownFiles };
 }
 
 /** The report as one text. A report for one item never mentions another. */
 const render = (report) => `${report.lines.join('\n')}\n`;
+
+// Matches only the exact "- <name> (<status>; +<a>/-<d>)" bullet this module renders for a changed
+// file, never a line inside a patch body that happens to look similar (a removed source line can
+// start with "- " too). A match is trusted only when its captured name is also one of the files the
+// caller already knows this report rendered; anything else is ignored rather than guessed at.
+const FILE_BULLET = /^- (.+) \([^()]*\)$/;
+function fileBulletLines(lines, filenames) {
+  const names = new Set(filenames);
+  const found = [];
+  lines.forEach((text, lineNumber) => {
+    const match = typeof text === 'string' ? FILE_BULLET.exec(text) : null;
+    if (match && names.has(match[1])) found.push({ lineNumber, filename: match[1] });
+  });
+  return found;
+}
 
 /** Next and previous in a list, wrapping around; an item that is not in the list starts from the first. */
 function neighbour(numbers, current, step) {
@@ -274,4 +294,4 @@ function neighbour(numbers, current, step) {
   return numbers[(at + step + numbers.length) % numbers.length];
 }
 
-module.exports = { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, APPLIES };
+module.exports = { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, APPLIES, fileBulletLines };
