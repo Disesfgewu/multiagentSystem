@@ -63,7 +63,8 @@ test('a credential comes only from the editor\'s authentication provider, silent
   assert.equal(count(commands, /authentication\.getSession\(/), 2, 'one silent read and one explicit sign-in');
   assert.equal(count(commands, /silent:\s*true/), 1);
   assert.equal(count(commands, /createIfNone:\s*true/), 1);
-  assert.doesNotMatch(commands, /forceNewSession|clearSessionPreference|authentication\.registerAuthenticationProvider|authentication\.onDidChangeSessions/);
+  assert.doesNotMatch(commands, /forceNewSession|clearSessionPreference|authentication\.registerAuthenticationProvider/);
+  assert.equal(count(commands, /authentication\.onDidChangeSessions/), 1, 'listens to session changes to automatically refresh');
   assert.equal(count(commands, /\.accessToken/), 1, 'the token is read in exactly one place');
   const token = /const session = await vscode\.authentication\.getSession\(GITHUB_AUTH_PROVIDER, \[\.\.\.GITHUB_SCOPES\], \{ silent: true \}\);\s*return session\?\.accessToken;/;
   assert.match(commands, token, 'and returned straight to the adapter, not kept or passed on');
