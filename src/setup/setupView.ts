@@ -3,14 +3,26 @@ import * as vscode from 'vscode';
 import { ManagedGh, Downloader, GhRelease, GhStatus } from './managedGh';
 import { ManagedCodex, CodexRelease, CodexStatus } from './managedCodex';
 import { privateStorage } from '../storage/storageCommands';
+import { describeStorage } from '../storage/extensionStorage';
+import { CONFIRM_CLEAR } from '../storage/private-store';
+import { observationsFor } from '../accounts/accountCommands';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
+const { diagnose, formatDiagnosticReport } = require('./diagnostics') as {
+  diagnose(input: Record<string, unknown>): Record<string, any>;
+  formatDiagnosticReport(report: Record<string, any>): string;
+};
 
 export const SETUP_VIEW = 'multiagentSystem.toolsSetupView';
+export const DIAGNOSTICS_SCHEME = 'multiagent-diagnostics';
 export const SETUP_COMMANDS = {
   refresh: 'multiagentSystem.setup.refresh',
   retryGh: 'multiagentSystem.setup.retryGh',
-  retryCodex: 'multiagentSystem.setup.retryCodex'
+  retryCodex: 'multiagentSystem.setup.retryCodex',
+  diagnose: 'multiagentSystem.setup.diagnose',
+  migrateStorage: 'multiagentSystem.setup.migrateStorage',
+  recoverStorageLock: 'multiagentSystem.setup.recoverStorageLock',
+  clearStorage: 'multiagentSystem.setup.clearStorage'
 } as const;
 
 interface SetupOverrides {
@@ -207,7 +219,160 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     this.syncPath('gh', result);
     if (result.state !== 'ready') void vscode.window.showWarningMessage('First-use tool setup needs attention. Open Multiagent → Tools Setup to see the unverified or missing item.');
   }
+
+  async runDiagnostics(options?: { interactive?: boolean; probeSecrets?: boolean }): Promise<{ ok: true; report: Record<string, any>; text: string; uri: string }> {
+    const interactive = options?.interactive !== false;
+    const probeSecrets = options?.probeSecrets === true;
+    const handle = privateStorage();
+    const storageStatus = handle ? await describeStorage(handle, { probeSecrets }) : null;
+    const used = handle ? await handle.use() : { ok: false as const, reason: 'context-incomplete', problems: ['storage-handle-missing'] };
+
+    let storeStatus: Record<string, unknown> | null = null;
+    let lockStatus: Record<string, unknown> | null = null;
+    let maskedExport: Record<string, unknown> | null = null;
+    let profiles: Array<{ id: string; [key: string]: unknown }> = [];
+    let repoRoot: string | null = null;
+
+    if (used.ok) {
+      storeStatus = used.store.status() as Record<string, unknown>;
+      lockStatus = used.store.inspectLock() as Record<string, unknown>;
+      maskedExport = used.store.exportMasked() as Record<string, unknown>;
+      repoRoot = (used.store as unknown as { repoRoot?: string }).repoRoot ?? null;
+      const listed = used.store.list('profiles') as { ok: boolean; items?: Array<{ id: string; value: Record<string, unknown> }> };
+      if (listed.ok && Array.isArray(listed.items)) {
+        profiles = listed.items.map((entry) => ({ id: entry.id, ...entry.value }));
+      }
+    }
+
+    const [gh, codex] = await Promise.all([this.ghStatus(), this.codexStatus()]);
+    const executables = {
+      git: executableAvailable('git'),
+      gh: executableAvailable('gh'),
+      claude: executableAvailable('claude'),
+      codex: executableAvailable('codex'),
+      agy: executableAvailable('agy')
+    };
+
+    const report = diagnose({
+      vscodeVersion: vscode.version,
+      nodeVersion: process.versions.node,
+      storageStatus,
+      storeStatus,
+      lockStatus,
+      maskedExport,
+      profiles,
+      observations: observationsFor(profiles),
+      repoRoot,
+      executables,
+      managedTools: { gh, codex }
+    });
+    const text = formatDiagnosticReport(report);
+    const uri = vscode.Uri.parse(`${DIAGNOSTICS_SCHEME}:/setup-and-storage.md`);
+    latestDiagnosticsText = text;
+    diagnosticsEmitter.fire(uri);
+
+    if (interactive) {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc, { preview: false });
+    }
+    return { ok: true, report, text, uri: uri.toString() };
+  }
+
+  async migrateStorage(options?: { interactive?: boolean }): Promise<Record<string, unknown>> {
+    const interactive = options?.interactive !== false;
+    const handle = privateStorage();
+    const used = handle ? await handle.use() : { ok: false as const, reason: 'context-incomplete', problems: ['storage-handle-missing'] };
+    if (!used.ok) {
+      if (interactive) void vscode.window.showErrorMessage(`Private storage cannot be migrated because storage is unavailable (${used.reason}).`);
+      return { ok: false, reason: used.reason, problems: used.problems };
+    }
+    const outcome = used.store.migrate() as { ok: boolean; onDiskVersion?: number | null; reason?: string; detail?: string | null };
+    this.refresh();
+    if (interactive) {
+      if (outcome.ok) {
+        void vscode.window.showInformationMessage(`Private storage schema is up to date (v${outcome.onDiskVersion ?? 'unknown'}).`);
+      } else {
+        void vscode.window.showErrorMessage(`Private storage migration failed (${outcome.reason ?? 'unknown'}).`);
+      }
+    }
+    return outcome;
+  }
+
+  async recoverStorageLock(options?: { interactive?: boolean; force?: boolean }): Promise<Record<string, unknown>> {
+    const interactive = options?.interactive !== false;
+    const handle = privateStorage();
+    const used = handle ? await handle.use() : { ok: false as const, reason: 'context-incomplete', problems: ['storage-handle-missing'] };
+    if (!used.ok) {
+      if (interactive) void vscode.window.showErrorMessage(`Cannot inspect or recover lock because private storage is unavailable (${used.reason}).`);
+      return { ok: false, reason: used.reason, problems: used.problems };
+    }
+    const inspected = used.store.inspectLock() as { ok: boolean; held?: boolean; stale?: boolean; reason?: string };
+    if (!inspected.ok) {
+      if (interactive) void vscode.window.showErrorMessage(`Could not inspect storage lock (${inspected.reason ?? 'unknown'}).`);
+      return inspected;
+    }
+    if (!inspected.held) {
+      if (interactive) void vscode.window.showInformationMessage('No private storage lock is currently held.');
+      return { ok: true, recovered: false, reason: 'not-locked' };
+    }
+    let force = Boolean(options?.force);
+    if (interactive && inspected.stale && options?.force === undefined) {
+      const choice = await vscode.window.showWarningMessage(
+        'The private storage single-writer lock is stale. Recover it only if no other VS Code window is writing.',
+        { modal: true },
+        'Recover Stale Lock'
+      );
+      if (choice !== 'Recover Stale Lock') return { ok: false, recovered: false, reason: 'cancelled' };
+      force = true;
+    }
+    const outcome = used.store.recoverLock({ force }) as { ok: boolean; recovered?: boolean; reason?: string };
+    this.refresh();
+    if (interactive) {
+      if (outcome.ok && outcome.recovered) {
+        void vscode.window.showInformationMessage('Recovered the stale private storage lock.');
+      } else {
+        void vscode.window.showWarningMessage(`Could not recover private storage lock (${outcome.reason ?? 'lock-active'}).`);
+      }
+    }
+    return outcome;
+  }
+
+  async clearStorage(options?: { interactive?: boolean; confirm?: string; includeBackups?: boolean }): Promise<Record<string, unknown>> {
+    const interactive = options?.interactive !== false;
+    const handle = privateStorage();
+    const used = handle ? await handle.use() : { ok: false as const, reason: 'context-incomplete', problems: ['storage-handle-missing'] };
+    if (!used.ok) {
+      if (interactive) void vscode.window.showErrorMessage(`Cannot clear private storage because the storage folder could not be verified (${used.reason}).`);
+      return { ok: false, reason: used.reason, problems: used.problems };
+    }
+    let confirmToken = options?.confirm;
+    if (interactive) {
+      const choice = await vscode.window.showWarningMessage(
+        'Clear all Multiagent private storage files owned by this extension? Unrecognized backup files are preserved.',
+        { modal: true },
+        'Clear Private Storage'
+      );
+      if (choice !== 'Clear Private Storage') return { ok: false, reason: 'cancelled' };
+      confirmToken = CONFIRM_CLEAR;
+    }
+    const outcome = used.store.clear({
+      confirm: confirmToken,
+      includeBackups: options?.includeBackups ?? true
+    } as never) as { ok: boolean; reason?: string; removed?: { store: boolean; backups: number; temps: number; kept: Record<string, number> } };
+    this.refresh();
+    if (interactive) {
+      if (outcome.ok) {
+        void vscode.window.showInformationMessage('Cleared private storage files owned by this extension.');
+      } else {
+        void vscode.window.showErrorMessage(`Could not clear private storage (${outcome.reason ?? 'unknown'}).`);
+      }
+    }
+    return outcome;
+  }
 }
+
+let latestDiagnosticsText = '# Multiagent Masked Setup & Storage Diagnostics\n\nRun `Multiagent: Open Masked Setup and Storage Diagnostics` to generate a report.\n';
+const diagnosticsEmitter = new vscode.EventEmitter<vscode.Uri>();
 
 export function managedPathContributionForTests(): string | undefined { return active?.managedBinForTests(); }
 
@@ -219,12 +384,25 @@ export function setupTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
 export function registerSetup(context: vscode.ExtensionContext): void {
   const controller = new SetupController(context);
   active = controller;
+  const diagnosticsProvider: vscode.TextDocumentContentProvider = {
+    onDidChange: diagnosticsEmitter.event,
+    provideTextDocumentContent: () => latestDiagnosticsText
+  };
   context.subscriptions.push(
     controller,
+    vscode.workspace.registerTextDocumentContentProvider(DIAGNOSTICS_SCHEME, diagnosticsProvider),
     vscode.window.createTreeView(SETUP_VIEW, { treeDataProvider: controller }),
     vscode.commands.registerCommand(SETUP_COMMANDS.refresh, () => controller.refresh()),
     vscode.commands.registerCommand(SETUP_COMMANDS.retryGh, () => controller.prepareGh(true)),
-    vscode.commands.registerCommand(SETUP_COMMANDS.retryCodex, () => controller.prepareCodex(true))
+    vscode.commands.registerCommand(SETUP_COMMANDS.retryCodex, () => controller.prepareCodex(true)),
+    vscode.commands.registerCommand(SETUP_COMMANDS.diagnose, (arg?: unknown) =>
+      controller.runDiagnostics(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; probeSecrets?: boolean }) : undefined)),
+    vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) =>
+      controller.migrateStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean }) : undefined)),
+    vscode.commands.registerCommand(SETUP_COMMANDS.recoverStorageLock, (arg?: unknown) =>
+      controller.recoverStorageLock(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; force?: boolean }) : undefined)),
+    vscode.commands.registerCommand(SETUP_COMMANDS.clearStorage, (arg?: unknown) =>
+      controller.clearStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : undefined))
   );
   // Extension Host tests install a synthetic archive explicitly. Production activation performs
   // the first-use setup automatically; it never reads a URL or executable from the workspace.

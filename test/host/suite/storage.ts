@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { STORAGE_COMMANDS, extensionContextForTests, privateStorage } from '../../../src/storage/storageCommands';
 import { StorageStatus, createStorageHandle } from '../../../src/storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../../../src/storage/private-store';
+import { SETUP_COMMANDS } from '../../../src/setup/setupView';
 
 // Exercises private storage in a real Extension Host: the editor's own storage folder and its
 // own SecretStorage. Every value is synthetic and everything written is removed at the end.
@@ -65,6 +66,10 @@ function relation(parent: string, child: string): boolean {
 
 export async function runStorageChecks(registered: string[], workspace: string): Promise<string> {
   assert.ok(registered.includes(STORAGE_COMMANDS.status), `${STORAGE_COMMANDS.status} is registered`);
+  assert.ok(registered.includes(SETUP_COMMANDS.diagnose), `${SETUP_COMMANDS.diagnose} is registered`);
+  assert.ok(registered.includes(SETUP_COMMANDS.migrateStorage), `${SETUP_COMMANDS.migrateStorage} is registered`);
+  assert.ok(registered.includes(SETUP_COMMANDS.recoverStorageLock), `${SETUP_COMMANDS.recoverStorageLock} is registered`);
+  assert.ok(registered.includes(SETUP_COMMANDS.clearStorage), `${SETUP_COMMANDS.clearStorage} is registered`);
   const context = extensionContextForTests();
   const handle = privateStorage();
   assert.ok(handle, 'the extension created its storage handle');
@@ -107,10 +112,50 @@ export async function runStorageChecks(registered: string[], workspace: string):
     const probed = await vscode.commands.executeCommand<StorageStatus>(STORAGE_COMMANDS.status, { interactive: false, probeSecrets: true });
     assert.equal(probed.secrets, 'reachable');
 
-    // 4. Removing the secret and clearing the data leave nothing behind.
+    // 3b. Actionable diagnostics, schema migration, lock recovery, and masked export via commands.
+    const diag = await vscode.commands.executeCommand<{ ok: boolean; report: any; text: string; uri: string }>(
+      SETUP_COMMANDS.diagnose,
+      { interactive: false, probeSecrets: true }
+    );
+    assert.equal(diag.ok, true);
+    assert.equal(diag.report.runtime.vscodeOk, true);
+    assert.equal(diag.report.runtime.nodeOk, true);
+    assert.equal(diag.text.includes(storageFolder), false, 'diagnostic report omits local paths');
+    assert.equal(diag.text.includes('Synthetic host record'), false, 'diagnostic report masks account labels');
+    assert.equal(diag.text.includes(SECRET_VALUE), false, 'diagnostic report omits secret values');
+    assert.match(diag.text, /profiles#1/, 'diagnostic report includes masked record alias');
+    const diagDoc = await vscode.workspace.openTextDocument(vscode.Uri.parse(diag.uri));
+    assert.match(diagDoc.getText(), /Multiagent Masked Setup & Storage Diagnostics/);
+
+    const migrated = await vscode.commands.executeCommand<{ ok: boolean; onDiskVersion?: number }>(
+      SETUP_COMMANDS.migrateStorage,
+      { interactive: false }
+    );
+    assert.equal(migrated.ok, true);
+    assert.equal(migrated.onDiskVersion, 1);
+
+    const lockRecovered = await vscode.commands.executeCommand<{ ok: boolean; recovered: boolean; reason: string }>(
+      SETUP_COMMANDS.recoverStorageLock,
+      { interactive: false }
+    );
+    assert.equal(lockRecovered.ok, true);
+    assert.equal(lockRecovered.recovered, false);
+    assert.equal(lockRecovered.reason, 'not-locked');
+
+    const unconfirmedClear = await vscode.commands.executeCommand<{ ok: boolean; reason?: string }>(
+      SETUP_COMMANDS.clearStorage,
+      { interactive: false }
+    );
+    assert.equal(unconfirmedClear.ok, false);
+    assert.equal(unconfirmedClear.reason, 'confirmation-required');
+
+    // 4. Removing the secret and clearing the data via the clearStorage command leave nothing behind.
     assert.deepEqual(await within('SecretStorage delete', used.vault.remove(saved.secretRef)), { ok: true });
     removalLagMs = await untilGone(() => used.vault.read(saved.secretRef));
-    const cleared = used.store.clear({ confirm: CONFIRM_CLEAR } as never) as { ok: boolean };
+    const cleared = await vscode.commands.executeCommand<{ ok: boolean }>(
+      SETUP_COMMANDS.clearStorage,
+      { interactive: false, confirm: CONFIRM_CLEAR }
+    );
     assert.equal(cleared.ok, true);
     assert.equal(fs.existsSync(file), false);
 
