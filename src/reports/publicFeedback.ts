@@ -90,7 +90,7 @@ function privateReferences(store: Store): { knownValues: Array<{ id: string; val
     if (!listed?.ok || !Array.isArray(listed.items)) return null;
     for (const item of listed.items) {
       if (!item || typeof item.id !== 'string' || !item.value || typeof item.value !== 'object' || Array.isArray(item.value)) return null;
-      if (collection === 'policies' && (item.id === POLICY_ID || item.id.startsWith('public-feedback-'))) continue;
+      if (collection === 'policies' && (item.id === POLICY_ID || item.id.startsWith('public-feedback-') || item.id.startsWith('broker-req-'))) continue;
       if (collection === 'reportFeedback' && (typeof (item.value as any).note !== 'string' || (item.value as any).note.trim() === '')) return null;
       if (collection === 'broadcasts' && (typeof (item.value as any).text !== 'string' || (item.value as any).text.trim() === '')) return null;
       visit(item.value, `${collection}-${hash(item.id).slice(0, 12)}`);
@@ -180,7 +180,7 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
     reader: {}, transport: { comment: ({ number, body: sent }: any) => hooks.comment(auth, repository, number, sent) }, audit,
-    config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, scanOptions: refs, privateReferencesChecked: true
+    config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'comment', requestId, target: target.kind === 'issue' ? 'issue' : 'pr', number: target.number, body });
   return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };

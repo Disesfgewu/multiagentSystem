@@ -466,3 +466,223 @@ test('text fields have a size limit and over-long text is refused before any sca
   assert.equal((await broker.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'x'.repeat(262144) })).ok, true);
   assert.equal(calls.length, 1);
 });
+
+test('trusted commit message and diff have size limits and over-long or blank content is refused before transport', async () => {
+  const { MAX_TEXT_CHARS, MAX_DIFF_CHARS } = require('../../src/broker/broker');
+  for (const [label, content, expectedReason] of [
+    ['blank message', { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: '   ', diff: 'diff --git a/a.js b/a.js\n+const x = 1;\n' }) }, 'content-blocked'],
+    ['oversized message', { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: 'm'.repeat(MAX_TEXT_CHARS + 1), diff: 'diff --git a/a.js b/a.js\n+const x = 1;\n' }) }, 'content-blocked'],
+    ['oversized diff', { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: 'ok', diff: 'd'.repeat(MAX_DIFF_CHARS + 1) }) }, 'content-blocked']
+  ]) {
+    for (const [operation, fields] of [
+      ['commit', { headSha: HEAD }],
+      ['push', { branch: 'feat/x', headSha: HEAD }],
+      ['createPr', { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }]
+    ]) {
+      const { broker, calls } = setup({ content });
+      const res = await broker.request({ operation, requestId: id(), ...fields });
+      assert.deepEqual([res.ok, res.reason], [false, expectedReason], `${label} on ${operation}`);
+      assert.equal(calls.length, 0);
+    }
+  }
+});
+
+test('scanner exceptions and internal scanner errors fail closed and never reach the transport', async () => {
+  const { broker, calls } = setup({ actor: asPm });
+  const throwingScanOptions = {};
+  Object.defineProperty(throwingScanOptions, 'knownValues', {
+    enumerable: true,
+    get() {
+      throw new Error('synthetic scanner exception');
+    }
+  });
+  const throwingBroker = new Broker({ ...broker.d, scanOptions: throwingScanOptions });
+  const thrownResult = await throwingBroker.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' });
+  assert.deepEqual([thrownResult.ok, thrownResult.reason], [false, 'content-scan-failed']);
+  assert.equal(calls.length, 0);
+
+  const malformedScanBroker = new Broker({ ...broker.d, scanOptions: { knownValues: [null] } });
+  const malformedResult = await malformedScanBroker.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' });
+  assert.deepEqual([malformedResult.ok, malformedResult.reason, malformedResult.scanStatus], [false, 'content-blocked', 'error']);
+  assert.equal(calls.length, 0);
+});
+
+test('persistent idempotency via PrivateStore: a new Broker instance after restart replays completed requests without writing twice and stores no content or secrets', async (t) => {
+  const { PrivateStore } = require('../../src/storage/private-store');
+  const { sandbox, COLLECTIONS } = require('../storage/helpers');
+  const box = sandbox(t);
+  const openStore = () => new PrivateStore({ dir: box.dir, repoRoot: box.repoRoot, collections: COLLECTIONS });
+
+  const firstRun = setup({ actor: asPm });
+  const firstBroker = new Broker({ ...firstRun.broker.d, store: openStore() });
+  const issueReq = id();
+  const mergeReq = id();
+
+  const created = await firstBroker.request({ operation: 'createIssue', requestId: issueReq, title: 'Sensitive-looking public title', body: 'Detailed issue body' });
+  assert.deepEqual(created, { ok: true, number: 5 });
+  const merged = await firstBroker.request({ operation: 'mergePr', requestId: mergeReq, number: 7 });
+  assert.deepEqual(merged, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD });
+  assert.equal(firstRun.calls.length, 2);
+
+  // Restart with a fresh Broker instance backed by a freshly opened PrivateStore on the same directory.
+  const secondRun = setup({ actor: asPm });
+  const storeAfterRestart = openStore();
+  const secondBroker = new Broker({ ...secondRun.broker.d, store: storeAfterRestart });
+
+  const replayedIssue = await secondBroker.request({ operation: 'createIssue', requestId: issueReq, title: 'Sensitive-looking public title', body: 'Detailed issue body' });
+  assert.deepEqual(replayedIssue, { ok: true, number: 5, replay: true });
+  const replayedMerge = await secondBroker.request({ operation: 'mergePr', requestId: mergeReq, number: 7 });
+  assert.deepEqual(replayedMerge, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD, replay: true });
+  assert.equal(secondRun.calls.length, 0, 'new Broker instance never writes a completed request a second time');
+
+  // A different payload with the same requestId after restart is rejected as a conflict.
+  const conflict = await secondBroker.request({ operation: 'createIssue', requestId: issueReq, title: 'Different title', body: 'Detailed issue body' });
+  assert.deepEqual([conflict.ok, conflict.reason], [false, 'request-id-conflict']);
+  assert.equal(secondRun.calls.length, 0);
+
+  // Verify the persisted records in PrivateStore never contain the title, body, diff, or any secret.
+  const listed = storeAfterRestart.list('policies');
+  assert.equal(listed.ok, true);
+  assert.equal(listed.items.length, 2);
+  const serialized = JSON.stringify(listed.items);
+  assert.equal(serialized.includes('Sensitive-looking'), false);
+  assert.equal(serialized.includes('Detailed issue body'), false);
+});
+
+test('restart reconciliation: unresolved (unknown/pending) requests in PrivateStore check remote state before deciding whether to replay, resend, or keep unknown', async (t) => {
+  const { PrivateStore } = require('../../src/storage/private-store');
+  const { sandbox, COLLECTIONS } = require('../storage/helpers');
+  const box = sandbox(t);
+  const openStore = () => new PrivateStore({ dir: box.dir, repoRoot: box.repoRoot, collections: COLLECTIONS });
+
+  // 1. mergePr: transport throws (outcome-unknown). On restart:
+  //    (a) if remote PR is already merged, reconcile to done without calling transport;
+  //    (b) if remote PR is still open & unmerged, allow resend;
+  //    (c) if remote PR cannot be verified, stay outcome-unknown without calling transport.
+  const mergeAlreadyLandedId = id();
+  const mergeNotLandedId = id();
+  const mergeUnverifiedId = id();
+  const crashRun = setup({
+    actor: asPm,
+    transport: { mergePullRequest: async () => { throw new Error('network reset during merge'); } }
+  });
+  const crashingBroker = new Broker({ ...crashRun.broker.d, store: openStore() });
+  assert.equal((await crashingBroker.request({ operation: 'mergePr', requestId: mergeAlreadyLandedId, number: 7 })).reason, 'outcome-unknown');
+  assert.equal((await crashingBroker.request({ operation: 'mergePr', requestId: mergeNotLandedId, number: 7 })).reason, 'outcome-unknown');
+  assert.equal((await crashingBroker.request({ operation: 'mergePr', requestId: mergeUnverifiedId, number: 7 })).reason, 'outcome-unknown');
+  assert.equal(crashRun.calls.length, 3);
+
+  // Restart (a): remote shows PR #7 is already merged.
+  const restartMerged = setup({
+    actor: asPm,
+    reader: { getPullRequestSnapshot: async () => snapshot({ pr: { state: 'closed', merged: true } }) }
+  });
+  const brokerMerged = new Broker({ ...restartMerged.broker.d, store: openStore() });
+  const reconciledMerge = await brokerMerged.request({ operation: 'mergePr', requestId: mergeAlreadyLandedId, number: 7 });
+  assert.deepEqual(reconciledMerge, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD, replay: true });
+  assert.equal(restartMerged.calls.length, 0, 'already merged remotely: never calls mergePullRequest again');
+
+  // Restart (c): remote snapshot is partial/unreadable -> fail closed as outcome-unknown.
+  const restartUnverified = setup({
+    actor: asPm,
+    reader: { getPullRequestSnapshot: async () => ({ status: 'partial' }) }
+  });
+  const brokerUnverified = new Broker({ ...restartUnverified.broker.d, store: openStore() });
+  const unverifiedRes = await brokerUnverified.request({ operation: 'mergePr', requestId: mergeUnverifiedId, number: 7 });
+  assert.deepEqual(unverifiedRes, { ok: false, reason: 'outcome-unknown', replay: true });
+  assert.equal(restartUnverified.calls.length, 0);
+
+  // Restart (b): remote shows PR #7 is still open and unmerged -> safely resends once and records done.
+  const restartOpen = setup({ actor: asPm });
+  const brokerOpen = new Broker({ ...restartOpen.broker.d, store: openStore() });
+  const resentMerge = await brokerOpen.request({ operation: 'mergePr', requestId: mergeNotLandedId, number: 7 });
+  assert.deepEqual(resentMerge, { ok: true, reason: 'merged', pullNumber: 7, headSha: HEAD });
+  assert.equal(restartOpen.calls.length, 1, 'confirmed not merged remotely: resends once');
+
+  // 2. comment: transport throws. On restart, if getIssueComments shows the comment already exists, replay without reposting; if empty, resend once.
+  const commentLandedId = id();
+  const commentMissingId = id();
+  const crashComment = setup({
+    actor: asPm,
+    transport: { comment: async () => { throw new Error('timeout'); } }
+  });
+  const crashCommentBroker = new Broker({ ...crashComment.broker.d, store: openStore() });
+  assert.equal((await crashCommentBroker.request({ operation: 'comment', requestId: commentLandedId, target: 'issue', number: 3, body: 'Landed comment' })).reason, 'outcome-unknown');
+  assert.equal((await crashCommentBroker.request({ operation: 'comment', requestId: commentMissingId, target: 'issue', number: 3, body: 'Missing comment' })).reason, 'outcome-unknown');
+
+  const restartComment = setup({
+    actor: asPm,
+    reader: {
+      getIssueComments: async () => ({ kind: 'ok', data: [{ id: 88, author: 'pm-user', body: 'Landed comment' }] })
+    }
+  });
+  const brokerComment = new Broker({ ...restartComment.broker.d, store: openStore() });
+  const landedCommentRes = await brokerComment.request({ operation: 'comment', requestId: commentLandedId, target: 'issue', number: 3, body: 'Landed comment' });
+  assert.deepEqual(landedCommentRes, { ok: true, number: 88, replay: true });
+  assert.equal(restartComment.calls.length, 0, 'comment already on GitHub is not posted twice');
+
+  const resentCommentRes = await brokerComment.request({ operation: 'comment', requestId: commentMissingId, target: 'issue', number: 3, body: 'Missing comment' });
+  assert.deepEqual(resentCommentRes, { ok: true, number: 5 });
+  assert.equal(restartComment.calls.length, 1, 'comment confirmed absent on GitHub is sent once');
+
+  // 3. claimIssue & editIssue & reviewPr reconciliation on restart.
+  const claimId = id();
+  const editId = id();
+  const reviewId = id();
+  const crashOps = setup({
+    actor: { actorId: '20', role: 'worker' },
+    transport: { claimIssue: async () => { throw new Error('reset'); } }
+  });
+  const crashWorkerBroker = new Broker({ ...crashOps.broker.d, store: openStore() });
+  assert.equal((await crashWorkerBroker.request({ operation: 'claimIssue', requestId: claimId, number: 3 })).reason, 'outcome-unknown');
+
+  const crashPmOps = setup({
+    actor: asPm,
+    transport: {
+      editIssue: async () => { throw new Error('reset'); },
+      reviewPullRequest: async () => { throw new Error('reset'); }
+    }
+  });
+  const crashPmBroker = new Broker({ ...crashPmOps.broker.d, store: openStore() });
+  assert.equal((await crashPmBroker.request({ operation: 'editIssue', requestId: editId, number: 3, title: 'Updated title' })).reason, 'outcome-unknown');
+  assert.equal((await crashPmBroker.request({ operation: 'reviewPr', requestId: reviewId, number: 7, decision: 'approve', body: 'LGTM', expectedHeadSha: HEAD })).reason, 'outcome-unknown');
+
+  const restartClaim = setup({
+    actor: { actorId: '20', role: 'worker' },
+    reader: { getIssue: async () => ({ kind: 'ok', data: { state: 'open', assignees: ['worker-user'] } }) }
+  });
+  const brokerClaim = new Broker({ ...restartClaim.broker.d, store: openStore() });
+  assert.deepEqual(await brokerClaim.request({ operation: 'claimIssue', requestId: claimId, number: 3 }), { ok: true, number: 3, replay: true });
+  assert.equal(restartClaim.calls.length, 0);
+
+  const restartPm = setup({
+    actor: asPm,
+    reader: {
+      getIssue: async () => ({ kind: 'ok', data: { number: 3, state: 'open', title: 'Updated title', body: 'old' } }),
+      getPullRequestSnapshot: async () => ({
+        ...snapshot(),
+        reviews: { kind: 'ok', data: [{ reviewId: 77, reviewer: 'pm-user', commitId: HEAD, state: 'APPROVED', body: 'LGTM' }] }
+      })
+    }
+  });
+  const brokerPm = new Broker({ ...restartPm.broker.d, store: openStore() });
+  assert.deepEqual(await brokerPm.request({ operation: 'editIssue', requestId: editId, number: 3, title: 'Updated title' }), { ok: true, number: 3, replay: true });
+  assert.deepEqual(await brokerPm.request({ operation: 'reviewPr', requestId: reviewId, number: 7, decision: 'approve', body: 'LGTM', expectedHeadSha: HEAD }), { ok: true, number: 77, replay: true });
+  assert.equal(restartPm.calls.length, 0);
+});
+
+test('an unusable or invalid store is rejected and fails closed before any write', async () => {
+  const { broker, calls } = setup({ actor: asPm });
+  for (const badStore of [null, 'store', {}, { get: () => {} }, { put: () => {} }]) {
+    assert.throws(() => new Broker({ ...broker.d, store: badStore }), TypeError);
+  }
+  assert.throws(() => new Broker({ ...broker.d, storeCollection: 'bad/name' }), TypeError);
+
+  const failingRead = new Broker({ ...broker.d, store: { get: () => ({ ok: false, reason: 'corrupt' }), put: () => ({ ok: true }) } });
+  assert.equal((await failingRead.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' })).reason, 'store-unavailable');
+  assert.equal(calls.length, 0);
+
+  const failingWrite = new Broker({ ...broker.d, store: { get: () => ({ ok: true, found: false, value: null }), put: () => ({ ok: false, reason: 'locked' }) } });
+  assert.equal((await failingWrite.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' })).reason, 'store-unavailable');
+  assert.equal(calls.length, 0);
+});
