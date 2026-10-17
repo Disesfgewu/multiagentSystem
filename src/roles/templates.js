@@ -93,6 +93,22 @@ function describeRoleGroup(record, options = {}) {
     }
   }
 
+  if (options && (options.researchSkills === true || (options.includeResearchSkills && group.role === 'researcher'))) {
+    const { loadResearchSkills, ACADEMIC_ETHICS_RULES } = require('../research/skills');
+    const { skills, warnings } = loadResearchSkills({ workspaceRoot: options.workspaceRoot, fileExists: options.fileExists });
+    lines.push('', 'Approved research skills:');
+    for (const skill of skills) {
+      lines.push(`  • ${skill.name} (${skill.id} v${skill.version}) — ${skill.summary}`);
+    }
+    if (warnings.length > 0) {
+      lines.push(`  (warnings: ${warnings.join(', ')})`);
+    }
+    lines.push('', 'Academic ethics requirements:');
+    for (const rule of ACADEMIC_ETHICS_RULES) {
+      lines.push(`  • ${rule}`);
+    }
+  }
+
   lines.push('', `Rules in the CLI: ${injectionStatus({ provider: group.provider }).label}`);
   return lines.join('\n');
 }
