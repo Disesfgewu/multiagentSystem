@@ -90,3 +90,18 @@ test('incomplete or blocked GitHub state always blocks merge', () => {
     }
   }
 });
+
+test('a researcher can never create or edit an Issue, claim, open a PR, review or merge (#61)', () => {
+  const operations = ['createIssue', 'editIssue', 'claimIssue', 'createPr', 'reviewPr', 'mergePr'];
+  for (const actorId of ['10', '20', '30']) {
+    for (const operation of operations) {
+      const request = { operation, role: 'researcher', actorId, pullRequest: readyPr() };
+      const decision = evaluatePublishRequest(request, config);
+      assert.equal(decision.allowed, false, `${operation}/${actorId}`);
+      assert.equal(decision.reason, 'role-forbidden', `${operation}/${actorId}`);
+    }
+  }
+  for (const other of [{ pmActorId: '10', mergeAuthority: 'human' }, { pmActorId: '10', mergeAuthority: 'pm' }, { pmActorId: '10' }]) {
+    assert.equal(evaluatePublishRequest({ operation: 'mergePr', role: 'researcher', actorId: '10', pullRequest: readyPr() }, other).allowed, false, 'even under the PM identity a researcher role cannot merge');
+  }
+});
