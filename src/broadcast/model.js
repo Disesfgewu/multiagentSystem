@@ -111,6 +111,24 @@ function appliesTo(broadcast, context = {}) {
   return false;
 }
 
+/** A short, human-readable description of who a broadcast's target names. */
+function targetLabel(target) {
+  if (target.scope === 'all') return 'Every agent';
+  if (target.scope === 'roleGroup') return `Role group: ${target.role}`;
+  if (target.scope === 'provider') return `Provider: ${target.provider}`;
+  return `Agent: ${target.agentId}`;
+}
+
+/** 'revoked' takes priority over 'expired' when both are true at once: a revocation is the more
+ *  deliberate, more recent fact an administrator can act on, and the list should show it. */
+function broadcastStatus(broadcast, now) {
+  const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+  if (!Number.isFinite(nowMs)) return 'active';
+  if (broadcast.revokedAt !== null && Date.parse(broadcast.revokedAt) <= nowMs) return 'revoked';
+  if (broadcast.expiresAt !== null && Date.parse(broadcast.expiresAt) <= nowMs) return 'expired';
+  return 'active';
+}
+
 /**
  * A live, applicable broadcast as a rule at the `user` layer, ready to add to the `layers.user`
  * array `previewEffectiveRules` (src/roles/preview.js) already accepts: stronger than project,
@@ -139,4 +157,4 @@ function liveBroadcastRules(broadcasts, context, now) {
   return rules;
 }
 
-module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, SCOPES };
+module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, SCOPES };

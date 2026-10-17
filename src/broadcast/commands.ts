@@ -9,9 +9,11 @@ const { BroadcastStore } = require('./store') as {
     revoke(id: string, revokedAt: string): { ok: boolean; broadcast?: Broadcast; reason?: string };
   };
 };
-const { scanBroadcastText, isLive } = require('./model') as {
+const { scanBroadcastText, isLive, targetLabel, broadcastStatus } = require('./model') as {
   scanBroadcastText(text: string): { status: string };
   isLive(broadcast: Broadcast, now: Date): boolean;
+  targetLabel(target: Target): string;
+  broadcastStatus(broadcast: Broadcast, now: Date): string;
 };
 const { roleProviderChoices } = require('../roles/provider-choices') as {
   roleProviderChoices(): Array<{ id: string; label: string; detail: string }>;
@@ -46,23 +48,10 @@ async function store(showError = true): Promise<Store | undefined> {
   return opened.store as Store;
 }
 
-function targetLabel(target: Target): string {
-  if (target.scope === 'all') return 'Every agent';
-  if (target.scope === 'roleGroup') return `Role group: ${target.role}`;
-  if (target.scope === 'provider') return `Provider: ${target.provider}`;
-  return `Agent: ${target.agentId}`;
-}
-
-function statusOf(broadcast: Broadcast, now: Date): string {
-  if (broadcast.revokedAt !== null) return 'revoked';
-  if (broadcast.expiresAt !== null && Date.parse(broadcast.expiresAt) <= now.getTime()) return 'expired';
-  return 'active';
-}
-
 class BroadcastItem extends vscode.TreeItem {
   constructor(readonly broadcast: Broadcast, now: Date) {
     super(broadcast.text.length > 60 ? `${broadcast.text.slice(0, 60)}…` : broadcast.text, vscode.TreeItemCollapsibleState.None);
-    const status = statusOf(broadcast, now);
+    const status = broadcastStatus(broadcast, now);
     this.description = `${targetLabel(broadcast.target)} · ${status}`;
     this.tooltip = [
       `Sent: ${broadcast.createdAt}`,

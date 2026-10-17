@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, SCOPES } = require('../../src/broadcast/model');
+const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, SCOPES } = require('../../src/broadcast/model');
 const { resolveRules } = require('../../src/memory/rules');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -132,4 +132,24 @@ test('a maximal broadcast actually composes: the text limit here is not just cla
   const rule = broadcastRule(max);
   const checked = validateRuleList([rule], { layer: 'user', path: 'layers.user' });
   assert.deepEqual(checked, { ok: true, rules: [{ id: rule.id, type: rule.type, text: rule.text, version: rule.version }], problems: [] });
+});
+
+test('targetLabel names exactly who a target reaches, for every scope', () => {
+  assert.equal(targetLabel({ scope: 'all' }), 'Every agent');
+  assert.equal(targetLabel({ scope: 'roleGroup', role: 'worker' }), 'Role group: worker');
+  assert.equal(targetLabel({ scope: 'provider', provider: 'claude' }), 'Provider: claude');
+  assert.equal(targetLabel({ scope: 'agent', agentId: 'session-1' }), 'Agent: session-1');
+});
+
+test('broadcastStatus: active until expired or revoked; a revocation wins even past its own expiry', () => {
+  const open = validateBroadcast(broadcast()).broadcast;
+  assert.equal(broadcastStatus(open, '2030-01-01T00:00:00.000Z'), 'active');
+  const expiring = validateBroadcast(broadcast({ expiresAt: '2026-10-17T13:00:00.000Z' })).broadcast;
+  assert.equal(broadcastStatus(expiring, '2026-10-17T12:59:59.000Z'), 'active');
+  assert.equal(broadcastStatus(expiring, '2026-10-17T13:00:00.000Z'), 'expired');
+  const revoked = validateBroadcast(broadcast({ revokedAt: '2026-10-17T12:30:00.000Z' })).broadcast;
+  assert.equal(broadcastStatus(revoked, '2026-10-17T12:29:00.000Z'), 'active');
+  assert.equal(broadcastStatus(revoked, '2026-10-17T12:30:00.000Z'), 'revoked');
+  const both = validateBroadcast(broadcast({ expiresAt: '2026-10-17T13:00:00.000Z', revokedAt: '2026-10-17T14:00:00.000Z' })).broadcast;
+  assert.equal(broadcastStatus(both, '2026-10-17T15:00:00.000Z'), 'revoked', 'a revocation is reported even once the broadcast has also expired');
 });
