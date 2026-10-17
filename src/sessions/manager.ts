@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SessionError, SessionRegistry } from './registry';
+import { modelArguments, normalizeRequestedModel } from '../providers/modelSelection';
 
 // Session lifecycle on top of SessionRegistry. It does not import `vscode`: native terminals and
 // persistence are injected, so the behaviour is tested with fakes. Nothing here is sent to GitHub;
@@ -29,6 +30,7 @@ export interface SessionIdentity {
 /** One persisted session: identity plus the display name. No runtime state, terminal or token. */
 export interface SessionRecord extends SessionIdentity {
   name: string;
+  requestedModel?: string;
 }
 
 /**
@@ -45,6 +47,8 @@ export type SessionState = 'unknown' | 'terminal-open' | 'launch-requested' | 'c
 
 export interface SessionView extends SessionIdentity {
   name: string;
+  /** A launch request, not a provider observation or an availability guarantee. */
+  requestedModel?: string | null;
   state: SessionState;
   stateLabel: string;
   /** True only while this Extension Host holds a live terminal bound to the session. */
@@ -137,6 +141,7 @@ export function cleanName(value: unknown): string | null {
 export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private registry: Registry;
   private readonly names = new Map<string, string>();
+  private readonly models = new Map<string, string>();
   private readonly bound = new Map<T, { id: string; token: string }>();
   private readonly handles = new Map<string, T>();
   // Saving is allowed only after the saved sessions were read successfully (or when there is no
@@ -190,14 +195,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     // would be replaced by the restored registry and become unmanageable. Refuse, and keep saving off.
     if (this.registry.list().length > 0 || this.inFlight > 0) throw this.block('sessions-exist');
     try {
+      for (const record of records) normalizeRequestedModel(record.provider ?? '', record.requestedModel);
       this.registry = restoreRegistry(records, this.deps.now);
     } catch {
       throw this.block('invalid-snapshot');
     }
     this.names.clear();
+    this.models.clear();
     for (const record of records) {
       const name = cleanName(record.name);
       if (typeof record.id === 'string' && name !== null) this.names.set(record.id, name);
+      if (typeof record.id === 'string' && typeof record.requestedModel === 'string') this.models.set(record.id, record.requestedModel);
     }
     this.loaded = true;
     return { restored: records.length };
@@ -241,6 +249,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       accountProfileId: entry.accountProfileId,
       worktree: entry.worktree,
       name: this.names.get(entry.id) || `${entry.provider} session`,
+      requestedModel: this.models.get(entry.id) ?? null,
       state: entry.state as SessionState,
       stateLabel: describeState(entry.state as SessionState),
       terminalOpen: this.handles.has(entry.id),
@@ -255,7 +264,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       this.notifyBlocked();
       return;
     }
-    const records = this.registry.snapshot().map((identity) => ({ ...identity, name: this.names.get(identity.id) ?? '' }));
+    const records = this.registry.snapshot().map((identity) => ({ ...identity, name: this.names.get(identity.id) ?? '', ...(this.models.has(identity.id) ? { requestedModel: this.models.get(identity.id)! } : {}) }));
     try {
       await store.save(records);
     } catch {
@@ -276,8 +285,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     accountProfileId?: string;
     env?: Record<string, string | null>;
     launch?: boolean;
+    requestedModel?: string | null;
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
+    const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
     const name = cleanName(input.name);
     if (!name) throw new SessionError('invalid-name');
     if (typeof input.cwd !== 'string' || !this.deps.directoryExists(input.cwd)) throw new SessionError('worktree-missing');
@@ -293,7 +304,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: input.accountProfileId ?? UNASSIGNED,
         worktree: input.cwd
       };
-      const view = this.open(identity, name, executable, input.launch !== false, input.env);
+      const view = this.open(identity, name, executable, input.launch !== false, input.env, requestedModel);
       await this.persist();
       return view;
     } finally {
@@ -301,7 +312,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
   }
 
-  private open(identity: SessionIdentity, name: string, executable: string, launch: boolean, env?: Record<string, string | null>): SessionView {
+  private open(identity: SessionIdentity, name: string, executable: string, launch: boolean, env?: Record<string, string | null>, requestedModel: string | null = null): SessionView {
+    const args = modelArguments(identity.provider, requestedModel);
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
@@ -316,11 +328,12 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       throw error;
     }
     this.names.set(identity.id, name);
+    if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     this.bound.set(terminal, { id: identity.id, token });
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      terminal.sendText(executable, true);
+      terminal.sendText([executable, ...args].join(' '), true);
       this.registry.launchRequested(identity.id, token);
     }
     return this.view(identity.id);
@@ -392,7 +405,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: old.accountProfileId,
         worktree: old.worktree
       };
-      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env);
+      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null);
       await this.persist();
       return view;
     } finally {

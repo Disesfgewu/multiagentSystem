@@ -110,20 +110,27 @@ test('only a running agent counts for the guide: an open terminal with an assign
 
 test('text from outside is shown as one clean, short line', () => {
   const evil = `${cp(0x202e)}evil${cp(0)}\nname${cp(0x200b)}${cp(0x2028)}x`;
-  const shown = presentAgent(row({}, [account({ label: { value: evil } })], { worker: evil }), { name: evil, providerLabel: evil });
+  const shown = presentAgent(row({}, [account({ label: { value: evil } })], { worker: evil }), { name: evil, providerLabel: evil, requestedModel: evil });
   for (const text of [shown.label, shown.description, ...shown.tooltip]) {
     assert.equal(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(text.replace(/\n/g, '')), false, `a control or format character survived: ${JSON.stringify(text)}`);
   }
   assert.equal(shown.label, 'evil name x');
   assert.equal(shown.description.includes('\n'), false);
   const long = 'x'.repeat(100000);
-  const big = presentAgent(row({ branches: undefined }, [account({ label: { value: long } })], { worker: long }), { name: long, providerLabel: long });
+  const big = presentAgent(row({ branches: undefined }, [account({ label: { value: long } })], { worker: long }), { name: long, providerLabel: long, requestedModel: long });
   assert.ok(Array.from(big.label).length <= 80);
   assert.ok(big.description.length < 400, `${big.description.length}`);
-  assert.ok(big.tooltip.join('\n').length < 600);
+  assert.ok(big.tooltip.join('\n').length < 850, 'the additional requested/actual model fields are bounded too');
   const withBranch = buildOverview({ sessions: [session()], accounts: [account()], roleGroups: { worker: 'W' }, branches: { s1: long } }).rows[0];
-  assert.ok(presentAgent(withBranch, { name: 'A' }).tooltip.join('\n').length < 700);
+  assert.ok(presentAgent(withBranch, { name: 'A' }).tooltip.join('\n').length < 850);
   assert.equal(presentAgent(row({}, [account({ label: { value: `${cp(0x202e)}${cp(0)}` } })]), { name: cp(0x200b) }).label, 'Session', 'a name that is only invisible characters falls back');
+});
+
+test('a launch model request never becomes an actual model observation', () => {
+  const text = presentAgent(row(), { name: 'A', requestedModel: 'sonnet' }).tooltip.join('\n');
+  assert.match(text, /Requested model: sonnet \(not confirmed\)/);
+  assert.match(text, /Actual model: unknown/);
+  assert.match(presentAgent(row(), { name: 'A' }).tooltip.join('\n'), /Requested model: CLI default/);
 });
 
 test('a state that is a property of every object is unknown, never shown as an object', () => {

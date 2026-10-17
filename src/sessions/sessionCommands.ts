@@ -7,6 +7,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { SessionManager, SessionView } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
+import { normalizeRequestedModel, supportsModelSelection } from '../providers/modelSelection';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { selectRoleProfiles } = require('../roles/account-choices') as {
@@ -27,6 +28,8 @@ const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: 
 const MESSAGES: Record<string, string> = {
   ...ROLE_REASONS,
   'provider-unsupported': 'That CLI provider is not supported.',
+  'model-selection-unsupported': 'This provider has no documented model selection flag in this extension yet.',
+  'invalid-model': 'Enter a model ID of 1–128 letters, digits, dots, underscores, colons, slashes or hyphens, starting with a letter or digit.',
   'executable-not-found': 'This CLI could not be found. Install it from the official provider or add its executable to PATH, then retry.',
   'account-isolation-unknown': '此 provider 的帳號隔離未驗證，無法指派獨立帳號。請使用 CLI 預設登入，或先選擇已支援的 provider。',
   'invalid-account-list': 'Account profiles could not be validated. Refresh the accounts view and try again.',
@@ -53,6 +56,8 @@ export interface SessionCommandOptions {
   accountProfileId?: string;
   /** A role group to assign to the new session. It is checked against the provider and never changed afterwards. */
   roleGroupId?: string;
+  /** null uses the CLI default. This requests a model; it does not confirm the model actually used. */
+  requestedModel?: string | null;
 }
 
 export type SessionOutcome =
@@ -170,6 +175,25 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
       const provider = input.provider ?? '';
       let env: Record<string, string | null> | undefined;
+      let requestedModel = input.requestedModel;
+      if (requestedModel === undefined && interactive && supportsModelSelection(provider)) {
+        const choice = await vscode.window.showQuickPick([
+          { label: 'Use CLI default model', custom: false, description: 'The actual model remains unknown until the CLI reports it' },
+          { label: 'Request a model', custom: true, description: 'Enter a provider model ID or alias; account availability is not checked' }
+        ], { placeHolder: 'Model for this new agent session' });
+        if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        requestedModel = null;
+        if (choice.custom) {
+          const entered = await vscode.window.showInputBox({
+            prompt: 'Model ID or alias for this new session. The CLI decides whether your account can use it.',
+            ignoreFocusOut: true,
+            validateInput: (value) => { try { normalizeRequestedModel(provider, value); return undefined; } catch { return MESSAGES['invalid-model']; } }
+          });
+          if (entered === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          requestedModel = entered;
+        }
+      }
+      requestedModel = normalizeRequestedModel(provider, requestedModel);
       if (input.accountProfileId && !['verified', 'unverified'].includes(builtIn.capability(provider, 'accountIsolation'))) {
         return failure(Object.assign(new Error('account-isolation-unknown'), { code: 'account-isolation-unknown' }), interactive);
       }
@@ -198,6 +222,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         cwd,
         accountProfileId: input.accountProfileId,
         roleGroupId: input.roleGroupId,
+        requestedModel,
         env,
         launch: input.launch
       });
@@ -218,7 +243,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       sessions.map((session) => ({
         label: session.name,
         description: `${session.provider} · ${session.stateLabel}`,
-        detail: `account: ${session.accountProfileId} · ${session.worktree}`,
+        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · ${session.worktree}`,
         session
       })),
       { placeHolder: placeholder, matchOnDescription: true, matchOnDetail: true }
