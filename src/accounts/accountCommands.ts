@@ -57,7 +57,7 @@ type CheckResult = { ok: boolean; state: string; reason: string; checkedAt: stri
 // a login method, never the CLI's output or an email address.
 const checkResults = new Map<string, CheckResult>();
 
-function observationsFor(profiles: Array<{ id: string }>): Map<string, { identity: unknown }> {
+export function observationsFor(profiles: Array<{ id: string }>): Map<string, { identity: unknown }> {
   const observed = new Map<string, { identity: unknown }>();
   for (const profile of profiles) {
     const result = checkResults.get(profile.id);

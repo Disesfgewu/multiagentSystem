@@ -68,6 +68,10 @@
     "onCommand:multiagentSystem.setup.refresh",
     "onCommand:multiagentSystem.setup.retryGh",
     "onCommand:multiagentSystem.setup.retryCodex",
+    "onCommand:multiagentSystem.setup.diagnose",
+    "onCommand:multiagentSystem.setup.migrateStorage",
+    "onCommand:multiagentSystem.setup.recoverStorageLock",
+    "onCommand:multiagentSystem.setup.clearStorage",
     "onCommand:multiagentSystem.sessions.list",
     "onCommand:multiagentSystem.storage.status"
   ],
@@ -151,6 +155,23 @@
         "command": "multiagentSystem.setup.retryCodex",
         "title": "Multiagent: Retry Verified Codex CLI Setup",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "multiagentSystem.setup.diagnose",
+        "title": "Multiagent: Open Masked Setup and Storage Diagnostics",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "multiagentSystem.setup.migrateStorage",
+        "title": "Multiagent: Migrate Private Storage Schema"
+      },
+      {
+        "command": "multiagentSystem.setup.recoverStorageLock",
+        "title": "Multiagent: Recover Stale Private Storage Lock"
+      },
+      {
+        "command": "multiagentSystem.setup.clearStorage",
+        "title": "Multiagent: Clear Private Storage Data"
       },
       {
         "command": "multiagentSystem.worktrees.list",
@@ -278,7 +299,11 @@
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.send", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.refresh", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
-        { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation" }
+        { "command": "multiagentSystem.setup.diagnose", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@1" },
+        { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@2" },
+        { "command": "multiagentSystem.setup.migrateStorage", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@1" },
+        { "command": "multiagentSystem.setup.recoverStorageLock", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@2" },
+        { "command": "multiagentSystem.setup.clearStorage", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@3" }
       ],
       "view/item/context": [
         { "command": "multiagentSystem.overview.openPullRequest", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgent(Live|Closed)Pr$/", "group": "inline@0" },
