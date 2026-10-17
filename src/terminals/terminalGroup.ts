@@ -41,4 +41,8 @@ export async function openTerminalGroup(cwd: vscode.Uri): Promise<void> {
     });
     terminal.show();
   }
+  // The 2×2 grid is only a starting arrangement, not a lock: VS Code's own tab drag-and-drop already
+  // works on these terminals like any other editor tab, so the only thing missing was telling the
+  // user that. Shown only when a fresh group is created, not on every refocus of an existing one.
+  void vscode.window.showInformationMessage('Four native terminals are arranged in a 2×2 grid. Drag any terminal\'s tab to another position to rearrange them, the same way you would drag any editor tab.');
 }
