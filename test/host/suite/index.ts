@@ -8,6 +8,7 @@ import { runOverviewChecks } from './overview';
 import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks } from './sessionPersistence';
+import { runQuotaDispatchChecks } from './quotaDispatch';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -261,6 +262,7 @@ async function accountFlow(workspace: string): Promise<void> {
   const lifted = await gated('Lifted');
   assert.equal(lifted.ok, true, 'clearing the limits lifts the hold');
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: lifted.session?.id });
+  await runQuotaDispatchChecks(workspace, created.profile.id);
   console.log('host smoke: profile identity remains unknown; validated login terminal carries its config folder and exact command; provider mismatch is refused; new session keeps its selected profile');
 }
 

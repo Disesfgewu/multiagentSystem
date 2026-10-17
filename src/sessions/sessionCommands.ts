@@ -100,9 +100,9 @@ function workspaceFolder(): string | undefined {
 export function registerSessionCommands(context: vscode.ExtensionContext): SessionCommands {
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
-  // One quota-dispatch reservation per session that was gated through an account's limits, released
+  // One quota-dispatch reservation per account-bound session, including those with no limits, released
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
-  // either took no reservation (no limits set for its account, or none at all) or was already released.
+  // either has no account assigned, is still awaiting handoff, or was already released.
   const reservations = new Map<string, () => void>();
   const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
   const manager = new SessionManager<vscode.Terminal>({
@@ -240,14 +240,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         env,
         launch: input.launch
       });
-      if (release) { reservations.set(session.id, release); release = undefined; }
+      if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       changed.fire();
       return { ok: true, session };
     } catch (error) {
       return failure(error, interactive);
     } finally {
-      // Reached only when a reservation was taken but the session it was for was never created
-      // (an error thrown, or the isolation confirmation declined): it must not leak.
+      // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
+      // finished and the reservation could be handed off. A successful handoff clears release.
       release?.();
     }
   }
@@ -323,7 +323,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (answer !== 'Open Anyway') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           session = await manager.reopen(id, { launch: input.launch, acknowledgeUnknown: true, env });
         }
-        if (release) { reservations.set(session.id, release); release = undefined; }
+        if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       }
       changed.fire();
       return { ok: true, session };

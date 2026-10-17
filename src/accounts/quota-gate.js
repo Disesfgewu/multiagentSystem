@@ -7,9 +7,9 @@ const { decideDispatch, summarizeQuota, validatePolicy, DEFAULT_POLICY } = requi
  * the one call that actually GRANTS a launch (made once, right when access is about to be given,
  * never for an earlier read-only preview that only decides what dialog to show): two callers racing
  * to reserve the last slot cannot both succeed, because `dispatcher.reserve` decides and records in
- * one synchronous step. An account with no stored policy, or an unreadable one, never touches the
- * dispatcher: with no policy there is nothing to protect, and with an unreadable one the launch is
- * already refused.
+ * one synchronous step. Even an account with no stored policy takes a tracking slot, so setting
+ * limits later counts its already-open sessions. With no policy the reservation has no limits
+ * and needs no quota confirmation; an unreadable policy still refuses the launch.
  *
  * @param {{ policyRead: object, observations?: object[], now: Date, dispatcher: object, accountKey: string, approval?: string }} input
  * @returns {{ ok: true, release: () => void } | { ok: false, code: string, message: string }}
@@ -18,9 +18,9 @@ function commitDispatch({ policyRead, observations = [], now, dispatcher, accoun
   if (!policyRead || policyRead.ok !== true) {
     return { ok: false, code: 'quota-gate', message: 'The limits saved for this account could not be read, so no new agent was started.' };
   }
-  if (policyRead.stored !== true) return { ok: true, release: () => {} };
-  const reserved = dispatcher.reserve({ accountKey, policy: policyRead.policy, observations, now, approval });
-  if (!reserved.allowed) return { ok: false, code: 'quota-gate', message: 'Another agent for this account was started first and took the last slot. Try again.' };
+  const constrained = policyRead.stored === true;
+  const reserved = dispatcher.reserve({ accountKey, policy: constrained ? policyRead.policy : DEFAULT_POLICY, observations: constrained ? observations : [], now, approval: constrained ? approval : 'override' });
+  if (!reserved.allowed) return { ok: false, code: 'quota-gate', message: reserved.reasons.map(wordsFor).join(' ') };
   let released = false;
   return { ok: true, release: () => { if (!released) { released = true; dispatcher.release(reserved.reservation); } } };
 }

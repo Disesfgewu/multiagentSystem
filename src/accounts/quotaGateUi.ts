@@ -32,7 +32,7 @@ export type GateOutcome = { ok: true; release: () => void } | { ok: false; code:
 
 /**
  * Applies the account's limits before a new agent starts on it. An account with no limits is never held
- * back, and never takes a dispatcher slot (there is nothing to protect). Interactive callers can confirm
+ * back, but its active sessions are tracked so later limits count them. Interactive callers can confirm
  * or (for usage limits) override; callers that cannot ask are refused whenever the limits say to ask or
  * to stop. On success, the caller MUST call the returned `release()` once, exactly when the session this
  * launch produced stops or its terminal closes; forgetting to release leaks a slot permanently.
@@ -43,10 +43,19 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
   const policyRead = loadPolicy(accounts.store, accountProfileId);
   const observations = quotaObservations(accountProfileId);
   const now = new Date();
-  const commit = (approval?: 'confirm' | 'override'): GateOutcome => commitDispatch({ policyRead, observations, now, dispatcher, accountKey: accountProfileId, approval });
-  // No stored policy: nothing is protected, so there is nothing to decide or reserve. An unreadable
-  // one is refused by commitDispatch itself, the same way it always was.
-  if (!policyRead.ok || policyRead.stored !== true) return commit();
+  if (!policyRead.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
+  const commit = async (approval?: 'confirm' | 'override'): Promise<GateOutcome> => {
+    // Recheck after every await/dialog, then decide and reserve synchronously from fresh inputs.
+    const latestAccounts = await accountService(sessions);
+    if (!latestAccounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be read again, so no new agent was started.' };
+    const latest = loadPolicy(latestAccounts.store, accountProfileId);
+    if (!latest.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
+    if (latest.stored !== policyRead.stored || JSON.stringify(latest.policy) !== JSON.stringify(policyRead.policy)) {
+      return { ok: false, code: 'quota-gate', message: 'Account limits changed while this launch was being checked. Try again to review the current limits.' };
+    }
+    return commitDispatch({ policyRead: latest, observations: quotaObservations(accountProfileId), now: new Date(), dispatcher, accountKey: accountProfileId, approval });
+  };
+  if (policyRead.stored !== true) return commit();
   // The running count that decides what to SHOW is a plain read, for responsive dialog wording; the
   // decision that actually GRANTS access is made again, atomically, in commit() above, so a request
   // that waited on a confirmation dialog cannot act on a running count that a concurrent request has
@@ -59,14 +68,12 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
     void vscode.window.showWarningMessage(`Account limits: ${first.lines[0] ?? 'a warning level was reached'}`);
     return commit();
   }
-  if (!interactive) return { ok: false, code: 'quota-gate', message: first.lines[0] ?? 'The account\'s limits stopped this agent.' };
+  if (!interactive || !first.overridable) return { ok: false, code: 'quota-gate', message: first.lines[0] ?? 'The account\'s limits stopped this agent.' };
   const confirmOnly = first.action === 'confirm';
   const buttons = first.overridable ? [confirmOnly ? 'Start Anyway' : 'Override and Start'] : [];
   const title = first.action === 'block' ? 'Account limits are holding back new agents.' : 'Account limits ask you to confirm.';
   const answer = await vscode.window.showWarningMessage(title, { modal: true, detail: text }, ...buttons);
-  if (!answer) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-  const approved = gateLaunch({ policyRead, observations, now, running, approval: confirmOnly ? 'confirm' : 'override' });
-  if (!approved.allowed) return { ok: false, code: 'quota-gate', message: 'The account\'s limits stopped this agent.' };
+  if (answer !== (confirmOnly ? 'Start Anyway' : 'Override and Start')) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
   return commit(confirmOnly ? 'confirm' : 'override');
 }
 

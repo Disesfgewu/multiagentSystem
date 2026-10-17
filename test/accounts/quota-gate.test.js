@@ -154,13 +154,13 @@ test('what a person types becomes a policy, or a list of plain problems', () => 
 });
 
 // ---- commitDispatch: the one call that actually grants access, atomically
-test('no stored policy never touches the dispatcher: nothing is reserved, release is a no-op', () => {
+test('no stored policy tracks a session without imposing a quota gate', () => {
   const dispatcher = new QuotaDispatcher();
   const result = commitDispatch({ policyRead: { ok: true, stored: false }, now: NOW, dispatcher, accountKey: 'acct-1' });
   assert.equal(result.ok, true);
-  assert.equal(dispatcher.running('acct-1'), 0);
+  assert.equal(dispatcher.running('acct-1'), 1);
   result.release();
-  assert.equal(dispatcher.running('acct-1'), 0, 'releasing a no-op reservation changes nothing');
+  assert.equal(dispatcher.running('acct-1'), 0, 'closing an unrestricted session frees its tracking slot');
 });
 
 test('an unreadable policy is refused before the dispatcher is ever consulted', () => {
@@ -180,14 +180,14 @@ test('two requests racing for the same real account cannot both take the last sl
   const second = commit();
   assert.equal(first.ok, true);
   assert.deepEqual([second.ok, second.code], [false, 'quota-gate']);
-  assert.match(second.ok ? '' : second.message, /took the last slot/);
+  assert.match(second.ok ? '' : second.message, /already running.*limit/);
   assert.equal(dispatcher.running('acct-1'), 1, 'the refused request never took a slot');
   first.release();
   assert.equal(dispatcher.running('acct-1'), 0);
   assert.equal(commit().ok, true, 'the freed slot can be taken by a later request');
 });
 
-test('releasing twice, or releasing a no-op outcome, changes nothing the second time', () => {
+test('releasing a reservation twice changes nothing the second time', () => {
   const dispatcher = new QuotaDispatcher();
   const policyRead = stored({ maxConcurrent: 1 });
   const result = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-1' });

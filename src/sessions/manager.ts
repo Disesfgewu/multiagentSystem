@@ -304,9 +304,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: input.accountProfileId ?? UNASSIGNED,
         worktree: input.cwd
       };
-      const view = this.open(identity, name, executable, input.launch !== false, input.env, requestedModel);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel);
       await this.persist();
-      return view;
+      return this.view(identity.id);
     } finally {
       this.inFlight -= 1;
     }
@@ -411,9 +411,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: old.accountProfileId,
         worktree: old.worktree
       };
-      const view = this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null);
       await this.persist();
-      return view;
+      return this.view(identity.id);
     } finally {
       this.inFlight -= 1;
     }
