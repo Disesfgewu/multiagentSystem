@@ -115,6 +115,12 @@ export async function runPlanChecks(workspace: string): Promise<string> {
     const failedRead = (await tree.getChildren(freshTasks?.[0])) ?? [];
     assert.equal(failedRead[0]?.description, 'unknown', 'a thrown read is unknown, not a crash');
     assert.equal(failedRead[1]?.description, 'unknown', 'a denied read is unknown, not treated as resolved or as a conflict');
+
+    // A dependency outside this module's control (finding the repository itself) can also throw.
+    setPlanEvidenceDepsForTests({ repository: async () => { throw new Error('worktree lookup failed'); }, readerFor: () => evidenceReader, now: () => new Date() });
+    const failedRepository = (await tree.getChildren(freshTasks?.[0])) ?? [];
+    assert.equal(failedRepository[0]?.description, 'unknown', 'a thrown repository lookup is unknown, not a crash that breaks the whole tree');
+    assert.equal(failedRepository[1]?.description, 'unknown');
   } finally { setPlanEvidenceDepsForTests(undefined); }
 
   await vscode.commands.executeCommand(PLAN_COMMANDS.open, { line: 101 });

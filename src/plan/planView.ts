@@ -43,15 +43,19 @@ export function setPlanEvidenceDepsForTests(next: PlanEvidenceDeps | undefined):
  * it never promotes a dependency into a conflict, and it never clears one either.
  */
 async function planEvidenceStatus(task: PlanTask, link: PlanReportLink): Promise<{ state: string; conflict: boolean; readAt: string | null }> {
-  const repository = await planEvidenceDeps.repository();
-  const reader = repository ? planEvidenceDeps.readerFor(repository) : null;
-  if (!reader) return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live: null }), readAt: null };
+  const unknown = () => ({ ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live: null }), readAt: null });
+  // Every step here — finding the repository, getting a reader, reading the item — can fail or throw
+  // for reasons outside this module's control (no workspace, an untrusted workspace, a network error,
+  // a broken test double). None of that may crash the whole tree: it all collapses to "unknown".
   try {
+    const repository = await planEvidenceDeps.repository();
+    const reader = repository ? planEvidenceDeps.readerFor(repository) : null;
+    if (!reader) return unknown();
     const result = link.kind === 'issue' ? await reader.getIssue(link.number) : await reader.getPullRequest(link.number);
     const live = result.kind === 'ok' ? result.data ?? null : null;
     return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live }), readAt: live ? planEvidenceDeps.now().toISOString() : null };
   } catch {
-    return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live: null }), readAt: null };
+    return unknown();
   }
 }
 
