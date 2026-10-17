@@ -157,4 +157,33 @@ function liveBroadcastRules(broadcasts, context, now) {
   return rules;
 }
 
-module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, SCOPES };
+function formatBroadcast(broadcast, now) {
+  return [
+    'PRIVATE — local administrator broadcast notice. Do not publish this document.',
+    `ID: ${broadcast.id}`,
+    `Version: ${broadcast.version}`,
+    `Target: ${targetLabel(broadcast.target)}`,
+    `Status: ${broadcastStatus(broadcast, now)}`,
+    `State read at: ${now.toISOString()}`,
+    `Created: ${broadcast.createdAt}`,
+    `Expires: ${broadcast.expiresAt ?? 'until revoked'}`,
+    `Revoked: ${broadcast.revokedAt ?? 'not revoked'}`,
+    'Rule layer: user (below platform; cannot grant permissions).',
+    'Delivery: unknown. Saved locally and included in matching role previews only.',
+    'Session launch, CLI delivery and acknowledgement are not connected.',
+    '',
+    'Full notice:',
+    broadcast.text,
+    ''
+  ].join('\n');
+}
+
+function broadcastPreviewLines(broadcasts, context, now) {
+  const items = Array.isArray(broadcasts) ? broadcasts : [];
+  return liveBroadcastRules(items, context, now).map((rule) => {
+    const item = items.find((entry) => `broadcast:${entry?.id}` === rule.id);
+    return `Local administrator notice ${item.id}, version ${item.version}, user layer; expires ${item.expiresAt ?? 'until revoked'}; CLI delivery unknown.`;
+  });
+}
+
+module.exports = { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, formatBroadcast, broadcastPreviewLines, SCOPES };

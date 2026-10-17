@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, SCOPES } = require('../../src/broadcast/model');
+const { validateBroadcast, scanBroadcastText, isLive, appliesTo, broadcastRule, liveBroadcastRules, targetLabel, broadcastStatus, formatBroadcast, broadcastPreviewLines, SCOPES } = require('../../src/broadcast/model');
 const { resolveRules } = require('../../src/memory/rules');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -152,4 +152,24 @@ test('broadcastStatus: active until expired or revoked; a revocation wins even p
   assert.equal(broadcastStatus(revoked, '2026-10-17T12:30:00.000Z'), 'revoked');
   const both = validateBroadcast(broadcast({ expiresAt: '2026-10-17T13:00:00.000Z', revokedAt: '2026-10-17T14:00:00.000Z' })).broadcast;
   assert.equal(broadcastStatus(both, '2026-10-17T15:00:00.000Z'), 'revoked', 'a revocation is reported even once the broadcast has also expired');
+});
+
+
+test('private details keep the complete notice and separate local state from unknown delivery', () => {
+  const text = 'Review all outstanding decisions. '.repeat(10).trim();
+  const item = broadcast({ text, version: 2, expiresAt: '2026-10-17T13:00:00.000Z' });
+  const rendered = formatBroadcast(item, new Date(NOW));
+  assert.ok(rendered.includes(text));
+  assert.match(rendered, /Version: 2/);
+  assert.match(rendered, /Status: active/);
+  assert.match(rendered, /Expires: 2026-10-17T13:00:00.000Z/);
+  assert.match(rendered, /Delivery: unknown/);
+  assert.match(rendered, /Session launch, CLI delivery and acknowledgement are not connected/);
+});
+
+test('role preview provenance only lists currently live matching notices with version and expiry', () => {
+  const items = [broadcast(), broadcast({ id: 'worker', target: { scope: 'roleGroup', role: 'worker' } }), broadcast({ id: 'revoked', revokedAt: NOW })];
+  const lines = broadcastPreviewLines(items, { role: 'pm', provider: 'claude' }, new Date(NOW));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /bc-1, version 1, user layer; expires until revoked; CLI delivery unknown/);
 });

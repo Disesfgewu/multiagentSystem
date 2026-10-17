@@ -9,13 +9,14 @@ import { runPlanChecks } from './plan';
 import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
+import { runBroadcastChecks } from './broadcasts';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, previewText, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
 import { BroadcastStore } from '../../../src/broadcast/store';
-import { BROADCAST_COMMANDS, broadcastTreeForTests } from '../../../src/broadcast/commands';
+import { BROADCAST_COMMANDS } from '../../../src/broadcast/commands';
 import { builtIn } from '../../../src/providers/registry';
 import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 import { createHash } from 'node:crypto';
@@ -38,7 +39,7 @@ const COMMANDS = [
   ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details, ACCOUNT_COMMANDS.limits,
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
   ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove,
-  BROADCAST_COMMANDS.refresh, BROADCAST_COMMANDS.send, BROADCAST_COMMANDS.revoke,
+  BROADCAST_COMMANDS.refresh, BROADCAST_COMMANDS.send, BROADCAST_COMMANDS.revoke, BROADCAST_COMMANDS.details,
   SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
@@ -475,29 +476,6 @@ async function roleFlow(workspace: string): Promise<void> {
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
 }
 
-// `send` and `revoke` are interactive-only by design, with no non-interactive bypass at all (unlike
-// every other command here that supports `interactive: false` for host testing): accepting a
-// pre-filled target or text would reopen exactly the self-declared-role bypass the product forbids.
-// That means headless CI cannot drive their QuickPick/InputBox sequence (there is no UI to answer it,
-// and `showQuickPick` simply waits), so — the same way ROLE_COMMANDS.create/edit are only ever
-// registration-checked, never executed, in this suite — this only proves they are registered and
-// that the read-only list reflects whatever BroadcastStore already holds.
-async function broadcastFlow(): Promise<void> {
-  const opened = await privateStorage()?.use();
-  assert.equal(opened?.ok, true);
-  const broadcasts = new BroadcastStore(opened.store);
-  const listed = broadcasts.list();
-  assert.ok(listed.ok && 'items' in listed);
-  const expectedIds = ((listed as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort();
-
-  await vscode.commands.executeCommand(BROADCAST_COMMANDS.refresh);
-  const rows = await broadcastTreeForTests().getChildren();
-  assert.ok(Array.isArray(rows) && rows.length > 0, 'the broadcast list always shows something, even when empty');
-  const shownIds = rows.map((row) => (row as { broadcast?: { id: string } }).broadcast?.id).filter((id): id is string => typeof id === 'string').sort();
-  assert.deepEqual(shownIds, expectedIds, 'the read-only list shows exactly what BroadcastStore holds');
-  console.log('host smoke: broadcast view commands are registered and the read-only list reflects stored broadcasts');
-}
-
 async function agyFlow(workspace: string): Promise<void> {
   const capabilities = builtIn.get('agy')?.capabilities;
   assert.ok(capabilities);
@@ -681,7 +659,7 @@ export async function run(): Promise<void> {
   await accountFlow(workspace);
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
-  await broadcastFlow();
+  await runBroadcastChecks(workspace);
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;

@@ -24,7 +24,10 @@ const { previewEffectiveRules, formatPreview } = require('./preview') as {
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
 const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 const { BroadcastStore } = require('../broadcast/store') as { BroadcastStore: new (store: Store) => { list(): { ok: boolean; items?: unknown[]; reason?: string } } };
-const { liveBroadcastRules } = require('../broadcast/model') as { liveBroadcastRules(items: unknown, context: { role: string; provider: string }, now: Date): Rule[] };
+const { liveBroadcastRules, broadcastPreviewLines } = require('../broadcast/model') as {
+  liveBroadcastRules(items: unknown, context: { role: string; provider: string }, now: Date): Rule[];
+  broadcastPreviewLines(items: unknown, context: { role: string; provider: string }, now: Date): string[];
+};
 const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates') as {
   describeRoleGroup(record: RoleRecord): string;
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
@@ -311,12 +314,14 @@ export async function previewText(id: string): Promise<string> {
   // administrator-broadcast line below cannot say what applies right now, and says so plainly
   // instead of silently composing the preview as if no broadcast existed.
   const broadcasts = new BroadcastStore(opened).list();
+  const broadcastNow = new Date();
+  const broadcastContext = { role: loaded.record.group.role, provider: loaded.record.group.provider };
   const broadcastNote = broadcasts.ok
     ? null
     : `Administrator broadcasts: unknown (${broadcasts.reason ?? 'could not be read'}). Any live broadcast for this role group is NOT reflected below.`;
   const userLayer = [
     ...(loaded.record.layers.user ?? []),
-    ...(broadcasts.ok ? liveBroadcastRules(broadcasts.items, { role: loaded.record.group.role, provider: loaded.record.group.provider }, new Date()) : [])
+    ...(broadcasts.ok ? liveBroadcastRules(broadcasts.items, broadcastContext, broadcastNow) : [])
   ];
   const result = previewEffectiveRules({ roleGroup: loaded.record.group, layers: { ...loaded.record.layers, user: userLayer } });
   const status = injectionStatus({ provider: loaded.record.group.provider });
@@ -324,6 +329,7 @@ export async function previewText(id: string): Promise<string> {
     'PRIVATE — shown on this computer only. This holds the text of your instructions: do not paste it into GitHub, issues or logs.',
     'This preview is read-only and cannot be saved to a file.',
     ...(broadcastNote ? [broadcastNote] : []),
+    ...(broadcasts.ok ? broadcastPreviewLines(broadcasts.items, broadcastContext, broadcastNow) : []),
     '',
     formatPreview(result, { injection: status })
   ].join('\n');

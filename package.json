@@ -116,7 +116,7 @@
       },
       {
         "view": "multiagentSystem.broadcastsView",
-        "contents": "No broadcasts sent yet. A broadcast only reaches new or reopened sessions on this computer; it cannot change what an already-running agent is doing, and there is no proof any CLI reads it.\n[Send Broadcast](command:multiagentSystem.broadcasts.send)"
+        "contents": "Local broadcast notices are stored on this computer and shown in matching role previews. Session launch and CLI delivery are not connected.\n[Create Broadcast Notice](command:multiagentSystem.broadcasts.send)"
       },
       {
         "view": "multiagentSystem.toolsSetupView",
@@ -223,7 +223,8 @@
       { "command": "multiagentSystem.roles.preview", "title": "Multiagent: Preview Effective Rules" },
       { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
       { "command": "multiagentSystem.broadcasts.refresh", "title": "Multiagent: Refresh Broadcasts", "icon": "$(refresh)" },
-      { "command": "multiagentSystem.broadcasts.send", "title": "Multiagent: Send Broadcast", "icon": "$(megaphone)" },
+      { "command": "multiagentSystem.broadcasts.send", "title": "Multiagent: Create Broadcast Notice", "icon": "$(megaphone)" },
+      { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
       {
         "command": "multiagentSystem.storage.status",

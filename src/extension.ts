@@ -80,7 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerPlanView(context);
   registerReports(context);
   registerRoleCommands(context, sessions);
-  registerBroadcastCommands(context);
+  registerBroadcastCommands(context, sessions);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
 }
