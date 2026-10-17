@@ -449,32 +449,27 @@ async function roleFlow(workspace: string): Promise<void> {
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
 }
 
-// The send/revoke commands are interactive-only on purpose: there is no non-interactive bypass, so
-// this is the one thing headless CI can actually prove about them beyond registration — that with no
-// human present to answer the dialogs, VS Code's headless Quick Pick/Input Box resolve to nothing and
-// the commands end in a safe no-op, never creating or revoking a broadcast on a guess.
+// `send` and `revoke` are interactive-only by design, with no non-interactive bypass at all (unlike
+// every other command here that supports `interactive: false` for host testing): accepting a
+// pre-filled target or text would reopen exactly the self-declared-role bypass the product forbids.
+// That means headless CI cannot drive their QuickPick/InputBox sequence (there is no UI to answer it,
+// and `showQuickPick` simply waits), so — the same way ROLE_COMMANDS.create/edit are only ever
+// registration-checked, never executed, in this suite — this only proves they are registered and
+// that the read-only list reflects whatever BroadcastStore already holds.
 async function broadcastFlow(): Promise<void> {
   const opened = await privateStorage()?.use();
   assert.equal(opened?.ok, true);
   const broadcasts = new BroadcastStore(opened.store);
-  const before = broadcasts.list();
-  assert.ok(before.ok && 'items' in before);
-  const beforeIds = ((before as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort();
-
-  await vscode.commands.executeCommand(BROADCAST_COMMANDS.send);
-  const afterSend = broadcasts.list();
-  assert.ok(afterSend.ok && 'items' in afterSend);
-  assert.deepEqual(((afterSend as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort(), beforeIds, 'an unanswered send dialog creates nothing');
-
-  await vscode.commands.executeCommand(BROADCAST_COMMANDS.revoke);
-  const afterRevoke = broadcasts.list();
-  assert.ok(afterRevoke.ok && 'items' in afterRevoke);
-  assert.deepEqual((afterRevoke as { items: unknown }).items, (afterSend as { items: unknown }).items, 'an unanswered revoke dialog changes nothing');
+  const listed = broadcasts.list();
+  assert.ok(listed.ok && 'items' in listed);
+  const expectedIds = ((listed as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort();
 
   await vscode.commands.executeCommand(BROADCAST_COMMANDS.refresh);
   const rows = await broadcastTreeForTests().getChildren();
   assert.ok(Array.isArray(rows) && rows.length > 0, 'the broadcast list always shows something, even when empty');
-  console.log('host smoke: broadcast send/revoke commands are registered and safely no-op without an interactive answer');
+  const shownIds = rows.map((row) => (row as { broadcast?: { id: string } }).broadcast?.id).filter((id): id is string => typeof id === 'string').sort();
+  assert.deepEqual(shownIds, expectedIds, 'the read-only list shows exactly what BroadcastStore holds');
+  console.log('host smoke: broadcast view commands are registered and the read-only list reflects stored broadcasts');
 }
 
 async function agyFlow(workspace: string): Promise<void> {
