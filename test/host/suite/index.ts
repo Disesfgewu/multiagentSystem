@@ -296,7 +296,9 @@ async function setupFlow(): Promise<void> {
   assert.match(String(codex?.description), /Ready · 0\.163\.0/);
   assert.match(String(codex?.tooltip), /Sign-in, identity, quota and rule injection are not implied/);
   assert.equal(String(gh?.tooltip).includes('synthetic managed gh'), false, 'status does not display binary content');
-  assert.ok(managedPathContributionForTests(), 'a verified managed bin directory is contributed to new native terminal PATHs');
+  const contributed = managedPathContributionForTests();
+  assert.ok(contributed, 'verified managed bin directories are contributed to new native terminal PATHs');
+  assert.equal(contributed.split(path.delimiter).length, 2, 'both verified gh and Codex directories remain on the managed PATH');
   if (platform !== 'win32') {
     const sentinel = process.env.MULTIAGENT_TEST_GH_SENTINEL;
     assert.ok(sentinel);

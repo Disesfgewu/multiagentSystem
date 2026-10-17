@@ -151,7 +151,13 @@ test('a replaced installs directory cannot redirect a later Codex install', asyn
 
 test('unsupported platforms, mismatched format and non-OpenAI sources never download', async (t) => {
   let downloaded = false;
-  const bad: Array<CodexRelease | null> = [null, release({ platform: 'linux' }), release({ url: 'https://example.test/codex.tar.gz' }), release({ platform: 'darwin', format: 'raw', entry: null, executable: 'codex.exe' })];
+  const bad: Array<CodexRelease | null> = [
+    null,
+    release({ platform: 'linux' }),
+    release({ url: 'https://example.test/codex.tar.gz' }),
+    release({ url: 'https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-apple-darwin.tar.gz' }),
+    release({ platform: 'darwin', format: 'raw', entry: null, executable: 'codex.exe' })
+  ];
   for (const item of bad) {
     const manager = new ManagedCodex({ root: world(t), release: item, download: async () => { downloaded = true; return archive; } });
     assert.deepEqual(await manager.prepare(), { state: 'unsupported', reason: 'platform-or-source-unverified' });
