@@ -13,6 +13,7 @@ import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, previewText, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
 import { BroadcastStore } from '../../../src/broadcast/store';
+import { BROADCAST_COMMANDS, broadcastTreeForTests } from '../../../src/broadcast/commands';
 import { builtIn } from '../../../src/providers/registry';
 import { pickRoleForLaunch } from '../../../src/roles/roleLaunch';
 import { createHash } from 'node:crypto';
@@ -35,6 +36,7 @@ const COMMANDS = [
   ACCOUNT_COMMANDS.refresh, ACCOUNT_COMMANDS.create, ACCOUNT_COMMANDS.details, ACCOUNT_COMMANDS.limits,
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
   ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove,
+  BROADCAST_COMMANDS.refresh, BROADCAST_COMMANDS.send, BROADCAST_COMMANDS.revoke,
   SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
@@ -447,6 +449,34 @@ async function roleFlow(workspace: string): Promise<void> {
   console.log('host smoke: private role group previews as a read-only virtual document with per-rule injection status (preview only; agy manual); it cannot be saved to the project');
 }
 
+// The send/revoke commands are interactive-only on purpose: there is no non-interactive bypass, so
+// this is the one thing headless CI can actually prove about them beyond registration — that with no
+// human present to answer the dialogs, VS Code's headless Quick Pick/Input Box resolve to nothing and
+// the commands end in a safe no-op, never creating or revoking a broadcast on a guess.
+async function broadcastFlow(): Promise<void> {
+  const opened = await privateStorage()?.use();
+  assert.equal(opened?.ok, true);
+  const broadcasts = new BroadcastStore(opened.store);
+  const before = broadcasts.list();
+  assert.ok(before.ok && 'items' in before);
+  const beforeIds = ((before as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort();
+
+  await vscode.commands.executeCommand(BROADCAST_COMMANDS.send);
+  const afterSend = broadcasts.list();
+  assert.ok(afterSend.ok && 'items' in afterSend);
+  assert.deepEqual(((afterSend as { items: Array<{ id: string }> }).items ?? []).map((item) => item.id).sort(), beforeIds, 'an unanswered send dialog creates nothing');
+
+  await vscode.commands.executeCommand(BROADCAST_COMMANDS.revoke);
+  const afterRevoke = broadcasts.list();
+  assert.ok(afterRevoke.ok && 'items' in afterRevoke);
+  assert.deepEqual((afterRevoke as { items: unknown }).items, (afterSend as { items: unknown }).items, 'an unanswered revoke dialog changes nothing');
+
+  await vscode.commands.executeCommand(BROADCAST_COMMANDS.refresh);
+  const rows = await broadcastTreeForTests().getChildren();
+  assert.ok(Array.isArray(rows) && rows.length > 0, 'the broadcast list always shows something, even when empty');
+  console.log('host smoke: broadcast send/revoke commands are registered and safely no-op without an interactive answer');
+}
+
 async function agyFlow(workspace: string): Promise<void> {
   const capabilities = builtIn.get('agy')?.capabilities;
   assert.ok(capabilities);
@@ -607,6 +637,7 @@ export async function run(): Promise<void> {
   await sessionFlow(workspace);
   await accountFlow(workspace);
   await roleFlow(workspace);
+  await broadcastFlow();
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
