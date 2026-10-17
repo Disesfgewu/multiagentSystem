@@ -1,0 +1,101 @@
+import { createHash } from 'node:crypto';
+import { cleanName, SessionRecord, SessionSnapshotStore } from './manager';
+import { SessionRegistry } from './registry';
+import { normalizeRequestedModel } from '../providers/modelSelection';
+
+interface Store {
+  get(collection: string, id: string): { ok: boolean; found?: boolean; value?: unknown };
+  transact(work: (tx: { get(collection: string, id: string): any; put(collection: string, id: string, value: any): void }) => unknown): any;
+}
+interface Access {
+  workspaceKey(): string | null;
+  /** Must obtain a newly checked private store for every operation. */
+  use(): Promise<{ ok: boolean; store?: Store }>;
+}
+interface Envelope { scope: string; revision: number; records: SessionRecord[] }
+const COLLECTION = 'sessions';
+const KEYS = new Set(['id', 'repoId', 'roleGroupId', 'provider', 'accountProfileId', 'worktree', 'name', 'requestedModel']);
+const fail = (code: string): never => { throw Object.assign(new Error(code), { code }); };
+const plain = (value: any): boolean => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Includes folder order: changing the primary folder must invalidate the old workspace scope. */
+export function sessionWorkspaceKey(folders: string[], workspaceFile?: string): string | null {
+  return folders.length ? createHash('sha256').update(JSON.stringify({ folders, workspaceFile: workspaceFile ?? null })).digest('hex') : null;
+}
+
+function validRecords(records: unknown): records is SessionRecord[] {
+  if (!Array.isArray(records) || records.length > 256) return false;
+  try {
+    for (const record of records) {
+      if (!plain(record) || Object.keys(record).some((key) => !KEYS.has(key)) || cleanName(record.name) !== record.name) return false;
+      normalizeRequestedModel(record.provider, record.requestedModel);
+    }
+    SessionRegistry.restore(records);
+    return true;
+  } catch { return false; }
+}
+function envelope(value: any, scope: string): value is Envelope {
+  return plain(value) && Object.keys(value).length === 3 && value.scope === scope &&
+    Number.isSafeInteger(value.revision) && value.revision > 0 && validRecords(value.records);
+}
+
+/** Workspace-bound snapshots, with serial writes and a transactional revision check across windows. */
+export class PrivateSessionSnapshot implements SessionSnapshotStore {
+  private scope: string | null = null;
+  private revision: number | null = null;
+  private loaded = false;
+  private refused = false;
+  private queue: Promise<void> = Promise.resolve();
+  constructor(private readonly access: Access) {}
+
+  private async store(): Promise<Store> {
+    if (!this.scope || this.access.workspaceKey() !== this.scope) return fail('session-workspace-changed');
+    const opened = await this.access.use();
+    if (this.access.workspaceKey() !== this.scope) return fail('session-workspace-changed');
+    if (!opened.ok || !opened.store) return fail('session-storage-unavailable');
+    return opened.store;
+  }
+  async load(): Promise<unknown> {
+    if (this.loaded || this.refused) return fail('session-snapshot-already-loaded');
+    this.scope = this.access.workspaceKey();
+    try {
+      // An empty window has no snapshot. Opening a folder later requires a reload to bind a scope.
+      if (!this.scope) { this.loaded = true; return undefined; }
+      const store = await this.store();
+      const found = store.get(COLLECTION, `workspace-${this.scope}`);
+      if (!found.ok) return fail('session-storage-unavailable');
+      if (!found.found) { this.loaded = true; return undefined; }
+      if (!envelope(found.value, this.scope)) return fail('invalid-session-snapshot');
+      this.revision = found.value.revision;
+      this.loaded = true;
+      return structuredClone(found.value.records);
+    } catch (error) { this.refused = true; throw error; }
+  }
+  save(records: SessionRecord[]): Promise<void> {
+    // Copy before waiting: later registry mutations cannot change what this save means.
+    const snapshot = structuredClone(records);
+    const write = async (): Promise<void> => {
+      if (!this.loaded || this.refused) return fail('session-persistence-blocked');
+      try {
+        if (!validRecords(snapshot)) return fail('invalid-session-snapshot');
+        const store = await this.store();
+        const scope = this.scope!;
+        const id = `workspace-${scope}`;
+        const result = store.transact((tx) => {
+          const old = tx.get(COLLECTION, id);
+          if (old !== null && !envelope(old, scope)) return { rejected: 'invalid-session-snapshot' };
+          if ((old?.revision ?? null) !== this.revision) return { rejected: 'session-snapshot-conflict' };
+          const revision = (this.revision ?? 0) + 1;
+          tx.put(COLLECTION, id, { scope, revision, records: snapshot });
+          return { revision };
+        });
+        if (!result?.ok) return fail('session-storage-unavailable');
+        if (result.value.rejected) return fail(result.value.rejected);
+        this.revision = result.value.revision;
+      } catch (error) { this.refused = true; throw error; }
+    };
+    const pending = this.queue.then(write);
+    this.queue = pending.catch(() => {});
+    return pending;
+  }
+}
