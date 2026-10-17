@@ -1,7 +1,59 @@
 import * as vscode from 'vscode';
-import { parsePlan, PlanSection, PlanTask } from './parser';
+import { parsePlan, PlanSection, PlanTask, PlanReportLink } from './parser';
 import { OVERVIEW_VIEW } from '../overview/overviewView';
 import { REPORT_COMMANDS } from '../reports/reportsView';
+import { WorktreeService } from '../projects/worktrees';
+import { githubReaderFor } from '../github/githubCommands';
+
+const { describeEvidence } = require('./evidence') as {
+  describeEvidence(input: { field: 'dependency' | 'evidence'; done: boolean; kind: 'issue' | 'pullRequest'; live: unknown }): { state: string; conflict: boolean };
+};
+
+export interface PlanEvidenceReader {
+  getIssue(number: number): Promise<{ kind: string; data?: { state: string } }>;
+  getPullRequest(number: number): Promise<{ kind: string; data?: { state: string; merged: boolean; draft: boolean } }>;
+}
+export interface PlanEvidenceDeps {
+  repository(): Promise<string | null>;
+  readerFor(repository: string): PlanEvidenceReader | null;
+  now(): Date;
+}
+const realPlanEvidenceDeps: PlanEvidenceDeps = {
+  async repository() {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !vscode.workspace.isTrusted) return null;
+    try {
+      const project = await WorktreeService.open(folder.uri.fsPath);
+      const name = typeof project.githubRepository === 'string' ? project.githubRepository.replace(/^github\.com\//i, '') : null;
+      return name && /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(name) ? name : null;
+    } catch {
+      return null;
+    }
+  },
+  readerFor: (repository) => githubReaderFor(repository) as unknown as PlanEvidenceReader | null,
+  now: () => new Date()
+};
+let planEvidenceDeps: PlanEvidenceDeps = realPlanEvidenceDeps;
+/** Replaces where live Issue/PR state is read from. Only the Extension Host test does this. */
+export function setPlanEvidenceDepsForTests(next: PlanEvidenceDeps | undefined): void { planEvidenceDeps = next ?? realPlanEvidenceDeps; }
+
+/**
+ * The live state of one Core Plan reference, read only when its TODO is expanded (never for every
+ * TODO at once). A read that fails, or a project with no connected GitHub repository, is unknown:
+ * it never promotes a dependency into a conflict, and it never clears one either.
+ */
+async function planEvidenceStatus(task: PlanTask, link: PlanReportLink): Promise<{ state: string; conflict: boolean; readAt: string | null }> {
+  const repository = await planEvidenceDeps.repository();
+  const reader = repository ? planEvidenceDeps.readerFor(repository) : null;
+  if (!reader) return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live: null }), readAt: null };
+  try {
+    const result = link.kind === 'issue' ? await reader.getIssue(link.number) : await reader.getPullRequest(link.number);
+    const live = result.kind === 'ok' ? result.data ?? null : null;
+    return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live }), readAt: live ? planEvidenceDeps.now().toISOString() : null };
+  } catch {
+    return { ...describeEvidence({ field: link.field, done: task.done, kind: link.kind, live: null }), readAt: null };
+  }
+}
 
 export const PLAN_VIEW = 'multiagentSystem.planView';
 export const PLAN_COMMANDS = {
@@ -47,11 +99,17 @@ class TaskNode extends vscode.TreeItem {
   }
 }
 class ReportNode extends vscode.TreeItem {
-  constructor(kind: 'issue' | 'pullRequest', number: number) {
+  constructor(kind: 'issue' | 'pullRequest', number: number, field: 'dependency' | 'evidence', status: { state: string; conflict: boolean; readAt: string | null }) {
     super(`${kind === 'issue' ? 'Issue' : 'PR'} #${number}`, vscode.TreeItemCollapsibleState.None);
-    this.description = 'Read report';
-    this.tooltip = 'Read the GitHub report inside this editor. This link does not certify that the TODO is complete.';
-    this.iconPath = new vscode.ThemeIcon(kind === 'issue' ? 'issues' : 'git-pull-request');
+    const fieldWord = field === 'evidence' ? 'delivery acceptance evidence' : 'dependency (informational only)';
+    this.description = status.conflict ? `⚠ ${status.state}: needs human review` : status.state;
+    this.tooltip = [
+      `${fieldWord}, live state: ${status.state}${status.readAt ? ` (read ${status.readAt})` : ' (not read: no connected GitHub repository, or the read failed)'}.`,
+      status.conflict
+        ? 'The checkbox and this live state disagree. Nothing was changed automatically: decide and edit the plan yourself.'
+        : 'Read the GitHub report inside this editor. This link does not certify that the TODO is complete.'
+    ].join(' ');
+    this.iconPath = new vscode.ThemeIcon(status.conflict ? 'warning' : kind === 'issue' ? 'issues' : 'git-pull-request');
     this.command = { command: REPORT_COMMANDS.open, title: 'Read linked report', arguments: [{ kind, number }] };
   }
 }
@@ -75,9 +133,13 @@ class PlanTree implements vscode.TreeDataProvider<Node> {
   getTreeItem(node: Node): vscode.TreeItem { return node; }
   async getChildren(node?: Node): Promise<Node[]> {
     if (node instanceof SectionNode) return node.visibleTasks.map((task) => new TaskNode(task));
-    if (node instanceof TaskNode) return node.task.reports.length
-      ? node.task.reports.map((link) => new ReportNode(link.kind, link.number))
-      : [new MessageNode('待連結：在依賴／證據欄位加入 Issue #12 或 PR #7。')];
+    if (node instanceof TaskNode) {
+      if (!node.task.reports.length) return [new MessageNode('待連結：在依賴／證據欄位加入 Issue #12 或 PR #7。')];
+      // Fetched only now, for this one task's own (typically one or two) links, never for every
+      // TODO in the plan at once: expanding one TODO must not fan out a request per every TODO.
+      const statuses = await Promise.all(node.task.reports.map((link) => planEvidenceStatus(node.task, link)));
+      return node.task.reports.map((link, index) => new ReportNode(link.kind, link.number, link.field, statuses[index]));
+    }
     if (node) return [];
     const uri = planUri();
     if (!uri) return [new MessageNode('Open a project folder to read its core plan.')];
