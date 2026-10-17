@@ -46,10 +46,12 @@ function useStore(opened: any): Store | null { return opened?.ok && opened.store
 export async function configurePublicFeedback(): Promise<{ ok: boolean; code?: string }> {
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
+  const repo = await hooks.repository();
+  if (!repo || !REPOSITORY.test(repo)) return { ok: false, code: 'no-workspace-repository' };
   const auth = await hooks.session(true); if (!auth) return { ok: false, code: 'github-sign-in-required' };
   const user = await hooks.user(auth); if (!user) return { ok: false, code: 'github-identity-unverified' };
-  if (!await hooks.confirm(`Allow the signed-in GitHub user ${user.login} to publish report feedback as this machine's PM?`, 'Configure PM publisher')) return { ok: false, code: 'cancelled' };
-  const saved = store.put(COLLECTION, POLICY_ID, { kind: 'public-feedback-publisher-v1', actorId: String(user.id), login: user.login, configuredAt: new Date().toISOString() });
+  if (!await hooks.confirm(`Allow the signed-in GitHub user ${user.login} to publish report feedback as this machine's PM for ${repo}?`, 'Configure PM publisher')) return { ok: false, code: 'cancelled' };
+  const saved = store.put(COLLECTION, POLICY_ID, { kind: 'public-feedback-publisher-v1', repository: repo, actorId: String(user.id), login: user.login, configuredAt: new Date().toISOString() });
   return saved?.ok ? { ok: true } : { ok: false, code: 'private-storage-unavailable' };
 }
 
@@ -71,17 +73,20 @@ export async function readMergeAuthority(): Promise<MergeAuthorityMode | 'unread
 export async function configureMergeAuthority(input?: { mode?: unknown; interactive?: boolean }): Promise<{ ok: boolean; mode?: MergeAuthorityMode; code?: string }> {
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
+  const repo = await hooks.repository();
+  if (!repo || !REPOSITORY.test(repo)) return { ok: false, code: 'no-workspace-repository' };
   const current = mergeAuthorityOf(store);
-  const picked = input?.interactive === false ? input.mode : (input?.mode !== undefined ? input.mode : await hooks.pickMergeAuthority(current === 'pm' ? 'pm' : 'human'));
+  const allowBypass = testMode && input?.interactive === false;
+  const picked = allowBypass ? input?.mode : (input?.mode !== undefined && allowBypass ? input.mode : await hooks.pickMergeAuthority(current === 'pm' ? 'pm' : 'human'));
   if (picked === undefined) return { ok: false, code: 'cancelled' };
   if (picked !== 'human' && picked !== 'pm') return { ok: false, code: 'invalid-merge-authority' };
-  if (input?.interactive !== false) {
+  if (!allowBypass) {
     const message = picked === 'pm'
-      ? 'Allow the configured PM publisher to merge pull requests from reports when current-head PM approval, passing CI, resolved threads, branch rules, and publication scans all pass?'
-      : 'Require a human to merge pull requests (default) and refuse PM merge requests from reports?';
+      ? `Allow the configured PM publisher to merge pull requests from reports in ${repo} when current-head PM approval, passing CI, resolved threads, branch rules, and publication scans all pass?`
+      : `Require a human to merge pull requests in ${repo} (default) and refuse PM merge requests from reports?`;
     if (!await hooks.confirm(message, 'Save merge authority')) return { ok: false, code: 'cancelled' };
   }
-  const saved = store.put(COLLECTION, MERGE_POLICY_ID, { kind: 'merge-authority-policy-v1', mode: picked, updatedAt: new Date().toISOString() });
+  const saved = store.put(COLLECTION, MERGE_POLICY_ID, { kind: 'merge-authority-policy-v1', repository: repo, mode: picked, updatedAt: new Date().toISOString() });
   return saved?.ok ? { ok: true, mode: picked } : { ok: false, code: 'private-storage-unavailable' };
 }
 
@@ -278,14 +283,15 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
   if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-sent' };
+  const allowBypass = testMode && input?.interactive === false;
   const initialDraft = old?.status === 'draft' && old.version === target.version && typeof old.body === 'string' ? old.body : '';
-  const body = input?.interactive === false ? input.body : await hooks.prompt(initialDraft);
+  const body = allowBypass ? input?.body : await hooks.prompt(initialDraft);
   if (body === undefined) return { ok: false, code: 'cancelled' };
   if (!plainText(body)) return { ok: false, code: 'invalid-public-feedback' };
   const requestId = old?.status === 'draft' && old.version === target.version && old.body === body && typeof old.requestId === 'string' ? old.requestId : `feedback_${randomBytes(12).toString('hex')}`;
   const draftSaved = store.put(COLLECTION, recordId(target.repository, target.kind, target.number), { kind: 'public-feedback-request-v1', repository: target.repository, targetKind: target.kind, number: target.number, version: target.version, status: 'draft', requestId, body, updatedAt: new Date().toISOString() });
   if (!draftSaved?.ok && draftSaved?.reason !== 'secret-detected') return { ok: false, code: 'private-storage-unavailable' };
-  if (input?.interactive !== false) {
+  if (!allowBypass) {
     const versionInfo = target.kind === 'pullRequest' ? ` (head ${target.version})` : ` (version ${target.version.slice(0, 12)})`;
     if (!await hooks.confirm(`Publish this exact comment to ${target.repository} ${target.kind === 'issue' ? 'Issue' : 'PR'} #${target.number}${versionInfo}?\n\n${body}`, 'Publish public feedback')) return { ok: false, code: 'cancelled' };
   }
@@ -319,18 +325,19 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   const old = previousBy(store, id, 'pr-review-request-v1');
   if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
-  const pickedDecision = input?.interactive === false ? input.decision : (input?.decision !== undefined ? input.decision : await hooks.pickReviewDecision());
+  const allowBypass = testMode && input?.interactive === false;
+  const pickedDecision = allowBypass ? input?.decision : (input?.decision !== undefined && allowBypass ? input.decision : await hooks.pickReviewDecision());
   if (pickedDecision === undefined) return { ok: false, code: 'cancelled' };
   if (pickedDecision !== 'approve' && pickedDecision !== 'request_changes' && pickedDecision !== 'comment') return { ok: false, code: 'invalid-review-decision' };
   if (old?.status === 'done' && old.version === target.version && old.decision === pickedDecision) return { ok: true, code: 'already-reviewed' };
   const initialDraft = old?.status === 'draft' && old.version === target.version && typeof old.body === 'string' ? old.body : '';
-  const body = input?.interactive === false ? input.body : (input?.body !== undefined ? input.body : await hooks.promptReview(initialDraft, pickedDecision));
+  const body = allowBypass ? input?.body : (input?.body !== undefined && allowBypass ? input.body : await hooks.promptReview(initialDraft, pickedDecision));
   if (body === undefined) return { ok: false, code: 'cancelled' };
   if (!plainText(body)) return { ok: false, code: 'invalid-review-body' };
   const requestId = old?.status === 'draft' && old.version === target.version && old.decision === pickedDecision && old.body === body && typeof old.requestId === 'string' ? old.requestId : `review_${randomBytes(12).toString('hex')}`;
   const draftSaved = store.put(COLLECTION, id, { kind: 'pr-review-request-v1', repository: target.repository, number: target.number, version: target.version, decision: pickedDecision, status: 'draft', requestId, body, updatedAt: new Date().toISOString() });
   if (!draftSaved?.ok && draftSaved?.reason !== 'secret-detected') return { ok: false, code: 'private-storage-unavailable' };
-  if (input?.interactive !== false) {
+  if (!allowBypass) {
     if (!await hooks.confirm(`Submit formal GitHub review (${pickedDecision}) to ${target.repository} PR #${target.number} (head ${target.version})?\n\n${body}`, 'Submit formal review')) return { ok: false, code: 'cancelled' };
   }
   if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };
@@ -380,7 +387,8 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
   if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
   if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-merged' };
-  if (authority === 'pm' && input?.interactive !== false) {
+  const allowBypass = testMode && input?.interactive === false;
+  if (authority === 'pm' && !allowBypass) {
     if (!await hooks.confirm(`Merge ${target.repository} PR #${target.number} (head ${target.version}) after verifying current-head PM approval, passing CI, resolved threads, supported branch rules, and publication scan?`, 'Merge pull request')) return { ok: false, code: 'cancelled' };
   }
   if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };

@@ -77,7 +77,8 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
   };
 
   const reviewAndConsent = async (arg?: { serverId?: string; interactive?: boolean }) => {
-    const interactive = arg?.interactive !== false;
+    const isTest = context.extensionMode === vscode.ExtensionMode.Test;
+    const interactive = isTest ? (arg?.interactive !== false) : true;
     let serverId = arg?.serverId;
 
     if (!serverId && interactive) {
@@ -159,7 +160,8 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
   };
 
   const revoke = async (arg?: { serverId?: string; interactive?: boolean }) => {
-    const interactive = arg?.interactive !== false;
+    const isTest = context.extensionMode === vscode.ExtensionMode.Test;
+    const interactive = isTest ? (arg?.interactive !== false) : true;
     let serverId = arg?.serverId;
 
     const store = await getPrivateStore();
