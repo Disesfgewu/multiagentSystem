@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { LAYERS, byCodeUnit, resolveRules } = require('../memory/rules');
 const { isPlainObject, label, validateRuleList } = require('./rule-input');
 const { TOOLS, validateRoleGroup } = require('./role-group');
+const { evaluateMcpTools, formatMcpLines } = require('./mcp-evaluation');
 
 // The layers a caller supplies. The role group's own layer comes from the group,
 // so it cannot be passed in here as well.
@@ -224,6 +225,13 @@ function formatPreview(preview, options = {}) {
       const subject = conflict.tool ? `tool ${conflict.tool}` : `${conflict.rule} (${source(conflict)})`;
       const target = conflict.target ? ` against ${conflict.target} (${source({ layer: conflict.targetLayer, version: conflict.targetVersion })})` : '';
       lines.push(`  - ${conflict.code}: ${subject}${target}`);
+    }
+  }
+  if (options && options.catalog !== undefined) {
+    const evaluation = evaluateMcpTools(options.catalog, options.allowlist, { permissions });
+    const mcpLines = formatMcpLines(evaluation, { bullet: '-' });
+    if (mcpLines.length > 0) {
+      lines.push('', ...mcpLines);
     }
   }
   lines.push('', `Digest: ${preview.digest}`);
