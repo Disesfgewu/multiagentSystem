@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+.github/**
+.agent-artifacts/**
+.agent-eye/**
+.claude/**
+test/**
+out/test/**
+scripts/**
+docs/**
+packages/*/test/**
+**/*.map
+**/*.ts
+tsconfig.json
+*.log
+.DS_Store
