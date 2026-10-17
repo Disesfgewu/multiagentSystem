@@ -399,7 +399,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
               'Reopen as New Session'
             );
             if (answer === 'Reopen as New Session') {
-              return await act('reopen', { id, interactive: true });
+              return await act('reopen', { id, interactive: true, launch: input.launch, acknowledgeUnknown: input.acknowledgeUnknown });
             }
             return { ok: false, code: 'terminal-not-open', message: MESSAGES['terminal-not-open'] };
           }
@@ -425,6 +425,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
             releaseReservation(id);
+            changed.fire();
           } else {
             throw Object.assign(new Error('session-still-open'), { code: 'session-still-open' });
           }

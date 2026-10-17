@@ -120,7 +120,7 @@ async function sessionFlow(workspace: string): Promise<void> {
       }
       return (realShowWarningMessage as any)(message, ...rest);
     }) as typeof vscode.window.showWarningMessage;
-    const focusedClosed = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.focus', { id: b.session?.id, interactive: true });
+    const focusedClosed = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.focus', { id: b.session?.id, interactive: true, launch: false });
     assert.equal(focusedClosed.ok, true, 'focusing a closed session interactively and choosing Reopen as New Session reopens it');
     assert.notEqual(focusedClosed.session?.id, b.session?.id, 'reopened session has a new id');
     assert.equal(focusedClosed.session?.terminalOpen, true);
