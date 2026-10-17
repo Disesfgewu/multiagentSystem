@@ -77,11 +77,17 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
   return commit(confirmOnly ? 'confirm' : 'override');
 }
 
+export interface CurrentGate {
+  action: 'allow' | 'warn' | 'confirm' | 'block';
+  line: string;
+  reason?: string;
+}
+
 /** What starting a new agent on this account would do right now: `null` when no policy is stored (so
  *  nothing is held back), or the plain action a real launch's gate would take at this instant. Reads
  *  the same dispatcher a real launch commits to, so this can never show a result a real launch
  *  couldn't reach; it only reports and never itself reserves a slot. */
-export async function currentGateState(accountProfileId: string, sessions: () => SessionUse[]): Promise<{ action: 'allow' | 'warn' | 'confirm' | 'block'; line: string } | null> {
+export async function currentGateState(accountProfileId: string, sessions: () => SessionUse[]): Promise<CurrentGate | null> {
   const accounts = await accountService(sessions);
   const policyRead = accounts.ok ? loadPolicy(accounts.store, accountProfileId) : { ok: false };
   if (!policyRead.ok || policyRead.stored !== true) return null;
@@ -89,7 +95,7 @@ export async function currentGateState(accountProfileId: string, sessions: () =>
   const now = new Date();
   const running = dispatcher.running(accountProfileId);
   const decision = gateLaunch({ policyRead, observations, now, running });
-  return { action: decision.action, line: describeCurrentState(decision) };
+  return { action: decision.action, line: describeCurrentState(decision), reason: decision.lines[0] };
 }
 
 /** Lines for the account details: the limits, what is known about usage, and whether a new agent on

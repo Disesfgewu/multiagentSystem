@@ -170,7 +170,12 @@ export function accountTreeForTests(): vscode.TreeDataProvider<AccountTreeItem> 
 }
 
 function selectedId(value: unknown): string | undefined {
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value : undefined;
+  const candidate = typeof value === 'string'
+    ? value
+    : value && typeof value === 'object' && 'id' in value && typeof (value as { id: unknown }).id === 'string'
+      ? (value as { id: string }).id
+      : undefined;
+  return candidate && /^[A-Za-z0-9_-]{1,80}$/.test(candidate) ? candidate : undefined;
 }
 
 async function chooseProfile(provider?: string): Promise<any | undefined> {

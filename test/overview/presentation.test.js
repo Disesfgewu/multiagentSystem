@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildOverview } = require('../../src/overview/model');
-const { presentAgent, onboardingSteps, guideVisible, countRunningAgents, STATE_TEXT } = require('../../src/overview/presentation');
+const { presentAgent, presentAccount, onboardingSteps, guideVisible, countRunningAgents, STATE_TEXT } = require('../../src/overview/presentation');
 
 const session = (over = {}) => ({ id: 's1', roleGroupId: 'worker', accountProfileId: 'a1', worktree: '/private/place/wt', state: 'terminal-open', observedAt: null, ...over });
 const account = (over = {}) => ({ id: 'a1', provider: 'claude', label: { value: 'Main' }, health: 'ready', verifiedIdentity: { state: 'unknown' }, issues: [], ...over });
@@ -189,3 +189,95 @@ test('a known role group says its rules are not sent yet, and an unknown one add
   assert.match(view().tooltip.join('\n'), /not sent to the CLI yet, so editing it does not change what an agent that is already started was told/);
   assert.equal(presentAgent(row({ roleGroupId: 'nobody' }), { name: 'A' }).tooltip.join('\n').includes('not sent to the CLI yet'), false);
 });
+
+test('presentAccount formats blocked, confirming, warning, and normal accounts with honest status and actionable remedies', () => {
+  const base = {
+    id: 'prof-1',
+    label: 'Main Claude',
+    provider: 'Claude Code',
+    policy: 'Limits: at most 1 running at once; if usage is unknown, ask first.',
+    usage: ['Usage: unknown. No verified usage source is connected for this account, so no percentage is shown.']
+  };
+
+  // Blocked state: concurrency limit or quota exceeded
+  const blocked = presentAccount({
+    ...base,
+    gate: {
+      action: 'block',
+      line: 'Right now: a new agent would be held back. 1 agent is already running on this account, and the limit is 1. Use Set Account Limits to change this.',
+      reason: '1 agent is already running on this account, and the limit is 1.'
+    }
+  });
+  assert.equal(blocked.id, 'prof-1');
+  assert.equal(blocked.label, 'Main Claude');
+  assert.equal(blocked.icon, 'circle-slash');
+  assert.equal(blocked.contextValue, 'multiagentOverviewAccountBlocked');
+  assert.equal(blocked.gateAction, 'block');
+  assert.equal(blocked.blockedReason, '1 agent is already running on this account, and the limit is 1.');
+  assert.match(blocked.description, /^Claude Code · BLOCKED NOW: 1 agent is already running on this account, and the limit is 1\. · Limits: /);
+  assert.match(blocked.tooltip.join('\n'), /Status: BLOCKED NOW \(1 agent is already running on this account, and the limit is 1\.\)/);
+  assert.match(blocked.tooltip.join('\n'), /Action: Click Set Account Limits to change limits, or close active sessions\./);
+
+  // Confirm state: usage unknown, confirm required
+  const confirm = presentAccount({
+    ...base,
+    gate: {
+      action: 'confirm',
+      line: 'Right now: a new agent would need your confirmation. No verified, current usage reading is available for this account, and your setting is "ask me first". Use Set Account Limits to change this.',
+      reason: 'No verified, current usage reading is available for this account, and your setting is "ask me first".'
+    }
+  });
+  assert.equal(confirm.icon, 'question');
+  assert.equal(confirm.contextValue, 'multiagentOverviewAccountConfirm');
+  assert.equal(confirm.gateAction, 'confirm');
+  assert.equal(confirm.blockedReason, null);
+  assert.match(confirm.description, /^Claude Code · needs confirmation: No verified, current usage reading/);
+  assert.match(confirm.tooltip.join('\n'), /Status: Needs confirmation/);
+  assert.match(confirm.tooltip.join('\n'), /Action: Click Set Account Limits to change limits, or confirm when starting\./);
+
+  // Warning state: warning threshold reached
+  const warn = presentAccount({
+    ...base,
+    gate: {
+      action: 'warn',
+      line: 'Right now: a new agent would start with a warning. A usage window (five_hour) reported 75% used, above your warning level.',
+      reason: 'A usage window (five_hour) reported 75% used, above your warning level.'
+    }
+  });
+  assert.equal(warn.icon, 'warning');
+  assert.equal(warn.contextValue, 'multiagentOverviewAccountWarn');
+  assert.equal(warn.gateAction, 'warn');
+  assert.match(warn.description, /^Claude Code · near limit: A usage window/);
+  assert.match(warn.tooltip.join('\n'), /Status: Near limit/);
+
+  // Normal allow state (no gate, or allow action)
+  const allowed = presentAccount(base);
+  assert.equal(allowed.icon, 'account');
+  assert.equal(allowed.contextValue, 'multiagentOverviewAccount');
+  assert.equal(allowed.gateAction, 'allow');
+  assert.equal(allowed.blockedReason, null);
+  assert.match(allowed.description, /^Claude Code · Usage: unknown.* · Limits: /);
+  assert.equal(allowed.tooltip.some((t) => t.includes('Status: BLOCKED NOW')), false);
+
+  // Fallbacks and hostile inputs
+  const fallback = presentAccount({ id: null, label: '', provider: '', policy: '', usage: null, gate: null });
+  assert.equal(fallback.id, '');
+  assert.equal(fallback.label, 'Account');
+  assert.equal(fallback.icon, 'account');
+  assert.equal(fallback.contextValue, 'multiagentOverviewAccount');
+  assert.match(fallback.description, /Provider unknown · Usage: unknown\. · Limits: could not be read\./);
+
+  const hostile = presentAccount({
+    id: 'prof-2',
+    label: 'Evil\u202EOverride\nLabel',
+    provider: 'Codex\u0000CLI',
+    policy: 'Limits: none set.',
+    usage: [],
+    gate: { action: 'block', reason: 'Blocked\u202Ereason\r\nhere' }
+  });
+  assert.equal(hostile.label.includes('\u202E'), false);
+  assert.equal(hostile.description.includes('\u202E'), false);
+  assert.equal(hostile.description.includes('\n'), false);
+  assert.equal(hostile.description.includes('\r'), false);
+});
+
