@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { observe } = require('../../src/accounts/observation');
-const { gateLaunch, commitDispatch, describePolicy, describeQuota, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
+const { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
 const { QuotaDispatcher } = require('../../src/accounts/quota-policy');
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
@@ -119,6 +119,21 @@ test('usage is unknown when no verified source exists, and a reading is shown wi
   const hostile = describeQuota([reading('safe', 10, { source: 'evil\u202E\ncommand' })], NOW)[0];
   assert.equal(hostile.includes('\u202E'), false);
   assert.equal(hostile.includes('\n'), false);
+});
+
+test('describeCurrentState names exactly what starting a new agent would do, for every gate action, with a pointer to Set Account Limits whenever it is not a plain allow', () => {
+  assert.equal(describeCurrentState(gate()), 'Right now: a new agent on this account would start.');
+  const warned = gate({ observations: [reading('five_hour', 80)] });
+  assert.match(describeCurrentState(warned), /^Right now: a new agent would start with a warning\. .+above your warning level/);
+  assert.equal(/Set Account Limits/.test(describeCurrentState(warned)), false, 'a warning still starts the agent, so there is nothing to change yet');
+  const confirming = gateLaunch({ policyRead: stored({ unknownQuota: 'require-confirmation' }), observations: [], now: NOW, running: 0 });
+  assert.equal(confirming.action, 'confirm');
+  assert.match(describeCurrentState(confirming), /^Right now: a new agent would need your confirmation\. .+Use Set Account Limits to change this\.$/);
+  const blocked = gate({ running: 0, observations: [reading('five_hour', 95)] });
+  assert.equal(blocked.action, 'block');
+  assert.match(describeCurrentState(blocked), /^Right now: a new agent would be held back\. .+at or above your pause level.+Use Set Account Limits to change this\.$/);
+  const unreadable = gateLaunch({ policyRead: { ok: false }, observations: [], now: NOW, running: 0 });
+  assert.match(describeCurrentState(unreadable), /^Right now: a new agent would be held back\. .+could not be read.+Use Set Account Limits to change this\.$/);
 });
 
 test('what a person types becomes a policy, or a list of plain problems', () => {

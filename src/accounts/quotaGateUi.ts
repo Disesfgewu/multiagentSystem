@@ -6,11 +6,12 @@ const { loadPolicy, savePolicy, QuotaDispatcher } = require('./quota-policy') as
   savePolicy(store: unknown, id: string, input: unknown): { ok: boolean; reason?: string; problems?: string[] };
   QuotaDispatcher: new () => { running(accountKey: string): number };
 };
-const { gateLaunch, commitDispatch, describePolicy, describeQuota, policyFromInput } = require('./quota-gate') as {
+const { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput } = require('./quota-gate') as {
   gateLaunch(input: Record<string, unknown>): { action: 'allow' | 'warn' | 'confirm' | 'block'; allowed: boolean; overridable: boolean; lines: string[]; note: string | null; reasons: Array<{ code: string }> };
   commitDispatch(input: Record<string, unknown>): { ok: true; release: () => void } | { ok: false; code: string; message: string };
   describePolicy(read: unknown): string;
   describeQuota(observations: unknown[], now: Date): string[];
+  describeCurrentState(decision: { action: string; lines: string[] }): string;
   policyFromInput(input: Record<string, unknown>): { ok: boolean; policy?: Record<string, unknown>; problems: string[] };
 };
 
@@ -69,11 +70,30 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
   return commit(confirmOnly ? 'confirm' : 'override');
 }
 
-/** Lines for the account details: the limits and what is known about usage. */
+/** What starting a new agent on this account would do right now: `null` when no policy is stored (so
+ *  nothing is held back), or the plain action a real launch's gate would take at this instant. Reads
+ *  the same dispatcher a real launch commits to, so this can never show a result a real launch
+ *  couldn't reach; it only reports and never itself reserves a slot. */
+export async function currentGateState(accountProfileId: string, sessions: () => SessionUse[]): Promise<{ action: 'allow' | 'warn' | 'confirm' | 'block'; line: string } | null> {
+  const accounts = await accountService(sessions);
+  const policyRead = accounts.ok ? loadPolicy(accounts.store, accountProfileId) : { ok: false };
+  if (!policyRead.ok || policyRead.stored !== true) return null;
+  const observations = quotaObservations(accountProfileId);
+  const now = new Date();
+  const running = dispatcher.running(accountProfileId);
+  const decision = gateLaunch({ policyRead, observations, now, running });
+  return { action: decision.action, line: describeCurrentState(decision) };
+}
+
+/** Lines for the account details: the limits, what is known about usage, and whether a new agent on
+ *  this account would actually be allowed to start right now. */
 export async function limitLines(accountProfileId: string, sessions: () => SessionUse[]): Promise<string[]> {
   const accounts = await accountService(sessions);
   const policyRead = accounts.ok ? loadPolicy(accounts.store, accountProfileId) : { ok: false };
-  return [describePolicy(policyRead), ...describeQuota(quotaObservations(accountProfileId), new Date())];
+  const lines = [describePolicy(policyRead), ...describeQuota(quotaObservations(accountProfileId), new Date())];
+  const current = await currentGateState(accountProfileId, sessions);
+  if (current) lines.push(current.line);
+  return lines;
 }
 
 /** Lets the person set the limits for one account. `input` is used instead of asking when given (tests). */

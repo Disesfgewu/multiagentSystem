@@ -107,6 +107,23 @@ function describeQuota(observations, now) {
 
 const safeDetail = (value, max) => typeof value === 'string' ? Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('') : '';
 
+/**
+ * What starting a new agent on this account would do right now, in plain words, with a pointer to
+ * the one action (Set Account Limits) that can change it. Takes a `gateLaunch` result directly, so a
+ * caller computes the decision once and can both act on it and describe it from the same object; this
+ * never re-decides anything on its own.
+ *
+ * @param {{ action: 'allow'|'warn'|'confirm'|'block', lines: string[] }} decision
+ * @returns {string}
+ */
+function describeCurrentState(decision) {
+  const reason = decision.lines[0];
+  if (decision.action === 'allow') return 'Right now: a new agent on this account would start.';
+  if (decision.action === 'warn') return `Right now: a new agent would start with a warning. ${reason ?? ''}`.trim();
+  if (decision.action === 'confirm') return `Right now: a new agent would need your confirmation. ${reason ?? ''} Use Set Account Limits to change this.`.trim();
+  return `Right now: a new agent would be held back. ${reason ?? ''} Use Set Account Limits to change this.`.trim();
+}
+
 /** Turns what a person typed into a stored policy, or the problems in plain words. */
 function policyFromInput({ warn, block, max, unknownQuota }) {
   const number = (text) => (typeof text === 'string' && text.trim() !== '' ? Number(text.trim()) : undefined);
@@ -128,4 +145,4 @@ function policyFromInput({ warn, block, max, unknownQuota }) {
   return { ok: false, problems: checked.problems.map((code) => words[code] ?? 'The limits are not valid.') };
 }
 
-module.exports = { gateLaunch, commitDispatch, describePolicy, describeQuota, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };
+module.exports = { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };
