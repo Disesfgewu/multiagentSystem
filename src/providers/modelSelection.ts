@@ -10,7 +10,7 @@ export function supportsModelSelection(provider: string): boolean { return PROVI
 export function normalizeRequestedModel(provider: string, value: unknown): string | null {
   if (value === undefined || value === null) return null;
   if (!supportsModelSelection(provider)) throw Object.assign(new Error('This provider has no verified model selection flag.'), { code: 'model-selection-unsupported' });
-  if (typeof value !== 'string' || !MODEL.test(value)) throw Object.assign(new Error('Use a model ID of 1–128 letters, digits, dots, underscores, colons, slashes or hyphens, starting with a letter or digit.'), { code: 'invalid-model' });
+  if (typeof value !== 'string' || MODEL.exec(value)?.[0] !== value) throw Object.assign(new Error('Use a model ID of 1–128 letters, digits, dots, underscores, colons, slashes or hyphens, starting with a letter or digit.'), { code: 'invalid-model' });
   return value;
 }
 

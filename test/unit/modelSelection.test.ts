@@ -17,7 +17,7 @@ test('documented providers request one model argument; no request preserves CLI 
 });
 
 test('model identifiers cannot inject shell syntax or CLI options', () => {
-  for (const value of ['', ' ', ' model', 'model ', '--yolo', '-m', 'model;echo', 'model&echo', 'model|echo', '$(echo)', '`echo`', '$MODEL', 'model\nother', 'model\u202E', 'model[1m]', 'a'.repeat(129), 7, {}, []]) {
+  for (const value of ['', ' ', ' model', 'model ', '--yolo', '-m', 'model;echo', 'model&echo', 'model|echo', '$(echo)', '`echo`', '$MODEL', 'model\nother', 'model\n', 'model\r', 'model\r\n', 'model\u202E', 'model[1m]', 'a'.repeat(129), 7, {}, []]) {
     assert.throws(() => normalizeRequestedModel('claude', value), { code: 'invalid-model' }, String(value));
   }
 });
