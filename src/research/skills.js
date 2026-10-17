@@ -214,11 +214,15 @@ function loadResearchSkills(options = {}) {
       try {
         const full = path.join(options.workspaceRoot, suspect);
         if (fileExists(full)) {
-          warnings.push('workspace-skill-override-forbidden');
+          if (!warnings.includes('workspace-skill-override-forbidden')) {
+            warnings.push('workspace-skill-override-forbidden');
+          }
           break;
         }
       } catch {
-        // ignore probe error
+        if (!warnings.includes('workspace-skill-probe-failed')) {
+          warnings.push('workspace-skill-probe-failed');
+        }
       }
     }
   }

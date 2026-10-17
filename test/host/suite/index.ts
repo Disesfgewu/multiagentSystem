@@ -531,7 +531,31 @@ async function researchFlow(workspace: string): Promise<void> {
   assert.equal(hallucinatedOutcome.ok, false);
   assert.equal(hallucinatedOutcome.code, 'hallucinated-citation-detected');
 
-  console.log('host smoke: research skills and academic ethics guard enforce reviewed skills, workspace override defense, and citation provenance');
+  // 3. Researcher role group virtual preview surfaces Approved research skills and Academic ethics requirements
+  const savedResearcher = await saveRoleRecord({
+    group: {
+      id: 'host-researcher',
+      name: 'Host Researcher',
+      role: 'researcher',
+      provider: 'claude',
+      version: 1,
+      defaultAccountProfileId: null,
+      allowedScope: { repositories: [], paths: [] },
+      toolPermissions: {},
+      memoryScope: { mode: 'off' },
+      rules: [{ id: 'host-researcher-rule', type: 'instruction', text: 'Verify citations against primary identifiers.', version: 1 }]
+    },
+    layers: {}
+  } as Parameters<typeof saveRoleRecord>[0]);
+  assert.equal(savedResearcher.ok, true, savedResearcher.reason);
+  const researcherPreviewDoc = await vscode.workspace.openTextDocument(previewUri('host-researcher'));
+  const researcherPreviewText = researcherPreviewDoc.getText();
+  assert.match(researcherPreviewText, /Approved research skills:/, 'researcher virtual preview includes approved research skills section');
+  assert.match(researcherPreviewText, /Paper Search & Screening/, 'researcher virtual preview lists built-in skills');
+  assert.match(researcherPreviewText, /Academic ethics requirements:/, 'researcher virtual preview includes academic ethics requirements section');
+  assert.match(researcherPreviewText, /Citation Provenance/, 'researcher virtual preview lists academic ethics rules');
+
+  console.log('host smoke: research skills and academic ethics guard enforce reviewed skills, workspace override defense, citation provenance, and researcher virtual preview');
 }
 
 async function agyFlow(workspace: string): Promise<void> {

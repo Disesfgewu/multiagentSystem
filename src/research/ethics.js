@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { scanPublication } = require('../publish/scan');
+const { isToolRecord, isAuthenticFinding } = require('./finding');
 
 // Academic Ethics Guard: verifiable integrity and safety checks for research deliverables (#61, #107).
 //
@@ -67,13 +68,20 @@ function validateFindingEthics(finding, options = {}) {
   const problems = [];
   const warnings = [];
 
-  // 1. Provenance: must have a tool-returned record
-  if (!isPlain(finding.record) || typeof finding.record.serverId !== 'string') {
+  // 1. Provenance: must have a genuine tool-returned record from `fromToolRecord`
+  if (!isPlain(finding.record) || !isToolRecord(finding.record)) {
     problems.push({ code: 'hallucinated-citation-detected', message: 'Finding lacks authentic tool record.' });
   } else {
-    // If source identifier is missing, cannot claim verified
-    if (!finding.record.identifier && finding.verification === 'verified') {
-      problems.push({ code: 'unverified-citation-claimed-verified', message: 'Finding with no identifier cannot be verified.' });
+    // If verification is claimed 'verified', it must be an authentic finding from `withVerification`
+    // and have both identifier and publishedAt.
+    if (
+      finding.verification === 'verified' &&
+      (!isAuthenticFinding(finding) || !finding.record.identifier || !finding.record.publishedAt)
+    ) {
+      problems.push({
+        code: 'unverified-citation-claimed-verified',
+        message: 'Finding cannot claim verified status without authentic verification, identifier, and publication date.'
+      });
     }
     // Warn if preprint
     if (finding.record.sourceType === 'preprint') {
@@ -115,7 +123,16 @@ function validateFindingEthics(finding, options = {}) {
     }
   }
 
-  // 4. Literature injection detection
+  // 4. Untrusted literature isolation & prompt injection detection
+  // External literature and research findings are untrusted data and can NEVER be elevated
+  // into instructions or system-rules, regardless of whether regex patterns match.
+  if (options.target === 'instructions' || options.target === 'system-rules') {
+    problems.push({
+      code: 'untrusted-instruction-elevation-forbidden',
+      message: 'External literature and research findings are untrusted data and cannot be elevated into system instructions or rules.'
+    });
+  }
+
   const textFields = [
     finding.claim,
     finding.record?.title,
@@ -127,14 +144,7 @@ function validateFindingEthics(finding, options = {}) {
   for (const field of textFields) {
     const injectionCheck = checkPromptInjection(field);
     if (injectionCheck.hasInjection) {
-      if (options.target === 'instructions' || options.target === 'system-rules') {
-        problems.push({
-          code: 'untrusted-instruction-elevation-forbidden',
-          message: 'Literature text containing prompt injection cannot be elevated into system instructions.'
-        });
-      } else {
-        warnings.push('adversarial-literature-pattern-detected');
-      }
+      warnings.push('adversarial-literature-pattern-detected');
     }
   }
 
@@ -155,9 +165,47 @@ function validateFindingEthics(finding, options = {}) {
  * @param {Function} [options.scan] Optional scan function (defaults to scanPublication)
  */
 function validateResearchDeliverable(deliverable, options = {}) {
-  const findings = Array.isArray(deliverable)
-    ? deliverable
-    : (deliverable && Array.isArray(deliverable.findings) ? deliverable.findings : [deliverable]);
+  let findings;
+  if (Array.isArray(deliverable)) {
+    findings = deliverable;
+  } else if (isPlain(deliverable) && 'findings' in deliverable) {
+    if (!Array.isArray(deliverable.findings)) {
+      return Object.freeze({
+        ok: false,
+        code: 'finding-invalid',
+        findingsCount: 0,
+        verifiedCount: 0,
+        retractedCount: 0,
+        warnings: Object.freeze([]),
+        problems: Object.freeze([{ code: 'finding-invalid', message: 'deliverable.findings must be an array of findings.' }])
+      });
+    }
+    findings = deliverable.findings;
+  } else if (isPlain(deliverable)) {
+    findings = [deliverable];
+  } else {
+    return Object.freeze({
+      ok: false,
+      code: 'finding-invalid',
+      findingsCount: 0,
+      verifiedCount: 0,
+      retractedCount: 0,
+      warnings: Object.freeze([]),
+      problems: Object.freeze([{ code: 'finding-invalid', message: 'Deliverable must be a finding object or a list of findings.' }])
+    });
+  }
+
+  if (findings.length === 0) {
+    return Object.freeze({
+      ok: false,
+      code: 'deliverable-empty',
+      findingsCount: 0,
+      verifiedCount: 0,
+      retractedCount: 0,
+      warnings: Object.freeze([]),
+      problems: Object.freeze([{ code: 'deliverable-empty', message: 'Research deliverable contains no findings.' }])
+    });
+  }
 
   const allProblems = [];
   const allWarnings = [];
@@ -166,6 +214,10 @@ function validateResearchDeliverable(deliverable, options = {}) {
 
   for (let i = 0; i < findings.length; i++) {
     const finding = findings[i];
+    if (!isPlain(finding)) {
+      allProblems.push({ code: 'finding-invalid', message: 'Finding entry must be a plain object.', findingIndex: i });
+      continue;
+    }
     const check = validateFindingEthics(finding, options);
     if (!check.valid) {
       for (const p of check.problems) {
@@ -186,10 +238,18 @@ function validateResearchDeliverable(deliverable, options = {}) {
       rules: options.rules,
       knownValues: options.knownValues
     });
-    if (scanned && (scanned.blocked || (Array.isArray(scanned.findings) && scanned.findings.length > 0))) {
+    if (
+      !isPlain(scanned) ||
+      scanned.status !== 'clear' ||
+      scanned.blocked !== false ||
+      scanned.truncated === true ||
+      (Number.isInteger(scanned.unscanned) && scanned.unscanned > 0) ||
+      !Array.isArray(scanned.findings) ||
+      scanned.findings.length > 0
+    ) {
       allProblems.push({
         code: 'privacy-leak-detected',
-        message: 'Research deliverable contains sensitive tokens, credentials, or internal workspace paths.'
+        message: 'Research deliverable contains sensitive tokens, credentials, internal workspace paths, or incomplete scan result.'
       });
     }
   } catch (err) {

@@ -140,6 +140,18 @@ test('loadResearchSkills without workspace override loads cleanly with zero warn
   assert.deepEqual(loaded.warnings, []);
 });
 
+test('loadResearchSkills reports workspace-skill-probe-failed warning when fileExists throws', () => {
+  const loaded = loadResearchSkills({
+    workspaceRoot: '/some/workspace',
+    fileExists: () => {
+      throw new Error('EACCES: permission denied');
+    }
+  });
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.skills.length, 5);
+  assert.deepEqual(loaded.warnings, ['workspace-skill-probe-failed']);
+});
+
 test('renderSkillsInstructions formats Markdown representation containing all skills and tools', () => {
   const rendered = renderSkillsInstructions();
   assert.match(rendered, /## Approved Research Skills/);
