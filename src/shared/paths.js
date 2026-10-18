@@ -13,8 +13,13 @@ function isStableAbsolute(p, platform, value) {
   return /^([A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+)/.test(value);
 }
 
+// Windows and macOS volumes are case-insensitive by default, so two spellings that differ only in case
+// are the same folder (and cannot be told apart by realpath while neither exists yet). A case-sensitive
+// macOS volume would be treated as having fewer distinct folders: a false conflict, which is the safe way to be wrong.
+const foldsCase = (platform) => platform === 'win32' || platform === 'darwin';
+
 function isSameOrInside(p, platform, candidate, parent) {
-  const fold = (value) => (platform === 'win32' ? value.toLowerCase() : value);
+  const fold = (value) => (foldsCase(platform) ? value.toLowerCase() : value);
   const rel = p.relative(fold(parent), fold(candidate));
   if (rel === '') return true;
   if (rel === '..' || rel.startsWith(`..${p.sep}`)) return false;
