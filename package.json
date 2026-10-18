@@ -87,6 +87,7 @@
         "multiagentSystem.skills.autoInstall": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "Automatically prepare bundled collaboration skills for Claude Code, Codex and OpenCode in trusted local workspaces. Existing skills are preserved. Does not install CLIs or grant permissions."
         }
       }

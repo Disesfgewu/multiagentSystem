@@ -60,12 +60,21 @@ export function registerSkillCommands(context: vscode.ExtensionContext): vscode.
     return result;
   }
 
+  // Only the user's own setting (or the shipped default) decides whether files are written into a
+  // workspace. A repository's .vscode/settings.json must never be able to turn this back on after the
+  // user turned it off, so workspace and folder values are ignored even if a client supplies them.
+  const autoInstallEnabled = (): boolean => {
+    const inspected = vscode.workspace.getConfiguration('multiagentSystem').inspect<boolean>('skills.autoInstall');
+    const value = inspected?.globalValue ?? inspected?.defaultValue ?? true;
+    return value === true;
+  };
+
   const prepare = async (folder: vscode.WorkspaceFolder) => serial(folder.uri.fsPath, async () => {
     const result = await runAutomaticInstall({
       workspaceRoot: folder.uri.fsPath, skillsRoot, store,
       trusted: vscode.workspace.isTrusted,
       local: folder.uri.scheme === 'file',
-      enabled: vscode.workspace.getConfiguration('multiagentSystem', folder.uri).get<boolean>('skills.autoInstall', true)
+      enabled: autoInstallEnabled()
     });
     if (!result.ok) ui.error(`Agent skills preparation failed: ${result.message}`);
     else if (result.written?.length) ui.info(`Prepared ${result.written.length} bundled skill files for Claude Code, Codex and OpenCode. Actual CLI loading is unverified.${result.conflicts?.length ? ` Skipped ${result.conflicts.length} existing files.` : ''}`);
