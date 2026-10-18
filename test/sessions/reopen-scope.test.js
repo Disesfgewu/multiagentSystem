@@ -8,7 +8,7 @@ const path = require('node:path');
 const { worktreeInProject } = require('../../src/sessions/reopenScope');
 
 function world(t) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reopen-scope-')));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'reopen-scope-')));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const folder = path.join(base, 'project');
   const sibling = path.join(base, 'other');
