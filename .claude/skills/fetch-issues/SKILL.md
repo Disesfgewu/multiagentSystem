@@ -12,7 +12,7 @@ gh issue list --state open --limit 60 --json number,title,labels,updatedAt \
 
 Output the list verbatim. Then partition it into three buckets by label only (no re-reading issue bodies yet):
 - `blocked` label → list as-is, do not investigate further unless the user asks.
-- `ready`/`mvp`/`priority` and no recent branch/PR → candidates to assign (check with `git branch -a | grep "issue-<N>"` per candidate, not per whole list).
+- `ready`/`mvp`/`priority` and no recent branch/PR → candidates to assign (check per candidate with `git branch -a | grep -E "issue-<N>([^0-9]|$)"` so issue-1 does not match issue-11).
 - everything else → list as-is.
 
 Do not open individual issue bodies in this skill. That belongs in `resolve-issues` (for closing/triage) or when a human asks about one specific issue.

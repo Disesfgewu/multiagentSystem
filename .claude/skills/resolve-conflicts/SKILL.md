@@ -1,38 +1,40 @@
 ---
 name: resolve-conflicts
-description: Rebase a PR whose sibling merged first (the recurring "stacked PR on an unmerged branch" / merge-conflict pattern in this repo) without burning a full review round-trip. Use instead of re-deriving the rebase steps from scratch each time two PRs collide.
-args: "<PR number>"
+description: Rebase a PR whose sibling merged first (or that was stacked on an unmerged branch) without losing anyone's commits. Use instead of re-deriving the rebase steps each time two PRs collide. Normally the PR author runs this; a reviewer should ask the author rather than resolve and merge their own resolution.
+argument-hint: "<PR number>"
 ---
 
-1. **Confirm it's a real conflict, not a stale UI cache:**
+1. **Confirm it's a real conflict:**
    ```bash
    N=<PR number>
-   gh pr view "$N" --json mergeable,mergeStateStatus,baseRefName,headRefName
+   gh pr view "$N" --json mergeable,mergeStateStatus,baseRefName,headRefName,headRefOid
    ```
-   `mergeable: CONFLICTING` is authoritative; `UNKNOWN` means GitHub hasn't computed it yet, re-check in a minute rather than acting on it.
+   `CONFLICTING` is authoritative; `UNKNOWN` means GitHub hasn't computed it yet — wait and re-check rather than acting.
 
-2. **Isolate, don't touch the shared checkout:**
+2. **If `baseRefName` is not the default branch** (the PR was stacked on another unmerged branch), retarget first, before any rebase — otherwise a squash-merge of the base PR makes this PR show "merged" while its diff never lands:
    ```bash
+   gh pr edit "$N" --base main
+   ```
+
+3. **Work from the remote branch, not a possibly stale local one, in an isolated worktree:**
+   ```bash
+   BR=$(gh pr view "$N" --json headRefName -q .headRefName)
    git fetch origin --prune
-   git worktree add /tmp/claude-conflict-$N "refs/heads/$(gh pr view $N --json headRefName -q .headRefName)" -q
-   cd /tmp/claude-conflict-$N
+   EXPECTED=$(git rev-parse "origin/$BR")          # the head you are about to rewrite
+   git worktree add "/tmp/claude-conflict-$N" "origin/$BR" --detach -q
+   cd "/tmp/claude-conflict-$N"
    git rebase origin/main
    ```
 
-3. **Resolve conflicts keep-both unless one side is clearly dead code**: when both sides added real functionality in the same region, keep both and re-check they compose correctly (don't silently drop a sibling's finished work) — this project has had two incidents of a dependent PR losing its content because of a bad base/rebase.
+4. **Resolve keep-both** unless one side is clearly dead code: when both sides added real functionality in the same region, keep both and check they compose (shared exports, lists, docs tables). Don't silently drop a sibling's finished work.
 
-4. **Re-run tests after rebase, not just a visual diff check:**
+5. **Re-run tests after rebase:** `npm ci --no-audit --no-fund && npm test 2>&1 | tail -30`.
+
+6. **Push only if nobody pushed meanwhile** — pin the lease to the SHA recorded in step 3 so newer author commits are never overwritten:
    ```bash
-   npm test 2>&1 | tail -30
+   git push --force-with-lease="$BR:$EXPECTED" origin "HEAD:$BR"
+   gh pr comment "$N" --body "rebase only：解決與 main 的衝突，重跑測試 <N>/<N> 通過，沒有功能變更。"
    ```
+   If the push is rejected, someone pushed after step 3: start over from step 3.
 
-5. **Push and comment:**
-   ```bash
-   git push --force-with-lease origin HEAD:$(gh pr view $N --json headRefName -q .headRefName)
-   gh pr comment "$N" --body "Rebase only：解決與 main 的衝突，重跑測試 <N>/<N> 通過，沒有功能變更。"
-   ```
-   Say explicitly "rebase only" so reviewers know not to re-review unrelated lines.
-
-6. If the PR was itself opened with `base` pointing at another not-yet-merged PR's branch (not `main`), don't rebase — re-target the base to `main` first (`gh pr edit "$N" --base main`), then rebase; otherwise a squash-merge of the base PR will make this PR show "merged" while its diff never lands on main.
-
-7. Clean up: `git worktree remove /tmp/claude-conflict-$N --force`.
+7. Clean up: `git worktree remove "/tmp/claude-conflict-$N" --force`.
