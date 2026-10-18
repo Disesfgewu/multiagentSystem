@@ -7,6 +7,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { describeStorage } from '../storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../storage/private-store';
 import { observationsFor } from '../accounts/accountCommands';
+import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { diagnose, formatDiagnosticReport } = require('./diagnostics') as {
@@ -476,6 +477,11 @@ export function setupTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
   return active;
 }
 
+/** `force` decides a stale-lock recovery without the dialog; only the extension's own tests may pass it. */
+function withoutForce<T extends { force?: boolean }>(options: T): T {
+  return options.force !== undefined && !isExtensionTestMode() ? { ...options, force: undefined } : options;
+}
+
 export function registerSetup(context: vscode.ExtensionContext): void {
   const controller = new SetupController(context);
   active = controller;
@@ -491,14 +497,17 @@ export function registerSetup(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(SETUP_COMMANDS.retryGh, () => controller.prepareGh(true)),
     vscode.commands.registerCommand(SETUP_COMMANDS.retryCodex, () => controller.prepareCodex(true)),
     vscode.commands.registerCommand(SETUP_COMMANDS.retryClaude, () => controller.prepareClaude(true)),
+    // diagnose only reads and returns a masked report; `interactive: false` just skips opening it.
     vscode.commands.registerCommand(SETUP_COMMANDS.diagnose, (arg?: unknown) =>
       controller.runDiagnostics(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; probeSecrets?: boolean }) : undefined)),
+    // migrate, recover-lock and clear write or delete private storage: outside test mode they always run
+    // interactively, so `confirm` (clear) and `force` (recover-lock) cannot answer the dialog for the person.
     vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) =>
-      controller.migrateStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean }) : undefined)),
+      controller.migrateStorage(arg && typeof arg === 'object' ? requireInteractive(arg as { interactive?: boolean }) : undefined)),
     vscode.commands.registerCommand(SETUP_COMMANDS.recoverStorageLock, (arg?: unknown) =>
-      controller.recoverStorageLock(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; force?: boolean }) : undefined)),
+      controller.recoverStorageLock(arg && typeof arg === 'object' ? withoutForce(requireInteractive(arg as { interactive?: boolean; force?: boolean })) : undefined)),
     vscode.commands.registerCommand(SETUP_COMMANDS.clearStorage, (arg?: unknown) =>
-      controller.clearStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : undefined))
+      controller.clearStorage(arg && typeof arg === 'object' ? requireInteractive(arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : undefined))
   );
   // Extension Host tests install a synthetic archive explicitly. Production activation performs
   // the first-use setup automatically; it never reads a URL or executable from the workspace.

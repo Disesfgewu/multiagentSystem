@@ -12,6 +12,7 @@ import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './ag
 import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
 import { registerSetup } from './setup/setupView';
 import { registerResearchCommands } from './research/researchCommands';
+import { setExtensionTestMode } from './shared/testMode';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
@@ -68,6 +69,9 @@ async function launchAgent(): Promise<void> {
 let sessions: SessionCommands | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  // First, before any command is registered: `interactive: false` and similar arguments are
+  // honoured only in the extension's own tests (see src/shared/testMode.ts).
+  setExtensionTestMode(context.extensionMode === vscode.ExtensionMode.Test);
   registerStorageCommands(context);
   registerSetup(context);
   registerResearchCommands(context);

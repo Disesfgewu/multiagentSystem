@@ -44,6 +44,7 @@ export function registerStorageCommands(context: vscode.ExtensionContext): void 
     vscode.commands.registerCommand(STORAGE_COMMANDS.status, async (value?: unknown): Promise<StorageStatus> => {
       const probeSecrets = Boolean(value && typeof value === 'object' && (value as { probeSecrets?: unknown }).probeSecrets === true);
       const status = await describeStorage(handle as StorageHandle, { probeSecrets });
+      // Read-only status: `interactive: false` only suppresses the notification, so it is not gated.
       if (!(value && typeof value === 'object' && (value as { interactive?: unknown }).interactive === false)) {
         const message = statusMessage(status);
         void (message.level === 'info' ? vscode.window.showInformationMessage(message.text) : vscode.window.showErrorMessage(message.text));

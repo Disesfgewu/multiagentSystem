@@ -130,6 +130,11 @@ export interface GitHubDeps {
  * Options double as the programmatic form of each command. With `interactive: false` no prompt
  * is ever shown and a page is opened only when `open: true`, which is what the Extension Host
  * smoke test uses. Nothing in here can select the transport or the credential.
+ *
+ * `interactive: false` is accepted outside test mode on purpose: every command here only reads
+ * (GET requests and one fixed GraphQL query) or opens an https github.com page, and none of them
+ * has a confirmation that the flag could skip. Non-interactive calls show less, never more: no
+ * picker, and a page is opened only with `open: true`, which an interactive call does anyway.
  */
 export interface GitHubCommandOptions {
   interactive?: boolean;

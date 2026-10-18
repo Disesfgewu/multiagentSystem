@@ -8,6 +8,7 @@ import {
   WorktreeUi
 } from './worktreeController';
 import { WorktreeService } from './worktrees';
+import { requireInteractive } from '../shared/testMode';
 
 export const WORKTREE_COMMANDS = {
   list: 'multiagentSystem.worktrees.list',
@@ -70,8 +71,12 @@ export function registerWorktreeCommands(context: vscode.ExtensionContext): void
   const options = (value: unknown): WorktreeCommandOptions =>
     value && typeof value === 'object' ? (value as WorktreeCommandOptions) : {};
   context.subscriptions.push(
+    // list only reads `git worktree list`; with `interactive: false` it skips the picker that opens a
+    // folder, so honouring it outside tests opens nothing and asks nothing that would be skipped.
     vscode.commands.registerCommand(WORKTREE_COMMANDS.list, (value?: unknown) => controller.list(options(value))),
-    vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => controller.create(options(value))),
-    vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => controller.remove(options(value)))
+    // create writes a worktree and remove deletes one: outside test mode they always run interactively,
+    // so remove's `confirmed: true` (honoured only when non-interactive) cannot skip the dialog.
+    vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => controller.create(requireInteractive(options(value)))),
+    vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => controller.remove(requireInteractive(options(value))))
   );
 }
