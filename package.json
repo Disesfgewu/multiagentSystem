@@ -5,6 +5,7 @@
   "version": "0.0.2",
   "private": true,
   "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Disesfgewu/multiagentSystem.git" },
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -336,12 +337,14 @@
     "test:unit": "npm run build && node --test \"test/**/*.test.js\" \"out/test/unit/**/*.test.js\"",
     "test:host": "npm run build && node out/test/host/runTest.js",
     "test": "npm run check && npm run test:unit",
-    "vscode:prepublish": "npm run build"
+    "vscode:prepublish": "npm run build",
+    "vsix:package": "node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --out artifacts/multiagentsystem.vsix && node scripts/verify-vsix.js artifacts/multiagentsystem.vsix"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
     "@types/vscode": "1.95.0",
     "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
     "typescript": "7.0.2"
   },
   "dependencies": {
