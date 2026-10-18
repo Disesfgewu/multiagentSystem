@@ -13,6 +13,8 @@ import {
   WorktreeUi,
   defaultWorktreeTarget,
   describeFailure,
+  isInsideAllowedRoots,
+  managedWorktreeRoot,
   validateBranchInput,
   validateTargetInput
 } from '../../src/projects/worktreeController';
@@ -80,6 +82,12 @@ class FakeUi implements WorktreeUi {
   confirmRelease = async (): Promise<boolean> => {
     this.confirmCalls += 1;
     return this.confirm;
+  };
+  confirmCreateAnswer = true;
+  createConfirms: Array<[string, string]> = [];
+  confirmCreate = async (branch: string, target: string): Promise<boolean> => {
+    this.createConfirms.push([branch, target]);
+    return this.confirmCreateAnswer;
   };
   offerOpen = async (): Promise<boolean> => this.open;
   openFolder = async (folder: string): Promise<void> => {
@@ -197,7 +205,7 @@ test('project resolution: no folder, several folders, and a folder that is not a
 test('list: marks primary and current, opens another worktree in a new window, handles current and cancel', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const other = path.join(temporary, 'worker 空白');
+  const other = path.join(managedWorktreeRoot(root), 'worker 空白');
   assert.equal((await h.controller.create({ interactive: false, branch: 'feature/a', target: other })).ok, true);
 
   const plain = await h.controller.list({ interactive: false });
@@ -257,14 +265,14 @@ test('create: cancelling a prompt creates nothing', async (t) => {
 test('create: Git and path conflicts are reported with the reason and change nothing', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const first = path.join(temporary, 'one');
+  const first = path.join(managedWorktreeRoot(root), 'one');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/taken', target: first })).ok);
 
-  const sameBranch = await h.controller.create({ branch: 'feature/taken', target: path.join(temporary, 'two') });
+  const sameBranch = await h.controller.create({ branch: 'feature/taken', target: path.join(managedWorktreeRoot(root), 'two') });
   assert.equal(sameBranch.ok, false);
   assert.equal((sameBranch as { code: string }).code, 'git-command-failed');
   assert.match((sameBranch as { message: string }).message, /already exists/i);
-  await assert.rejects(fs.stat(path.join(temporary, 'two')));
+  await assert.rejects(fs.stat(path.join(managedWorktreeRoot(root), 'two')));
 
   const inside = await h.controller.create({ branch: 'feature/inside', target: path.join(root, 'inside') });
   assert.equal((inside as { code: string }).code, 'worktree-path-overlap');
@@ -272,9 +280,71 @@ test('create: Git and path conflicts are reported with the reason and change not
 
   const relative = await h.controller.create({ branch: 'feature/rel', target: 'relative/dir' });
   assert.equal((relative as { code: string }).code, 'path-must-be-absolute');
-  const bad = await h.controller.create({ branch: '--force', target: path.join(temporary, 'bad') });
+  const bad = await h.controller.create({ branch: '--force', target: path.join(managedWorktreeRoot(root), 'bad') });
   assert.equal((bad as { code: string }).code, 'branch-invalid');
   assert.equal(h.ui.errors.length, 4);
+});
+
+test('create: a caller-supplied folder is confirmed and must stay inside the workspace or the managed folder (Refs #192)', async (t) => {
+  const { root, temporary } = await repository(t);
+  const h = harness(root);
+  const count = async (): Promise<number> => (await git(root, 'worktree', 'list', '--porcelain')).split('worktree ').length - 1;
+
+  // Outside both roots: refused before any prompt or Git work, interactive or not.
+  const outside = path.join(temporary, 'elsewhere');
+  for (const interactive of [true, false]) {
+    const refused = await h.controller.create({ interactive, branch: `feature/out-${interactive}`, target: outside });
+    assert.equal((refused as { code: string }).code, 'target-outside-allowed-roots');
+  }
+  assert.deepEqual(h.ui.createConfirms, []);
+  await assert.rejects(fs.stat(outside));
+
+  // A link inside the managed folder that points outside it does not count as inside.
+  const managed = managedWorktreeRoot(root);
+  await fs.mkdir(managed, { recursive: true });
+  await fs.mkdir(path.join(temporary, 'escape'));
+  await fs.symlink(path.join(temporary, 'escape'), path.join(managed, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+  const viaLink = await h.controller.create({ branch: 'feature/link', target: path.join(managed, 'link', 'wt') });
+  assert.equal((viaLink as { code: string }).code, 'target-outside-allowed-roots');
+  await assert.rejects(fs.stat(path.join(temporary, 'escape', 'wt')));
+  const dotdot = await h.controller.create({ branch: 'feature/dotdot', target: path.join(managed, '..', 'escape', 'wt2') });
+  assert.equal((dotdot as { code: string }).code, 'target-outside-allowed-roots');
+
+  // Inside the managed folder, an interactive caller-supplied folder asks; declining creates nothing.
+  const inside = path.join(managed, 'caller');
+  h.ui.confirmCreateAnswer = false;
+  const declined = await h.controller.create({ branch: 'feature/caller', target: inside });
+  assert.equal((declined as { code: string }).code, 'cancelled');
+  assert.deepEqual(h.ui.createConfirms, [['feature/caller', inside]]);
+  await assert.rejects(fs.stat(inside));
+  assert.equal(await git(root, 'branch', '--list', 'feature/caller'), '');
+  assert.equal(await count(), 1);
+
+  h.ui.confirmCreateAnswer = true;
+  assert.ok((await h.controller.create({ branch: 'feature/caller', target: inside })).ok);
+  assert.equal(h.ui.createConfirms.length, 2);
+  assert.equal(await count(), 2);
+
+  // A folder typed by the person in the input box is the person's own choice: no second question.
+  h.ui.branch = 'feature/typed';
+  h.ui.target = path.join(managed, 'typed');
+  assert.ok((await h.controller.create()).ok);
+  assert.equal(h.ui.createConfirms.length, 2);
+});
+
+test('isInsideAllowedRoots compares real paths and needs a strict descendant', async (t) => {
+  const { temporary } = await repository(t);
+  const base = path.join(temporary, 'base');
+  await fs.mkdir(base);
+  assert.equal(isInsideAllowedRoots(path.join(base, 'a', 'b'), [base]), true, 'a missing folder below the root');
+  assert.equal(isInsideAllowedRoots(base, [base]), false, 'the root itself');
+  assert.equal(isInsideAllowedRoots(path.join(temporary, 'base-other', 'x'), [base]), false, 'a sibling with the same prefix');
+  assert.equal(isInsideAllowedRoots('relative/x', [base]), false);
+  assert.equal(isInsideAllowedRoots(path.join(base, 'x'), []), false);
+  if (process.platform !== 'win32') {
+    await fs.symlink(path.join(temporary, 'missing-target'), path.join(base, 'dangling'));
+    assert.equal(isInsideAllowedRoots(path.join(base, 'dangling', 'x'), [base]), false, 'a dangling link is not a folder name');
+  }
 });
 
 test('create without prompts needs every argument', async (t) => {
@@ -288,7 +358,7 @@ test('create without prompts needs every argument', async (t) => {
 test('release: the picker never offers the primary or the current worktree; a clean worktree is released and its branch kept', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const target = path.join(temporary, 'worker');
+  const target = path.join(managedWorktreeRoot(root), 'worker');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/release', target })).ok);
 
   h.ui.pickWorktreeBy = (items) => items[0];
@@ -311,7 +381,7 @@ for (const kind of ['tracked', 'untracked', 'ignored'] as const) {
   test(`release: a worktree with ${kind} local files is refused with the reason and left untouched`, async (t) => {
     const { root, temporary } = await repository(t);
     const h = harness(root);
-    const target = path.join(temporary, 'worker');
+    const target = path.join(managedWorktreeRoot(root), 'worker');
     assert.ok((await h.controller.create({ interactive: false, branch: 'feature/dirty', target })).ok);
     const name = kind === 'tracked' ? 'file.txt' : kind === 'ignored' ? 'ignored.txt' : 'untracked.txt';
     await fs.writeFile(path.join(target, name), 'local content');
@@ -335,7 +405,7 @@ for (const kind of ['tracked', 'untracked', 'ignored'] as const) {
 test('release: declining the confirmation, or releasing without prompts but without confirmed, removes nothing', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const target = path.join(temporary, 'worker');
+  const target = path.join(managedWorktreeRoot(root), 'worker');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/keep', target })).ok);
 
   h.ui.pickWorktreeBy = (items) => items[0];
@@ -352,7 +422,7 @@ test('release: declining the confirmation, or releasing without prompts but with
 test('release: primary, current, locked and unknown folders are refused with their reasons', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const target = path.join(temporary, 'worker');
+  const target = path.join(managedWorktreeRoot(root), 'worker');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/locked', target })).ok);
 
   const primary = await h.controller.remove({ interactive: false, path: root, confirmed: true });
@@ -377,7 +447,7 @@ test('release: primary, current, locked and unknown folders are refused with the
 test('an interactive release ignores confirmed:true and is decided by the dialog alone', async (t) => {
   const { root, temporary } = await repository(t);
   const h = harness(root);
-  const target = path.join(temporary, 'worker');
+  const target = path.join(managedWorktreeRoot(root), 'worker');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/dialog', target })).ok);
 
   h.ui.confirm = false;
@@ -396,7 +466,7 @@ test('a workspace folder inside a worktree still identifies that worktree as thi
   const sub = path.join(root, 'src', 'nested');
   await fs.mkdir(sub, { recursive: true });
   const h = harness(sub);
-  const target = path.join(temporary, 'worker');
+  const target = path.join(managedWorktreeRoot(root), 'worker');
   assert.ok((await h.controller.create({ interactive: false, branch: 'feature/sub', target })).ok);
 
   const listed = await h.controller.list({ interactive: false });

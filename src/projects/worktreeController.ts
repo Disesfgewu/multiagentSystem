@@ -43,6 +43,8 @@ export interface WorktreeUi {
   askBranch(validate: (value: string) => string | undefined): Promise<string | undefined>;
   askTarget(defaultPath: string, validate: (value: string) => string | undefined): Promise<string | undefined>;
   confirmRelease(entry: WorktreeEntry): Promise<boolean>;
+  /** Asked when a caller, not the input box, chose the folder for a new worktree. */
+  confirmCreate(branch: string, target: string): Promise<boolean>;
   offerOpen(entry: WorktreeEntry): Promise<boolean>;
   openFolder(folder: string): Promise<void>;
   info(message: string): void;
@@ -92,7 +94,9 @@ const MESSAGES: Record<string, string> = {
   'worktree-has-local-files':
     'Refused: the worktree contains uncommitted changes, untracked files or ignored files. Nothing was deleted. Commit or move them first.',
   'worktree-not-found': 'That folder is not a worktree of this repository.',
-  'worktree-output-invalid': 'Git returned a worktree list that could not be read.'
+  'worktree-output-invalid': 'Git returned a worktree list that could not be read.',
+  'target-outside-allowed-roots':
+    'Refused: a folder given by a command must be inside the open workspace folder or the managed worktree folder next to the repository. Nothing was created.'
 };
 
 const STDERR_LIMIT = 300;
@@ -147,7 +151,54 @@ function slug(branch: string): string {
 
 /** Suggests a folder next to the repository, never inside it (the service rejects nesting). */
 export function defaultWorktreeTarget(projectRoot: string, branch: string): string {
-  return path.join(path.dirname(projectRoot), `${path.basename(projectRoot)}-worktrees`, slug(branch));
+  return path.join(managedWorktreeRoot(projectRoot), slug(branch));
+}
+
+/** The folder that holds worktrees made from the default suggestion: `<repo>-worktrees` next to the repository. */
+export function managedWorktreeRoot(projectRoot: string): string {
+  return path.join(path.dirname(projectRoot), `${path.basename(projectRoot)}-worktrees`);
+}
+
+// The real path of a folder that may not exist yet: its nearest existing ancestor is resolved
+// (following every link) and the missing part appended. A part that exists but cannot be resolved,
+// such as a dangling link, gives undefined, so it is never treated as a plain folder name.
+function realPathOf(value: string): string | undefined {
+  const tail: string[] = [];
+  let current = path.resolve(value);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...tail.reverse());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+      try {
+        fs.lstatSync(current);
+        return undefined; // it exists (a link) but does not resolve
+      } catch {
+        // Really missing: look at the parent.
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * True when `target` (an absolute path) lies strictly inside one of `roots`, compared by real path,
+ * so a link inside a root that points elsewhere does not count as inside.
+ */
+export function isInsideAllowedRoots(target: string, roots: string[]): boolean {
+  if (!path.isAbsolute(target)) return false;
+  const real = realPathOf(target);
+  if (!real) return false;
+  const fold = (value: string): string => (process.platform === 'win32' ? value.toLowerCase() : value);
+  return roots.some((root) => {
+    const base = realPathOf(root);
+    if (!base) return false;
+    const relative = path.relative(fold(base), fold(real));
+    return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  });
 }
 
 function sameDirectory(a: string, b: string): boolean {
@@ -264,6 +315,18 @@ export class WorktreeController {
       if (!interactive) return this.fail('path-must-be-absolute', 'A destination folder is required.', false);
       target = await ui.askTarget(defaultWorktreeTarget(project.root, branch), validateTargetInput);
       if (target === undefined) return cancelled();
+    } else {
+      // The caller chose the folder, not the person (Refs #192): it must stay inside the workspace
+      // or the managed worktree folder, and an interactive call (every call outside the extension's
+      // own tests) asks the person before Git writes anything.
+      if (typeof target !== 'string' || !path.isAbsolute(target.trim())) {
+        return this.fail('path-must-be-absolute', MESSAGES['path-must-be-absolute'], interactive);
+      }
+      const roots = [...ui.workspaceFolders(), managedWorktreeRoot(project.root)];
+      if (!isInsideAllowedRoots(target.trim(), roots)) {
+        return this.fail('target-outside-allowed-roots', MESSAGES['target-outside-allowed-roots'], interactive);
+      }
+      if (interactive && !(await ui.confirmCreate(branch, target.trim()))) return cancelled();
     }
 
     try {

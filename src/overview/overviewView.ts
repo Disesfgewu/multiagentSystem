@@ -7,6 +7,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor } from '../github/githubCommands';
 import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
 import { isGitHubWebUrl } from '../github/controller';
+import { markOwnUiItem } from '../shared/uiOrigin';
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
 const { cleanTitle } = require('./model') as { cleanTitle(value: unknown): string };
@@ -67,6 +68,8 @@ class AgentRow extends Row {
     this.iconPath = new vscode.ThemeIcon(entry.terminalOpen ? 'terminal' : 'debug-disconnect');
     this.contextValue = `${entry.terminalOpen ? 'multiagentOverviewAgentLive' : 'multiagentOverviewAgentClosed'}${entry.pullRequestUrl ? 'Pr' : ''}`;
     this.command = { command: 'multiagentSystem.sessions.focus', title: 'Focus terminal', arguments: [{ id: entry.id }] };
+    // The inline Stop action passes this row; marking it lets sessions.stop skip the caller confirmation.
+    markOwnUiItem(this);
   }
 }
 

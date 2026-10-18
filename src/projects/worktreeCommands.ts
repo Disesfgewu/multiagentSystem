@@ -18,6 +18,7 @@ export const WORKTREE_COMMANDS = {
 
 const OPEN_LABEL = 'Open in New Window';
 const RELEASE_LABEL = 'Release Worktree';
+const CREATE_LABEL = 'Create Worktree';
 
 const vscodeUi: WorktreeUi = {
   isTrusted: () => vscode.workspace.isTrusted,
@@ -51,6 +52,17 @@ const vscodeUi: WorktreeUi = {
     );
     return answer === RELEASE_LABEL;
   },
+  async confirmCreate(branch: string, target: string) {
+    const answer = await vscode.window.showWarningMessage(
+      `Create a worktree for branch ${branch}?`,
+      {
+        modal: true,
+        detail: `${target}\n\nA command chose this folder. Git will create the folder and a new branch there.`
+      },
+      CREATE_LABEL
+    );
+    return answer === CREATE_LABEL;
+  },
   async offerOpen() {
     return (await vscode.window.showInformationMessage('Worktree created.', OPEN_LABEL)) === OPEN_LABEL;
   },
@@ -75,7 +87,8 @@ export function registerWorktreeCommands(context: vscode.ExtensionContext): void
     // folder, so honouring it outside tests opens nothing and asks nothing that would be skipped.
     vscode.commands.registerCommand(WORKTREE_COMMANDS.list, (value?: unknown) => controller.list(options(value))),
     // create writes a worktree and remove deletes one: outside test mode they always run interactively,
-    // so remove's `confirmed: true` (honoured only when non-interactive) cannot skip the dialog.
+    // so remove's `confirmed: true` (honoured only when non-interactive) cannot skip the dialog, and a
+    // caller-supplied `target` for create is confirmed and must stay inside the allowed roots (Refs #192).
     vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => controller.create(requireInteractive(options(value)))),
     vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => controller.remove(requireInteractive(options(value))))
   );

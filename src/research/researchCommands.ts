@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
-import { requireInteractive } from '../shared/testMode';
+import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
 const {
   formatConsentManifest,
@@ -208,13 +208,17 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
     const serverId = arg?.serverId;
     if (!serverId) return { ok: false, code: 'server-id-required' };
 
+    // Asset bytes and a download function in a command argument come from the caller, not from the
+    // reviewed catalog source; only the extension's own tests may supply them (Refs #192). Without a
+    // verified asset the installer writes nothing and reports `asset-unavailable`.
+    const testMode = isExtensionTestMode();
     try {
       const outcome = await prepareResearchTool(serverId, {
         store,
         root,
         boundary,
-        download: arg?.download,
-        assetBytes: arg?.assetBytes
+        download: testMode ? arg?.download : undefined,
+        assetBytes: testMode ? arg?.assetBytes : undefined
       });
       return { ok: true, outcome };
     } catch (err: any) {

@@ -161,6 +161,27 @@ test('prepareResearchTool fails closed on hash mismatch: cleans up staging folde
   }
 });
 
+test('prepareResearchTool without a verified asset writes nothing, not even a placeholder (Refs #192)', async () => {
+  const store = new FakeStore();
+  grantConsent('zhtw-mcp', { store });
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-test-'));
+  const root = path.join(parent, 'research');
+  try {
+    for (const deps of [{}, { download: async () => undefined }, { download: async () => new Uint8Array(0) }, { assetBytes: 'not bytes' }]) {
+      await assert.rejects(
+        prepareResearchTool('zhtw-mcp', { store, root, ...deps }),
+        (err) => err.code === 'asset-unavailable'
+      );
+    }
+    assert.equal(fs.existsSync(root), false, 'the tool folder is not even created');
+    await assert.rejects(prepareResearchTool('zhtw-mcp', { store, root, assetBytes: Buffer.from('wrong') }), (err) => err.code === 'hash-mismatch');
+    assert.equal(fs.existsSync(root), false, 'a mismatching asset writes nothing either');
+    assert.equal(listResearchTools({ store, root }).find((t) => t.serverId === 'zhtw-mcp').installStatus, 'not-installed');
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test('prepareResearchTool installs atomically when hash matches', async () => {
   const store = new FakeStore();
   grantConsent('zhtw-mcp', { store });
@@ -168,14 +189,16 @@ test('prepareResearchTool installs atomically when hash matches', async () => {
   const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-test-'));
 
-  // Synthetic valid asset matching tool.integrity
-  // Tool integrity: sha256:a0b555fb47253e580eb095d438368c6af0018cf90fffa0dbb979f081e28d084a
-  // In synthetic test without raw assetBytes, it writes a mock script
+  // A synthetic asset and a copy of the catalog entry pinned to its digest: the real asset is not
+  // downloaded in tests, and no placeholder is ever written in its place.
+  const bytes = Buffer.from('#!/bin/sh\necho synthetic zhtw asset\n');
+  const catalog = [validateCatalogItem({ ...tool, integrity: `sha256:${createHash('sha256').update(bytes).digest('hex')}` })];
   try {
-    const outcome = await prepareResearchTool('zhtw-mcp', { store, root: tmpRoot });
+    const outcome = await prepareResearchTool('zhtw-mcp', { store, root: tmpRoot, catalog, assetBytes: bytes });
     assert.equal(outcome.state, 'ready');
     assert.equal(outcome.serverId, 'zhtw-mcp');
     assert.equal(fs.existsSync(outcome.executable), true);
+    assert.deepEqual(fs.readFileSync(outcome.executable), bytes, 'the verified bytes, not a placeholder');
 
     const listed = listResearchTools({ store, root: tmpRoot });
     const zhtw = listed.find((t) => t.serverId === 'zhtw-mcp');

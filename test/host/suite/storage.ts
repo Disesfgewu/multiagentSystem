@@ -6,7 +6,9 @@ import * as vscode from 'vscode';
 import { STORAGE_COMMANDS, extensionContextForTests, privateStorage } from '../../../src/storage/storageCommands';
 import { StorageStatus, createStorageHandle } from '../../../src/storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../../../src/storage/private-store';
-import { SETUP_COMMANDS } from '../../../src/setup/setupView';
+import { SETUP_COMMANDS, RECOVER_LOCK_LABEL } from '../../../src/setup/setupView';
+import { CONFIRM_RECOVER } from '../../../src/shared/lock';
+import * as os from 'node:os';
 import { outsideTestMode } from './nonInteractiveGate';
 
 // Exercises private storage in a real Extension Host: the editor's own storage folder and its
@@ -142,6 +144,34 @@ export async function runStorageChecks(registered: string[], workspace: string):
     assert.equal(lockRecovered.ok, true);
     assert.equal(lockRecovered.recovered, false);
     assert.equal(lockRecovered.reason, 'not-locked');
+
+    // Refs #192: a held lock whose owner is gone. Before the fix the command never passed the store's
+    // confirmation token, so even a confirmed recovery returned `confirmation-required`.
+    const lockFile = path.join(dataFolder, 'store.lock');
+    fs.writeFileSync(lockFile, JSON.stringify({ token: 'synthetic-dead-owner', pid: 2147483646, host: os.hostname(), createdAt: new Date().toISOString() }), { mode: 0o600 });
+    try {
+      type Recovered = { ok: boolean; recovered?: boolean; reason?: string };
+      const isLockPrompt = (prompt: string): boolean => prompt.startsWith('The private storage single-writer lock is held');
+      const dismissed = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<Recovered>(SETUP_COMMANDS.recoverStorageLock)));
+      assert.deepEqual(dismissed.result, { ok: false, recovered: false, reason: 'cancelled' });
+      assert.ok(dismissed.prompts.some(isLockPrompt), 'the recovery dialog was shown');
+      assert.equal(fs.existsSync(lockFile), true, 'a dismissed dialog keeps the lock');
+      // A payload cannot answer the dialog outside test mode.
+      const payload = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<Recovered>(SETUP_COMMANDS.recoverStorageLock, { interactive: false, force: true, confirm: CONFIRM_RECOVER })));
+      assert.deepEqual(payload.result, { ok: false, recovered: false, reason: 'cancelled' });
+      assert.equal(fs.existsSync(lockFile), true);
+      // The person confirms: the lock is now really recovered.
+      const confirmed = await outsideTestMode(
+        () => Promise.resolve(vscode.commands.executeCommand<Recovered>(SETUP_COMMANDS.recoverStorageLock)),
+        (prompt) => (isLockPrompt(prompt) ? RECOVER_LOCK_LABEL : undefined)
+      );
+      assert.equal(confirmed.result.ok, true, JSON.stringify(confirmed.result));
+      assert.equal(confirmed.result.recovered, true, JSON.stringify(confirmed.result));
+      assert.equal(confirmed.prompts.filter(isLockPrompt).length, 1, 'one question');
+      assert.equal(fs.existsSync(lockFile), false, 'the lock file was removed');
+    } finally {
+      fs.rmSync(lockFile, { force: true });
+    }
 
     const unconfirmedClear = await vscode.commands.executeCommand<{ ok: boolean; reason?: string }>(
       SETUP_COMMANDS.clearStorage,

@@ -6,6 +6,9 @@ import { ManagedClaude, ClaudeRelease, ClaudeStatus } from './managedClaude';
 import { privateStorage } from '../storage/storageCommands';
 import { describeStorage } from '../storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../storage/private-store';
+import { CONFIRM_RECOVER } from '../shared/lock';
+
+export const RECOVER_LOCK_LABEL = 'Recover Lock';
 import { observationsFor } from '../accounts/accountCommands';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
@@ -394,7 +397,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     return outcome;
   }
 
-  async recoverStorageLock(options?: { interactive?: boolean; force?: boolean }): Promise<Record<string, unknown>> {
+  async recoverStorageLock(options?: { interactive?: boolean; force?: boolean; confirm?: string }): Promise<Record<string, unknown>> {
     const interactive = options?.interactive !== false;
     const handle = privateStorage();
     const used = handle ? await handle.use() : { ok: false as const, reason: 'context-incomplete', problems: ['storage-handle-missing'] };
@@ -411,17 +414,24 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (interactive) void vscode.window.showInformationMessage('No private storage lock is currently held.');
       return { ok: true, recovered: false, reason: 'not-locked' };
     }
+    // Recovery removes the lock file, so the store requires CONFIRM_RECOVER. It is passed only after the
+    // person answers the dialog; before #192 it was never passed, so this command always failed with
+    // `confirmation-required`. A `confirm` (or `force`) argument reaches here only in extension test mode.
     let force = Boolean(options?.force);
-    if (interactive && inspected.stale && options?.force === undefined) {
+    let confirm = options?.confirm;
+    if (interactive && confirm !== CONFIRM_RECOVER) {
       const choice = await vscode.window.showWarningMessage(
-        'The private storage single-writer lock is stale. Recover it only if no other VS Code window is writing.',
-        { modal: true },
-        'Recover Stale Lock'
+        inspected.stale
+          ? 'The private storage single-writer lock is stale. Recover it only if no other VS Code window is writing.'
+          : 'The private storage single-writer lock is held. Recover it only if no other VS Code window is writing.',
+        { modal: true, detail: 'Recovering removes the lock file. A lock whose owner may still be running is refused.' },
+        RECOVER_LOCK_LABEL
       );
-      if (choice !== 'Recover Stale Lock') return { ok: false, recovered: false, reason: 'cancelled' };
-      force = true;
+      if (choice !== RECOVER_LOCK_LABEL) return { ok: false, recovered: false, reason: 'cancelled' };
+      confirm = CONFIRM_RECOVER;
+      if (options?.force === undefined) force = inspected.stale === true;
     }
-    const outcome = used.store.recoverLock({ force }) as { ok: boolean; recovered?: boolean; reason?: string };
+    const outcome = used.store.recoverLock({ force, confirm }) as { ok: boolean; recovered?: boolean; reason?: string };
     this.refresh();
     if (interactive) {
       if (outcome.ok && outcome.recovered) {
@@ -477,9 +487,9 @@ export function setupTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
   return active;
 }
 
-/** `force` decides a stale-lock recovery without the dialog; only the extension's own tests may pass it. */
-function withoutForce<T extends { force?: boolean }>(options: T): T {
-  return options.force !== undefined && !isExtensionTestMode() ? { ...options, force: undefined } : options;
+/** `force` and `confirm` decide a lock recovery without the dialog; only the extension's own tests may pass them. */
+function withoutForce<T extends { force?: boolean; confirm?: string }>(options: T): T {
+  return (options.force !== undefined || options.confirm !== undefined) && !isExtensionTestMode() ? { ...options, force: undefined, confirm: undefined } : options;
 }
 
 export function registerSetup(context: vscode.ExtensionContext): void {
@@ -505,7 +515,7 @@ export function registerSetup(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) =>
       controller.migrateStorage(arg && typeof arg === 'object' ? requireInteractive(arg as { interactive?: boolean }) : undefined)),
     vscode.commands.registerCommand(SETUP_COMMANDS.recoverStorageLock, (arg?: unknown) =>
-      controller.recoverStorageLock(arg && typeof arg === 'object' ? withoutForce(requireInteractive(arg as { interactive?: boolean; force?: boolean })) : undefined)),
+      controller.recoverStorageLock(arg && typeof arg === 'object' ? withoutForce(requireInteractive(arg as { interactive?: boolean; force?: boolean; confirm?: string })) : undefined)),
     vscode.commands.registerCommand(SETUP_COMMANDS.clearStorage, (arg?: unknown) =>
       controller.clearStorage(arg && typeof arg === 'object' ? requireInteractive(arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : undefined))
   );

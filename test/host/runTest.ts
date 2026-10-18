@@ -28,7 +28,8 @@ async function main(): Promise<void> {
   fs.writeFileSync(path.join(workspace, 'file.txt'), 'initial\n');
   git('add', 'file.txt');
   git('commit', '-m', 'initial');
-  const worktreeTarget = path.join(sandbox, 'worktrees 空白', 'feature-host');
+  // A folder given by a command must be inside the managed `<repo>-worktrees` folder (Refs #192).
+  const worktreeTarget = path.join(sandbox, 'project with space-worktrees', 'feature 空白');
   const fakeBin = path.join(sandbox, 'fake-cli-bin');
   const agySentinel = path.join(sandbox, 'agy-started.txt');
   const ghSentinel = path.join(sandbox, 'gh-started.txt');
