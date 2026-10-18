@@ -113,7 +113,16 @@ async function withFeedback(report: string, repository: string, kind: Kind, numb
 }
 
 class Message extends vscode.TreeItem {
-  constructor(text: string) { super(text, vscode.TreeItemCollapsibleState.None); this.iconPath = new vscode.ThemeIcon('info'); }
+  constructor(text: string, signIn = false) {
+    super(text, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon(signIn ? 'key' : 'info');
+    // Only an expired or refused GitHub session offers the button; a rate limit or a network blip
+    // resolves by itself and must not suggest the account is the problem.
+    if (signIn) {
+      this.tooltip = 'Click to sign in to GitHub again.';
+      this.command = { command: 'multiagentSystem.github.signIn', title: 'Sign In to GitHub' };
+    }
+  }
 }
 
 class Category extends vscode.TreeItem {
@@ -203,7 +212,8 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (generation === readGeneration) order[this.kind] = [];
       this.setBadge(null);
       const failed = openItems === null ? result : closed;
-      return [new Message(incompleteMessage(what, failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid', (failed as any)?.reason))];
+      const failureKind = failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid';
+      return [new Message(incompleteMessage(what, failureKind, (failed as any)?.reason), failureKind === 'denied')];
     }
     const all = [...openItems, ...closedItems];
     if (new Set(all.map((entry) => entry.number)).size !== all.length) { this.setBadge(null); return [new Message(incompleteMessage(what, 'duplicate'))]; }

@@ -484,6 +484,9 @@ export async function runReportChecks(): Promise<string> {
       assert.equal(shown.length, 1, kind);
       assert.equal(shown.some((label) => label.includes('99')), false, kind);
       assert.equal(reportBadgeForTests('issue'), undefined, kind);
+      // Only an expired or refused session offers a one-click sign-in; temporary failures must not.
+      const row = ((await reportTreeForTests('issue').getChildren()) ?? [])[0];
+      assert.equal(row?.command?.command, kind === 'denied' ? 'multiagentSystem.github.signIn' : undefined, `${kind}: sign-in action`);
     }
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => { throw new Error('network down'); } }) });
     assert.match((await labels('issue'))[0], /could not be read/);
