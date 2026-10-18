@@ -156,7 +156,14 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       ghItem,
       new ToolItem('Claude Code', observed('claude'), 'Provider tool. Direct asset and redistribution conditions are not verified, so setup does not download it.', 'question'),
       codexItem,
-      new ToolItem('agy', observed('agy'), 'Fixed official assets, integrity metadata and redistribution terms are unverified. Setup does not download it.', 'question'),
+      new ToolItem(
+        'agy',
+        executableAvailable('agy') ? 'Found on PATH · not verified by setup' : 'Unverified · auto-deployment unsupported',
+        executableAvailable('agy')
+          ? 'Found on PATH. Fixed official binary assets, SHA-256 verification and redistribution terms are unverified (Refs #73, #94, docs/AGY_INVESTIGATION.md); managed automatic deployment is unsupported. Sign-in, identity, quota and rule injection are not implied.'
+          : 'Fixed official release binaries, integrity digests, and redistribution terms are unverified (Refs #73, #94, docs/AGY_INVESTIGATION.md). Automatic deployment is unsupported; install the official agy CLI manually on PATH.',
+        'question'
+      ),
       ...researchItems
     ];
   }

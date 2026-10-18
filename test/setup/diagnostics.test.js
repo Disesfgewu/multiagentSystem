@@ -169,6 +169,8 @@ test('diagnose produces actionable codes and omits private labels, paths, and se
   assert.equal(agy.capabilities.terminalLaunch, 'unverified');
   assert.equal(agy.capabilities.accountIsolation, 'unknown');
   assert.equal(agy.capabilities.identityVerification, 'unknown');
+  assert.equal(report.tools.managedAgy.state, 'unsupported');
+  assert.equal(report.tools.managedAgy.category, 'platform-unsupported');
 
   // Verify codex is marked available via managedReady even when not on PATH
   const codex = report.providers.find((p) => p.id === 'codex');
@@ -183,6 +185,7 @@ test('diagnose produces actionable codes and omits private labels, paths, and se
   assert.equal(formatted.includes('prof-1'), false, 'no profile ID in diagnostic output');
   assert.match(formatted, /profiles#1/);
   assert.match(formatted, /storage-migration-pending/);
+  assert.match(formatted, /- agy \(managed\): unsupported/);
 });
 
 test('diagnose flags corrupt store and recommends clearStorage recovery', () => {

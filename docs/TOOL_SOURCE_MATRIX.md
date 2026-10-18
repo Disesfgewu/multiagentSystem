@@ -55,3 +55,19 @@ Git、Claude Code、Codex CLI 與 agy 目前只報告 PATH 上是否找到命令
 Tools Setup 現在也可準備上表固定的 Codex CLI `rust-v0.163.0`。macOS x64／arm64 只接受精確的官方 `tar.gz` 資產與唯一預期 target 執行檔；原生 Windows x64／arm64 只接受精確的官方 `.exe` 資產。下載位址、版本、平台、架構、格式、資產名稱與 SHA-256 均寫死於程式，不從工作區或設定取得。下載、重試、受管路徑、原子切換與每次狀態重驗沿用 `gh` 的失敗關閉界線；只有保留的官方資產仍符合固定 SHA，且目前執行檔與該資產重新推導的內容相同，才顯示 Ready 並加入新 terminal 的 PATH。
 
 已在 macOS arm64 實際下載固定官方資產，重新計算 SHA-256 為 `61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10`，經本安裝器解出唯一的 `codex-aarch64-apple-darwin`，執行 `codex --version` 得到 `codex-cli 0.163.0`。沒有登入、沒有讀取登入資料，也沒有驗證身份、額度、規則注入、macOS x64、原生 Windows、乾淨機器、VSIX 安裝後流程、平台簽章、視覺與易用性。程式存在與 SHA 相符只代表受管執行檔已備妥，不代表登入或 provider 其他能力通過。
+
+## agy CLI 首次設定與自動部署評估狀態（2026-10-18）
+
+依據 Issue #73 交付設計第一項與 #94 調查文件（`docs/AGY_INVESTIGATION.md`），本專案針對 Google Antigravity CLI（`agy`）評估受管自動部署的可行性：
+
+1. **官方發行來源與資產固化**：Google 官方文件列出之安裝方式為透過官方腳本安裝至使用者環境目錄（macOS/Linux 為 `~/.local/bin/agy`，原生 Windows 為 `%LOCALAPPDATA%\agy\bin`），並未提供四平台（`darwin-x64`、`darwin-arm64`、`win32-x64`、`win32-arm64`）具固定版本 URL 與發行端 SHA-256 完整性雜湊之獨立可解壓／獨立執行二進位發行檔（standalone binary release assets）。
+2. **再散布與授權條款**：查無獨立 CLI 二進位軟體授權或第三方再散布條款；官方服務條款（Terms of Service）包含第三方軟體存取限制，不得未經授權在 VSIX 打包或從未受合約保障之端點自動下載散布。
+3. **安全界線與非官方鏡像禁止**：本專案嚴格遵守 fail-closed 原則，禁止在擴充套件執行 `curl | sh`、PowerShell 遠端腳本，或使用未經官方簽名／驗證之第三方鏡像來源硬做自動安裝。
+4. **交付判定與產品呈現**：
+   - `agy` 的受管自動部署判定為**不足夠支撐固定版本自動部署**。
+   - 本專案誠實將 `agy` 受管部署標示為「**未驗證／暫不支援自動部署**」（`unverified-source-and-terms`）。
+   - 在 `Tools Setup` 樹狀清單中：
+     - 若使用者本機已手動將 `agy` 裝於系統 `PATH`，顯示 `Found on PATH · not verified by setup`，工具提示說明固定官方資產與再散布條款未驗證，不提供自動下載重試，且不推論登入、額度、身份核實或規則注入；
+     - 若系統 `PATH` 上未找到 `agy`，明確顯示 `Unverified · auto-deployment unsupported`，引導使用者依官方文件手動安裝至 `PATH`，而非誤導使用者等待擴充套件自動下載。
+   - 在診斷報告（`diagnose`）中，`tools.managedAgy` 誠實報告為 `unsupported`（`platform-unsupported:unverified-source-and-terms`），動作指引提示手動安裝官方 CLI，禁止偽稱已備妥。
+
