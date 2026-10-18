@@ -475,3 +475,43 @@ test('writeSettingsAtomic writes a new file privately and an unchanged one in pl
     assert.equal(fs.readFileSync(file, 'utf8'), '{"n":2}');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('re-enabling after the extension moved (new bridge path) keeps the user\'s original statusLine backup, and disable still restores it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-upgrade-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const original = { type: 'command', command: 'my-custom-statusline-helper' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: original, theme: 'light' }));
+    const oldBridge = path.join(root, 'ext-1.0.0', 'claudeStatusLineBridge.js');
+    const newBridge = path.join(root, 'ext-1.1.0', 'claudeStatusLineBridge.js');
+    assert.equal(enableStatusLineBridge(root, oldBridge).ok, true);
+    // The extension is upgraded: the installed bridge now lives at a different path.
+    assert.equal(enableStatusLineBridge(root, newBridge).ok, true);
+    const afterReEnable = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(afterReEnable._multiagentStatusLineBackup, original, 'the old bridge command must never replace the real backup');
+    assert.ok(afterReEnable.statusLine.command.includes('ext-1.1.0'));
+    assert.equal(disableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original);
+    // A stale bridge left behind by an upgrade can also be disabled without the new path matching.
+    assert.equal(enableStatusLineBridge(root, oldBridge).ok, true);
+    assert.equal(disableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a bridge command pointing at another destination, or with extra shell, is never treated as our stale bridge', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-stale-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const quota = path.join(root, STATUSLINE_QUOTA_FILE_NAME);
+    const bridge = path.join(root, 'ext', 'claudeStatusLineBridge.js');
+    for (const custom of [
+      `${buildBridgeCommand(bridge, quota)} && echo custom`,
+      buildBridgeCommand(bridge, path.join(root, 'other.json')),
+      buildBridgeCommand(path.join(root, 'ext', 'otherScript.js'), quota)
+    ]) {
+      fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: 'command', command: custom }, _multiagentStatusLineBackup: { command: 'older' } }));
+      assert.equal(disableStatusLineBridge(root, path.join(root, 'new', 'claudeStatusLineBridge.js')).ok, false, custom);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

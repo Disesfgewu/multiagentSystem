@@ -112,6 +112,26 @@ export function writeSettingsAtomic(settingsPath: string, text: string, expected
   }
 }
 
+/**
+ * True only for a bridge command this extension wrote earlier whose script has since moved (an
+ * extension upgrade installs into a new versioned folder). Everything but the script's folder must
+ * match exactly: the `node` launcher, the file name, the quoting and this profile's own quota file.
+ * Anything else (extra shell, another destination, another script) is the user's own command.
+ */
+export function isStaleBridgeCommand(statusLine: unknown, quotaPath: string, isWindows: boolean = process.platform === 'win32'): boolean {
+  let command: string | undefined;
+  if (typeof statusLine === 'string') command = statusLine;
+  else if (statusLine && typeof statusLine === 'object' && typeof (statusLine as { command?: unknown }).command === 'string') command = (statusLine as { command: string }).command;
+  if (!command || !isSafePath(quotaPath, isWindows)) return false;
+  const quote = isWindows ? '"' : "'";
+  const prefix = `node ${quote}`;
+  const suffix = `${quote} ${quote}${quotaPath}${quote}`;
+  if (!command.startsWith(prefix) || !command.endsWith(suffix)) return false;
+  const script = command.slice(prefix.length, command.length - suffix.length);
+  if (!isSafePath(script, isWindows)) return false;
+  return /(^|[\\/])claudeStatusLineBridge\.js$/.test(script);
+}
+
 export interface StatusLineInspection {
   status: 'disabled' | 'active' | 'custom' | 'unreadable';
   currentCommand?: string;
@@ -241,7 +261,11 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
     const command = buildBridgeCommand(bridgeScriptPath, quotaPath, isWindows);
 
     // If an existing statusLine is present and not our bridge, back it up so disable can restore it
-    if (settings.statusLine !== undefined && !isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
+    // A bridge command left by an older install is ours, not the user's: backing it up would replace the
+    // real original with a dead command and lose it for good.
+    if (settings.statusLine !== undefined
+      && !isBridgeCommand(settings.statusLine, bridgeScriptPath, quotaPath)
+      && !isStaleBridgeCommand(settings.statusLine, quotaPath, isWindows)) {
       settings._multiagentStatusLineBackup = settings.statusLine;
     }
 
@@ -284,7 +308,8 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
     }
 
     // Refuse to touch settings if statusLine is not our bridge command
-    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
+    const ownQuotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
+    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath, ownQuotaPath) && !isStaleBridgeCommand(settings.statusLine, ownQuotaPath)) {
       return { ok: false, reason: 'statusline-not-our-bridge' };
     }
 
