@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
+import { requireInteractive } from '../shared/testMode';
 
 const {
   formatConsentManifest,
@@ -77,8 +78,7 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
   };
 
   const reviewAndConsent = async (arg?: { serverId?: string; interactive?: boolean }) => {
-    const isTest = context.extensionMode === vscode.ExtensionMode.Test;
-    const interactive = isTest ? (arg?.interactive !== false) : true;
+    const interactive = requireInteractive(arg ?? {}).interactive !== false;
     let serverId = arg?.serverId;
 
     if (!serverId && interactive) {
@@ -160,8 +160,7 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
   };
 
   const revoke = async (arg?: { serverId?: string; interactive?: boolean }) => {
-    const isTest = context.extensionMode === vscode.ExtensionMode.Test;
-    const interactive = isTest ? (arg?.interactive !== false) : true;
+    const interactive = requireInteractive(arg ?? {}).interactive !== false;
     let serverId = arg?.serverId;
 
     const store = await getPrivateStore();
