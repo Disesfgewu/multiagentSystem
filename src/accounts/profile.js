@@ -143,7 +143,10 @@ function validateProfile(profile, context) {
     if (isSameOrInside(p, ctx.platform, dir.value, repo.value)) problems.push('config-dir-inside-repo');
     if (isSameOrInside(p, ctx.platform, repo.value, dir.value)) problems.push('config-dir-contains-repo');
   }
-  if (dir.value && providerDefault.value && samePath(p, ctx.platform, dir.value, providerDefault.value)) {
+  // The default folder the tool uses outside this extension: not the folder itself, and not a folder
+  // inside it (the unmanaged account's own tree would then hold this account). A folder that merely
+  // contains it is the home folder or one of its parents, which have their own checks.
+  if (dir.value && providerDefault.value && isSameOrInside(p, ctx.platform, dir.value, providerDefault.value)) {
     problems.push('config-dir-is-provider-default');
   }
   if (dir.value) {
