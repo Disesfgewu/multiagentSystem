@@ -184,7 +184,6 @@ test('prepareResearchTool without a verified asset writes nothing, not even a pl
 
 test('prepareResearchTool installs atomically when hash matches', async () => {
   const store = new FakeStore();
-  grantConsent('zhtw-mcp', { store });
 
   const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-test-'));
@@ -193,6 +192,7 @@ test('prepareResearchTool installs atomically when hash matches', async () => {
   // downloaded in tests, and no placeholder is ever written in its place.
   const bytes = Buffer.from('#!/bin/sh\necho synthetic zhtw asset\n');
   const catalog = [validateCatalogItem({ ...tool, integrity: `sha256:${createHash('sha256').update(bytes).digest('hex')}` })];
+  grantConsent('zhtw-mcp', { store, catalog });
   try {
     const outcome = await prepareResearchTool('zhtw-mcp', { store, root: tmpRoot, catalog, assetBytes: bytes });
     assert.equal(outcome.state, 'ready');
@@ -200,7 +200,7 @@ test('prepareResearchTool installs atomically when hash matches', async () => {
     assert.equal(fs.existsSync(outcome.executable), true);
     assert.deepEqual(fs.readFileSync(outcome.executable), bytes, 'the verified bytes, not a placeholder');
 
-    const listed = listResearchTools({ store, root: tmpRoot });
+    const listed = listResearchTools({ store, root: tmpRoot, catalog });
     const zhtw = listed.find((t) => t.serverId === 'zhtw-mcp');
     assert.equal(zhtw.consentStatus, 'consented');
     assert.equal(zhtw.installStatus, 'ready');
@@ -208,4 +208,50 @@ test('prepareResearchTool installs atomically when hash matches', async () => {
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+
+test('revoking cannot delete outside the install root: a tool id is a plain name, and nothing is written for a bad one', () => {
+  const store = new FakeStore();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-revoke-'));
+  const root = path.join(base, 'root');
+  const victim = path.join(base, 'victim');
+  fs.mkdirSync(path.join(root, 'zhtw-mcp'), { recursive: true });
+  fs.mkdirSync(victim);
+  fs.writeFileSync(path.join(victim, 'precious'), 'keep');
+  try {
+    for (const bad of ['../victim', '../../victim', 'a/../../victim', '/etc', '..', '.', '', 'UPPER', 'a/b', 'x\\y', 'a\0b', undefined, null, 7]) {
+      assert.throws(() => revokeConsent(bad, { store, root }), (error) => error.code === 'invalid-server-id', String(bad));
+    }
+    assert.equal(fs.readFileSync(path.join(victim, 'precious'), 'utf8'), 'keep');
+    assert.equal(fs.existsSync(path.join(root, 'zhtw-mcp')), true);
+    assert.equal(store.data.get('researchConsents')?.size ?? 0, 0, 'no consent record is written under a bad id');
+    grantConsent('zhtw-mcp', { store });
+    assert.equal(revokeConsent('zhtw-mcp', { store, root }).ok, true);
+    assert.equal(fs.existsSync(path.join(root, 'zhtw-mcp')), false, 'a real tool id still cleans its own folder');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('consent belongs to the exact tool entry: a changed version, source, hash, command or permissions asks again', async () => {
+  const store = new FakeStore();
+  const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  grantConsent('zhtw-mcp', { store });
+  assert.equal(isConsentActive('zhtw-mcp', store), true);
+  const changes = {
+    version: 'v9.9.9',
+    source: 'https://example.invalid/other.git',
+    integrity: `sha256:${'0'.repeat(64)}`,
+    command: ['other-binary']
+  };
+  for (const [field, value] of Object.entries(changes)) {
+    let catalog;
+    try { catalog = [validateCatalogItem({ ...tool, [field]: value })]; } catch { continue; }
+    assert.equal(isConsentActive('zhtw-mcp', store, catalog), false, `${field} changed`);
+    const listed = listResearchTools({ store, catalog })[0];
+    assert.equal(listed.consentStatus, 'outdated', field);
+    assert.match(listed.statusLabel, /Consent outdated/);
+    await assert.rejects(prepareResearchTool('zhtw-mcp', { store, root: os.tmpdir(), catalog, assetBytes: Buffer.from('x') }), (error) => error.code === 'consent-required', field);
+  }
+  assert.equal(isConsentActive('zhtw-mcp', store, []), false, 'a tool no longer in the catalog has no active consent');
+  store.put('researchConsents', 'zhtw-mcp', { serverId: 'zhtw-mcp', status: 'consented' });
+  assert.equal(isConsentActive('zhtw-mcp', store), false, 'a record without a fingerprint (older format) is not trusted');
 });

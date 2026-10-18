@@ -185,6 +185,8 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
     }
 
     if (!serverId) return { ok: false, code: 'server-id-required' };
+    // The id names a folder in private storage: refuse anything but a plain name before asking the user.
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(serverId) || serverId.includes('..')) return { ok: false, code: 'invalid-server-id' };
 
     if (interactive) {
       const answer = await vscode.window.showWarningMessage(
