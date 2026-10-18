@@ -4,6 +4,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { privateStorage } from '../storage/storageCommands';
 import { configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
+import { resolveInteractive } from '../shared/executionMode';
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
   readFeedback(store: unknown, target: Record<string, unknown>): { state: string; record?: { note: string; headSha: string | null; updatedAt: string; revision: number } };
@@ -449,9 +450,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.configureMergeAuthority, async (value?: unknown) => {
-      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { mode?: unknown; interactive?: unknown } : {};
-      const interactive = isTest ? (input.interactive === false ? false : true) : true;
+      const interactive = resolveInteractive(context, input.interactive as boolean | undefined);
       const result = await configureMergeAuthority({ mode: input.mode, interactive });
       if (result.ok) {
         refresh();
@@ -462,9 +462,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.publicFeedback, async (value?: unknown) => {
-      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { body?: unknown; interactive?: unknown } : {};
-      const interactive = isTest ? (input.interactive === false ? false : true) : true;
+      const interactive = resolveInteractive(context, input.interactive as boolean | undefined);
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target) return { ok: false, code: 'report-evidence-unavailable' };
@@ -484,9 +483,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.reviewPullRequest, async (value?: unknown) => {
-      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { decision?: unknown; body?: unknown; interactive?: unknown } : {};
-      const interactive = isTest ? (input.interactive === false ? false : true) : true;
+      const interactive = resolveInteractive(context, input.interactive as boolean | undefined);
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
@@ -500,9 +498,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.mergePullRequest, async (value?: unknown) => {
-      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const input = value && typeof value === 'object' ? value as { interactive?: unknown } : {};
-      const interactive = isTest ? (input.interactive === false ? false : true) : true;
+      const interactive = resolveInteractive(context, input.interactive as boolean | undefined);
       const uri = vscode.window.activeTextEditor?.document.uri;
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
@@ -522,9 +519,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.feedback, async (value?: unknown) => {
-      const isTest = context.extensionMode === vscode.ExtensionMode.Test;
       const requested = value && typeof value === 'object' ? value as { kind?: unknown; number?: unknown; note?: unknown; interactive?: unknown } : {};
-      const interactive = isTest ? (requested.interactive === false ? false : true) : true;
+      const interactive = resolveInteractive(context, requested.interactive as boolean | undefined);
       const requestedKind = requested.kind === 'issue' || requested.kind === 'pullRequest' ? requested.kind : null;
       const requestedNumber = typeof requested.number === 'number' && Number.isSafeInteger(requested.number) && requested.number > 0 ? requested.number : null;
       const target: { kind: Kind; number: number } | null = requestedKind && requestedNumber !== null ? { kind: requestedKind, number: requestedNumber } : activeTarget();

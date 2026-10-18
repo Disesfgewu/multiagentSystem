@@ -377,6 +377,7 @@ export class GitHubController {
 
   /** Lists open issues or pull requests, and opens the page that is picked. */
   async browse(options: GitHubCommandOptions = {}): Promise<BrowseResult> {
+    // browse performs HTTP GET reads of issues/pullRequests; read-only operation permitted non-interactively for tree views.
     const interactive = options.interactive !== false;
     const chosen = await this.chooseRepository(options, interactive);
     if (!chosen.ok) return chosen;
@@ -447,6 +448,7 @@ export class GitHubController {
 
   /** Opens an issue, a pull request or its checks page. No read is needed: the address is built locally. */
   async openPage(kind: 'issue' | 'pullRequest' | 'checks', options: GitHubCommandOptions = {}): Promise<OpenResult> {
+    // openPage opens a public github.com page in browser; safe read/navigation permitted non-interactively.
     const interactive = options.interactive !== false;
     const chosen = await this.chooseRepository(options, interactive);
     if (!chosen.ok) return chosen;
@@ -463,6 +465,7 @@ export class GitHubController {
 
   /** Reads the review and CI evidence of one pull request; whatever was not read is shown as unknown. */
   async pullRequestStatus(options: GitHubCommandOptions = {}): Promise<StatusResult> {
+    // pullRequestStatus performs HTTP GET read of PR review/CI status; read-only permitted non-interactively.
     const interactive = options.interactive !== false;
     const chosen = await this.chooseRepository(options, interactive);
     if (!chosen.ok) return chosen;

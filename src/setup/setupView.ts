@@ -7,6 +7,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { describeStorage } from '../storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../storage/private-store';
 import { observationsFor } from '../accounts/accountCommands';
+import { resolveInteractive } from '../shared/executionMode';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { diagnose, formatDiagnosticReport } = require('./diagnostics') as {
@@ -493,12 +494,21 @@ export function registerSetup(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(SETUP_COMMANDS.retryClaude, () => controller.prepareClaude(true)),
     vscode.commands.registerCommand(SETUP_COMMANDS.diagnose, (arg?: unknown) =>
       controller.runDiagnostics(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; probeSecrets?: boolean }) : undefined)),
-    vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) =>
-      controller.migrateStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean }) : undefined)),
-    vscode.commands.registerCommand(SETUP_COMMANDS.recoverStorageLock, (arg?: unknown) =>
-      controller.recoverStorageLock(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; force?: boolean }) : undefined)),
-    vscode.commands.registerCommand(SETUP_COMMANDS.clearStorage, (arg?: unknown) =>
-      controller.clearStorage(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : undefined))
+    vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) => {
+      const opts = arg && typeof arg === 'object' ? (arg as { interactive?: boolean }) : {};
+      const interactive = resolveInteractive(context, opts.interactive);
+      return controller.migrateStorage({ ...opts, interactive });
+    }),
+    vscode.commands.registerCommand(SETUP_COMMANDS.recoverStorageLock, (arg?: unknown) => {
+      const opts = arg && typeof arg === 'object' ? (arg as { interactive?: boolean; force?: boolean }) : {};
+      const interactive = resolveInteractive(context, opts.interactive);
+      return controller.recoverStorageLock({ ...opts, interactive });
+    }),
+    vscode.commands.registerCommand(SETUP_COMMANDS.clearStorage, (arg?: unknown) => {
+      const opts = arg && typeof arg === 'object' ? (arg as { interactive?: boolean; confirm?: string; includeBackups?: boolean }) : {};
+      const interactive = resolveInteractive(context, opts.interactive);
+      return controller.clearStorage({ ...opts, interactive });
+    })
   );
   // Extension Host tests install a synthetic archive explicitly. Production activation performs
   // the first-use setup automatically; it never reads a URL or executable from the workspace.

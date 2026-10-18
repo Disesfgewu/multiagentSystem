@@ -6,6 +6,7 @@ import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
+import { resolveInteractive } from '../shared/executionMode';
 
 const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
@@ -163,6 +164,7 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
 let sessions: SessionCommands | undefined;
 let treeForTest: AccountTree | undefined;
 let currentTree: AccountTree | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
 
 export function accountTreeForTests(): vscode.TreeDataProvider<AccountTreeItem> {
   if (!treeForTest) throw new Error('The account tree is available only in Extension Host tests.');
@@ -239,6 +241,7 @@ async function pickConfigFolder(provider: string, label: string, profiles: any[]
 }
 
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
+  extensionContext = context;
   sessions = sessionCommands;
   const tree = new AccountTree();
   currentTree = tree;
@@ -415,7 +418,8 @@ async function login(value: unknown): Promise<void> {
 /** Runs the provider's own status command in this profile's environment and shows the result in plain words. */
 async function check(value: unknown): Promise<CheckResult | undefined> {
   const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean }) : {};
-  const interactive = options.interactive !== false;
+  // Running identity check executes provider command in child process; non-interactive is restricted to test mode.
+  const interactive = resolveInteractive(extensionContext, options.interactive);
   const id = selectedId(options.id ?? value);
   const profile = id || !interactive ? undefined : await chooseProfile();
   const selected = profile ?? (id ? { id } : undefined);
@@ -455,23 +459,33 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
 /** Sets (or, with `clear`, removes) the limits for one account. */
 async function limits(value: unknown): Promise<unknown> {
   const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean; clear?: boolean; warn?: string; block?: string; max?: string; unknownQuota?: string }) : {};
+  // Modifying account limits alters private storage policy; non-interactive is restricted strictly to ExtensionMode.Test.
+  const interactive = resolveInteractive(extensionContext, options.interactive);
   const id = selectedId(options.id ?? value);
-  const profile = id ? undefined : await chooseProfile();
+  const profile = id || !interactive ? undefined : await chooseProfile();
   const selected = profile ?? (id ? { id } : undefined);
   if (!selected) return { ok: false, cancelled: true };
   const result = await accountService(() => sessions?.list() ?? []);
-  if (!result.ok) { if (options.interactive !== false) void vscode.window.showErrorMessage(result.message); return { ok: false, reason: 'storage-unavailable' }; }
+  if (!result.ok) { if (interactive) void vscode.window.showErrorMessage(result.message); return { ok: false, reason: 'storage-unavailable' }; }
   const loaded = result.service.get(selected.id);
-  if (!loaded.ok) { if (options.interactive !== false) void vscode.window.showErrorMessage(errorFor(loaded)); return { ok: false, reason: 'profile-not-found' }; }
+  if (!loaded.ok) { if (interactive) void vscode.window.showErrorMessage(errorFor(loaded)); return { ok: false, reason: 'profile-not-found' }; }
   if (options.clear === true) {
+    if (interactive) {
+      const confirm = await vscode.window.showWarningMessage(
+        `Remove saved limits for “${loaded.profile.label}”?`,
+        { modal: true },
+        'Remove Limits'
+      );
+      if (confirm !== 'Remove Limits') return { ok: false, cancelled: true };
+    }
     const cleared = await clearLimits(loaded.profile.id, () => sessions?.list() ?? []);
     currentTree?.refresh();
     return { ok: cleared };
   }
-  const outcome = await editLimits(loaded.profile.id, loaded.profile.label, () => sessions?.list() ?? [], options.interactive === false ? { warn: options.warn, block: options.block, max: options.max, unknownQuota: options.unknownQuota } : undefined);
+  const outcome = await editLimits(loaded.profile.id, loaded.profile.label, () => sessions?.list() ?? [], interactive === false ? { warn: options.warn, block: options.block, max: options.max, unknownQuota: options.unknownQuota } : undefined);
   if (outcome.ok) {
     currentTree?.refresh();
-    if (options.interactive !== false) void vscode.window.showInformationMessage(`Limits saved for “${loaded.profile.label}”. They apply to agents started from now on; agents already running are not changed.`);
+    if (interactive) void vscode.window.showInformationMessage(`Limits saved for “${loaded.profile.label}”. They apply to agents started from now on; agents already running are not changed.`);
   }
   return outcome;
 }

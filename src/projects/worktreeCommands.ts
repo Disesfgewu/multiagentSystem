@@ -60,6 +60,8 @@ const vscodeUi: WorktreeUi = {
   error: (message) => void vscode.window.showErrorMessage(message)
 };
 
+import { resolveInteractive } from '../shared/executionMode';
+
 export function registerWorktreeCommands(context: vscode.ExtensionContext): void {
   const controller = new WorktreeController({
     ui: vscodeUi,
@@ -70,8 +72,19 @@ export function registerWorktreeCommands(context: vscode.ExtensionContext): void
   const options = (value: unknown): WorktreeCommandOptions =>
     value && typeof value === 'object' ? (value as WorktreeCommandOptions) : {};
   context.subscriptions.push(
+    // Worktree list is read-only inspection; non-interactive is permitted for programmatic queries.
     vscode.commands.registerCommand(WORKTREE_COMMANDS.list, (value?: unknown) => controller.list(options(value))),
-    vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => controller.create(options(value))),
-    vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => controller.remove(options(value)))
+    // Worktree creation runs git and writes to disk; non-interactive is permitted ONLY in test mode.
+    vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => {
+      const opts = options(value);
+      const interactive = resolveInteractive(context, opts.interactive);
+      return controller.create({ ...opts, interactive });
+    }),
+    // Worktree removal deletes files on disk; non-interactive is permitted ONLY in test mode.
+    vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => {
+      const opts = options(value);
+      const interactive = resolveInteractive(context, opts.interactive);
+      return controller.remove({ ...opts, interactive });
+    })
   );
 }

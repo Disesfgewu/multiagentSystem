@@ -36,6 +36,10 @@ export type GateOutcome = { ok: true; release: () => void } | { ok: false; code:
  * or (for usage limits) override; callers that cannot ask are refused whenever the limits say to ask or
  * to stop. On success, the caller MUST call the returned `release()` once, exactly when the session this
  * launch produced stops or its terminal closes; forgetting to release leaks a slot permanently.
+ *
+ * Security note: When interactive === false, gateAccountLaunch fails closed.
+ * It NEVER bypasses the gate: if the policy blocks or requires confirmation,
+ * it immediately stops the agent and returns { ok: false, code: 'quota-gate' }.
  */
 export async function gateAccountLaunch(accountProfileId: string, interactive: boolean, sessions: () => SessionUse[]): Promise<GateOutcome> {
   const accounts = await accountService(sessions);

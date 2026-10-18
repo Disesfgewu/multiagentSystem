@@ -203,7 +203,10 @@ export function registerGitHubCommands(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh())
   );
   // Invoked from the Command Palette the argument is undefined. Other callers (the Extension
-  // Host smoke test) pass options; see GitHubCommandOptions.
+  // Host smoke test, tree view populator) pass options; see GitHubCommandOptions.
+  // Security rationale: The commands below (browse, openPage, pullRequestStatus) are strictly
+  // read-only queries against GitHub GET endpoints or local URL construction. They do not write,
+  // mutate, launch processes, or modify permissions. Non-interactive execution is safely permitted.
   context.subscriptions.push(
     vscode.commands.registerCommand(GITHUB_COMMANDS.browse, (value?: unknown) => controller.browse(commandOptions(value))),
     vscode.commands.registerCommand(GITHUB_COMMANDS.openIssue, (value?: unknown) => controller.openPage('issue', commandOptions(value))),

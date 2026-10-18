@@ -18,6 +18,7 @@ const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
 import { gateAccountLaunch } from '../accounts/quotaGateUi';
+import { resolveInteractive } from '../shared/executionMode';
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -166,7 +167,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     value && typeof value === 'object' ? (value as SessionCommandOptions) : {};
 
   async function launch(input: SessionCommandOptions): Promise<SessionOutcome> {
-    const interactive = input.interactive !== false;
+    // Launching a session spawns terminal processes, prepares instructions, and takes account reservations.
+    // Non-interactive execution is restricted strictly to ExtensionMode.Test.
+    const interactive = resolveInteractive(context, input.interactive);
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -401,7 +404,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   async function act(action: 'focus' | 'stop' | 'reopen', value: unknown): Promise<SessionOutcome> {
     const input = options(value);
-    const interactive = input.interactive !== false;
+    // 'focus' is pure navigation/focusing an existing terminal.
+    // 'stop' (killing terminal process) and 'reopen' (launching new terminal & taking reservations) mutate state
+    // and can only run non-interactively in ExtensionMode.Test.
+    const interactive = action === 'focus' ? input.interactive !== false : resolveInteractive(context, input.interactive);
     // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
     let release: (() => void) | undefined;
     try {
@@ -582,6 +588,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   async function list(value: unknown): Promise<SessionOutcome> {
     const input = options(value);
+    // Session list is pure in-memory read-only inspection of session views; non-interactive is permitted for programmatic queries.
     if (input.interactive === false) return { ok: true, sessions: manager.list() };
     const picked = await pickSession('Sessions in this window (state is shown only when there is evidence)', () => true);
     if (!picked) return { ok: true, sessions: manager.list() };
