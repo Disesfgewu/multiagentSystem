@@ -19,6 +19,8 @@ If the project has a PR template (`.github/pull_request_template.md`), `gh pr cr
 gh pr create --title "<type>(<scope>): <summary> (Refs #<issue>)" --body "$(cat <<'EOF'
 <一段話：使用者現在在畫面上能做到什麼，或明講「基礎工作，使用者看不到」>
 
+Refs #<issue>
+
 ### 變更內容
 - [重點變更，vertical slice 優先，不要夾帶無關範圍]
 
@@ -26,7 +28,7 @@ gh pr create --title "<type>(<scope>): <summary> (Refs #<issue>)" --body "$(cat 
 - 測試：<N>/<N> 通過
 - [如有整合測試 / CI 矩陣，列出結果；沒跑過的就不要寫]
 
-### 未驗證 / 待外部資源
+### 未驗證／待外部資源
 - [真機、真帳號、原生平台等明講，不要省略]
 EOF
 )"

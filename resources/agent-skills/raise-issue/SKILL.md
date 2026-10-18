@@ -1,7 +1,7 @@
 ---
 name: raise-issue
 description: Create a well-formed GitHub issue for the current repository in one shot, using the project's issue template and existing labels, instead of free-composing issue structure from scratch each time.
-args: "<one-line problem statement>"
+argument-hint: "<one-line problem statement>"
 ---
 
 Confirm which repository you are in once: `gh repo view --json nameWithOwner -q .nameWithOwner`.
@@ -21,8 +21,8 @@ gh issue create --title "<type>: <one-line>" --label <existing-labels-only> --bo
 ## 背景
 [為什麼開這張；是誰發現的、什麼情境下發現]
 
-## 現況（file:line evidence, not vibes）
-[具體程式位置與行為，貼關鍵程式碼片段]
+## 現況
+[具體程式位置與行為（file:line），必要時貼關鍵片段；不要憑印象]
 
 ## 驗收
 [每一條都要能用程式/測試驗證；依賴真機/真帳號/原生平台/外部服務設定的項目要明講，不要混在可程式驗證的條件裡]
@@ -33,4 +33,4 @@ EOF
 )"
 ```
 
-Labels: run `gh label list` once if you don't already know them — never pass a label that doesn't exist (it aborts the whole creation). Do not add a "ready to work" style label yourself unless you have already confirmed no blocking dependency — such labels often drive other agents' claim behavior.
+Labels: run `gh label list` once if you don't already know them — never pass a label that doesn't exist (gh fails with an error and creates nothing). Do not add a "ready to work" style label yourself unless you have already confirmed no blocking dependency — such labels often drive other agents' claim behavior.

@@ -12,7 +12,7 @@ gh issue list --state open --limit 60 --json number,title,labels,updatedAt \
 
 Output the list verbatim. Then partition it into three buckets by label only (no re-reading issue bodies yet). Label names differ per project: if you don't already know them in this session, run `gh label list` once and map them to these meanings using their names and descriptions:
 - labels meaning "blocked / waiting" → list as-is, do not investigate further unless the user asks.
-- labels meaning "ready to work / high priority" and no existing branch or PR → candidates to pick up (check with `git branch -a | grep "issue-<N>"` and `gh pr list --search "<N>"` per candidate, not per whole list).
+- labels meaning "ready to work / high priority" and no existing branch or PR → candidates to pick up (check per candidate, not per whole list, with `git branch -a | grep -E "issue-<N>([^0-9]|$)"` so issue-1 does not match issue-11, and `gh pr list --search "<N>"`).
 - everything else → list as-is.
 
 If the project has no such labels, say so and list everything as one bucket.

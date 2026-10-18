@@ -49,10 +49,10 @@ test('bundled skills are the eight generic procedures with no repository-specifi
   for (const entry of all) {
     const text = entry.content.toString('utf8');
     assert.doesNotMatch(text, /multiagentSystem|Disesfgewu|this repo\b|#\d+/i, entry.rel);
-    assert.doesNotMatch(text, /\/Users\/|\/home\/|C:\\\\|\/tmp\//, entry.rel);
+    assert.doesNotMatch(text, /\/Users\/|\/home\/|C:\\\\|(^|[\s"'(])\/tmp\//, entry.rel);
     assert.doesNotMatch(text, /`(ready|mvp|blocked|priority)`/, entry.rel);
   }
-  for (const entry of loaded) assert.match(entry.content.toString('utf8'), /^---\nname: [a-z-]+\ndescription: /, entry.rel);
+  for (const entry of loaded) assert.match(entry.content.toString('utf8'), /^---\r?\nname: [a-z-]+\r?\ndescription: /, entry.rel);
   assert.match(fs.readFileSync(path.join(skillsRoot, 'raise-issue', 'SKILL.md'), 'utf8'), /gh label list/);
   assert.match(fs.readFileSync(path.join(skillsRoot, 'raise-issue', 'SKILL.md'), 'utf8'), /gh repo view/);
 });
@@ -162,6 +162,17 @@ test('the atomic writer never replaces an existing file and leaves no temporary 
   assert.deepEqual(fs.readdirSync(workspace).sort(), ['SKILL.md', 'fresh.md']);
 });
 
+test('a failure while writing or syncing the temporary file leaves no temporary file behind', (t) => {
+  const { workspace } = world(t);
+  for (const failing of ['writeSync', 'fsyncSync', 'linkSync']) {
+    const io = { ...fs, [failing]() { const error = new Error(`injected ${failing} failure`); error.code = 'EIO'; throw error; } };
+    const target = path.join(workspace, `${failing}.md`);
+    assert.throws(() => skills.writeNewFileAtomic(target, Buffer.from('content'), io), /injected/);
+    assert.equal(fs.existsSync(target), false);
+    assert.deepEqual(fs.readdirSync(workspace).filter((name) => name.endsWith('.tmp')), [], failing);
+  }
+});
+
 test('remove deletes only unchanged files it wrote and keeps edited and user files', async (t) => {
   const { workspace } = world(t);
   fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'mine'), { recursive: true });
@@ -207,9 +218,33 @@ test('remove deletes nothing when the install record is malformed or names unsaf
   const hash = crypto.createHash('sha256').update('outside').digest('hex');
   const escaping = memoryStore({ [skills.recordKey(workspace)]: { version: 1, files: [{ path: '../outside.md', sha256: hash }, { path: '/etc/hosts', sha256: hash }], dirs: ['..'] } });
   const result = await skills.runRemove(deps(workspace, { store: escaping, isTestMode: true, arg: { interactive: false } }));
-  assert.equal(result.removed.length, 0);
+  assert.equal(result.code, 'record-invalid');
   assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
   assert.ok(fs.existsSync(sandbox));
+});
+
+test('a record with one escaping or unrelated entry is unreadable as a whole, so even valid entries are kept', async (t) => {
+  const { workspace } = world(t);
+  const store = memoryStore();
+  await skills.runInstall(deps(workspace, { isTestMode: true, arg: { interactive: false }, store }));
+  const key = skills.recordKey(workspace);
+  const valid = store.data[key];
+  assert.ok(skills.parseRecord(valid));
+  const bad = [
+    { ...valid, files: [...valid.files, { path: '.claude/skills/../../x/SKILL.md', sha256: valid.files[0].sha256 }] },
+    { ...valid, files: [...valid.files, { path: 'src/index.js', sha256: valid.files[0].sha256 }] },
+    { ...valid, files: [...valid.files, { path: '/abs/SKILL.md', sha256: valid.files[0].sha256 }] },
+    { ...valid, files: [...valid.files, { path: '.claude\\skills\\x\\SKILL.md', sha256: valid.files[0].sha256 }] },
+    { ...valid, dirs: [...valid.dirs, '..'] },
+    { ...valid, dirs: [...valid.dirs, 'src'] }
+  ];
+  for (const record of bad) {
+    assert.equal(skills.parseRecord(record), null);
+    store.data[key] = record;
+    const result = await skills.runRemove(deps(workspace, { store, isTestMode: true, arg: { interactive: false } }));
+    assert.equal(result.code, 'record-invalid');
+    assert.ok(fs.existsSync(path.join(workspace, '.claude/skills/fetch-prs/SKILL.md')), 'nothing deleted');
+  }
 });
 
 test('symlinked target folders and escaping paths are refused before anything is written', async (t) => {
@@ -261,7 +296,7 @@ test('the commands are contributed and the VSIX ignore list ships the resources 
   const commands = Object.fromEntries(manifest.contributes.commands.map((c) => [c.command, c.title]));
   assert.match(commands['multiagentSystem.skills.install'], /^Multiagent: Install Agent Skills in This Workspace/);
   assert.equal(commands['multiagentSystem.skills.remove'], 'Multiagent: Remove Installed Agent Skills');
-  const ignore = fs.readFileSync(path.join(repoRoot, '.vscodeignore'), 'utf8').split('\n');
+  const ignore = fs.readFileSync(path.join(repoRoot, '.vscodeignore'), 'utf8').split(/\r?\n/);
   assert.ok(ignore.includes('.claude/**'));
   assert.ok(ignore.includes('!resources/agent-skills/**'));
   assert.ok(ignore.includes('!resources/agent-templates/**'));

@@ -162,27 +162,28 @@ function ensureParents(root, parts, createdDirs) {
 // Writes to a temporary file in the target folder, then publishes it without ever replacing an
 // existing file: a hard link fails with EEXIST if the target appeared after planning. On file
 // systems without hard links it falls back to a rename after a fresh lstat check.
-function writeNewFileAtomic(target, content) {
+function writeNewFileAtomic(target, content, io = fs) {
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
-  const fd = fs.openSync(temp, 'wx', 0o644);
+  const fd = io.openSync(temp, 'wx', 0o644);
+  let open = true;
+  // One finally covers write, fsync, close and publish: the temporary file never survives.
   try {
-    fs.writeSync(fd, content);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
+    io.writeSync(fd, content);
+    io.fsyncSync(fd);
+    open = false;
+    io.closeSync(fd);
     try {
-      fs.linkSync(temp, target);
+      io.linkSync(temp, target);
     } catch (error) {
       if (error && error.code === 'EEXIST') return false;
       if (!error || !['EPERM', 'ENOTSUP', 'ENOSYS', 'EXDEV', 'EACCES'].includes(error.code)) throw error;
       if (lstatOrNull(target)) return false;
-      fs.renameSync(temp, target);
+      io.renameSync(temp, target);
     }
     return true;
   } finally {
-    try { fs.unlinkSync(temp); } catch { /* already renamed */ }
+    if (open) { try { io.closeSync(fd); } catch { /* already failing */ } }
+    try { io.unlinkSync(temp); } catch { /* already renamed or never created */ }
   }
 }
 
@@ -210,16 +211,24 @@ function applyInstall(root, writes) {
 
 const recordKey = (root) => `${RECORD_KEY_PREFIX}${root}`;
 
-// Strict parse: anything unexpected makes the record unusable, so removal deletes nothing.
+// The installer only ever writes these shapes, so a record naming anything else (an escaping,
+// absolute or unrelated path) has been tampered with or corrupted.
+const SKILL_FILE_PATH = /^\.claude\/skills\/[a-z0-9][a-z0-9-]{0,63}\/SKILL\.md$/;
+const SKILL_DIR_PATH = /^\.claude(?:\/skills(?:\/[a-z0-9][a-z0-9-]{0,63})?)?$/;
+const TEMPLATE_DIRS = new Set(['.github', '.github/ISSUE_TEMPLATE']);
+const isRecordedFilePath = (value) => typeof value === 'string' && (SKILL_FILE_PATH.test(value) || TEMPLATE_FILES.some((file) => file.rel === value));
+const isRecordedDirPath = (value) => typeof value === 'string' && (SKILL_DIR_PATH.test(value) || TEMPLATE_DIRS.has(value));
+
+// Strict parse: anything unexpected makes the whole record unusable, so removal deletes nothing.
 function parseRecord(value) {
   if (value === undefined || value === null) return { version: RECORD_VERSION, files: [], dirs: [] };
   if (typeof value !== 'object' || Array.isArray(value) || value.version !== RECORD_VERSION || !Array.isArray(value.files) || !Array.isArray(value.dirs)) return null;
   const files = [];
   for (const file of value.files) {
-    if (!file || typeof file.path !== 'string' || typeof file.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(file.sha256)) return null;
+    if (!file || !isRecordedFilePath(file.path) || typeof file.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(file.sha256)) return null;
     files.push({ path: file.path, sha256: file.sha256 });
   }
-  if (!value.dirs.every((dir) => typeof dir === 'string')) return null;
+  if (!value.dirs.every(isRecordedDirPath)) return null;
   return { version: RECORD_VERSION, files, dirs: [...value.dirs] };
 }
 
