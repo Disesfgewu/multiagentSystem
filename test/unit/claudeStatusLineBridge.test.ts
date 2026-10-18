@@ -108,3 +108,24 @@ test('Claude status line bridge: fail-closed on write failure', () => {
   // Must exit code 0 and never crash Claude Code
   assert.equal(result.status, 0);
 });
+
+test('bridge rejects oversized input in a single chunk and does not persist a valid prefix', async () => {
+  const { PassThrough } = await import('node:stream');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-bound-'));
+  const target = path.join(root, 'quota.json');
+  try {
+    for (const chunks of [
+      [JSON.stringify({ padding: 'x'.repeat(70000), rate_limits: {} })],
+      [JSON.stringify({ padding: '界'.repeat(22000), rate_limits: {} })],
+      ['{"rate_limits":{}}', ' '.repeat(70000)]
+    ]) {
+      const input = new PassThrough(); const output = new PassThrough();
+      runBridge([target], input as unknown as typeof process.stdin, output as unknown as typeof process.stdout);
+      for (const chunk of chunks) input.emit('data', chunk);
+      input.emit('end');
+      assert.equal(fs.existsSync(target), false);
+      assert.equal(output.read(), null);
+      input.destroy(); output.destroy();
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

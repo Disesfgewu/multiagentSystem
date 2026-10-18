@@ -39,9 +39,16 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
 
   stdinStream.setEncoding('utf8');
   stdinStream.on('data', (chunk) => {
-    if (buffer.length < MAX_BUFFER) {
-      buffer += chunk;
+    if (finished) return;
+    if (Buffer.byteLength(buffer, 'utf8') + Buffer.byteLength(chunk, 'utf8') > MAX_BUFFER) {
+      finished = true;
+      clearTimeout(timer);
+      process.exitCode = 0;
+      if (typeof stdinStream.destroy === 'function') stdinStream.destroy();
+      else if (typeof stdinStream.pause === 'function') stdinStream.pause();
+      return;
     }
+    buffer += chunk;
   });
 
   const onEnd = () => {

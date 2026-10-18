@@ -399,3 +399,15 @@ test('bridge ownership requires the exact executable command and destination, ne
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('quota bridge rejects reset values outside the JavaScript date range without throwing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-range-'));
+  const now = new Date('2026-10-18T06:00:00Z');
+  try {
+    for (const resets_at of [1e308, 1e20]) {
+      fs.writeFileSync(path.join(root, STATUSLINE_QUOTA_FILE_NAME), JSON.stringify({ observedAt: now.toISOString(), rate_limits: { five_hour: { used_percentage: 1, resets_at } } }));
+      const values = readClaudeQuotaObservations('synthetic', root, now) as Array<{ value: unknown; confidence: string }>;
+      assert.ok(values.every((value) => value.value === null && value.confidence === 'unknown'));
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

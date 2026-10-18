@@ -167,7 +167,7 @@ function claudeQuotaFromStatusLine(payload, { profileId, observedAt, ttlMs = QUO
       : 'rate_limits-absent (subscription accounts only, after first API response)';
     const rawReset = window ? window.resets_at : undefined;
     const resetGiven = rawReset !== undefined && rawReset !== null;
-    const resetsMs = resetGiven && Number.isFinite(rawReset) && rawReset > 0 ? rawReset * 1000 : null;
+    const resetsMs = resetGiven && Number.isFinite(rawReset) && rawReset > 0 && Number.isFinite(new Date(rawReset * 1000).getTime()) ? rawReset * 1000 : null;
     const resetInvalid = resetGiven && resetsMs === null;
     const expired = resetsMs !== null && resetsMs <= nowMs;
     let reason = reasonMissing;
