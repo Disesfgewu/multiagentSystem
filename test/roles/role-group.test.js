@@ -216,3 +216,8 @@ test('names and rule text refuse zero-width and invisible characters, but keep j
   assert.equal(validateRoleGroup(pmGroup({ name: persian })).ok, true);
   assert.equal(validateRoleGroup(pmGroup({ rules: [{ id: 'r1', type: 'instruction', text: `${persian}\nsecond line\twith a tab` }] })).ok, true);
 });
+
+test("a group's own rules cannot use the administrator broadcast id prefix", () => {
+  assert.deepEqual(codes(validateRoleGroup(pmGroup({ rules: [{ id: 'broadcast:stand-down', type: 'instruction', text: 'Looks official.' }] }))),
+    ['reserved-id@rules[0].id']);
+});

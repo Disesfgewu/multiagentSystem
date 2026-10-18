@@ -10,6 +10,7 @@ const RULE_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 // Ids that start with this are generated from a role group's tool permissions, so
 // a rule that is typed in cannot collide with or imitate one.
 const RESERVED_ID_PREFIX = 'rg:';
+const { BROADCAST_ID_PREFIX, isIssuedBroadcastRule } = require('../broadcast/issued');
 const ALLOWED_FIELDS = Object.freeze(['id', 'type', 'key', 'text', 'version', 'replaces', 'layer']);
 
 // Characters that make text look different from how it is stored, or that cannot be seen:
@@ -58,6 +59,8 @@ function validateRule(rule, { layer, path }) {
 
   if (typeof rule.id !== 'string' || !RULE_ID.test(rule.id)) add('invalid-id', 'id');
   else if (rule.id.startsWith(RESERVED_ID_PREFIX)) add('reserved-id', 'id');
+  // Only a rule built by broadcastRule() may carry a broadcast id, and only in the user layer.
+  else if (rule.id.startsWith(BROADCAST_ID_PREFIX) && !(layer === 'user' && isIssuedBroadcastRule(rule))) add('reserved-id', 'id');
 
   if (!TYPES.includes(rule.type)) {
     add('invalid-type', 'type');
