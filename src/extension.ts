@@ -13,6 +13,7 @@ import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminal
 import { registerSetup } from './setup/setupView';
 import { registerResearchCommands } from './research/researchCommands';
 import { setExtensionTestMode } from './shared/testMode';
+import { registerSkillCommands } from './skills/skillCommands';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
@@ -75,6 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerStorageCommands(context);
   registerSetup(context);
   registerResearchCommands(context);
+  registerSkillCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)

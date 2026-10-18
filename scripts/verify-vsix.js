@@ -23,6 +23,8 @@ function allowed(name) {
   if (META_FILES.has(name) || ROOT_FILES.has(name)) return true;
   if (/^extension\/out\/(?:src|packages)\/[\w./-]+\.js$/.test(name)) return true;
   if (/^extension\/node_modules\/fflate\/[\w./-]+$/.test(name)) return true;
+  if (/^extension\/resources\/agent-skills\/[a-z0-9][a-z0-9-]*\/SKILL\.md$/.test(name)) return true;
+  if (name === 'extension/resources/agent-templates/ISSUE_TEMPLATE/standard.md' || name === 'extension/resources/agent-templates/pull_request_template.md') return true;
   return false;
 }
 

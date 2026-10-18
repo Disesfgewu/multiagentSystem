@@ -1,0 +1,4 @@
+# Bundled agent skills and templates are copied verbatim into user workspaces; keep them LF
+# so a VSIX built on Windows ships the same bytes (and hashes) as one built elsewhere.
+resources/agent-skills/** text eol=lf
+resources/agent-templates/** text eol=lf
