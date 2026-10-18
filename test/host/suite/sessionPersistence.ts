@@ -75,7 +75,28 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   assert.equal(stopResult.ok, true);
   assert.equal(fs.existsSync(expectedFile), false, 'instruction file must be cleaned up on session stop');
 
-  // 3. Test stale detection on reopen: simulate store mutation during interactive review dialog
+  // 3. Exercise the registered Codex start command. The unit synthetic terminal test separately
+  // verifies that this prepared profile is launched with `-p` and the same CODEX_HOME.
+  const sourceRole = store.get('roleGroups', 'host-pm');
+  assert.equal(sourceRole.ok && sourceRole.found, true);
+  const codexRole = structuredClone(sourceRole.value);
+  codexRole.group = { ...codexRole.group, id: 'host-codex', name: 'Host Codex', provider: 'codex', version: 1 };
+  assert.equal(store.put('roleGroups', 'host-codex', codexRole).ok, true);
+  const codexStart = await vscode.commands.executeCommand<{ ok: boolean; session?: SessionView }>(
+    'multiagentSystem.sessions.start',
+    { interactive: false, provider: 'codex', roleGroupId: 'host-codex', name: 'Managed Codex Instructions', cwd: workspace, launch: false }
+  );
+  assert.equal(codexStart.ok, true);
+  const codexSession = codexStart.session!;
+  assert.equal(codexSession.instructionMethod, 'profile-developer-instructions');
+  assert.equal(codexSession.instructionState, 'prepared');
+  const codexProfile = path.join(privateDir, 'codex-home', `mas-${codexSession.id}.config.toml`);
+  assert.equal(fs.existsSync(codexProfile), true, 'registered Codex start writes its private injection profile');
+  assert.match(fs.readFileSync(codexProfile, 'utf8'), /Review the latest approved head\./);
+  await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: codexSession.id, interactive: false });
+  assert.equal(fs.existsSync(codexProfile), false, 'Codex injection profile is cleaned up on stop');
+
+  // 4. Test stale detection on reopen: simulate store mutation during interactive review dialog
   const loadedRole = store.get('roleGroups', 'host-pm');
   const roleRecord = (loadedRole as any).value;
   const realShowInformationMessage = vscode.window.showInformationMessage;
@@ -101,7 +122,7 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
     store.put('roleGroups', 'host-pm', roleRecord);
   }
 
-  // 4. Test clean reopen succeeding with restored role
+  // 5. Test clean reopen succeeding with restored role
   const cleanReopen = await vscode.commands.executeCommand<{ ok: boolean; session?: SessionView }>(
     'multiagentSystem.sessions.reopen',
     { id: sessionId, interactive: false, launch: false }
@@ -113,5 +134,5 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: reopenedSessionId, interactive: false });
   assert.equal(fs.existsSync(reopenedFile), false, 'reopened instruction file cleaned up on stop');
 
-  return 'host smoke: managed instructions generate private files (0600), reject stale reopen, and clean up on session stop';
+  return 'host smoke: managed Claude and Codex instructions generate private files, reject stale reopen, and clean up on session stop';
 }

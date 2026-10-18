@@ -414,7 +414,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         this.instructionLabels.set(identity.id, instructions.injectionStatusLabel ?? 'Provider does not support instructions');
       } else if (instructions.injectionState === 'prepared') {
         this.instructionStates.set(identity.id, launch ? 'launch-requested' : 'prepared');
-        this.instructionLabels.set(identity.id, launch ? 'CLI launch requested with verified flag, awaiting CLI evidence' : 'Instructions prepared (shell not launched)');
+        this.instructionLabels.set(identity.id, launch ? 'CLI launch requested with prepared injection arguments; awaiting CLI evidence' : 'Instructions prepared (shell not launched)');
       } else {
         this.instructionStates.set(identity.id, 'none');
         this.instructionLabels.set(identity.id, 'No instructions configured');

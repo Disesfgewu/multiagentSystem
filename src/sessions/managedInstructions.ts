@@ -47,6 +47,7 @@ export interface PrepareInstructionsOptions {
   targetSessionId: string;
   now?: Date;
   privateDir: string;
+  codexHome?: string;
   context?: any;
 }
 
@@ -215,15 +216,22 @@ export async function prepareInstructionSnapshot(
     });
 
     try {
+      const ruleInjection = builtIn.capability(provider, 'ruleInjection');
+      const canInjectRules = ruleInjection === 'verified' || ruleInjection === 'unverified';
+
       plan = planInjection({
         provider,
         roleGroup: group ?? { id: 'unassigned', name: 'Agent', role: 'general' },
         rules: effectiveRules,
         memories: [],
         privateDir,
+        codexHome: options.codexHome,
         repoRoot,
         sessionToken: targetSessionId,
-        capabilities: { appendSystemPromptFile: true },
+        capabilities: {
+          appendSystemPromptFile: provider === 'claude' && canInjectRules,
+          profileFlag: provider === 'codex' && canInjectRules
+        },
         context: options.context
       });
 
@@ -234,6 +242,9 @@ export async function prepareInstructionSnapshot(
       if (provider === 'claude' && plan.method === 'append-system-prompt-file') {
         injectionState = 'prepared';
         injectionStatusLabel = 'Prepared: will append system prompt file at launch (CLI verification pending)';
+      } else if (provider === 'codex' && plan.method === 'profile-developer-instructions') {
+        injectionState = 'prepared';
+        injectionStatusLabel = 'Prepared: will pass config profile with developer instructions at launch (CLI verification pending)';
       } else if (plan.method === 'manual') {
         injectionState = 'manual';
         injectionStatusLabel = 'Manual: instructions written to private file; paste into terminal';
