@@ -12,6 +12,24 @@ const SUPPORTED_BRANCH_RULES = new Set([
   'protection:required_status_checks',
   'protection:required_conversation_resolution'
 ]);
+const MAX_COMMIT_TITLE = 200;
+const MAX_COMMIT_BODY = 4000;
+const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+// Lines git and GitHub read as attribution: a pull request body must not be able to add a co-author,
+// sign-off or reviewer to the merge commit just by containing such a line.
+const TRAILER_LINE = /^\s*(?:co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|helped-by|on-behalf-of|cc)\s*:/i;
+
+/** The merge commit text built from untrusted pull request text: one short clean line, and a bounded body. */
+function commitText(rawTitle, rawBody, number) {
+  const clean = (value) => String(value ?? '').replace(INVISIBLE, ' ');
+  const title = Array.from(clean(rawTitle).replace(/\s+/g, ' ').trim()).slice(0, MAX_COMMIT_TITLE).join('') || `Merge pull request #${number}`;
+  const body = String(rawBody ?? '').replace(/\r\n?/g, '\n').split('\n')
+    .map((line) => line.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (ch) => (ch === '\t' ? ' ' : '')))
+    .filter((line) => !TRAILER_LINE.test(line))
+    .join('\n').trim();
+  return { commitTitle: title, commitMessage: Array.from(body).slice(0, MAX_COMMIT_BODY).join('') };
+}
+
 const SAFE_WRITER_REASONS = new Set([
   'conflict', 'head-changed', 'denied', 'not-found', 'rate-limited',
   'validation-failed', 'not-mergeable'
@@ -234,18 +252,19 @@ async function mergePullRequest({
       repository: { owner: repository.owner, name: repository.name },
       number: pullNumber,
       expectedHeadSha: decision.headSha,
-      commitTitle: units[0].text,
-      commitMessage: units[1].text
+      ...commitText(units[0].text, units[1].text, pullNumber)
     });
   } catch {
     return refuse('merge-outcome-unknown');
   }
   if (!isPlain(result) || typeof result.ok !== 'boolean') return refuse('merge-outcome-unknown');
   if (result.ok !== true) {
-    const writerReason = SAFE_WRITER_REASONS.has(result.reason) ? result.reason : 'unknown';
-    return refuse('merge-refused', { writerReason });
+    // Only a reason the writer reports as a definite refusal means "not merged". Anything else (a 5xx,
+    // a reply that cannot be read) may have merged: keep the record that blocks a blind retry.
+    if (!SAFE_WRITER_REASONS.has(result.reason)) return refuse('merge-outcome-unknown');
+    return refuse('merge-refused', { writerReason: result.reason });
   }
   return { ok: true, reason: 'merged', pullNumber, headSha: decision.headSha };
 }
 
-module.exports = { assessMerge, mergePullRequest, SUPPORTED_BRANCH_RULES };
+module.exports = { assessMerge, mergePullRequest, commitText, SUPPORTED_BRANCH_RULES };

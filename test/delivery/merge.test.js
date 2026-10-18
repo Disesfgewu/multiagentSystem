@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assessMerge, mergePullRequest } = require('../../src/delivery/merge');
+const { assessMerge, mergePullRequest, commitText } = require('../../src/delivery/merge');
 
 const HEAD = 'a'.repeat(40);
 const OLD = 'b'.repeat(40);
@@ -235,7 +235,8 @@ test('a failed policy decision never scans or writes', async () => {
 test('writer conflicts are returned and unknown outcomes are not retried', async () => {
   for (const [implementation, expected] of [
     [async () => ({ ok: false, reason: 'head-changed' }), ['merge-refused', 'head-changed']],
-    [async () => ({ ok: false, reason: 'backend said secret text' }), ['merge-refused', 'unknown']],
+    [async () => ({ ok: false, reason: 'backend said secret text' }), ['merge-outcome-unknown', undefined]],
+    [async () => ({ ok: false, reason: 'unknown' }), ['merge-outcome-unknown', undefined]],
     [async () => { throw new Error('connection reset'); }, ['merge-outcome-unknown', undefined]],
     [async () => ({}), ['merge-outcome-unknown', undefined]]
   ]) {
@@ -328,4 +329,31 @@ test('the writer receives exactly the scanned title and body as the commit text'
   assert.equal(writes[0].commitMessage, 'Scanned body, Refs #17');
   const empty = await attempt({}, { body: null });
   assert.equal(empty.writes[0].commitMessage, '');
+});
+
+test('merge commit text from untrusted pull request text: one clean short title, no attribution trailers, no invisible characters, bounded body', () => {
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  const hostile = commitText(
+    `  Fix${cp(0x202e)}  the\nthing${cp(0)}  `,
+    `Real description.\r\nCo-authored-by: Someone <someone@example.invalid>\nSigned-off-by: Other <other@example.invalid>\n  cc: nobody\nstill here${cp(0x200b)}!\tTab`,
+    7
+  );
+  assert.equal(hostile.commitTitle, 'Fix the thing');
+  assert.equal(hostile.commitMessage, 'Real description.\nstill here! Tab');
+  assert.equal(/co-authored|signed-off|cc:/i.test(hostile.commitMessage), false);
+  assert.equal(commitText('x'.repeat(500), 'y'.repeat(9000), 7).commitTitle.length, 200);
+  assert.equal(commitText('t', 'y'.repeat(9000), 7).commitMessage.length, 4000);
+  assert.equal(commitText('   ', null, 12).commitTitle, 'Merge pull request #12', 'an empty title still gets a safe fixed one');
+  assert.equal(commitText('Safe change', 'Refs #17', 7).commitMessage, 'Refs #17');
+});
+
+test('the merge call receives the cleaned text, never trailers from the pull request body', async () => {
+  const writes = [];
+  const result = await mergePullRequest({
+    reader: readerFor(snapshot({ pr: { body: 'Refs #17\nCo-authored-by: Someone Else' } })),
+    writer: { mergePullRequest: async (payload) => { writes.push(payload); return { ok: true }; } },
+    repository: REPOSITORY, pullNumber: 7, ...context()
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(writes[0].commitMessage, 'Refs #17');
 });
