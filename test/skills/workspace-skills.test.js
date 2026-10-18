@@ -326,6 +326,23 @@ test('automatic preparation installs both discovery locations, protects custom s
   assert.equal((await skills.runAutomaticInstall(options)).code, 'disabled', 'removal persists across activation');
 });
 
+test('a skill the user deleted by hand is not recreated by later automatic preparation, but an explicit install restores it', async (t) => {
+  const { workspace } = world(t);
+  const store = memoryStore();
+  const options = { workspaceRoot: workspace, skillsRoot, store, trusted: true, enabled: true, local: true };
+  assert.equal((await skills.runAutomaticInstall(options)).written.length, 16);
+  const deleted = path.join(workspace, '.claude/skills/fetch-prs/SKILL.md');
+  fs.rmSync(path.dirname(deleted), { recursive: true });
+  const again = await skills.runAutomaticInstall(options);
+  assert.equal(again.ok, true);
+  assert.deepEqual(again.written, [], 'the deliberate deletion is respected');
+  assert.equal(fs.existsSync(deleted), false);
+  assert.equal(fs.existsSync(path.join(workspace, '.agents/skills/fetch-prs/SKILL.md')), true, 'untouched files stay');
+  const explicit = await skills.runInstall(deps(workspace, { store, skillTargets: ['.claude/skills', '.agents/skills'], isTestMode: true, arg: { interactive: false } }));
+  assert.equal(explicit.ok, true);
+  assert.equal(fs.existsSync(deleted), true, 'an explicit install is the way to bring it back');
+});
+
 test('automatic preparation refuses untrusted, remote, disabled, corrupt-record and symlink cases', async (t) => {
   const { workspace, sandbox } = world(t);
   const store = memoryStore();
