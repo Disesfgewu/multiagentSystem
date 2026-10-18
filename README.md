@@ -10,6 +10,8 @@
 
 ## 試用 P0 雛形
 
+首次安裝、Tools Setup 狀態、四個原生終端與故障復原步驟見 [首次設定與診斷](docs/GETTING_STARTED.md)。
+
 在 VS Code 開啟這個資料夾，按 `F5` 啟動 Extension Development Host；在新視窗的 Command Palette 執行：
 
 - 開啟 Explorer 裡的 **Multiagent GitHub** 區塊，即可列出目前專案的開放 Issues／PRs；點選項目會在 VS Code 編輯器讀取內容，PR 頁會讀取 review／CI 摘要。可按標題列的 Refresh 更新清單。此切片只讀取 GitHub；建立、review 與 merge 的套件內操作仍待後續工作。
