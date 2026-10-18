@@ -1,0 +1,13 @@
+# VSIX 打包與授權核對（#29 切片）
+
+在 Node.js 24 執行 `npm ci`、`npm run vsix:package`，候選封存會寫至 `artifacts/multiagentsystem.vsix`。此檔案不受 Git 追蹤，也不會由這個流程上架。macOS 與 Windows CI 各自從鎖定的依賴重新建置、打包並檢查封存內容；尚未驗證 VSIX 在乾淨機器上的安裝、升級或移除，也未完成 #73 的所有 CLI 來源與首次啟用驗收。
+
+封裝只允許 extension manifest、README、MIT 授權、第三方聲明、圖示、編譯後 `out/src`／`out/packages` JavaScript，以及唯一的執行期 npm 相依 `fflate`。`src`、測試、文件、腳本、source map、開發設定與本機產物均排除。`scripts/verify-vsix.js` 直接解開產出的 VSIX，確認入口檔與相依授權檔存在、manifest 的執行期相依與鎖檔一致、沒有額外路徑，並對套件自有文字使用 #23 的 `scanPublication`。掃描器自身兩個實作檔含刻意的敏感路徑／憑證測試字串，第三方 `fflate` 檔案由 `npm ci` 鎖檔完整性保障；這些檔案不接受文字掃描的「clear」宣稱。封裝掃描不等於證明不存在未知型態、編碼或二進位秘密，發佈仍需人工審查。
+
+| 進入 VSIX 的執行期相依 | 固定版本 | 授權 | 證據 |
+| --- | --- | --- | --- |
+| `fflate` | `0.8.3` | MIT | `package-lock.json`、VSIX 內 `node_modules/fflate/LICENSE`、`THIRD_PARTY_NOTICES.md` |
+
+`@vscode/vsce` 固定為開發工具 `4.0.0`（MIT），只在建置環境執行，不收入 VSIX。Git／gh／Claude Code／Codex CLI／agy 均不隨 VSIX 打包；其官方來源與部署限制見 [工具來源矩陣](TOOL_SOURCE_MATRIX.md)。
+
+目前 `package.json` 尚無 `publisher`。加上 publisher 會改變 VS Code 的 `globalStorageUri` 資料夾名稱，可能讓既有私人資料看似消失；因此本切片只補 repository 供 `vsce` 正確處理 README 相對連結。正式決定 publisher 前需與 #27 完成舊資料夾偵測／安全遷移或清楚的使用者處理流程，再做實機升級驗收。
