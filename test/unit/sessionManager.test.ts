@@ -7,6 +7,7 @@ import {
   SessionSnapshotStore,
   TerminalHandle,
   UNASSIGNED,
+  cleanName,
   describeState
 } from '../../src/sessions/manager';
 
@@ -605,4 +606,15 @@ test('a start and an initialize called back to back: the restore is refused rath
   await start(r, { name: 'Later' });
   assert.equal(store.saves, 0, 'a session started after the refused restore is not saved over the unread snapshot either');
   assert.deepEqual(store.saved?.map((record) => record.id), ['old-1']);
+});
+
+test('cleanName rejects control, C1, separator and bidirectional characters but keeps ordinary and joiner-using names', () => {
+  const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+  for (const bad of [`safe${cp(0x202e)}txt.exe`, `a${cp(0x85)}b`, `a${cp(0x2028)}b`, `a${cp(0x2029)}b`, `a${cp(0x200b)}b`, `a${cp(0x200e)}b`, `a${cp(0xfeff)}b`, `a${cp(0x2066)}b`, 'a\nb', 'a\tb', `a${cp(0)}b`, '', '   ', 'x'.repeat(81)]) {
+    assert.equal(cleanName(bad), null, JSON.stringify(bad));
+  }
+  assert.equal(cleanName('  PM review  '), 'PM review');
+  assert.equal(cleanName('代理 1'), '代理 1');
+  assert.equal(cleanName(`می${cp(0x200c)}خواهم`), `می${cp(0x200c)}خواهم`, 'ZWNJ is needed by Persian');
+  assert.equal(cleanName(`👩${cp(0x200d)}💻 dev`), `👩${cp(0x200d)}💻 dev`, 'ZWJ is needed by emoji sequences');
 });

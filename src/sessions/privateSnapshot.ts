@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import * as path from 'node:path';
 import { cleanName, SessionRecord, SessionSnapshotStore } from './manager';
 import { SessionRegistry } from './registry';
 import { normalizeRequestedModel } from '../providers/modelSelection';
@@ -23,11 +24,24 @@ export function sessionWorkspaceKey(folders: string[], workspaceFile?: string): 
   return folders.length ? createHash('sha256').update(JSON.stringify({ folders, workspaceFile: workspaceFile ?? null })).digest('hex') : null;
 }
 
+// Restored fields are untrusted: a tampered snapshot must not hand a launch a relative path (resolved
+// against whatever directory the host happens to be in), a control-character-laden string or an
+// unbounded one. The path must be absolute and plain; whether it still exists and belongs to the
+// project is checked again when a session is reopened.
+const SAFE_TEXT = /^[^\p{Cc}\p{Zl}\p{Zp}]*$/u;
+function plainField(value: unknown, max: number): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= max && SAFE_TEXT.test(value);
+}
+function plainWorktree(value: unknown): boolean {
+  return plainField(value, 1024) && path.isAbsolute(value as string);
+}
+
 function validRecords(records: unknown): records is SessionRecord[] {
   if (!Array.isArray(records) || records.length > 256) return false;
   try {
     for (const record of records) {
       if (!plain(record) || Object.keys(record).some((key) => !KEYS.has(key)) || cleanName(record.name) !== record.name) return false;
+      if (!plainField(record.id, 100) || !plainField(record.accountProfileId, 200) || !plainField(record.roleGroupId, 200) || !plainField(record.repoId, 400) || !plainWorktree(record.worktree)) return false;
       normalizeRequestedModel(record.provider, record.requestedModel);
       if (record.instructionDigest !== undefined && (typeof record.instructionDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.instructionDigest))) return false;
       if (record.instructionMethod !== undefined && (typeof record.instructionMethod !== 'string' || !/^[a-z0-9-]+$/.test(record.instructionMethod))) return false;
