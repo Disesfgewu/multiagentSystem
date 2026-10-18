@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as vscode from 'vscode';
 // The same module file the extension loaded, so the overrides apply to the running extension.
 // They are accepted only while the editor runs in test mode.
-import { GITHUB_COMMANDS, githubTreeForTests, installTestOverrides } from '../../../src/github/githubCommands';
+import { GITHUB_COMMANDS, githubTreeForTests, installTestOverrides, notifySessionChangedForTests } from '../../../src/github/githubCommands';
 import { GITHUB_TREE_COMMANDS } from '../../../src/github/githubTree';
 
 // Drives the GitHub commands in non-interactive form inside a real Extension Host. Every
@@ -188,6 +188,13 @@ export async function runGitHubChecks(registered: string[]): Promise<string> {
   assert.match(pullDetail, /Review and CI/);
   assert.deepEqual(inEditorOpened, [], 'opening the tree entry does not leave VS Code');
 
+  // 9. Session changes trigger tree and report refresh.
+  let refreshed = false;
+  const sub = tree.onDidChangeTreeData(() => { refreshed = true; });
+  notifySessionChangedForTests();
+  sub.dispose();
+  assert.equal(refreshed, true, 'session change triggers tree refresh');
+
   installTestOverrides({});
-  return 'github host smoke: native tree lists issues without a number and opens body in editor; reads use GET to the API host only; failures, cancel and repository switch are reported';
+  return 'github host smoke: native tree lists issues without a number and opens body in editor; reads use GET to the API host only; failures, cancel, repository switch and session changes are reported';
 }

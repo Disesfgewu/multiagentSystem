@@ -48,6 +48,7 @@ export interface TestOverrides {
   fetch?: typeof fetch;
   getToken?: () => Promise<string | undefined>;
   openExternal?: (url: string) => Promise<boolean>;
+  onSessionChange?: (listener: () => void) => vscode.Disposable;
 }
 
 let testMode = false;
@@ -58,6 +59,14 @@ let testTree: GitHubTree | undefined;
 export function githubTreeForTests(): GitHubTree {
   if (!testMode || !testTree) throw new Error('The GitHub tree is available only in Extension Host tests.');
   return testTree;
+}
+
+export function notifySessionChangedForTests(): void {
+  if (!testMode) throw new Error('The session notification test hook is available only in Extension Host tests.');
+  adapter?.clearCache?.();
+  testTree?.refresh();
+  void vscode.commands.executeCommand('multiagentSystem.reports.refresh');
+  void vscode.commands.executeCommand('multiagentSystem.overview.refresh');
 }
 
 export function installTestOverrides(next: TestOverrides): void {
@@ -132,7 +141,17 @@ const vscodeUi: GitHubUi = {
   },
   info: (message) => void vscode.window.showInformationMessage(message),
   warn: (message) => void vscode.window.showWarningMessage(message),
-  error: (message) => void vscode.window.showErrorMessage(message)
+  error: (message) => {
+    if (message.includes('Sign In to GitHub')) {
+      void vscode.window.showErrorMessage(message, 'Sign In to GitHub').then((action) => {
+        if (action === 'Sign In to GitHub') {
+          void vscode.commands.executeCommand(GITHUB_COMMANDS.signIn);
+        }
+      });
+    } else {
+      void vscode.window.showErrorMessage(message);
+    }
+  }
 };
 
 // Only these fields are taken from a command argument, and only with the right type.
@@ -158,8 +177,25 @@ export function registerGitHubCommands(context: vscode.ExtensionContext): void {
       return typeof project.githubRepository === 'string' ? project.githubRepository : null;
     }
   });
-  const tree = new GitHubTree(controller, getAdapter);
+  const tree = new GitHubTree(controller, getAdapter, GITHUB_COMMANDS.signIn);
   if (testMode) testTree = tree;
+  const onSessionChanged = () => {
+    adapter?.clearCache?.();
+    tree.refresh();
+    void vscode.commands.executeCommand('multiagentSystem.reports.refresh');
+    void vscode.commands.executeCommand('multiagentSystem.overview.refresh');
+  };
+
+  context.subscriptions.push(
+    vscode.authentication.onDidChangeSessions((event) => {
+      if (event.provider.id === GITHUB_AUTH_PROVIDER) {
+        onSessionChanged();
+      }
+    })
+  );
+  if (testMode && overrides.onSessionChange) {
+    context.subscriptions.push(overrides.onSessionChange(onSessionChanged));
+  }
   context.subscriptions.push(
     vscode.window.createTreeView(GITHUB_TREE_VIEW, { treeDataProvider: tree }),
     vscode.commands.registerCommand(GITHUB_TREE_COMMANDS.refresh, () => tree.refresh()),
