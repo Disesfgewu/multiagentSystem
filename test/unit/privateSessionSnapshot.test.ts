@@ -133,3 +133,27 @@ test('unavailable private storage has no fallback; an empty window does not bind
   key = 'opened-later';
   await assert.rejects(empty.save([]), { code: 'session-workspace-changed' });
 });
+
+test('a restored snapshot with a relative path, control characters or oversized fields is refused, untouched, and blocks saving', async (t) => {
+  const bad: Array<[string, Partial<SessionRecord>]> = [
+    ['relative worktree', { worktree: 'relative/project' }],
+    ['dot-dot worktree', { worktree: '../outside' }],
+    ['newline in worktree', { worktree: '/synthetic/a\nb' }],
+    ['oversized worktree', { worktree: `/${'a'.repeat(1100)}` }],
+    ['control character in account id', { accountProfileId: 'acct\u0085x' }],
+    ['oversized id', { id: 'x'.repeat(101) }],
+    ['bidi override in name', { name: `safe${String.fromCodePoint(0x202e)}txt` }]
+  ];
+  for (const [label, change] of bad) {
+    const f = fixture(t);
+    const opened = await f.handle.use();
+    assert.ok(opened.ok);
+    const id = `workspace-${f.access.workspaceKey()}`;
+    const damaged = { scope: f.access.workspaceKey(), revision: 1, records: [{ ...record('one'), ...change }] };
+    assert.equal(opened.store.put('sessions', id, damaged).ok, true);
+    const writer = f.adapter();
+    await assert.rejects(writer.load(), { code: 'invalid-session-snapshot' }, label);
+    await assert.rejects(writer.save([]), { code: 'session-persistence-blocked' }, label);
+    assert.deepEqual((opened.store.get('sessions', id) as any).value, damaged, `${label}: the original record is not overwritten`);
+  }
+});

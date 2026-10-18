@@ -148,8 +148,10 @@ export function describeState(state: SessionState): string {
 const randomId = (): string => randomUUID();
 
 const MAX_NAME = 80;
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/;
+// Control characters (including the C1 range), line and paragraph separators, and invisible format
+// characters such as the bidirectional overrides that make a name read differently from how it is
+// stored. The joiners U+200C and U+200D stay allowed: scripts such as Persian and Indic need them.
+const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]|(?![\u200c\u200d])\p{Cf}/u;
 
 /** One rule for every name, whether typed now or restored from a snapshot. */
 export function cleanName(value: unknown): string | null {
