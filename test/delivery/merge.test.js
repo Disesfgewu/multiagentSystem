@@ -357,3 +357,20 @@ test('the merge call receives the cleaned text, never trailers from the pull req
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(writes[0].commitMessage, 'Refs #17');
 });
+
+test('cleaning the commit text can never produce a private value the scan did not see: the final payload is scanned and the writer gets exactly that text', async () => {
+  const knownValues = [{ id: 'private-label', value: 'private-value-12345' }];
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  // Removing the control character joins the two halves into the whole private value.
+  for (const separator of [cp(0x85), cp(0x7f), cp(0), cp(0x1b)]) {
+    const { result, writes } = await attempt({ privateReferencesChecked: undefined, scanOptions: { knownValues } }, { body: `private${separator}-value-12345` });
+    assert.equal(result.reason, 'publication-blocked', JSON.stringify(separator));
+    assert.equal(writes.length, 0, `the writer was not called for ${JSON.stringify(separator)}`);
+  }
+  // A clean text still goes through, and the writer receives exactly commitText's output for it.
+  const original = { title: '  Tidy  title  ', body: 'Refs #17\nCo-authored-by: Someone Else\n\ttabbed' };
+  const clean = await attempt({ privateReferencesChecked: undefined, scanOptions: { knownValues } }, original);
+  assert.equal(clean.result.ok, true, JSON.stringify(clean.result));
+  const expected = commitText(original.title, original.body, 7);
+  assert.deepEqual([clean.writes[0].commitTitle, clean.writes[0].commitMessage], [expected.commitTitle, expected.commitMessage]);
+});

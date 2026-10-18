@@ -212,9 +212,16 @@ async function mergePullRequest({
   }
 
   const pr = snapshot.pullRequest.data;
+  // The text that will actually be sent is built BEFORE scanning, and the scan covers it as well as the
+  // original: cleaning can join the pieces around a removed character into a value that the raw text did
+  // not contain (for example a private value split by a control character). What the writer receives is
+  // exactly the `payload` object scanned here, never something derived after the scan.
+  const payload = commitText(pr.title, pr.body || '', pullNumber);
   const units = [
     { kind: 'pr-title', text: pr.title },
     { kind: 'pr-body', text: pr.body || '' },
+    { kind: 'pr-title', text: payload.commitTitle },
+    { kind: 'pr-body', text: payload.commitMessage },
     { kind: 'diff', text: publication.data.diff }
   ];
 
@@ -252,7 +259,8 @@ async function mergePullRequest({
       repository: { owner: repository.owner, name: repository.name },
       number: pullNumber,
       expectedHeadSha: decision.headSha,
-      ...commitText(units[0].text, units[1].text, pullNumber)
+      commitTitle: payload.commitTitle,
+      commitMessage: payload.commitMessage
     });
   } catch {
     return refuse('merge-outcome-unknown');
