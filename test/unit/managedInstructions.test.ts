@@ -506,6 +506,9 @@ test('prepareInstructionSnapshot prepares a Codex profile from provider capabili
   assert.deepEqual(prep.argv, ['-p', 'mas-session-codex-12345678']);
   assert.match(prep.injectionStatusLabel, /config profile with developer instructions/);
   assert.match(prep.injectionStatusLabel, /CLI verification pending/);
+  // Nothing has been handed to the CLI yet when this summary is read, so it must never say it was.
+  assert.doesNotMatch(prep.summaryText, /<sent to the CLI>/);
+  assert.match(prep.summaryText, /<NOT sent to the CLI>/);
 
   const profilePath = path.join(codexHome, 'mas-session-codex-12345678.config.toml');
   assert.equal(fs.existsSync(profilePath), true);
@@ -541,6 +544,8 @@ test('prepareInstructionSnapshot prepares a Codex profile from provider capabili
   assert.equal(prepManual.injectionState, 'manual');
   assert.deepEqual(prepManual.argv, []);
   assert.match(prepManual.injectionStatusLabel, /Manual: instructions written to private file/);
+  assert.doesNotMatch(prepManual.summaryText, /<sent to the CLI>/);
+  assert.match(prepManual.summaryText, /<not supported: give by hand>/, 'a manual paste is the user\'s job, not a delivery');
   const manualFile = path.join(privateDir, 'sessions', 'session-codex-manual-12', 'context.md');
   assert.equal(fs.existsSync(manualFile), true);
   cleanupSessionPlan(prepManual.plan);

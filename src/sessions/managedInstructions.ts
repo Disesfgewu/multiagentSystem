@@ -280,6 +280,7 @@ export async function prepareInstructionSnapshot(
     permissions,
     matchingBroadcasts,
     injectionStatusLabel,
+    injectionState,
     now
   });
 
@@ -379,6 +380,7 @@ export function formatInstructionSummary(
     permissions?: any[];
     matchingBroadcasts?: any[];
     injectionStatusLabel?: string;
+    injectionState?: PreparedInstructions['injectionState'];
     now: Date;
   }
 ): string {
@@ -409,7 +411,12 @@ export function formatInstructionSummary(
 
   if (details.previewResult && details.previewResult.ok) {
     lines.push(formatPreview(details.previewResult, {
-      injection: { label: details.injectionStatusLabel ?? 'Prepared', state: 'sent-to-cli' },
+      // 'sent-to-cli' means evidence that a launch handed the rules to the CLI. This summary is read
+      // before any launch, so it can only say prepared (not sent yet) or that the user must paste them.
+      injection: {
+        label: details.injectionStatusLabel ?? 'Prepared',
+        state: details.injectionState === 'manual' || details.injectionState === 'unsupported' ? 'unsupported' : 'preview-only'
+      },
       includeResearchSkills: true,
       workspaceRoot: snapshot.repoRoot
     } as any));
