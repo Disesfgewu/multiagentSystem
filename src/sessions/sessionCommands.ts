@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
@@ -299,6 +300,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       } else {
         const store = openedStorage.store as any;
         const privateDir = store.dir;
+        const codexHome = provider === 'codex' ? (env?.CODEX_HOME ?? path.join(privateDir, 'codex-home')) : undefined;
+        if (codexHome && !env?.CODEX_HOME) env = { ...(env ?? {}), CODEX_HOME: codexHome };
         const project = await resolveProject(cwd);
         const prep = await prepareInstructionSnapshot({
           store,
@@ -309,7 +312,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           accountProfileId: input.accountProfileId,
           requestedModel,
           targetSessionId,
-          privateDir
+          privateDir,
+          codexHome
         });
         if (!prep.ok) {
           if (release) { release(); release = undefined; }
@@ -506,6 +510,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         } else {
           const store = openedStorage.store as any;
           const privateDir = store.dir;
+          const codexHome = prior.provider === 'codex' ? (env?.CODEX_HOME ?? path.join(privateDir, 'codex-home')) : undefined;
+          if (codexHome && !env?.CODEX_HOME) env = { ...(env ?? {}), CODEX_HOME: codexHome };
           const project = await resolveProject(prior.worktree);
           const prep = await prepareInstructionSnapshot({
             store,
@@ -516,7 +522,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             accountProfileId: prior.accountProfileId !== 'unassigned' ? prior.accountProfileId : undefined,
             requestedModel: prior.requestedModel,
             targetSessionId: newSessionId,
-            privateDir
+            privateDir,
+            codexHome
           });
           if (!prep.ok) {
             if (release) { release(); release = undefined; }

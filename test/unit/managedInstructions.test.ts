@@ -59,13 +59,13 @@ class FakeStore {
   }
 }
 
-function makeRoleRecord(id = 'worker-1', version = 1, role = 'worker') {
+function makeRoleRecord(id = 'worker-1', version = 1, role = 'worker', provider = 'claude') {
   return {
     group: {
       id,
       name: 'Worker Role',
       role,
-      provider: 'claude',
+      provider,
       version,
       defaultAccountProfileId: null,
       allowedScope: { repositories: ['owner/repo'], paths: [] },
@@ -473,3 +473,173 @@ test('SessionManager cliExited cleans up instruction file and confirm-unknown-re
   assert.equal(fs.existsSync(file2), false);
 });
 
+test('prepareInstructionSnapshot prepares a Codex profile from provider capability and stays manual without CODEX_HOME (Refs #147)', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-codex-prep-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const codexHome = path.join(tmpDir, 'codex-home');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = new FakeStore(privateDir);
+  store.put('roleGroups', 'codex-role-1', makeRoleRecord('codex-role-1', 1, 'worker', 'codex'));
+
+  // 1. Successful automatic preparation with profile-developer-instructions
+  const prep = await prepareInstructionSnapshot({
+    store,
+    repoRoot,
+    repoId: 'owner/repo',
+    provider: 'codex',
+    roleGroupId: 'codex-role-1',
+    targetSessionId: 'session-codex-12345678',
+    privateDir,
+    codexHome
+  });
+
+  assert.equal(prep.ok, true);
+  if (!prep.ok) return;
+
+  assert.equal(prep.method, 'profile-developer-instructions');
+  assert.equal(prep.injectionState, 'prepared');
+  assert.deepEqual(prep.argv, ['-p', 'mas-session-codex-12345678']);
+  assert.match(prep.injectionStatusLabel, /config profile with developer instructions/);
+  assert.match(prep.injectionStatusLabel, /CLI verification pending/);
+
+  const profilePath = path.join(codexHome, 'mas-session-codex-12345678.config.toml');
+  assert.equal(fs.existsSync(profilePath), true);
+  const tomlContent = fs.readFileSync(profilePath, 'utf8');
+  assert.match(tomlContent, /^developer_instructions = /);
+  assert.match(tomlContent, /Write clear unit tests\./);
+
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(profilePath).mode & 0o777, 0o600);
+  }
+
+  // Cleanup cleans up the profile file
+  const cleanupRes = cleanupSessionPlan(prep.plan);
+  assert.equal(cleanupRes.removed >= 1, true);
+  assert.equal(fs.existsSync(profilePath), false);
+
+  // Without a matching CODEX_HOME the caller cannot guarantee the CLI will read the profile,
+  // so preparation stays honest and falls back to manual delivery.
+  const prepManual = await prepareInstructionSnapshot({
+    store,
+    repoRoot,
+    repoId: 'owner/repo',
+    provider: 'codex',
+    roleGroupId: 'codex-role-1',
+    targetSessionId: 'session-codex-manual-12',
+    privateDir
+  });
+
+  assert.equal(prepManual.ok, true);
+  if (!prepManual.ok) return;
+
+  assert.equal(prepManual.method, 'manual');
+  assert.equal(prepManual.injectionState, 'manual');
+  assert.deepEqual(prepManual.argv, []);
+  assert.match(prepManual.injectionStatusLabel, /Manual: instructions written to private file/);
+  const manualFile = path.join(privateDir, 'sessions', 'session-codex-manual-12', 'context.md');
+  assert.equal(fs.existsSync(manualFile), true);
+  cleanupSessionPlan(prepManual.plan);
+  assert.equal(fs.existsSync(manualFile), false);
+});
+
+test('SessionManager launches native terminal for Codex with safe -p profile flag and cleans up profile on exit (Refs #147)', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-codex-sm-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const codexHome = path.join(tmpDir, 'codex-home');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = new FakeStore(privateDir);
+  store.put('roleGroups', 'codex-worker', makeRoleRecord('codex-worker', 1, 'worker', 'codex'));
+
+  class SyntheticTerminal implements TerminalHandle {
+    sent: Array<{ text: string; newline?: boolean }> = [];
+    shown = 0;
+    disposed = 0;
+    constructor(readonly name: string, readonly cwd: string, readonly env?: Record<string, string | null>) {}
+    show() { this.shown += 1; }
+    sendText(text: string, newline?: boolean) { this.sent.push({ text, newline }); }
+    dispose() { this.disposed += 1; }
+  }
+
+  const terminals: SyntheticTerminal[] = [];
+  const deps: ManagerDeps<SyntheticTerminal> = {
+    terminals: {
+      create: (options) => {
+        const term = new SyntheticTerminal(options.name, options.cwd, options.env);
+        terminals.push(term);
+        return term;
+      }
+    },
+    providers: { codex: 'codex' },
+    resolveProject: async () => ({ repoId: 'owner/repo' }),
+    directoryExists: (p) => fs.existsSync(p),
+    terminalTitle: (n) => `Title: ${n}`
+  };
+
+  const manager = new SessionManager<SyntheticTerminal>(deps);
+  await manager.initialize();
+
+  const prep = await prepareInstructionSnapshot({
+    store,
+    repoRoot,
+    repoId: 'owner/repo',
+    provider: 'codex',
+    roleGroupId: 'codex-worker',
+    targetSessionId: 'session-codex-launch-12345678',
+    privateDir,
+    codexHome
+  });
+
+  assert.equal(prep.ok, true);
+  if (!prep.ok) return;
+
+  const session = await manager.start({
+    id: 'session-codex-launch-12345678',
+    provider: 'codex',
+    name: 'Codex Managed Agent',
+    cwd: repoRoot,
+    roleGroupId: 'codex-worker',
+    requestedModel: 'o3-mini',
+    env: { CODEX_HOME: codexHome },
+    instructions: prep
+  });
+
+  // Verify terminal command line was safely quoted and passed -p profile name
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].env?.CODEX_HOME, codexHome);
+  const sentCommand = terminals[0].sent[0].text;
+  assert.match(sentCommand, /^codex --model o3-mini -p mas-session-codex-launch-12345678/);
+  assert.equal(session.state, 'launch-requested');
+  assert.equal(session.instructionState, 'launch-requested');
+  assert.equal(session.instructionDigest, prep.digest);
+
+  // Verify profile file was created in codexHome
+  const profileFile = path.join(codexHome, 'mas-session-codex-launch-12345678.config.toml');
+  assert.equal(fs.existsSync(profileFile), true);
+
+  // Synthetic CLI sends observation event with instructionEvidence
+  manager.observeCli(session.id, {
+    provider: 'codex',
+    accountProfileId: 'unassigned',
+    source: 'provider-event',
+    instructionEvidence: true
+  } as any);
+
+  const observedView = manager.get(session.id);
+  assert.equal(observedView?.state, 'cli-observed');
+  assert.equal(observedView?.instructionState, 'cli-observed');
+  assert.equal(observedView?.instructionStatusLabel, 'CLI evidence recorded');
+
+  // Stop session cleans up injection profile file
+  manager.stop(session.id);
+  assert.equal(fs.existsSync(profileFile), false, 'Codex profile config file must be deleted upon session stop');
+});
