@@ -58,6 +58,8 @@ export interface WorktreeDeps {
  * Options double as the programmatic form of each command. With `interactive: false` no prompt
  * is ever shown, which is what the Extension Host smoke test uses. Releasing without a prompt
  * additionally requires `confirmed: true`, which has no effect on an interactive call.
+ * The registered commands honour `interactive: false` for create and remove only in extension
+ * test mode (see src/shared/testMode.ts); elsewhere they always ask.
  */
 export interface WorktreeCommandOptions {
   interactive?: boolean;

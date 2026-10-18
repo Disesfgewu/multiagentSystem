@@ -9,6 +9,7 @@ import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
+import { outsideTestMode, runNonInteractiveGateChecks } from './nonInteractiveGate';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -269,6 +270,12 @@ async function accountFlow(workspace: string): Promise<void> {
   assert.match(String(blockedItem?.tooltip ?? ''), /Right now: a new agent would be held back\..*Use Set Account Limits to change this\./);
   const badLimits = await vscode.commands.executeCommand<{ ok: boolean; problems?: string[] }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, warn: '95', block: '90' });
   assert.deepEqual([badLimits.ok, badLimits.problems?.[0]], [false, 'The warning level cannot be higher than the pause level.']);
+  // Outside test mode a payload can neither set nor clear limits; the person is asked (Refs #183).
+  for (const payload of [{ warn: '10', block: '20', max: '5', unknownQuota: 'require-confirmation' }, { clear: true }]) {
+    const bypass = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<{ ok: boolean; cancelled?: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, ...payload })));
+    assert.deepEqual(bypass.result, { ok: false, cancelled: true }, `limits payload ${JSON.stringify(payload)} is not applied`);
+    assert.ok(bypass.prompts.some((prompt) => prompt.includes('warn when usage reaches this percent')), 'the limits prompt was shown');
+  }
   const held = await gated('Gated');
   assert.deepEqual([held.ok, held.code], [false, 'quota-gate']);
   assert.match(String(held.message), /No verified, current usage reading.*do not start new agents/);
@@ -491,6 +498,10 @@ async function roleFlow(workspace: string): Promise<void> {
   const viaRole = await vscode.commands.executeCommand<{ ok: boolean; session?: { roleGroupId: string; name: string } }>(ROLE_COMMANDS.start, { id: 'host-pm', interactive: false, name: 'Started From Role', launch: false });
   assert.equal(viaRole.ok, true);
   assert.equal(viaRole.session?.roleGroupId, 'host-pm', 'the Start Agent command assigns the group to the new session');
+  const roleBypass = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<{ ok: boolean; code?: string }>(ROLE_COMMANDS.start, { id: 'host-pm', interactive: false, name: 'Role Bypass Attempt', launch: false })));
+  assert.deepEqual([roleBypass.result.ok, roleBypass.result.code], [false, 'cancelled'], 'outside test mode a role start asks which account to use');
+  assert.ok(roleBypass.prompts.length > 0);
+  assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Role Bypass Attempt'), false);
   try {
     const rows = (await overviewTreeForTests().getChildren()) ?? [];
     const row = rows.find((entry) => entry.label === 'Role Session');
@@ -765,6 +776,12 @@ async function worktreeFlow(workspace: string, target: string): Promise<void> {
   const primary = await command('multiagentSystem.worktrees.remove', { path: workspace, confirmed: true });
   assert.equal(primary.code, 'primary-worktree-protected');
 
+  // Outside test mode `confirmed: true` in a payload does not skip the release dialog (Refs #183).
+  const bypass = await outsideTestMode(() => Promise.resolve(command('multiagentSystem.worktrees.remove', { path: target, confirmed: true })));
+  assert.equal(bypass.result.code, 'cancelled');
+  assert.ok(bypass.prompts.some((prompt) => prompt.startsWith('Release the worktree')), 'the release dialog was shown');
+  assert.ok(fs.existsSync(target), 'nothing is released without the person');
+
   const released = await command('multiagentSystem.worktrees.remove', { path: target, confirmed: true });
   assert.equal(released.ok, true, released.message);
   assert.equal(released.branch, 'feature/host-smoke');
@@ -860,6 +877,7 @@ export async function run(): Promise<void> {
 
   await sessionFlow(workspace);
   await accountFlow(workspace);
+  console.log(await runNonInteractiveGateChecks(workspace));
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
   await researchFlow(workspace);

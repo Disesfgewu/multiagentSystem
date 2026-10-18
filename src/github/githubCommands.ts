@@ -203,7 +203,8 @@ export function registerGitHubCommands(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => tree.refresh())
   );
   // Invoked from the Command Palette the argument is undefined. Other callers (the Extension
-  // Host smoke test) pass options; see GitHubCommandOptions.
+  // Host smoke test) pass options; see GitHubCommandOptions. These commands only read or open a
+  // github.com page and have no confirmation, so `interactive: false` is not gated by test mode.
   context.subscriptions.push(
     vscode.commands.registerCommand(GITHUB_COMMANDS.browse, (value?: unknown) => controller.browse(commandOptions(value))),
     vscode.commands.registerCommand(GITHUB_COMMANDS.openIssue, (value?: unknown) => controller.openPage('issue', commandOptions(value))),

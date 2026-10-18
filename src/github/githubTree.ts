@@ -80,6 +80,7 @@ export class GitHubTree implements vscode.TreeDataProvider<Node> {
     if (!repository) return [new MessageNode('Open a GitHub project folder to list its work.')];
     const label = `${repository.owner}/${repository.name}`;
     try {
+      // An in-process read of the open list for the tree; not a command argument, nothing to confirm.
       const result = await this.controller.browse({ interactive: false, repository: label, kind: node.category });
       if (!result.ok) {
         const command = this.signInCommandId && result.message.includes('Sign In to GitHub') ? this.signInCommandId : undefined;

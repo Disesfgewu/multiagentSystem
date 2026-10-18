@@ -6,6 +6,7 @@ import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
+import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
 const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
@@ -414,7 +415,8 @@ async function login(value: unknown): Promise<void> {
 
 /** Runs the provider's own status command in this profile's environment and shows the result in plain words. */
 async function check(value: unknown): Promise<CheckResult | undefined> {
-  const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean }) : {};
+  // It runs the provider's CLI: outside test mode it always shows its progress and result.
+  const options = requireInteractive(value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean }) : {});
   const interactive = options.interactive !== false;
   const id = selectedId(options.id ?? value);
   const profile = id || !interactive ? undefined : await chooseProfile();
@@ -454,7 +456,10 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
 
 /** Sets (or, with `clear`, removes) the limits for one account. */
 async function limits(value: unknown): Promise<unknown> {
-  const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean; clear?: boolean; warn?: string; block?: string; max?: string; unknownQuota?: string }) : {};
+  // Limits decide whether new agents start. Outside test mode caller-supplied values and `clear`
+  // are ignored and the person is asked, so another extension cannot change or lift them.
+  const given = requireInteractive(value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as { id?: unknown; interactive?: boolean; clear?: boolean; warn?: string; block?: string; max?: string; unknownQuota?: string }) : {});
+  const options = given.clear === true && !isExtensionTestMode() ? { ...given, clear: undefined } : given;
   const id = selectedId(options.id ?? value);
   const profile = id ? undefined : await chooseProfile();
   const selected = profile ?? (id ? { id } : undefined);

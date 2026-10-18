@@ -68,6 +68,8 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
     void vscode.window.showWarningMessage(`Account limits: ${first.lines[0] ?? 'a warning level was reached'}`);
     return commit();
   }
+  // `interactive: false` here can only refuse (never override), so it fails closed; the commands that
+  // reach this already force interactive outside test mode (src/shared/testMode.ts).
   if (!interactive || !first.overridable) return { ok: false, code: 'quota-gate', message: first.lines[0] ?? 'The account\'s limits stopped this agent.' };
   const confirmOnly = first.action === 'confirm';
   const buttons = first.overridable ? [confirmOnly ? 'Start Anyway' : 'Override and Start'] : [];

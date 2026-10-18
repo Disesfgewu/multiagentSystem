@@ -7,6 +7,7 @@ import { STORAGE_COMMANDS, extensionContextForTests, privateStorage } from '../.
 import { StorageStatus, createStorageHandle } from '../../../src/storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../../../src/storage/private-store';
 import { SETUP_COMMANDS } from '../../../src/setup/setupView';
+import { outsideTestMode } from './nonInteractiveGate';
 
 // Exercises private storage in a real Extension Host: the editor's own storage folder and its
 // own SecretStorage. Every value is synthetic and everything written is removed at the end.
@@ -148,6 +149,20 @@ export async function runStorageChecks(registered: string[], workspace: string):
     );
     assert.equal(unconfirmedClear.ok, false);
     assert.equal(unconfirmedClear.reason, 'confirmation-required');
+
+    // Outside test mode the confirm token in a payload cannot answer the clear dialog (Refs #183).
+    const bypassClear = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<{ ok: boolean; reason?: string }>(
+      SETUP_COMMANDS.clearStorage,
+      { interactive: false, confirm: CONFIRM_CLEAR }
+    )));
+    assert.deepEqual(bypassClear.result, { ok: false, reason: 'cancelled' });
+    assert.ok(bypassClear.prompts.some((prompt) => prompt.startsWith('Clear all Multiagent private storage')), 'the clear dialog was shown');
+    assert.equal(fs.existsSync(file), true, 'a payload alone clears nothing outside test mode');
+    const bypassMigrate = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand<{ ok: boolean; reason?: string }>(
+      SETUP_COMMANDS.migrateStorage,
+      { interactive: false }
+    )));
+    assert.ok(bypassMigrate.prompts.some((prompt) => prompt.startsWith('Private storage schema')), 'outside test mode a migration is reported to the person');
 
     // 4. Removing the secret and clearing the data via the clearStorage command leave nothing behind.
     assert.deepEqual(await within('SecretStorage delete', used.vault.remove(saved.secretRef)), { ok: true });

@@ -18,6 +18,7 @@ const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
 import { gateAccountLaunch } from '../accounts/quotaGateUi';
+import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -164,6 +165,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   const options = (value: unknown): SessionCommandOptions =>
     value && typeof value === 'object' ? (value as SessionCommandOptions) : {};
+  // `acknowledgeUnknown` answers the "a terminal from before may still be running" warning for the
+  // caller; only the extension's own tests may do that through a command argument.
+  const withoutAcknowledge = (input: SessionCommandOptions): SessionCommandOptions =>
+    input.acknowledgeUnknown === true && !isExtensionTestMode() ? { ...input, acknowledgeUnknown: undefined } : input;
 
   async function launch(input: SessionCommandOptions): Promise<SessionOutcome> {
     const interactive = input.interactive !== false;
@@ -619,11 +624,15 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (closedId) releaseReservation(closedId);
       changed.fire();
     }),
+    // list with `interactive: false` only returns the in-memory session list and opens no picker.
     vscode.commands.registerCommand(SESSION_COMMANDS.list, (value?: unknown) => list(value)),
-    vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(options(value))),
+    // start, stop and reopen launch or end terminals and take account quota: outside test mode they
+    // always run interactively, and reopen's `acknowledgeUnknown` cannot skip its warning.
+    vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(requireInteractive(options(value)))),
+    // focus only brings an existing terminal forward; offering a reopen happens only interactively.
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
-    vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', value)),
-    vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', value))
+    vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', requireInteractive(options(value)))),
+    vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', withoutAcknowledge(requireInteractive(options(value)))))
   );
 
   void manager.initialize().then(() => changed.fire()).catch((error) => failure(error, true));

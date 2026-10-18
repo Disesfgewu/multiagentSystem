@@ -6,6 +6,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { builtIn } from '../providers/registry';
 import { accountService } from '../accounts/accountRuntime';
 import type { SessionCommands } from '../sessions/sessionCommands';
+import { requireInteractive } from '../shared/testMode';
 
 const { RoleStore, validRecord } = require('./role-store') as {
   RoleStore: new (store: Store) => { list(): any; get(id: string): any; save(record: RoleRecord, options?: { expectedRevision?: number }): any };
@@ -389,7 +390,8 @@ type StartOptions = { id?: string; interactive?: boolean; accountProfileId?: str
  * a running session keeps whatever it was started with. Rules are not sent to the CLI by this step.
  */
 async function startWithRole(sessions: SessionCommands, value: unknown): Promise<unknown> {
-  const options: StartOptions = value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as StartOptions) : {};
+  // It launches an agent on an account: outside test mode it always asks (account, confirmations).
+  const options: StartOptions = requireInteractive(value && typeof value === 'object' && !(value instanceof vscode.TreeItem) ? (value as StartOptions) : {});
   const interactive = options.interactive !== false;
   const record = await chooseRecord(options.id ?? value);
   if (!record) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
