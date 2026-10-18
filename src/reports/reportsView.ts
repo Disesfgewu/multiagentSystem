@@ -95,8 +95,8 @@ async function localFeedback(repository: string, kind: Kind, number: number): Pr
   } catch { return { state: 'unknown' }; }
 }
 
-async function mergeAuthoritySection(): Promise<string> {
-  const mode = await readMergeAuthority();
+async function mergeAuthoritySection(repository: string): Promise<string> {
+  const mode = await readMergeAuthority(repository);
   if (mode === 'pm') return '\nMERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval, passing CI, resolved threads, supported branch rules, and a clear publication scan.\n';
   if (mode === 'human') return '\nMERGE AUTHORITY\nHuman only (default): PM merge is refused.\n';
   return '\nMERGE AUTHORITY\nUnknown: merge authority policy could not be read from private storage (fails closed).\n';
@@ -104,7 +104,7 @@ async function mergeAuthoritySection(): Promise<string> {
 
 async function withFeedback(report: string, repository: string, kind: Kind, number: number, currentHead: string | null): Promise<string> {
   const found = await localFeedback(repository, kind, number);
-  const authority = kind === 'pullRequest' ? await mergeAuthoritySection() : '';
+  const authority = kind === 'pullRequest' ? await mergeAuthoritySection(repository) : '';
   if (found.state === 'unknown') return `${report}\nLOCAL FEEDBACK\nUnknown: private feedback could not be read.\n${authority}`;
   if (found.state === 'missing') return `${report}\nLOCAL FEEDBACK\nNone saved on this machine. Nothing was sent to GitHub.\n${authority}`;
   const record = found.record!;

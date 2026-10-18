@@ -21,6 +21,11 @@ const reviewRecordId = (repository: string, number: number): string => `pr-revie
 const mergeRecordId = (repository: string, number: number): string => `pr-merge-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const plainText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && Array.from(value).length <= 4000 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 
+const { publisherFor, mergeModeFor } = require('./publisherPolicy') as {
+  publisherFor(found: any, repository?: string): { actorId: string; login: string } | 'unreadable' | null;
+  mergeModeFor(found: any, repository?: string): 'human' | 'pm' | 'unreadable';
+};
+
 type Kind = 'issue' | 'pullRequest';
 export type ReviewDecision = 'approve' | 'request_changes' | 'comment';
 export type MergeAuthorityMode = 'human' | 'pm';
@@ -56,18 +61,14 @@ export async function configurePublicFeedback(): Promise<{ ok: boolean; code?: s
   return saved?.ok ? { ok: true } : { ok: false, code: 'private-storage-unavailable' };
 }
 
-function mergeAuthorityOf(store: Store): MergeAuthorityMode | 'unreadable' {
-  const found = store.get(COLLECTION, MERGE_POLICY_ID);
-  if (!found?.ok) return 'unreadable';
-  if (!found.found) return 'human';
-  const value = found.value;
-  return value?.kind === 'merge-authority-policy-v1' && (value.mode === 'human' || value.mode === 'pm') ? value.mode : 'unreadable';
+function mergeAuthorityOf(store: Store, repository?: string): MergeAuthorityMode | 'unreadable' {
+  return mergeModeFor(store.get(COLLECTION, MERGE_POLICY_ID), repository);
 }
 
-export async function readMergeAuthority(): Promise<MergeAuthorityMode | 'unreadable'> {
+export async function readMergeAuthority(repository?: string): Promise<MergeAuthorityMode | 'unreadable'> {
   try {
     const opened = await privateStorage()?.use(); const store = useStore(opened);
-    return store ? mergeAuthorityOf(store) : 'unreadable';
+    return store ? mergeAuthorityOf(store, repository) : 'unreadable';
   } catch { return 'unreadable'; }
 }
 
@@ -91,12 +92,8 @@ export async function configureMergeAuthority(input?: { mode?: unknown; interact
   return saved?.ok ? { ok: true, mode: picked } : { ok: false, code: 'private-storage-unavailable' };
 }
 
-function publisher(store: Store): { actorId: string; login: string } | 'unreadable' | null {
-  const found = store.get(COLLECTION, POLICY_ID);
-  if (!found?.ok) return 'unreadable';
-  if (!found.found) return null;
-  const value = found.value;
-  return value?.kind === 'public-feedback-publisher-v1' && typeof value.actorId === 'string' && /^\d+$/.test(value.actorId) && typeof value.login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(value.login) ? value : 'unreadable';
+function publisher(store: Store, repository: string): { actorId: string; login: string } | 'unreadable' | null {
+  return publisherFor(store.get(COLLECTION, POLICY_ID), repository);
 }
 function previous(store: Store, target: PublicTarget): any {
   const found = store.get(COLLECTION, recordId(target.repository, target.kind, target.number));
@@ -283,7 +280,7 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   if (!REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
   const old = previous(store, target);
@@ -325,7 +322,7 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
   const id = reviewRecordId(target.repository, target.number);
@@ -384,10 +381,10 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
-  const authority = mergeAuthorityOf(store);
+  const authority = mergeAuthorityOf(store, target.repository);
   if (authority === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   const id = mergeRecordId(target.repository, target.number);
   const old = previousBy(store, id, 'pr-merge-request-v1');
