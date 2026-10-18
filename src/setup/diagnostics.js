@@ -6,6 +6,15 @@ const { groupBySubject } = require('../accounts/observation');
 const { reportEntry, profileReadiness, fleetReadiness } = require('../accounts/readiness');
 const { findSecrets } = require('../storage/sensitive');
 
+// Everything that reaches a diagnostic from outside this module (a status reason, a list of problems, a
+// store detail, a tool's failure reason) must be a short machine code, never free text: free text can hold
+// a path, an address or a token an exception happened to quote. Anything else is replaced, not scrubbed.
+const CODE = /^[a-z0-9][a-z0-9:_.-]{0,63}$/;
+function codeOf(value, fallback = 'unrecognized-value') {
+  if (typeof value !== 'string' || !CODE.test(value)) return fallback;
+  return findSecrets(value).length > 0 ? fallback : value;
+}
+
 const MIN_VSCODE_VERSION = '1.95.0';
 const MIN_NODE_MAJOR = 20;
 
@@ -55,9 +64,9 @@ function classifyManagedTool(status) {
     return { state: 'ready', category: 'ready', reason: null, version: typeof status.version === 'string' ? status.version : null };
   }
   if (status.state === 'unsupported') {
-    return { state: 'unsupported', category: 'platform-unsupported', reason: status.reason || 'unsupported-platform', version: null };
+    return { state: 'unsupported', category: 'platform-unsupported', reason: codeOf(status.reason, 'unsupported-platform'), version: null };
   }
-  const reason = typeof status.reason === 'string' ? status.reason : 'unknown';
+  const reason = typeof status.reason === 'string' ? codeOf(status.reason, 'unrecognized-reason') : 'unknown';
   if (reason === 'not-installed' || reason === 'not-activated') {
     return { state: 'missing', category: 'first-use-pending', reason, version: null };
   }
@@ -199,8 +208,8 @@ function diagnose({
 
   const storage = {
     state: storageStatus?.state ?? 'unknown',
-    reason: storageStatus?.reason ?? null,
-    problems: Array.isArray(storageStatus?.problems) ? [...storageStatus.problems] : [],
+    reason: storageStatus?.reason == null ? null : codeOf(storageStatus.reason),
+    problems: Array.isArray(storageStatus?.problems) ? storageStatus.problems.slice(0, 32).map((problem) => codeOf(problem)) : [],
     vaultProbe: storageStatus?.secrets ?? 'not-checked',
     coverage: storageStatus?.coverage
       ? {
@@ -212,8 +221,8 @@ function diagnose({
     store: storeStatus
       ? {
           ok: Boolean(storeStatus.ok),
-          reason: storeStatus.reason ?? null,
-          detail: storeStatus.detail ?? null,
+          reason: storeStatus.reason == null ? null : codeOf(storeStatus.reason),
+          detail: storeStatus.detail == null ? null : codeOf(storeStatus.detail),
           schemaVersion: storeStatus.schemaVersion ?? null,
           onDiskVersion: storeStatus.onDiskVersion ?? null,
           pendingMigration: Boolean(storeStatus.pendingMigration),
