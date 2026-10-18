@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { WorktreeService } from '../projects/worktrees';
 import {
   BrowseItem, Category, GitHubAdapter, GitHubController, IssueSummary, PullRequestSummary,
-  RepositoryRef, describeReadFailure, describeSnapshot, displayText, parseNumber, parseRepository
+  RepositoryRef, describeReadFailure, describeSnapshot, displayText, bodyText, parseNumber, parseRepository
 } from './controller';
 
 export const GITHUB_TREE_VIEW = 'multiagentSystem.githubView';
@@ -50,7 +50,7 @@ class MessageNode extends vscode.TreeItem {
 function detailBody(body: string | null | undefined): string {
   if (!body) return '(no description)';
   // This is opened as source text, never rendered as an instruction or executed.
-  return body.slice(0, 200_000).replace(/[\u0000-\u0008\u000b-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ');
+  return bodyText(body);
 }
 
 function detailFailure(kind: string, repository: string, number: number, code: string): string {
