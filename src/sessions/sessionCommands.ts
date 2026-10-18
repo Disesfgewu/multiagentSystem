@@ -103,6 +103,7 @@ function workspaceFolder(): string | undefined {
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
+const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice.';
 
 class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
   private readonly docs = new Map<string, string>();
@@ -304,6 +305,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (release) { release(); release = undefined; }
           return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
         }
+        // No role group means nothing to protect, so the agent still starts, but live administrator
+        // notices live in the same private storage and could not be read: say so instead of skipping them.
+        if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
       } else {
         const store = openedStorage.store as any;
         const privateDir = store.dir;
@@ -529,6 +533,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (release) { release(); release = undefined; }
             return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
           }
+          if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
         } else {
           const store = openedStorage.store as any;
           const privateDir = store.dir;
