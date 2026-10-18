@@ -249,7 +249,8 @@ function listResearchTools({ store, catalog = CANDIDATE_RESEARCH_TOOLS, root } =
  * Fail-closed design:
  *  - Throws `consent-required` if user has not explicitly consented.
  *  - Enforces private storage boundary.
- *  - Verifies SHA-256 integrity hash of asset bytes.
+ *  - Throws `asset-unavailable` and writes nothing when no asset bytes are available.
+ *  - Verifies the SHA-256 integrity hash of the asset bytes before anything is written.
  *  - Extracts to temporary staging dir, cleans up on any error (no half-installed artifacts).
  *  - Atomically moves to destination.
  */
@@ -274,37 +275,31 @@ async function prepareResearchTool(serverId, deps) {
   }
   const valid = validateCatalogItem(tool);
 
+  // The asset is fetched and verified before anything is written. Without verified bytes nothing is
+  // created at all (no folder, no placeholder script), so a missing download never looks installed.
+  let bytes = assetBytes;
+  if (!bytes && typeof download === 'function') {
+    bytes = await download(valid.source, 64 * 1024 * 1024);
+  }
+  if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+    throw Object.assign(new Error(`No verified asset is available for tool '${valid.serverId}'. Nothing was written.`), { code: 'asset-unavailable' });
+  }
+  const computedHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  if (computedHash.toLowerCase() !== valid.integrity.toLowerCase()) {
+    throw Object.assign(
+      new Error(`Integrity hash mismatch: expected ${valid.integrity}, got ${computedHash}`),
+      { code: 'hash-mismatch', expected: valid.integrity, actual: computedHash }
+    );
+  }
+
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 
   const stagingDir = path.join(root, '.staging', randomUUID());
   fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
 
   try {
-    let bytes = assetBytes;
-    if (!bytes && typeof download === 'function') {
-      bytes = await download(valid.source, 64 * 1024 * 1024);
-    }
-
-    if (bytes) {
-      const computedHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-      if (computedHash.toLowerCase() !== valid.integrity.toLowerCase()) {
-        throw Object.assign(
-          new Error(`Integrity hash mismatch: expected ${valid.integrity}, got ${computedHash}`),
-          { code: 'hash-mismatch', expected: valid.integrity, actual: computedHash }
-        );
-      }
-    }
-
-    const binDir = stagingDir;
     const executableName = valid.command[0];
-    const execPath = path.join(binDir, executableName);
-
-    if (bytes) {
-      fs.writeFileSync(execPath, bytes, { mode: 0o755 });
-    } else {
-      // In synthetic / test environments without binary download: write a validated placeholder script
-      fs.writeFileSync(execPath, `#!/bin/sh\necho "${valid.serverId} mock"\n`, { mode: 0o755 });
-    }
+    fs.writeFileSync(path.join(stagingDir, executableName), bytes, { mode: 0o755 });
 
     const finalDir = path.join(root, valid.serverId);
     if (fs.existsSync(finalDir)) {

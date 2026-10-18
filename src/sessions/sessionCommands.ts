@@ -19,6 +19,8 @@ const { selectRoleProfiles } = require('../roles/account-choices') as {
 };
 import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
+import { isOwnUiItem } from '../shared/uiOrigin';
+import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -404,13 +406,28 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     return picked?.session;
   }
 
-  async function act(action: 'focus' | 'stop' | 'reopen', value: unknown): Promise<SessionOutcome> {
+  async function act(action: 'focus' | 'stop' | 'reopen', value: unknown, fromOwnUi = false): Promise<SessionOutcome> {
     const input = options(value);
     const interactive = input.interactive !== false;
     // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
     let release: (() => void) | undefined;
     try {
       let id = input.id;
+      // A caller that names the session skips the picker, so outside the extension's own tests the
+      // person confirms which session is stopped. The overview's own Stop button passes its row and
+      // the picker below is itself the person's choice: neither asks a second time (Refs #192).
+      if (action === 'stop' && callerArgumentNeedsConfirmation({ supplied: typeof id === 'string' && id.length > 0, fromOwnUi, testMode: isExtensionTestMode() })) {
+        const target = manager.get(id as string);
+        if (!target) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
+        if (target.terminalOpen) {
+          const answer = await vscode.window.showWarningMessage(
+            `Stop session "${target.name}"?`,
+            { modal: true, detail: 'A command asked to stop this session. Stopping closes its terminal and ends the agent running in it.' },
+            'Stop Session'
+          );
+          if (answer !== 'Stop Session') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        }
+      }
       if (!id) {
         if (!interactive) throw Object.assign(new Error('id'), { code: 'session-not-found' });
         const wantsOpen = action !== 'reopen';
@@ -631,7 +648,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(requireInteractive(options(value)))),
     // focus only brings an existing terminal forward; offering a reopen happens only interactively.
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
-    vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', requireInteractive(options(value)))),
+    // A caller-supplied id asks the person first (see act); the overview row's own Stop action does not.
+    vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', requireInteractive(options(value)), isOwnUiItem(value))),
     vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', withoutAcknowledge(requireInteractive(options(value)))))
   );
 

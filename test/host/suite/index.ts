@@ -9,7 +9,7 @@ import { runReportChecks } from './reports';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
-import { outsideTestMode, runNonInteractiveGateChecks } from './nonInteractiveGate';
+import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
@@ -673,17 +673,30 @@ async function researchFlow(workspace: string): Promise<void> {
   const consentedArxiv = afterConsent.find((t: any) => t.serverId === 'arxiv-mcp-server');
   assert.equal(consentedArxiv?.consentStatus, 'consented');
 
-  // Preparation after consent succeeds and creates verified executable
-  const preparedOutcome = await vscode.commands.executeCommand<{ ok: boolean; outcome?: any }>('multiagentSystem.research.prepareTool', { serverId: 'arxiv-mcp-server' });
-  assert.equal(preparedOutcome.ok, true);
-  assert.equal(preparedOutcome.outcome?.state, 'ready');
-  assert.ok(fs.existsSync(preparedOutcome.outcome?.executable));
+  // After consent, preparation without a verified asset writes nothing: no placeholder script (Refs #192).
+  type Prepared = { ok: boolean; code?: string; outcome?: any };
+  const prepare = (payload: object) => Promise.resolve(vscode.commands.executeCommand<Prepared>('multiagentSystem.research.prepareTool', { serverId: 'arxiv-mcp-server', ...payload }));
+  const installStatus = async () => (await vscode.commands.executeCommand<any[]>('multiagentSystem.research.listTools')).find((t: any) => t.serverId === 'arxiv-mcp-server')?.installStatus;
+  const noAsset = await prepare({});
+  assert.deepEqual([noAsset.ok, noAsset.code], [false, 'asset-unavailable']);
+  assert.equal(await installStatus(), 'not-installed', 'nothing was installed');
+  // In test mode caller bytes are still checked against the pinned digest.
+  const wrongBytes = await prepare({ assetBytes: new TextEncoder().encode('caller bytes') });
+  assert.deepEqual([wrongBytes.ok, wrongBytes.code], [false, 'hash-mismatch']);
+  // Outside test mode caller bytes and a caller download function are not used at all.
+  let downloadCalled = false;
+  const outside = await outsideTestMode(() => prepare({
+    assetBytes: new TextEncoder().encode('caller bytes'),
+    download: async () => { downloadCalled = true; return new TextEncoder().encode('caller download'); }
+  }));
+  assert.deepEqual([outside.result.ok, outside.result.code], [false, 'asset-unavailable'], 'outside test mode the payload asset is ignored');
+  assert.equal(downloadCalled, false, 'the caller download function is never called outside test mode');
+  assert.equal(await installStatus(), 'not-installed');
 
-  // Revocation cleans up installed files and resets consent
+  // Revocation resets consent
   const revokedOutcome = await vscode.commands.executeCommand<{ ok: boolean; status?: string }>('multiagentSystem.research.revokeConsent', { serverId: 'arxiv-mcp-server', interactive: false });
   assert.equal(revokedOutcome.ok, true);
   assert.equal(revokedOutcome.status, 'revoked');
-  assert.equal(fs.existsSync(preparedOutcome.outcome?.executable), false, 'installed binary is removed when consent is revoked');
 
   const finalTools = await vscode.commands.executeCommand<any[]>('multiagentSystem.research.listTools');
   assert.equal(finalTools.find((t: any) => t.serverId === 'arxiv-mcp-server')?.consentStatus, 'not-granted');
@@ -745,6 +758,22 @@ interface Outcome {
 async function worktreeFlow(workspace: string, target: string): Promise<void> {
   const command = (id: string, options: object): Thenable<Outcome> =>
     vscode.commands.executeCommand<Outcome>(id, { interactive: false, ...options });
+
+  // Refs #192: outside test mode a folder chosen by the caller is confirmed first; dismissing creates nothing.
+  for (const payload of [{ branch: 'feature/host-caller', target }, { branch: 'feature/host-caller', target, interactive: true }]) {
+    const asked = await outsideTestMode(() => Promise.resolve(command('multiagentSystem.worktrees.create', payload)));
+    assert.equal(asked.result.code, 'cancelled', JSON.stringify(asked.result));
+    assert.deepEqual(asked.prompts, ['Create a worktree for branch feature/host-caller?'], 'one dialog naming the branch');
+    assert.equal(fs.existsSync(target), false, 'nothing is created without the person');
+  }
+  // A folder outside the workspace and the managed worktree folder is refused, in test mode too.
+  const unmanaged = path.join(path.dirname(path.dirname(target)), 'unmanaged worktrees', 'wt');
+  for (const run of [(work: () => Promise<Outcome>) => work(), async (work: () => Promise<Outcome>) => (await outsideTestMode(work)).result]) {
+    const refusedRoot = await run(() => Promise.resolve(command('multiagentSystem.worktrees.create', { branch: 'feature/host-unmanaged', target: unmanaged })));
+    assert.equal(refusedRoot.code, 'target-outside-allowed-roots');
+  }
+  assert.equal(fs.existsSync(unmanaged), false);
+  assert.equal(((await command('multiagentSystem.worktrees.list', {})).worktrees ?? []).length, 1, 'no worktree was added');
 
   const created = await command('multiagentSystem.worktrees.create', { branch: 'feature/host-smoke', target });
   assert.equal(created.ok, true, created.message);
@@ -878,6 +907,7 @@ export async function run(): Promise<void> {
   await sessionFlow(workspace);
   await accountFlow(workspace);
   console.log(await runNonInteractiveGateChecks(workspace));
+  console.log(await runCallerStopChecks(workspace));
   console.log(await runSessionPersistenceChecks());
   await roleFlow(workspace);
   await researchFlow(workspace);
