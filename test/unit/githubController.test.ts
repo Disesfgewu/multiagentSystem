@@ -11,6 +11,7 @@ import {
   SignInOutcome,
   describeSnapshot,
   displayText,
+  bodyText,
   isGitHubWebUrl,
   parseNumber,
   parseRepository
@@ -714,4 +715,15 @@ test('error messages distinguish session expiration from transient errors and ra
   const transient = await cTransient.browse({ interactive: true, repository: REPO, kind: 'issues' });
   assert.equal(!transient.ok && transient.code, 'transient');
   assert.match(!transient.ok ? transient.message : '', /temporary server or network issue.*retry automatically/);
+});
+
+test('bodyText keeps lines and tabs but replaces control, invisible and direction-changing characters, including the ones the old editor text let through', () => {
+  const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+  const hostile = `line one\r\n\tindented${cp(0x200e)}${cp(0x200f)}${cp(0x061c)}${cp(0xfeff)}${cp(0x2060)}${cp(0x2062)}${cp(0x2065)}${cp(0x85)}${cp(0x202e)}${cp(0x2066)}${cp(0)}end`;
+  const out = bodyText(hostile);
+  assert.equal(out, 'line one\r\n\tindented           end');
+  for (const code of [0x200e, 0x200f, 0x061c, 0xfeff, 0x2060, 0x2062, 0x2065, 0x85, 0x202e, 0x2066, 0]) assert.equal(out.includes(cp(code)), false, code.toString(16));
+  assert.equal(bodyText('x'.repeat(300_000)).length, 200_000, 'long bodies are capped');
+  assert.equal(bodyText(undefined), '');
+  assert.equal(bodyText(42), '');
 });

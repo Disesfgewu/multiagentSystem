@@ -173,8 +173,23 @@ export type SignInResult = { ok: true } | Failure | Cancelled;
 function isUnsafeCodePoint(code: number): boolean {
   return code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f) ||
     (code >= 0x200b && code <= 0x200f) || (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2060 && code <= 0x2064) || (code >= 0x2066 && code <= 0x2069) ||
+    (code >= 0x2060 && code <= 0x2069) ||
     code === 0x061c || code === 0xfeff;
+}
+
+/**
+ * A pull request or issue body for an editor document: line structure and tabs are kept, but every
+ * control, invisible or direction-changing character is replaced, the same set displayText removes.
+ * It is shown as plain text, never rendered or executed.
+ */
+export function bodyText(value: unknown, max = 200_000): string {
+  if (typeof value !== 'string') return '';
+  let out = '';
+  for (const char of value.slice(0, max)) {
+    const code = char.codePointAt(0) ?? 0;
+    out += code === 0x0a || code === 0x09 || (code === 0x0d) ? char : isUnsafeCodePoint(code) ? ' ' : char;
+  }
+  return out;
 }
 
 export function displayText(value: unknown, max = 100): string {
