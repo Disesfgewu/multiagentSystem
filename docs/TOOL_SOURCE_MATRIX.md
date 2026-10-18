@@ -26,7 +26,7 @@
 | Codex CLI | [x86_64 Apple tar.gz](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-apple-darwin.tar.gz) `562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1` | [aarch64 Apple tar.gz](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-aarch64-apple-darwin.tar.gz) `61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10` | [x86_64 Windows exe](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-pc-windows-msvc.exe) `2692c8c7bb2cf8b0aefe638741fc90236f4b824c59578ce84994f9de58200993` | [aarch64 Windows exe](https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-aarch64-pc-windows-msvc.exe) `babd1ee5a76e4299d18f7ef99aa39d330e176e837566d3e2325d9b6b64e1ca61` |
 | agy | **未驗證**：查不到固定資產與雜湊 | **未驗證**：同左 | **未驗證**：同左 | **未驗證**：同左 |
 
-`gh`、Git for Windows 與 Codex 的 hash 來自對應 GitHub Releases 官方 API `assets[].digest`，並可在上述發行頁逐項核對。Claude 的值來自官方 manifest；本次下載**公開的金鑰、manifest 與 detached signature**，在獨立臨時 GPG keyring 核對官方指紋 `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` 並驗證 2.1.89 manifest 的簽章通過。macOS notarization、Windows Authenticode 與二進位自身 hash 仍未驗證。[官方驗證說明](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
+`gh`、Git for Windows 與 Codex 的 hash 來自對應 GitHub Releases 官方 API `assets[].digest`，並可在上述發行頁逐項核對。Claude 的值來自官方 manifest；本次下載**公開的金鑰、manifest 與 detached signature**，在獨立臨時 GPG keyring 核對官方指紋 `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` 並驗證 2.1.89 manifest 的簽章通過。macOS notarization、Windows Authenticode 與二進位自身 hash 仍未驗證。擴充套件**執行階段不會抓取或驗證 manifest 簽章**：簽章只是 2026-10-16 的一次性離線核對，執行階段只靠程式內固定的 URL 與 SHA-256 表（下載後比對，不符即拒絕）。[官方驗證說明](https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing)
 
 ## VSIX 與安裝能力結論
 
