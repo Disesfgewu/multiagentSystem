@@ -5,6 +5,7 @@
 .agent-artifacts/**
 .agent-eye/**
 .agents/**
+artifacts/**
 .claude/**
 .codex/**
 test/**
