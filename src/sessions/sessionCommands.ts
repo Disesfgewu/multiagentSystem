@@ -21,6 +21,7 @@ import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
+const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -45,6 +46,7 @@ const MESSAGES: Record<string, string> = {
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
   'worktree-missing': 'The folder does not exist, so no terminal was started there.',
+  'worktree-outside-project': 'The saved folder is no longer part of this project (or is a link that now points elsewhere), so no terminal was started there. Start a new session instead.',
   'invalid-snapshot': 'Saved sessions could not be read. They were left untouched and nothing will be saved in this window.',
   'store-unavailable': 'Saved sessions could not be loaded. They were left untouched and nothing will be saved in this window.',
   'confirm-unknown-reopen': 'This session\'s earlier terminal may still be running in that folder. Confirm to open a new one anyway.'
@@ -498,6 +500,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
         if (!fs.existsSync(prior.worktree) || !fs.statSync(prior.worktree).isDirectory()) {
           throw Object.assign(new Error('worktree-missing'), { code: 'worktree-missing' });
+        }
+        // The saved path came from private storage: before it becomes a terminal's cwd, confirm it is
+        // still this project's own folder or a worktree of the same repository.
+        const projectFolders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+        if (!await worktreeInProject(prior.worktree, projectFolders, { commonDir: async (dir: string) => { try { return (await WorktreeService.open(dir)).commonDir as string; } catch { return null; } } })) {
+          throw Object.assign(new Error('worktree-outside-project'), { code: 'worktree-outside-project' });
         }
 
         let env: Record<string, string | null> | undefined;
