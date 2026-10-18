@@ -75,7 +75,7 @@ function formatConsentManifest(item, options = {}) {
     `- **Shell Execution**: **Strictly Forbidden** (Array-based execution only; no eval / shell wrappers)`,
     `- **Required Secrets**: ${envKeys.length > 0 ? envKeys.map((k) => `\`${k}\` (SecretStorage only)`).join(', ') : 'None'}`,
     '',
-    '## 3. Required Permissions',
+    '## 3. Required Permissions (declared by the catalog; this extension does not enforce them)',
     permissions.length > 0
       ? permissions.map((p) => `- \`${p}\``).join('\n')
       : '- **None** (Pure local computation; opens no external network connections)',
@@ -210,18 +210,40 @@ function revokeConsent(serverId, { store, root, now = () => new Date() } = {}) {
 
   store.put(CONSENTS_COLLECTION, serverId, updated);
 
+  // 'none': nothing was installed; 'done': the folder is gone; 'failed': it may still be on disk.
+  let cleanup = 'none';
   if (root && typeof root === 'string') {
     const installDir = path.resolve(root, serverId);
     try {
       if (isInside(path.resolve(root), installDir) && fs.existsSync(installDir)) {
         fs.rmSync(installDir, { recursive: true, force: true });
+        cleanup = fs.existsSync(installDir) ? 'failed' : 'done';
       }
     } catch {
-      // Best-effort directory cleanup on revoke
+      cleanup = 'failed';
     }
   }
 
-  return { ok: true, serverId, status: 'revoked' };
+  return { ok: true, serverId, status: 'revoked', cleanup };
+}
+
+const PREPARED_MANIFEST = '.prepared.json';
+
+/**
+ * A prepared folder counts as ready only if it carries the manifest written when the verified bytes were
+ * installed, that manifest matches the tool entry the user consented to right now, and the executable
+ * is still a plain file. A folder that merely exists (or was prepared for an older entry) is not ready.
+ */
+function preparedState(dir, tool) {
+  try {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return 'not-installed';
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, PREPARED_MANIFEST), 'utf8'));
+    const executable = fs.lstatSync(path.join(dir, tool.command[0]));
+    return manifest && manifest.schema === 1 && manifest.fingerprint === consentFingerprint(tool) && executable.isFile() && !executable.isSymbolicLink()
+      ? 'ready' : 'stale';
+  } catch {
+    return 'stale';
+  }
 }
 
 /**
@@ -234,25 +256,22 @@ function listResearchTools({ store, catalog = CANDIDATE_RESEARCH_TOOLS, root } =
     const isConsented = isConsentActive(tool.serverId, store, catalog);
     const consentOutdated = !isConsented && consent !== null && consent.status === 'consented';
 
-    let isInstalled = false;
+    let installState = 'not-installed';
     let installPath = null;
     if (root && typeof root === 'string') {
       const candidatePath = path.join(root, tool.serverId);
-      try {
-        if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isDirectory()) {
-          isInstalled = true;
-          installPath = candidatePath;
-        }
-      } catch {
-        isInstalled = false;
-      }
+      installState = preparedState(candidatePath, tool);
+      if (installState === 'ready') installPath = candidatePath;
     }
+    const isInstalled = installState === 'ready';
 
     const permissions = RESEARCH_TOOL_PERMISSIONS[tool.serverId] || [];
 
     let statusLabel = consentOutdated ? 'Consent outdated: the tool changed since you agreed; review it again' : 'Consent not granted';
-    if (isConsented && isInstalled) {
-      statusLabel = 'Consented · Ready (synthetic / verified)';
+    if (installState === 'stale') {
+      statusLabel = 'Prepared files do not match the current tool entry: prepare again';
+    } else if (isConsented && isInstalled) {
+      statusLabel = 'Consented · Prepared (hash verified when installed; not re-checked, not running)';
     } else if (isConsented) {
       statusLabel = 'Consented · Not installed';
     }
@@ -269,7 +288,7 @@ function listResearchTools({ store, catalog = CANDIDATE_RESEARCH_TOOLS, root } =
       permissions,
       consentStatus: isConsented ? 'consented' : consentOutdated ? 'outdated' : 'not-granted',
       consentedAt: consent?.consentedAt || null,
-      installStatus: isInstalled ? 'ready' : 'not-installed',
+      installStatus: installState,
       installPath,
       statusLabel
     };
@@ -332,12 +351,25 @@ async function prepareResearchTool(serverId, deps) {
   try {
     const executableName = valid.command[0];
     fs.writeFileSync(path.join(stagingDir, executableName), bytes, { mode: 0o755 });
+    fs.writeFileSync(path.join(stagingDir, PREPARED_MANIFEST), JSON.stringify({
+      schema: 1, serverId: valid.serverId, version: valid.version, integrity: valid.integrity,
+      fingerprint: consentFingerprint(valid), executable: executableName, verifiedAt: now().toISOString()
+    }), { mode: 0o600 });
 
+    // Swap the old install aside first so a failed rename restores it instead of losing a good install.
     const finalDir = path.join(root, valid.serverId);
+    let backup = null;
     if (fs.existsSync(finalDir)) {
-      fs.rmSync(finalDir, { recursive: true, force: true });
+      backup = `${finalDir}.old-${randomUUID()}`;
+      fs.renameSync(finalDir, backup);
     }
-    fs.renameSync(stagingDir, finalDir);
+    try {
+      fs.renameSync(stagingDir, finalDir);
+    } catch (error) {
+      if (backup) { try { fs.renameSync(backup, finalDir); } catch { /* nothing more can be done */ } }
+      throw error;
+    }
+    if (backup) { try { fs.rmSync(backup, { recursive: true, force: true }); } catch { /* leftover is outside the active folder */ } }
 
     return {
       state: 'ready',

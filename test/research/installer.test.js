@@ -255,3 +255,72 @@ test('consent belongs to the exact tool entry: a changed version, source, hash, 
   store.put('researchConsents', 'zhtw-mcp', { serverId: 'zhtw-mcp', status: 'consented' });
   assert.equal(isConsentActive('zhtw-mcp', store), false, 'a record without a fingerprint (older format) is not trusted');
 });
+
+test('"ready" needs the manifest written at prepare time, matching the current entry; a bare folder or an older entry is only stale', async () => {
+  const store = new FakeStore();
+  const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-ready-'));
+  const bytes = Buffer.from('#!/bin/sh\necho synthetic\n');
+  const catalog = [validateCatalogItem({ ...tool, integrity: `sha256:${createHash('sha256').update(bytes).digest('hex')}` })];
+  try {
+    grantConsent('zhtw-mcp', { store, catalog });
+    fs.mkdirSync(path.join(root, 'zhtw-mcp'));
+    fs.writeFileSync(path.join(root, 'zhtw-mcp', 'zhtw-mcp'), 'planted');
+    let entry = listResearchTools({ store, root, catalog })[0];
+    assert.equal(entry.installStatus, 'stale', 'a folder that merely exists is not ready');
+    assert.equal(entry.installPath, null);
+    assert.match(entry.statusLabel, /do not match the current tool entry/);
+    fs.rmSync(path.join(root, 'zhtw-mcp'), { recursive: true });
+
+    await prepareResearchTool('zhtw-mcp', { store, root, catalog, assetBytes: bytes });
+    entry = listResearchTools({ store, root, catalog })[0];
+    assert.equal(entry.installStatus, 'ready');
+    assert.match(entry.statusLabel, /hash verified when installed; not re-checked, not running/);
+    assert.doesNotMatch(entry.statusLabel, /Ready/);
+
+    const newer = [validateCatalogItem({ ...catalog[0], version: 'v9.9.9' })];
+    assert.equal(listResearchTools({ store, root, catalog: newer })[0].installStatus, 'stale', 'prepared for an older entry');
+    fs.rmSync(path.join(root, 'zhtw-mcp', 'zhtw-mcp'));
+    assert.equal(listResearchTools({ store, root, catalog })[0].installStatus, 'stale', 'the executable is gone');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a failed swap during prepare restores the previous good install instead of losing it', async () => {
+  const store = new FakeStore();
+  const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-swap-'));
+  const bytes = Buffer.from('#!/bin/sh\necho v1\n');
+  const catalog = [validateCatalogItem({ ...tool, integrity: `sha256:${createHash('sha256').update(bytes).digest('hex')}` })];
+  const realRename = fs.renameSync;
+  try {
+    grantConsent('zhtw-mcp', { store, catalog });
+    await prepareResearchTool('zhtw-mcp', { store, root, catalog, assetBytes: bytes });
+    const final = path.join(root, 'zhtw-mcp');
+    fs.renameSync = (from, to) => {
+      if (String(from).includes(`${path.sep}.staging${path.sep}`) && to === final) throw new Error('synthetic rename failure');
+      return realRename(from, to);
+    };
+    await assert.rejects(prepareResearchTool('zhtw-mcp', { store, root, catalog, assetBytes: bytes }), /synthetic rename failure/);
+    fs.renameSync = realRename;
+    assert.equal(listResearchTools({ store, root, catalog })[0].installStatus, 'ready', 'the earlier verified install is still in place');
+    assert.deepEqual(fs.readdirSync(root).filter((name) => name.includes('.old-')), [], 'no backup folder is left behind');
+  } finally { fs.renameSync = realRename; fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('revoke reports whether the installed files were really removed', () => {
+  const store = new FakeStore();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-cleanup-'));
+  try {
+    grantConsent('zhtw-mcp', { store });
+    assert.equal(revokeConsent('zhtw-mcp', { store, root }).cleanup, 'none');
+    grantConsent('zhtw-mcp', { store });
+    fs.mkdirSync(path.join(root, 'zhtw-mcp'));
+    assert.equal(revokeConsent('zhtw-mcp', { store, root }).cleanup, 'done');
+    grantConsent('zhtw-mcp', { store });
+    fs.mkdirSync(path.join(root, 'zhtw-mcp'));
+    const realRm = fs.rmSync;
+    fs.rmSync = () => { throw new Error('synthetic EBUSY'); };
+    try { assert.equal(revokeConsent('zhtw-mcp', { store, root }).cleanup, 'failed'); } finally { fs.rmSync = realRm; }
+    assert.equal(isConsentActive('zhtw-mcp', store), false, 'consent is revoked even when cleanup failed');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

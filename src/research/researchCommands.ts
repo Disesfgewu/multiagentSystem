@@ -15,7 +15,7 @@ const {
   formatConsentManifest(tool: any): string;
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
   grantConsent(serverId: string, deps: { store: any; catalog?: any[] }): { ok: boolean; record: any };
-  revokeConsent(serverId: string, deps: { store: any; root?: string }): { ok: boolean; serverId: string; status: string };
+  revokeConsent(serverId: string, deps: { store: any; root?: string }): { ok: boolean; serverId: string; status: string; cleanup: 'none' | 'done' | 'failed' };
   prepareResearchTool(serverId: string, deps: { store: any; root: string; boundary?: string; download?: any; catalog?: any[]; assetBytes?: Uint8Array }): Promise<any>;
   isConsentActive(serverId: string, store: any): boolean;
 };
@@ -109,7 +109,9 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
     }
 
     if (interactive) {
-      const permissionsText = (tool as any).permissions?.join(', ') || 'None (pure local computation)';
+      const declared = listResearchTools({ catalog: [tool] })[0]?.permissions ?? [];
+      const permissionsText = declared.length > 0 ? declared.join(', ') : 'None declared';
+      const secretKeys = Object.keys((tool as any).env ?? {});
       const answer = await vscode.window.showWarningMessage(
         `Research MCP Tool Consent: ${tool.name} (${tool.serverId} ${tool.version})`,
         {
@@ -118,7 +120,9 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
             `Source Repository: ${tool.source}`,
             `License: ${tool.license}`,
             `Integrity Digest: ${tool.integrity}`,
-            `Required Permissions: ${permissionsText}`,
+            `Command: ${(tool as any).command?.join(' ') ?? 'unknown'}`,
+            `Required secrets (SecretStorage only): ${secretKeys.length > 0 ? secretKeys.join(', ') : 'none'}`,
+            `Required Permissions: ${permissionsText} (declared by the catalog; this extension does not enforce them)`,
             '',
             'All external literature and papers retrieved by this tool are strictly untrusted data.',
             'Read-only status is self-declared by tool schema (sandboxEnforced: false).',
@@ -199,7 +203,8 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
 
     const result = revokeConsent(serverId, { store, root });
     if (interactive) {
-      void vscode.window.showInformationMessage(`Consent revoked for '${serverId}'. Tool disabled and cleaned up.`);
+      if (result.cleanup === 'failed') void vscode.window.showWarningMessage(`Consent revoked for '${serverId}', but its installed files could not be fully removed. Delete the folder from private storage by hand.`);
+      else void vscode.window.showInformationMessage(`Consent revoked for '${serverId}'. ${result.cleanup === 'done' ? 'Installed files were removed.' : 'Nothing was installed.'}`);
     }
     return result;
   };
