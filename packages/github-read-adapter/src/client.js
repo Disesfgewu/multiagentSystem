@@ -348,6 +348,7 @@ function createGitHubClient(options) {
       } else if (outcome.error) {
         const code = errorCode(outcome.error);
         if (code === 'INVALID_RESPONSE') return { failure: fail('invalid', { reason: 'invalid_transport_response' }) };
+        if (code === 'RESPONSE_TOO_LARGE') return { failure: fail('invalid', { reason: 'response_too_large' }) };
         if (isOfflineError(outcome.error)) {
           return { failure: fail('offline', { code, attempts: attempt + 1 }) };
         }
