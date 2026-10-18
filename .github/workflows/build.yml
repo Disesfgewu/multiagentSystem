@@ -47,6 +47,14 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run vsix:package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: multiagentsystem-0.0.3-beta-${{ runner.os }}
+          path: |
+            artifacts/multiagentsystem.vsix
+            artifacts/release-candidate.json
+          if-no-files-found: error
+          retention-days: 14
 
   # Startup smoke test only: it proves the built extension loads in a real
   # Extension Host and creates native terminals. It does not cover typing,
