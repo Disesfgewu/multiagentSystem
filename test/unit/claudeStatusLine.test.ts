@@ -10,6 +10,7 @@ import {
   isBridgeCommand,
   inspectStatusLineConfig,
   enableStatusLineBridge,
+  writeSettingsAtomic,
   disableStatusLineBridge,
   readClaudeQuotaFile,
   readClaudeQuotaObservations,
@@ -409,5 +410,68 @@ test('quota bridge rejects reset values outside the JavaScript date range withou
       const values = readClaudeQuotaObservations('synthetic', root, now) as Array<{ value: unknown; confidence: string }>;
       assert.ok(values.every((value) => value.value === null && value.confidence === 'unknown'));
     }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a settings.json that is a symlink stays a symlink: the file it points to is updated, not replaced', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-symlink-'));
+  try {
+    const dotfiles = path.join(root, 'dotfiles');
+    const configDir = path.join(root, 'config');
+    fs.mkdirSync(dotfiles); fs.mkdirSync(configDir);
+    const target = path.join(dotfiles, 'claude-settings.json');
+    fs.writeFileSync(target, JSON.stringify({ theme: 'light' }));
+    fs.symlinkSync(target, path.join(configDir, 'settings.json'));
+    const bridge = path.join(root, 'ext', 'claudeStatusLineBridge.js');
+    assert.equal(enableStatusLineBridge(configDir, bridge).ok, true);
+    assert.equal(fs.lstatSync(path.join(configDir, 'settings.json')).isSymbolicLink(), true, 'the link itself is untouched');
+    const written = JSON.parse(fs.readFileSync(target, 'utf8'));
+    assert.equal(written.theme, 'light');
+    assert.match(written.statusLine.command, /claudeStatusLineBridge\.js/);
+    assert.equal(fs.statSync(target).mode & 0o777, 0o600, 'still written privately, as for a regular settings.json');
+    assert.equal(disableStatusLineBridge(configDir, bridge).ok, true);
+    assert.equal(fs.lstatSync(path.join(configDir, 'settings.json')).isSymbolicLink(), true);
+    assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).statusLine, undefined);
+    assert.deepEqual(fs.readdirSync(dotfiles), ['claude-settings.json'], 'no temp file is left beside the target');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a dangling settings.json symlink is refused instead of being replaced', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-dangling-'));
+  try {
+    fs.symlinkSync(path.join(root, 'missing.json'), path.join(root, 'settings.json'));
+    const result = writeSettingsAtomic(path.join(root, 'settings.json'), '{}', null);
+    assert.equal(result.ok, false);
+    assert.equal(fs.lstatSync(path.join(root, 'settings.json')).isSymbolicLink(), true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('if settings.json changed after it was read, nothing is written and the newer content survives', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-lost-update-'));
+  try {
+    const file = path.join(root, 'settings.json');
+    fs.writeFileSync(file, '{"a":1}');
+    fs.writeFileSync(file, '{"a":1,"editedByClaudeCode":true}');
+    const result = writeSettingsAtomic(file, '{"statusLine":{}}', '{"a":1}');
+    assert.deepEqual([result.ok, result.reason], [false, 'settings-changed']);
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"a":1,"editedByClaudeCode":true}');
+    assert.deepEqual(fs.readdirSync(root), ['settings.json']);
+    // A file that appeared after we saw none is also someone else's change.
+    const fresh = path.join(root, 'fresh', 'settings.json');
+    fs.mkdirSync(path.dirname(fresh));
+    fs.writeFileSync(fresh, '{"late":true}');
+    assert.equal(writeSettingsAtomic(fresh, '{}', null).reason, 'settings-changed');
+    assert.equal(fs.readFileSync(fresh, 'utf8'), '{"late":true}');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('writeSettingsAtomic writes a new file privately and an unchanged one in place', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-write-'));
+  try {
+    const file = path.join(root, 'settings.json');
+    assert.equal(writeSettingsAtomic(file, '{"n":1}', null).ok, true);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.equal(writeSettingsAtomic(file, '{"n":2}', '{"n":1}').ok, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"n":2}');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

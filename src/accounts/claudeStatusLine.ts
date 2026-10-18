@@ -75,6 +75,43 @@ export function isBridgeCommand(statusLine: unknown, bridgeScriptPath?: string, 
   } catch { return false; }
 }
 
+/**
+ * Writes `text` to a settings file without replacing a symlink, without losing a concurrent edit and
+ * without widening its permissions. A symlinked file (dotfiles managers do this) is updated at its
+ * target. `expected` is the content the caller read and based its change on (null when there was no
+ * file); if the file now differs, nothing is written, because the change was computed from stale data
+ * and would silently discard someone else's edit.
+ */
+export function writeSettingsAtomic(settingsPath: string, text: string, expected: string | null): { ok: boolean; reason?: string } {
+  let temp: string | undefined;
+  try {
+    let target = settingsPath;
+    let link: fs.Stats | undefined;
+    try { link = fs.lstatSync(settingsPath); } catch { link = undefined; }
+    if (link?.isSymbolicLink()) {
+      try { target = fs.realpathSync(settingsPath); } catch { return { ok: false, reason: 'settings-symlink-unresolvable' }; }
+    }
+    let current: string | null = null;
+    try {
+      const stat = fs.statSync(target);
+      if (!stat.isFile()) return { ok: false, reason: 'settings-not-a-file' };
+      current = fs.readFileSync(target, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (current !== expected) return { ok: false, reason: 'settings-changed' };
+    temp = `${target}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(temp, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.renameSync(temp, target);
+    temp = undefined;
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'write-failed' };
+  } finally {
+    if (temp) { try { fs.unlinkSync(temp); } catch { /* already gone */ } }
+  }
+}
+
 export interface StatusLineInspection {
   status: 'disabled' | 'active' | 'custom' | 'unreadable';
   currentCommand?: string;
@@ -182,9 +219,11 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
 
     const settingsPath = path.join(configDir, 'settings.json');
     let settings: Record<string, unknown> = {};
+    let originalContent: string | null = null;
 
     if (fs.existsSync(settingsPath)) {
       const content = fs.readFileSync(settingsPath, 'utf8');
+      originalContent = content;
       if (content.trim()) {
         try {
           const parsed = JSON.parse(content);
@@ -211,11 +250,7 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
       command
     };
 
-    const tempFile = `${settingsPath}.tmp.${process.pid}.${Date.now()}`;
-    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempFile, settingsPath);
-
-    return { ok: true };
+    return writeSettingsAtomic(settingsPath, JSON.stringify(settings, null, 2), originalContent);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'write-failed' };
   }
@@ -260,9 +295,8 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
       delete settings.statusLine;
     }
 
-    const tempFile = `${settingsPath}.tmp.${process.pid}.${Date.now()}`;
-    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempFile, settingsPath);
+    const written = writeSettingsAtomic(settingsPath, JSON.stringify(settings, null, 2), content);
+    if (!written.ok) return written;
 
     const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
     if (fs.existsSync(quotaPath)) {
