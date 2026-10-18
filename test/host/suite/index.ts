@@ -1,3 +1,4 @@
+import { runAgentSkillChecks } from './agentSkills';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { strict as assert } from 'node:assert';
@@ -875,6 +876,7 @@ export async function run(): Promise<void> {
     for (const terminal of created) terminal.dispose();
   }
 
+  await runAgentSkillChecks(workspace);
   await sessionFlow(workspace);
   await accountFlow(workspace);
   console.log(await runNonInteractiveGateChecks(workspace));

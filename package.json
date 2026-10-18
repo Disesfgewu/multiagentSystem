@@ -81,6 +81,16 @@
     "onCommand:multiagentSystem.skills.remove"
   ],
   "contributes": {
+    "configuration": {
+      "title": "Multiagent System",
+      "properties": {
+        "multiagentSystem.skills.autoInstall": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically prepare bundled collaboration skills for Claude Code, Codex and OpenCode in trusted local workspaces. Existing skills are preserved. Does not install CLIs or grant permissions."
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         { "id": "multiagentSystem", "title": "Multiagent", "icon": "media/multiagent.svg" }
@@ -275,7 +285,7 @@
       { "command": "multiagentSystem.research.revokeConsent", "title": "Multiagent: Revoke Research MCP Tool Consent", "icon": "$(discard)" },
       { "command": "multiagentSystem.research.inspectTool", "title": "Multiagent: Inspect Research MCP Tool Security Manifest", "icon": "$(info)" },
       { "command": "multiagentSystem.research.prepareTool", "title": "Multiagent: Prepare Consented Research MCP Tool" },
-      { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace (Claude Code only)" },
+      { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace" },
       { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
     ],
     "menus": {
