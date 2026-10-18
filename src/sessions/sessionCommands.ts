@@ -329,7 +329,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (interactive && prep.digest) {
           const answer = await vscode.window.showInformationMessage(
             `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
-            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nInstructions written exclusively to managed session storage.` },
+            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nThe instructions are written to a private file outside the workspace (for Codex, inside the account's Codex home); they are removed when the session ends. Whether the CLI reads them is not verified.` },
             'Start Agent',
             'View Instructions'
           );
