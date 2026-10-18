@@ -1,32 +1,71 @@
 import * as vscode from 'vscode';
 import { accountService, SessionUse } from './accountRuntime';
 import { quotaObservations, registerProfileForQuota } from './claudeStatusLine';
+import { privateStorage } from '../storage/storageCommands';
 
 export { quotaObservations, registerProfileForQuota };
 
-const { loadPolicy, savePolicy, QuotaDispatcher } = require('./quota-policy') as {
+const { loadPolicy, savePolicy } = require('./quota-policy') as {
   loadPolicy(store: unknown, id: string): { ok: boolean; policy?: Record<string, unknown>; stored?: boolean };
   savePolicy(store: unknown, id: string, input: unknown): { ok: boolean; reason?: string; problems?: string[] };
-  QuotaDispatcher: new () => { running(accountKey: string): number };
 };
-const { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput } = require('./quota-gate') as {
+const { gateLaunch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor } = require('./quota-gate') as {
   gateLaunch(input: Record<string, unknown>): { action: 'allow' | 'warn' | 'confirm' | 'block'; allowed: boolean; overridable: boolean; lines: string[]; note: string | null; reasons: Array<{ code: string }> };
-  commitDispatch(input: Record<string, unknown>): { ok: true; release: () => void } | { ok: false; code: string; message: string };
   describePolicy(read: unknown): string;
   describeQuota(observations: unknown[], now: Date): string[];
   describeCurrentState(decision: { action: string; lines: string[] }): string;
   policyFromInput(input: Record<string, unknown>): { ok: boolean; policy?: Record<string, unknown>; problems: string[] };
+  wordsFor(reason: { code: string }): string;
+};
+const { runningSlots, reserveSlot, renewSlot, releaseSlot, RENEW_MS } = require('./quota-reservations') as {
+  runningSlots(store: unknown, accountKey: string, now?: Date): { ok: boolean; running?: number; reason?: string };
+  reserveSlot(input: Record<string, unknown>): { ok: boolean; reason?: string; decision?: { allowed: boolean; reasons: Array<{ code: string }>; reservation?: { accountKey: string; id: string } } };
+  renewSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date): { ok: boolean; renewed?: boolean };
+  releaseSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date): { ok: boolean; released?: boolean };
+  RENEW_MS: number;
 };
 
-// One dispatcher per window: every gated launch (start or reopen) reserves a slot here before it is
-// allowed through, via `commitDispatch` (quota-gate.js), and whoever holds the outcome must call
-// `release()` exactly once, when that session's terminal actually closes. This is what makes the
-// running-agent limit atomic: two launch requests that both read "not full yet" cannot both then
-// also both successfully reserve the last slot, because the reservation itself is the one
-// synchronous step that decides and records.
-const dispatcher = new QuotaDispatcher();
+export type GateOutcome = { ok: true; release: () => Promise<void> } | { ok: false; code: string; message: string };
 
-export type GateOutcome = { ok: true; release: () => void } | { ok: false; code: string; message: string };
+function reservationFailure(reason?: string): GateOutcome {
+  const message = reason === 'policy-changed'
+    ? 'Account limits changed while this launch was being checked. Try again to review the current limits.'
+    : 'Shared running-session limits could not be read safely, so no new agent was started.';
+  return { ok: false, code: 'quota-gate', message };
+}
+
+function holdReservation(reservation: { accountKey: string; id: string }): GateOutcome {
+  let released = false;
+  let renewing = false;
+  let warned = false;
+  const renew = async (): Promise<void> => {
+    if (released || renewing) return;
+    renewing = true;
+    try {
+      const opened = await privateStorage()?.use();
+      const result = opened?.ok ? renewSlot(opened.store, reservation, new Date()) : { ok: false };
+      if ((!result.ok || result.renewed !== true) && !warned) {
+        warned = true;
+        void vscode.window.showWarningMessage('The shared running-session reservation could not be refreshed. Check Private Storage diagnostics; new launches fail closed while storage is unavailable.');
+      }
+    } finally {
+      renewing = false;
+    }
+  };
+  const timer = setInterval(() => void renew(), RENEW_MS);
+  timer.unref?.();
+  return {
+    ok: true,
+    release: async () => {
+      if (released) return;
+      released = true;
+      clearInterval(timer);
+      const opened = await privateStorage()?.use();
+      if (opened?.ok) releaseSlot(opened.store, reservation, new Date());
+      // If storage cannot be opened, the bounded lease expires without being revived.
+    }
+  };
+}
 
 /**
  * Applies the account's limits before a new agent starts on it. An account with no limits is never held
@@ -57,14 +96,28 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
     if (latest.stored !== policyRead.stored || JSON.stringify(latest.policy) !== JSON.stringify(policyRead.policy)) {
       return { ok: false, code: 'quota-gate', message: 'Account limits changed while this launch was being checked. Try again to review the current limits.' };
     }
-    return commitDispatch({ policyRead: latest, observations: quotaObservations(accountProfileId, latestProfile), now: new Date(), dispatcher, accountKey: accountProfileId, approval });
+    const reserved = reserveSlot({
+      store: latestAccounts.store,
+      accountKey: accountProfileId,
+      expectedPolicyRead: latest,
+      observations: quotaObservations(accountProfileId, latestProfile),
+      now: new Date(),
+      approval
+    });
+    if (!reserved.ok || !reserved.decision) return reservationFailure(reserved.reason);
+    if (!reserved.decision.allowed || !reserved.decision.reservation) {
+      return { ok: false, code: 'quota-gate', message: reserved.decision.reasons.map(wordsFor).join(' ') };
+    }
+    return holdReservation(reserved.decision.reservation);
   };
   if (policyRead.stored !== true) return commit();
   // The running count that decides what to SHOW is a plain read, for responsive dialog wording; the
   // decision that actually GRANTS access is made again, atomically, in commit() above, so a request
   // that waited on a confirmation dialog cannot act on a running count that a concurrent request has
   // since made stale.
-  const running = dispatcher.running(accountProfileId);
+  const slots = runningSlots(accounts.store, accountProfileId, now);
+  if (!slots.ok || !Number.isInteger(slots.running)) return reservationFailure(slots.reason);
+  const running = slots.running as number;
   const first = gateLaunch({ policyRead, observations, now, running });
   if (first.action === 'allow') return commit();
   const text = [...first.lines, ...(first.note ? ['', first.note] : [])].join('\n');
@@ -102,7 +155,11 @@ export async function currentGateState(accountProfileId: string, sessions: () =>
   if (profile) registerProfileForQuota(profile);
   const observations = quotaObservations(accountProfileId, profile);
   const now = new Date();
-  const running = dispatcher.running(accountProfileId);
+  const slots = runningSlots(accounts.store, accountProfileId, now);
+  if (!slots.ok || !Number.isInteger(slots.running)) {
+    return { action: 'block', line: 'Right now: a new agent would be held back. Shared running-session limits could not be read safely. Use Setup Diagnostics to check Private Storage.', reason: 'Shared running-session limits could not be read safely.' };
+  }
+  const running = slots.running as number;
   const decision = gateLaunch({ policyRead, observations, now, running });
   return { action: decision.action, line: describeCurrentState(decision), reason: decision.lines[0] };
 }
