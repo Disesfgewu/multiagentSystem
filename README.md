@@ -14,7 +14,7 @@
 
 在 VS Code 開啟這個資料夾，按 `F5` 啟動 Extension Development Host；在新視窗的 Command Palette 執行：
 
-- 開啟 Explorer 裡的 **Multiagent GitHub** 區塊，即可列出目前專案的開放 Issues／PRs；點選項目會在 VS Code 編輯器讀取內容，PR 頁會讀取 review／CI 摘要。可按標題列的 Refresh 更新清單。此切片只讀取 GitHub；建立、review 與 merge 的套件內操作仍待後續工作。
+- 開啟 Explorer 裡的 **Multiagent GitHub** 區塊，即可列出目前專案的開放 Issues／PRs；點選項目會在 VS Code 編輯器讀取內容，PR 頁會讀取 review／CI 摘要。可按標題列的 Refresh 更新清單。此區塊只讀取 GitHub；正式 PR review 與合併在 PR 報告中經 Broker 執行（**Multiagent: Submit Formal Pull Request Review**／**Merge Pull Request from Report**），合併權限預設為人工，可經確認改為 PM，詳見 [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)。
 
 - `Multiagent: Open Four Native Terminals`：開啟四個可直接輸入的 VS Code 原生 terminal，名稱為 PM、Worker 1–3。依 VS Code 實際排列，必要時手動拖曳或分割成想要的格局。
 - `Multiagent: Launch CLI Agent in Native Terminal`：選 Claude Code 或 Codex CLI，再輸入 terminal 名稱；CLI 在新建的原生 terminal 執行，使用目前環境的 CLI 登入與預設 shell。
