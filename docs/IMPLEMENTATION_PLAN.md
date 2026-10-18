@@ -1,6 +1,6 @@
 # 多代理人 CLI 協作平台實作計劃
 
-狀態：需求與架構基線；逐項進度和最高決策者待辦見 [核心計劃與決策台帳](MASTER_PLAN.md)
+狀態：需求與架構基線；目前進度及待決事項以 GitHub Issues／PRs 為準。[舊交付台帳](MASTER_PLAN.md)僅保留歷史紀錄。
 
 更新：2026-10-14
 目標環境：macOS 與 Windows 的 VS Code Desktop、以 GitHub 為來源的專案、Codex CLI、Claude Code CLI 與 agy（內建 provider 範圍見 [Provider 登錄](PROVIDERS.md)）
@@ -11,7 +11,7 @@
 
 第一個可展示檢查點：不輸入編號、不開瀏覽器，使用者可在套件內看到同 repo 的 Issues／PRs 清單、打開內容、查看 review／CI 與返回清單；錯誤和無權限狀態要清楚。下一個檢查點：在相同介面建立／選擇帳號與身份組，預覽有效指令、MCP／記憶範圍及額度 gate，然後啟動對應真 CLI terminal。每個檢查點都要有實際 Extension Host 演示；雙平台真機驗收另記證據。
 
-**MVP 決策工作台（[#106](https://github.com/Disesfgewu/multiagentSystem/issues/106)）：**中央預設是同專案真實 agents／terminals 的總覽；側欄提供 Core Plan、Issues Report、PRs Report、帳號與模型、Agents 設定、廣播管理。使用者能依序閱讀 Issue／PR 敘述、解法、PM 報告、reviewer 結果與最新 head／CI，回饋、要求修改、通過或在 gate 達成時合併，再返回 agent 總覽。核心計劃文件記錄大量可追溯 TODO 與下一決策，GitHub Issue／PR 仍是公開需求與交付的權威來源。僅有唯讀清單或空入口不代表此流程完成。
+**MVP 決策工作台（[#106](https://github.com/Disesfgewu/multiagentSystem/issues/106)）：**中央預設是同專案真實 agents／terminals 的總覽；側欄提供 Issues Report、PRs Report、帳號與模型、Agents 設定、廣播管理。使用者能依序閱讀 Issue／PR 敘述、解法、PM 報告、reviewer 結果與最新 head／CI，回饋、要求修改、通過或在 gate 達成時合併，再返回 agent 總覽。GitHub Issue／PR 是公開需求、待決事項與交付的權威來源。僅有唯讀清單或空入口不代表此流程完成。
 
 ## 1. 問題與產品邊界
 

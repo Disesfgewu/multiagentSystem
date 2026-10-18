@@ -4,12 +4,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, planOwners, planReportLinks } from '../../src/plan/parser';
 
-test('the project core plan has 65 unique decisions and traceable fields', () => {
+test('the archived delivery ledger has 58 unique records and traceable fields', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'docs', 'MASTER_PLAN.md'), 'utf8');
   const parsed = parsePlan(source);
   const tasks = parsed.sections.flatMap((section) => section.tasks);
   assert.deepEqual(parsed.errors, []);
-  assert.equal(tasks.length, 65);
+  assert.equal(tasks.length, 58);
   assert.equal(new Set(tasks.map((task) => task.id)).size, tasks.length);
   assert.equal(tasks.filter((task) => task.id.startsWith('DEC-')).length, 6);
   for (const task of tasks) {
