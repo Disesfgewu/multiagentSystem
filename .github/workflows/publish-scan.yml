@@ -38,6 +38,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ matrix.node }}
+      - run: npm ci --omit=dev --ignore-scripts
       - run: node --check src/publish/scan.js
       - run: node --check src/publish/diff.js
       - run: node --check src/publish/detectors.js
