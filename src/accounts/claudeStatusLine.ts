@@ -61,7 +61,7 @@ export function buildBridgeCommand(bridgeScriptPath: string, quotaFilePath: stri
 /**
  * Checks whether a statusLine setting belongs to our bridge script.
  */
-export function isBridgeCommand(statusLine: unknown, bridgeScriptPath?: string): boolean {
+export function isBridgeCommand(statusLine: unknown, bridgeScriptPath?: string, quotaPath?: string): boolean {
   let command: string | undefined;
   if (typeof statusLine === 'string') {
     command = statusLine;
@@ -69,8 +69,10 @@ export function isBridgeCommand(statusLine: unknown, bridgeScriptPath?: string):
     command = (statusLine as { command: string }).command;
   }
   if (!command) return false;
-  const scriptName = bridgeScriptPath ? path.basename(bridgeScriptPath) : 'claudeStatusLineBridge.js';
-  return command.includes(scriptName);
+  if (!quotaPath) return false;
+  try {
+    return command === buildBridgeCommand(bridgeScriptPath ?? getBridgeScriptPath(), quotaPath);
+  } catch { return false; }
 }
 
 export interface StatusLineInspection {
@@ -150,7 +152,7 @@ export function inspectStatusLineConfig(configDir: string, bridgeScriptPath?: st
     command = (statusLine as { command: string }).command;
   }
 
-  const isActive = isBridgeCommand(statusLine, bridgeScriptPath);
+  const isActive = isBridgeCommand(statusLine, bridgeScriptPath, quotaPath);
 
   return {
     status: isActive ? 'active' : 'custom',
@@ -200,7 +202,7 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
     const command = buildBridgeCommand(bridgeScriptPath, quotaPath, isWindows);
 
     // If an existing statusLine is present and not our bridge, back it up so disable can restore it
-    if (settings.statusLine !== undefined && !isBridgeCommand(settings.statusLine, bridgeScriptPath)) {
+    if (settings.statusLine !== undefined && !isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
       settings._multiagentStatusLineBackup = settings.statusLine;
     }
 
@@ -247,7 +249,7 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
     }
 
     // Refuse to touch settings if statusLine is not our bridge command
-    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath)) {
+    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
       return { ok: false, reason: 'statusline-not-our-bridge' };
     }
 
@@ -304,12 +306,14 @@ export function readClaudeQuotaObservations(profileId: string, configDir: string
   const fileData = readClaudeQuotaFile(configDir);
   if (!fileData) return [];
 
-  const observedAt = fileData.observedAt ? new Date(fileData.observedAt) : now;
-  const safeObservedAt = Number.isFinite(observedAt.getTime()) ? observedAt : now;
+  // A missing or malformed timestamp cannot turn an old file into a fresh reading.
+  if (typeof fileData.observedAt !== 'string') return [];
+  const observedAt = new Date(fileData.observedAt);
+  if (!Number.isFinite(observedAt.getTime()) || observedAt.getTime() > now.getTime()) return [];
 
   const result = claudeQuotaFromStatusLine({ rate_limits: fileData.rate_limits }, {
     profileId,
-    observedAt: safeObservedAt
+    observedAt
   });
   return result.observations;
 }

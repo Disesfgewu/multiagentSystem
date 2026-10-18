@@ -368,3 +368,34 @@ test('Claude status line wizard: rejects unsafe paths and rejects non-active dis
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('quota bridge never refreshes missing, invalid or future observation times', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-time-'));
+  const now = new Date('2026-10-18T06:00:00Z');
+  try {
+    for (const observedAt of [undefined, null, '', 'invalid', '2030-01-01T00:00:00Z']) {
+      fs.writeFileSync(path.join(root, STATUSLINE_QUOTA_FILE_NAME), JSON.stringify({ observedAt, rate_limits: { five_hour: { used_percentage: 1, resets_at: now.getTime() / 1000 + 3600 } } }));
+      assert.deepEqual(readClaudeQuotaObservations('synthetic', root, now), [], String(observedAt));
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('bridge ownership requires the exact executable command and destination, never a filename fragment', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-owner-'));
+  const bridge = getBridgeScriptPath();
+  const quota = path.join(root, STATUSLINE_QUOTA_FILE_NAME);
+  try {
+    const command = buildBridgeCommand(bridge, quota);
+    assert.equal(isBridgeCommand({ command }, bridge, quota), true);
+    for (const custom of [`echo claudeStatusLineBridge.js`, `${command} && echo custom`, buildBridgeCommand(bridge, path.join(root, 'other.json'))]) {
+      const settings = JSON.stringify({ statusLine: { type: 'command', command: custom }, theme: 'private' });
+      fs.writeFileSync(path.join(root, 'settings.json'), settings);
+      assert.equal(inspectStatusLineConfig(root, bridge).status, 'custom');
+      assert.equal(disableStatusLineBridge(root, bridge).ok, false);
+      assert.equal(fs.readFileSync(path.join(root, 'settings.json'), 'utf8'), settings);
+      assert.equal(enableStatusLineBridge(root, bridge).ok, true);
+      assert.equal(disableStatusLineBridge(root, bridge).ok, true);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'utf8')).statusLine.command, custom);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

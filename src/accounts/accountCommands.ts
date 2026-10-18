@@ -317,7 +317,7 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     `Subscription plan: ${plan ?? 'unknown (the CLI did not report one)'}`,
     ...(profile.provider === 'claude' ? [(() => {
       const info = inspectStatusLineConfig(profile.configDir, getBridgeScriptPath(extensionContext?.extensionPath));
-      if (info.status === 'active') return 'Status line bridge: active (capturing rate limits)';
+      if (info.status === 'active') return 'Status line bridge: configured (receipt and freshness are shown separately in quota readings)';
       if (info.status === 'custom') return `Status line bridge: custom command (${info.currentCommand ?? 'custom'})`;
       return 'Status line bridge: not configured (use Configure Claude Status Line Bridge)';
     })()] : []),
