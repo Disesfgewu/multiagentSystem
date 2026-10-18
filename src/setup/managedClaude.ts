@@ -242,7 +242,7 @@ export class ManagedClaude {
       await fs.promises.rename(staging, install);
       await fs.promises.writeFile(pointerTemp, JSON.stringify(pointer), { mode: 0o600, flag: 'wx' });
       await fs.promises.rename(pointerTemp, this.pointerPath());
-      await pruneInstalls(installsDir, id);
+      await pruneInstalls(installsDir, id, { pointerFile: this.pointerPath() });
       return await this.status();
     } catch (error) {
       if (await this.rootAllowed()) {
