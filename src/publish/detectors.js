@@ -57,7 +57,9 @@ const LOCAL_PATH = new RegExp(
     String.raw`/(?:Users|home|root|Volumes)/[^\s/\\"'` + '`' + String.raw`)\]]+` +
     String.raw`|/private/(?:var|tmp)/|/var/folders/` +
     String.raw`|[A-Za-z]:(?:\\+|/)(?![\\/])[^\s"'` + '`' + String.raw`]+` +
-    String.raw`|~(?:\\+|/)\.(?:ssh|aws|gnupg|kube|docker|npmrc|netrc)(?![A-Za-z0-9_-])` +
+    String.raw`|~[A-Za-z0-9_-]*(?:\\+|/)\.(?:ssh|aws|gnupg|kube|docker|npmrc|netrc)(?![A-Za-z0-9_-])` +
+    String.raw`|%(?:USERPROFILE|APPDATA|LOCALAPPDATA|HOMEPATH|HOMEDRIVE)%` +
+    String.raw`|/var/root(?:/|(?![A-Za-z0-9_-]))` +
     String.raw`)`,
   'g'
 );

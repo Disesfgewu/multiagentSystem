@@ -40,6 +40,7 @@ const LIMITATIONS = Object.freeze([
   'paraphrase-not-detected',
   'translation-not-detected',
   'split-or-encoded-not-detected',
+  'lookalike-characters-not-detected',
   'unknown-secret-formats-not-detected',
   'human-review-still-required'
 ]);
@@ -123,6 +124,17 @@ function scanPublication(units, options = {}) {
   }
 }
 
+// Text can hide a private value from an exact match without changing how it reads: fullwidth letters,
+// zero-width or other invisible format characters inside a token. Detectors therefore also see a folded
+// copy (NFKC, format characters removed). Pure ASCII cannot differ, so it is never folded (no extra
+// cost on ordinary diffs). Hits found only in the folded copy have no reliable position in the original,
+// so they are reported for the text as a whole.
+function foldForScan(text) {
+  if (!/[^\x00-\x7f]/.test(text)) return null;
+  const folded = text.normalize('NFKC').replace(/\p{Cf}/gu, '');
+  return folded === text ? null : folded;
+}
+
 function run(units, options) {
   if (!Array.isArray(units) || units.length === 0) return error('invalid-input');
   if (units.length > LIMITS.maxUnits) return error('input-too-large');
@@ -165,6 +177,7 @@ function run(units, options) {
   // Runs every detector on `text` and reports hits with positions mapped by `where(index)`.
   const scanText = (text, base, where, keep = () => true) => {
     const starts = lineStarts(text);
+    const folded = foldForScan(text);
     for (const detector of active) {
       withinBudget();
       const hits = detector.detect(text);
@@ -175,6 +188,15 @@ function run(units, options) {
         if (!keep(text, hit)) continue;
         const position = hit.index === null || hit.index === undefined ? { line: null, column: null } : where(locate(starts, hit.index));
         add({ ...base, code: hit.code, category: hit.category, ...position, ...(hit.id !== undefined ? { id: hit.id } : {}), hint: HINTS[hit.category] || HINTS.credential });
+      }
+      if (folded !== null) {
+        const foldedHits = detector.detect(folded);
+        withinBudget();
+        if (foldedHits && foldedHits.truncated === true) truncated = true;
+        for (const hit of foldedHits) {
+          if (!keep(folded, hit)) continue;
+          add({ ...base, code: hit.code, category: hit.category, line: null, column: null, ...(hit.id !== undefined ? { id: hit.id } : {}), hint: HINTS[hit.category] || HINTS.credential });
+        }
       }
     }
   };
