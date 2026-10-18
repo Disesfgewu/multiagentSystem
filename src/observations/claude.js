@@ -8,7 +8,6 @@ const CLAUDE_STATUSLINE_SOURCE = 'claude-statusline-v1';
 
 const INPUT_KEYS = new Set(['eventId', 'observedAt', 'sequence', 'state', 'model', 'usage', 'statusLine', 'hook']);
 const HOOK_INPUT_KEYS = new Set(['eventId', 'observedAt', 'sequence', 'notification']);
-const HOOK_NOTIFICATION_KEYS = new Set(['sessionId', 'hookEventName']);
 
 const CLAUDE_HOOK_STATES = Object.freeze({
   UserPromptSubmit: 'working',
@@ -21,20 +20,35 @@ const CLAUDE_HOOK_STATES = Object.freeze({
 
 const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+function extractHookNotification(notification) {
+  if (!isPlain(notification)) return null;
+  const rawSessionId = notification.session_id ?? notification.sessionId;
+  const rawEventName = notification.hook_event_name ?? notification.hookEventName;
+  if (typeof rawSessionId !== 'string' || rawSessionId.length === 0) return null;
+  if (typeof rawEventName !== 'string' || rawEventName.length === 0) return null;
+  // Discard any other fields (e.g. transcript_path, cwd, prompt_id) to avoid leaking private data.
+  return {
+    sessionId: rawSessionId,
+    hookEventName: rawEventName
+  };
+}
+
 function deriveClaudeHookState(hookEventName) {
   if (typeof hookEventName !== 'string') return null;
   return Object.hasOwn(CLAUDE_HOOK_STATES, hookEventName) ? CLAUDE_HOOK_STATES[hookEventName] : null;
 }
 
 /**
- * Extracts verified model and usage from Claude Code official status line JSON payload.
+ * Extracts verified model and estimated cumulative cost from Claude Code official status line JSON payload.
+ *
  * Official schema fields:
- * - model.id
- * - cost.total_cost_usd -> usage.cost_usd
- * - context_window.total_input_tokens -> usage.input_tokens
- * - context_window.total_output_tokens -> usage.output_tokens
- * - context_window.current_usage.cache_read_input_tokens -> usage.cache_read_tokens
- * - context_window.current_usage.cache_creation_input_tokens -> usage.cache_write_tokens
+ * - model.id -> model code
+ * - cost.total_cost_usd -> usage.cost_usd (list price estimate, measurement: 'estimated', scope: 'session-cumulative')
+ *
+ * Note on context_window tokens:
+ * context_window.total_input_tokens and total_output_tokens represent the tokens currently inside the context window
+ * from the latest API response, and current_usage represents only the last request. They are NOT cumulative session usage
+ * and decrease on /compact. They are kept as unknown here to prevent misrepresenting window size as accumulated consumption.
  */
 function extractClaudeStatusLineUsage(payload) {
   if (!isPlain(payload)) return null;
@@ -52,49 +66,9 @@ function extractClaudeStatusLineUsage(payload) {
     usage.push({
       field: 'usage.cost_usd',
       value: payload.cost.total_cost_usd,
-      measurement: 'actual',
+      measurement: 'estimated',
       scope: 'session-cumulative'
     });
-  }
-
-  if (isPlain(payload.context_window)) {
-    const cw = payload.context_window;
-    if (typeof cw.total_input_tokens === 'number' && Number.isFinite(cw.total_input_tokens) && cw.total_input_tokens >= 0) {
-      usage.push({
-        field: 'usage.input_tokens',
-        value: cw.total_input_tokens,
-        measurement: 'actual',
-        scope: 'session-cumulative'
-      });
-    }
-    if (typeof cw.total_output_tokens === 'number' && Number.isFinite(cw.total_output_tokens) && cw.total_output_tokens >= 0) {
-      usage.push({
-        field: 'usage.output_tokens',
-        value: cw.total_output_tokens,
-        measurement: 'actual',
-        scope: 'session-cumulative'
-      });
-    }
-    if (isPlain(cw.current_usage)) {
-      if (typeof cw.current_usage.cache_read_input_tokens === 'number' &&
-          Number.isFinite(cw.current_usage.cache_read_input_tokens) && cw.current_usage.cache_read_input_tokens >= 0) {
-        usage.push({
-          field: 'usage.cache_read_tokens',
-          value: cw.current_usage.cache_read_input_tokens,
-          measurement: 'actual',
-          scope: 'session-cumulative'
-        });
-      }
-      if (typeof cw.current_usage.cache_creation_input_tokens === 'number' &&
-          Number.isFinite(cw.current_usage.cache_creation_input_tokens) && cw.current_usage.cache_creation_input_tokens >= 0) {
-        usage.push({
-          field: 'usage.cache_write_tokens',
-          value: cw.current_usage.cache_creation_input_tokens,
-          measurement: 'actual',
-          scope: 'session-cumulative'
-        });
-      }
-    }
   }
 
   return { model, usage };
@@ -124,13 +98,17 @@ function createClaudeSessionEvidenceAdapter({ core, sessionId, accountProfileId 
       let source = CLAUDE_SOURCE;
 
       if (input.hook !== undefined) {
-        if (!isPlain(input.hook) || Object.keys(input.hook).some(key => !HOOK_NOTIFICATION_KEYS.has(key))) {
+        if (input.state !== undefined) {
           return { ok: false, reason: 'claude-evidence-invalid' };
         }
-        if (input.hook.sessionId !== sessionId) {
+        const notif = extractHookNotification(input.hook);
+        if (!notif) {
+          return { ok: false, reason: 'claude-evidence-invalid' };
+        }
+        if (notif.sessionId !== sessionId) {
           return { ok: false, reason: 'session-binding-mismatch' };
         }
-        const derivedState = deriveClaudeHookState(input.hook.hookEventName);
+        const derivedState = deriveClaudeHookState(notif.hookEventName);
         if (!derivedState) {
           return { ok: false, reason: 'claude-state-unknown' };
         }
@@ -139,12 +117,15 @@ function createClaudeSessionEvidenceAdapter({ core, sessionId, accountProfileId 
       }
 
       if (input.statusLine !== undefined) {
+        if (input.usage !== undefined || input.model !== undefined) {
+          return { ok: false, reason: 'claude-evidence-invalid' };
+        }
         const extracted = extractClaudeStatusLineUsage(input.statusLine);
         if (!extracted) {
           return { ok: false, reason: 'claude-evidence-invalid' };
         }
-        if (model === undefined) model = extracted.model;
-        if (usage === undefined) usage = extracted.usage;
+        model = extracted.model;
+        usage = extracted.usage;
         if (source === CLAUDE_SOURCE) source = CLAUDE_STATUSLINE_SOURCE;
       }
 
@@ -188,14 +169,14 @@ function createClaudeHookEvidenceAdapter({
       if (!isPlain(input) || Object.keys(input).some(key => !HOOK_INPUT_KEYS.has(key))) {
         return { ok: false, reason: 'claude-evidence-invalid' };
       }
-      if (!isPlain(input.notification) || Object.keys(input.notification).some(key => !HOOK_NOTIFICATION_KEYS.has(key))) {
+      const notif = extractHookNotification(input.notification);
+      if (!notif) {
         return { ok: false, reason: 'claude-evidence-invalid' };
       }
-      const { notification } = input;
-      if (notification.sessionId !== claudeSessionId) {
+      if (notif.sessionId !== claudeSessionId) {
         return { ok: false, reason: 'session-binding-mismatch' };
       }
-      const state = deriveClaudeHookState(notification.hookEventName);
+      const state = deriveClaudeHookState(notif.hookEventName);
       if (!state) {
         return { ok: false, reason: 'claude-state-unknown' };
       }

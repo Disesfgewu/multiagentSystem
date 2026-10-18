@@ -69,33 +69,14 @@ test('extractClaudeStatusLineUsage parses official Claude statusLine payload', (
   assert.deepEqual(usageMap['usage.cost_usd'], {
     field: 'usage.cost_usd',
     value: 0.045,
-    measurement: 'actual',
+    measurement: 'estimated',
     scope: 'session-cumulative'
   });
-  assert.deepEqual(usageMap['usage.input_tokens'], {
-    field: 'usage.input_tokens',
-    value: 12000,
-    measurement: 'actual',
-    scope: 'session-cumulative'
-  });
-  assert.deepEqual(usageMap['usage.output_tokens'], {
-    field: 'usage.output_tokens',
-    value: 650,
-    measurement: 'actual',
-    scope: 'session-cumulative'
-  });
-  assert.deepEqual(usageMap['usage.cache_read_tokens'], {
-    field: 'usage.cache_read_tokens',
-    value: 4000,
-    measurement: 'actual',
-    scope: 'session-cumulative'
-  });
-  assert.deepEqual(usageMap['usage.cache_write_tokens'], {
-    field: 'usage.cache_write_tokens',
-    value: 1500,
-    measurement: 'actual',
-    scope: 'session-cumulative'
-  });
+  // context_window tokens are not session-cumulative; they are kept unknown
+  assert.equal(usageMap['usage.input_tokens'], undefined);
+  assert.equal(usageMap['usage.output_tokens'], undefined);
+  assert.equal(usageMap['usage.cache_read_tokens'], undefined);
+  assert.equal(usageMap['usage.cache_write_tokens'], undefined);
 });
 
 test('extractClaudeStatusLineUsage fails closed on malformed input', () => {
@@ -198,7 +179,58 @@ test('createClaudeSessionEvidenceAdapter accepts statusLine usage and hook event
   assert.equal(snap.model.value, 'claude-3-5-sonnet-20241022');
   const usageMap = Object.fromEntries(snap.usage.map(u => [u.field, u]));
   assert.equal(usageMap['usage.cost_usd'].value, 0.02);
-  assert.equal(usageMap['usage.input_tokens'].value, 1500);
+  assert.equal(usageMap['usage.cost_usd'].confidence, 'estimated');
+  assert.equal(usageMap['usage.cost_usd'].source, `${CLAUDE_STATUSLINE_SOURCE}.local-estimate`);
+  assert.equal(usageMap['usage.input_tokens'].confidence, 'unknown');
+});
+
+test('createClaudeSessionEvidenceAdapter rejects conflicting caller fields when statusLine or hook is supplied', () => {
+  const { sessionAdapter } = setup();
+
+  // statusLine + usage is rejected
+  assert.equal(sessionAdapter.accept({
+    eventId: 'evt-c1', observedAt: START, sequence: 1,
+    usage: [{ field: 'usage.cost_usd', value: 0.01, measurement: 'estimated', scope: 'session-cumulative' }],
+    statusLine: { model: { id: 'claude-3-5-sonnet-20241022' } }
+  }).reason, 'claude-evidence-invalid');
+
+  // statusLine + model is rejected
+  assert.equal(sessionAdapter.accept({
+    eventId: 'evt-c2', observedAt: START, sequence: 2,
+    model: 'claude-3-5-sonnet-20241022',
+    statusLine: { cost: { total_cost_usd: 0.01 } }
+  }).reason, 'claude-evidence-invalid');
+
+  // hook + state is rejected
+  assert.equal(sessionAdapter.accept({
+    eventId: 'evt-c3', observedAt: START, sequence: 3,
+    state: 'working',
+    hook: { sessionId: 'session-c1', hookEventName: 'PreToolUse' }
+  }).reason, 'claude-evidence-invalid');
+});
+
+test('hook adapter accepts official snake_case notification and discards extraneous fields', () => {
+  const { core, hookAdapter } = setup('claude-sess-1');
+
+  const res = hookAdapter.accept({
+    eventId: 'evt-snake-1',
+    observedAt: START,
+    sequence: 1,
+    notification: {
+      session_id: 'claude-sess-1',
+      hook_event_name: 'PreToolUse',
+      transcript_path: '/secret/transcript.jsonl',
+      cwd: '/secret/cwd',
+      prompt_id: 'prompt-123'
+    }
+  });
+  assert.deepEqual(res, { ok: true, reason: 'accepted', accepted: true });
+  const snap = core.snapshot('session-c1', START);
+  assert.equal(snap.status.value, 'working');
+  // Ensure private fields (transcript_path, cwd, prompt_id) are NOT passed or stored in snapshot
+  assert.equal(snap.transcript_path, undefined);
+  assert.equal(snap.cwd, undefined);
+  assert.equal(snap.prompt_id, undefined);
 });
 
 test('parameter validation throws TypeError on invalid arguments for hook adapter', () => {
