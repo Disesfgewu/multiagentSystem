@@ -26,17 +26,22 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
   let buffer = '';
   let finished = false;
 
+  const MAX_BUFFER = 64 * 1024;
   const timer = setTimeout(() => {
     if (!finished) {
       finished = true;
       process.exitCode = 0;
+      if (typeof stdinStream.destroy === 'function') stdinStream.destroy();
+      else if (typeof stdinStream.pause === 'function') stdinStream.pause();
     }
   }, 3000);
   if (timer.unref) timer.unref();
 
   stdinStream.setEncoding('utf8');
   stdinStream.on('data', (chunk) => {
-    buffer += chunk;
+    if (buffer.length < MAX_BUFFER) {
+      buffer += chunk;
+    }
   });
 
   const onEnd = () => {
@@ -64,11 +69,25 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
         return;
       }
 
-      // If target path is provided, persist the quota observation
+      // If target path is provided, persist sanitized quota observation
       if (targetPath) {
+        let sanitizedRateLimits = null;
+        if (payload.rate_limits && typeof payload.rate_limits === 'object') {
+          sanitizedRateLimits = {};
+          for (const windowKey of ['five_hour', 'seven_day']) {
+            const entry = payload.rate_limits[windowKey];
+            if (entry && typeof entry === 'object') {
+              sanitizedRateLimits[windowKey] = {
+                used_percentage: typeof entry.used_percentage === 'number' ? entry.used_percentage : null,
+                resets_at: typeof entry.resets_at === 'number' ? entry.resets_at : null
+              };
+            }
+          }
+        }
+
         const record = {
           observedAt: now.toISOString(),
-          rate_limits: payload.rate_limits || null,
+          rate_limits: sanitizedRateLimits,
           model: (payload.model && typeof payload.model.display_name === 'string')
             ? payload.model.display_name
             : null

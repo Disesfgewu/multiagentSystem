@@ -6,6 +6,8 @@ import { test } from 'node:test';
 import {
   getBridgeScriptPath,
   buildBridgeCommand,
+  isSafePath,
+  isBridgeCommand,
   inspectStatusLineConfig,
   enableStatusLineBridge,
   disableStatusLineBridge,
@@ -17,13 +19,36 @@ import {
   STATUSLINE_QUOTA_FILE_NAME
 } from '../../src/accounts/claudeStatusLine';
 
-test('Claude status line: bridge script path resolution and command building', () => {
+test('Claude status line: bridge script path resolution, safe path verification, and command building', () => {
   const scriptPath = getBridgeScriptPath();
   assert.equal(fs.existsSync(scriptPath), true);
   assert.match(scriptPath, /claudeStatusLineBridge\.js$/);
 
-  const command = buildBridgeCommand('/path/to/bridge.js', '/path/to/quota.json');
-  assert.equal(command, 'node "/path/to/bridge.js" "/path/to/quota.json"');
+  // isSafePath checks
+  assert.equal(isSafePath('/usr/local/share/script.js', false), true);
+  assert.equal(isSafePath('C:\\Users\\alice\\AppData\\script.js', true), true);
+  // Rejects quotes, shell operators, substitution
+  assert.equal(isSafePath('/path/with"quote', false), false);
+  assert.equal(isSafePath("/path/with'quote", false), false);
+  assert.equal(isSafePath('/path/with`backtick`', false), false);
+  assert.equal(isSafePath('/path/$(whoami)', false), false);
+  assert.equal(isSafePath('/path/;rm -rf', false), false);
+  assert.equal(isSafePath('/path/&foo', false), false);
+  assert.equal(isSafePath('/path/|bar', false), false);
+  assert.equal(isSafePath('/path/\nnewline', false), false);
+  // POSIX rejects backslashes
+  assert.equal(isSafePath('/path/with\\backslash', false), false);
+
+  // Command building: POSIX uses single quotes, Windows uses double quotes
+  const posixCommand = buildBridgeCommand('/path/to/bridge.js', '/path/to/quota.json', false);
+  assert.equal(posixCommand, "node '/path/to/bridge.js' '/path/to/quota.json'");
+
+  const winCommand = buildBridgeCommand('C:\\path\\to\\bridge.js', 'C:\\path\\to\\quota.json', true);
+  assert.equal(winCommand, 'node "C:\\path\\to\\bridge.js" "C:\\path\\to\\quota.json"');
+
+  // Throws on unsafe characters
+  assert.throws(() => buildBridgeCommand('/path/to/"injected".js', '/path/to/quota.json', false), /unsafe shell characters/);
+  assert.throws(() => buildBridgeCommand('/path/to/bridge.js', '/path/to/$(cat /etc/passwd)', false), /unsafe shell characters/);
 });
 
 test('Claude status line inspection: detects disabled, active, custom, and unreadable configurations', () => {
@@ -230,6 +255,115 @@ test('Quota gate integration: feeds real Claude status line readings and leaves 
     registerProfileForQuota({ id: 'prof-agy', provider: 'agy', configDir: tempDir });
     const agyObs = quotaObservations('prof-agy', undefined, now);
     assert.deepEqual(agyObs, [], 'agy quota is never read from status line');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude status line: backups and restores custom user statusLine on disable', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-backup-'));
+  try {
+    const bridgeScript = getBridgeScriptPath();
+    const settingsPath = path.join(tempDir, 'settings.json');
+    const customStatusLine = { type: 'command', command: 'my-custom-statusline-helper' };
+
+    fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: customStatusLine, theme: 'light' }, null, 2));
+
+    // Enable bridge: should backup custom statusLine to _multiagentStatusLineBackup
+    const enableResult = enableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(enableResult.ok, true);
+
+    const afterEnable = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(afterEnable._multiagentStatusLineBackup, customStatusLine);
+    assert.ok(afterEnable.statusLine?.command.includes('claudeStatusLineBridge.js'));
+
+    // Disable bridge: should restore the custom statusLine and delete _multiagentStatusLineBackup
+    const disableResult = disableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(disableResult.ok, true);
+
+    const afterDisable = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(afterDisable.statusLine, customStatusLine);
+    assert.equal(afterDisable._multiagentStatusLineBackup, undefined);
+    assert.equal(afterDisable.theme, 'light');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude status line: disable guards against deleting or altering non-bridge statusLine', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-guard-'));
+  try {
+    const settingsPath = path.join(tempDir, 'settings.json');
+    const initialContent = JSON.stringify({ statusLine: { type: 'command', command: 'unrelated-command' }, font: 'Monaco' }, null, 2);
+    fs.writeFileSync(settingsPath, initialContent);
+
+    // disableStatusLineBridge refuses to modify settings
+    const res = disableStatusLineBridge(tempDir);
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'statusline-not-our-bridge');
+
+    // File content remains unaltered
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), initialContent);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude status line: fail-closed on corrupt or invalid JSON without altering settings file', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-failclosed-'));
+  try {
+    const bridgeScript = getBridgeScriptPath();
+    const settingsPath = path.join(tempDir, 'settings.json');
+
+    // 1. Malformed JSON on enable
+    const corruptJson = '{ "broken": json';
+    fs.writeFileSync(settingsPath, corruptJson);
+    const enableCorrupt = enableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(enableCorrupt.ok, false);
+    assert.equal(enableCorrupt.reason, 'settings-parse-failed');
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), corruptJson);
+
+    // 2. Malformed JSON on disable
+    const disableCorrupt = disableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(disableCorrupt.ok, false);
+    assert.equal(disableCorrupt.reason, 'settings-parse-failed');
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), corruptJson);
+
+    // 3. Array JSON on enable
+    const arrayJson = '["not", "an", "object"]';
+    fs.writeFileSync(settingsPath, arrayJson);
+    const enableArray = enableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(enableArray.ok, false);
+    assert.equal(enableArray.reason, 'settings-invalid-json');
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), arrayJson);
+
+    // 4. Array JSON on disable
+    const disableArray = disableStatusLineBridge(tempDir, bridgeScript);
+    assert.equal(disableArray.ok, false);
+    assert.equal(disableArray.reason, 'settings-invalid-json');
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), arrayJson);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude status line wizard: rejects unsafe paths and rejects non-active disable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-wizard-guards-'));
+  try {
+    const claudeProfile = { id: 'claude-guard', provider: 'claude', label: 'Claude Guard', configDir: tempDir };
+
+    // 1. Trying to disable when bridge is not active fails
+    const disableNotActive = await configureStatusLineWizard(claudeProfile, { interactive: false, consent: true, action: 'disable' });
+    assert.equal(disableNotActive.ok, false);
+    assert.equal(disableNotActive.status, 'failed');
+    assert.match(disableNotActive.message, /not active/);
+
+    // 2. Unsafe path in configDir (e.g. quote in path) fails
+    const unsafeProfile = { id: 'claude-unsafe', provider: 'claude', label: 'Claude Unsafe', configDir: '/path/with"quote' };
+    const unsafeRes = await configureStatusLineWizard(unsafeProfile, { interactive: false, consent: true, action: 'enable' });
+    assert.equal(unsafeRes.ok, false);
+    assert.equal(unsafeRes.status, 'failed');
+    assert.match(unsafeRes.message, /unsafe shell characters/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

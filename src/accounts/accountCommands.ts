@@ -6,7 +6,7 @@ import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
-import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
+import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
 import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
 
 const { accountProviderChoices } = require('./provider-choices') as {
@@ -513,11 +513,14 @@ async function launch(value: unknown): Promise<void> {
 
 /** Configures or manages the Claude Code status line bridge for real quota reporting. */
 export async function configureStatusLine(value: unknown): Promise<unknown> {
-  const options = value && typeof value === 'object' && !(value instanceof vscode.TreeItem)
+  const rawOptions = value && typeof value === 'object' && !(value instanceof vscode.TreeItem)
     ? (value as { id?: unknown; interactive?: boolean; consent?: boolean; action?: 'enable' | 'disable' })
     : {};
-  const interactive = options.interactive !== false;
-  const id = selectedId(options.id ?? value);
+  const testMode = isExtensionTestMode();
+  const interactive = testMode ? (rawOptions.interactive !== false) : true;
+  const consent = testMode ? rawOptions.consent : undefined;
+  const action = testMode ? rawOptions.action : undefined;
+  const id = selectedId(rawOptions.id ?? value);
   const profile = id ? undefined : await chooseProfile('claude');
   const selected = profile ?? (id ? { id } : undefined);
   if (!selected) return { ok: false, status: 'cancelled' };
@@ -584,8 +587,8 @@ export async function configureStatusLine(value: unknown): Promise<unknown> {
 
   const outcome = await configureStatusLineWizard(loaded.profile, {
     interactive,
-    consent: options.consent,
-    action: options.action,
+    consent,
+    action,
     extensionPath: extensionContext?.extensionPath,
     ui: vscodeStatusLineUi
   });

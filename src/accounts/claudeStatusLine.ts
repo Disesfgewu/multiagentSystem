@@ -29,10 +29,48 @@ export function getBridgeScriptPath(extensionPath?: string): string {
 }
 
 /**
- * Builds the shell command string to execute the bridge script via Node.
+ * Checks whether a path contains only safe characters, preventing shell command injection.
+ * Disallows quotes, backticks, dollar signs, shell operators, and control characters.
  */
-export function buildBridgeCommand(bridgeScriptPath: string, quotaFilePath: string): string {
-  return `node "${bridgeScriptPath}" "${quotaFilePath}"`;
+export function isSafePath(p: string, isWindows: boolean = process.platform === 'win32'): boolean {
+  if (typeof p !== 'string' || p.trim().length === 0) return false;
+  const unsafe = isWindows
+    ? /["'`$()&;<>|*?%!\n\r\t\x00-\x1f\x7f]/
+    : /["'`$()&;<>|*?%!\n\r\t\x00-\x1f\x7f\\]/;
+  return !unsafe.test(p);
+}
+
+/**
+ * Builds the shell command string to execute the bridge script via Node.
+ * Uses single quotes on POSIX and double quotes on Windows.
+ * Throws an Error if either path contains unsafe shell characters.
+ */
+export function buildBridgeCommand(bridgeScriptPath: string, quotaFilePath: string, isWindows: boolean = process.platform === 'win32'): string {
+  if (!isSafePath(bridgeScriptPath, isWindows)) {
+    throw new Error('bridgeScriptPath contains unsafe shell characters');
+  }
+  if (!isSafePath(quotaFilePath, isWindows)) {
+    throw new Error('quotaFilePath contains unsafe shell characters');
+  }
+  if (isWindows) {
+    return `node "${bridgeScriptPath}" "${quotaFilePath}"`;
+  }
+  return `node '${bridgeScriptPath}' '${quotaFilePath}'`;
+}
+
+/**
+ * Checks whether a statusLine setting belongs to our bridge script.
+ */
+export function isBridgeCommand(statusLine: unknown, bridgeScriptPath?: string): boolean {
+  let command: string | undefined;
+  if (typeof statusLine === 'string') {
+    command = statusLine;
+  } else if (statusLine && typeof statusLine === 'object' && 'command' in statusLine && typeof (statusLine as { command: unknown }).command === 'string') {
+    command = (statusLine as { command: string }).command;
+  }
+  if (!command) return false;
+  const scriptName = bridgeScriptPath ? path.basename(bridgeScriptPath) : 'claudeStatusLineBridge.js';
+  return command.includes(scriptName);
 }
 
 export interface StatusLineInspection {
@@ -112,8 +150,7 @@ export function inspectStatusLineConfig(configDir: string, bridgeScriptPath?: st
     command = (statusLine as { command: string }).command;
   }
 
-  const scriptName = bridgeScriptPath ? path.basename(bridgeScriptPath) : 'claudeStatusLineBridge.js';
-  const isActive = typeof command === 'string' && command.includes(scriptName);
+  const isActive = isBridgeCommand(statusLine, bridgeScriptPath);
 
   return {
     status: isActive ? 'active' : 'custom',
@@ -128,9 +165,15 @@ export function inspectStatusLineConfig(configDir: string, bridgeScriptPath?: st
 /**
  * Enables the status line bridge in `settings.json` for a Claude profile directory.
  * Preserves all other user settings in `settings.json`.
+ * Backs up any existing custom statusLine so it can be restored when the bridge is disabled.
  */
-export function enableStatusLineBridge(configDir: string, bridgeScriptPath: string): { ok: boolean; reason?: string } {
+export function enableStatusLineBridge(configDir: string, bridgeScriptPath: string, isWindows: boolean = process.platform === 'win32'): { ok: boolean; reason?: string } {
   try {
+    const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
+    if (!isSafePath(bridgeScriptPath, isWindows) || !isSafePath(quotaPath, isWindows)) {
+      return { ok: false, reason: 'unsafe-path-characters' };
+    }
+
     if (!fs.existsSync(configDir)) {
       fs.mkdirSync(configDir, { recursive: true });
     }
@@ -154,8 +197,12 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
       }
     }
 
-    const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
-    const command = buildBridgeCommand(bridgeScriptPath, quotaPath);
+    const command = buildBridgeCommand(bridgeScriptPath, quotaPath, isWindows);
+
+    // If an existing statusLine is present and not our bridge, back it up so disable can restore it
+    if (settings.statusLine !== undefined && !isBridgeCommand(settings.statusLine, bridgeScriptPath)) {
+      settings._multiagentStatusLineBackup = settings.statusLine;
+    }
 
     settings.statusLine = {
       type: 'command',
@@ -173,28 +220,47 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
 }
 
 /**
- * Disables the status line bridge by removing `statusLine` from `settings.json`.
- * Preserves all other user settings. Also deletes the local quota file if present.
+ * Disables the status line bridge by removing or restoring `statusLine` in `settings.json`.
+ * Only touches `settings.json` if `statusLine` is verified to be our bridge script.
+ * Restores any previous custom statusLine backup. Also deletes the local quota file if present.
  */
-export function disableStatusLineBridge(configDir: string): { ok: boolean; reason?: string } {
+export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: string): { ok: boolean; reason?: string } {
   try {
     const settingsPath = path.join(configDir, 'settings.json');
-    if (fs.existsSync(settingsPath)) {
-      const content = fs.readFileSync(settingsPath, 'utf8');
-      if (content.trim()) {
-        try {
-          const settings = JSON.parse(content);
-          if (settings && typeof settings === 'object') {
-            delete settings.statusLine;
-            const tempFile = `${settingsPath}.tmp.${process.pid}.${Date.now()}`;
-            fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-            fs.renameSync(tempFile, settingsPath);
-          }
-        } catch {
-          return { ok: false, reason: 'settings-parse-failed' };
-        }
-      }
+    if (!fs.existsSync(settingsPath)) {
+      return { ok: false, reason: 'statusline-not-our-bridge' };
     }
+    const content = fs.readFileSync(settingsPath, 'utf8');
+    if (!content.trim()) {
+      return { ok: false, reason: 'statusline-not-our-bridge' };
+    }
+    let settings: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        settings = parsed;
+      } else {
+        return { ok: false, reason: 'settings-invalid-json' };
+      }
+    } catch {
+      return { ok: false, reason: 'settings-parse-failed' };
+    }
+
+    // Refuse to touch settings if statusLine is not our bridge command
+    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath)) {
+      return { ok: false, reason: 'statusline-not-our-bridge' };
+    }
+
+    if (settings._multiagentStatusLineBackup !== undefined) {
+      settings.statusLine = settings._multiagentStatusLineBackup;
+      delete settings._multiagentStatusLineBackup;
+    } else {
+      delete settings.statusLine;
+    }
+
+    const tempFile = `${settingsPath}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tempFile, settingsPath);
 
     const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
     if (fs.existsSync(quotaPath)) {
@@ -321,6 +387,12 @@ export async function configureStatusLineWizard(
   }
 
   const quotaPath = path.join(profile.configDir, STATUSLINE_QUOTA_FILE_NAME);
+  if (!isSafePath(bridgeScriptPath) || !isSafePath(quotaPath)) {
+    const msg = `Could not safely configure status line bridge: path contains unsafe shell characters.`;
+    if (options.ui) options.ui.showError(msg);
+    return { ok: false, status: 'failed', message: msg };
+  }
+
   const bridgeCommand = buildBridgeCommand(bridgeScriptPath, quotaPath);
 
   // Programmatic / non-interactive path
@@ -329,7 +401,10 @@ export async function configureStatusLineWizard(
       return { ok: false, status: 'cancelled', message: 'User consent was not granted.' };
     }
     if (options.action === 'disable') {
-      const disabled = disableStatusLineBridge(profile.configDir);
+      if (inspection.status !== 'active') {
+        return { ok: false, status: 'failed', message: 'Status line bridge is not active on this profile.' };
+      }
+      const disabled = disableStatusLineBridge(profile.configDir, bridgeScriptPath);
       return disabled.ok
         ? { ok: true, status: 'disabled', message: `Status line bridge was disabled for “${profile.label}”.` }
         : { ok: false, status: 'failed', message: disabled.reason ?? 'Failed to disable.' };
@@ -354,7 +429,7 @@ export async function configureStatusLineWizard(
       if (!confirmed) {
         return { ok: false, status: 'cancelled', message: 'Removal cancelled.' };
       }
-      const outcome = disableStatusLineBridge(profile.configDir);
+      const outcome = disableStatusLineBridge(profile.configDir, bridgeScriptPath);
       if (outcome.ok) {
         ui.showInfo(`Status line bridge was removed from “${profile.label}”.`);
         return { ok: true, status: 'disabled', message: 'Bridge removed.' };
