@@ -13,6 +13,7 @@ import { observationsFor } from '../accounts/accountCommands';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
+const { lockRecoveryPlan } = require('./lockRecovery') as { lockRecoveryPlan(inspected: { detail?: string; stale?: boolean }): { blocked: boolean; force: boolean; ownerLine: string; refusal: string | null } };
 const { diagnose, formatDiagnosticReport } = require('./diagnostics') as {
   diagnose(input: Record<string, unknown>): Record<string, any>;
   formatDiagnosticReport(report: Record<string, any>): string;
@@ -385,6 +386,14 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (interactive) void vscode.window.showErrorMessage(`Private storage cannot be migrated because storage is unavailable (${used.reason}).`);
       return { ok: false, reason: used.reason, problems: used.problems };
     }
+    if (interactive) {
+      const choice = await vscode.window.showWarningMessage(
+        'Migrate the private storage schema?',
+        { modal: true, detail: 'A backup of the current store file is written first (in this extension\'s private storage), then the store file is rewritten in place. If nothing needs migrating, nothing is changed.' },
+        'Migrate'
+      );
+      if (choice !== 'Migrate') return { ok: false, reason: 'cancelled' };
+    }
     const outcome = used.store.migrate() as { ok: boolean; onDiskVersion?: number | null; reason?: string; detail?: string | null };
     this.refresh();
     if (interactive) {
@@ -405,7 +414,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (interactive) void vscode.window.showErrorMessage(`Cannot inspect or recover lock because private storage is unavailable (${used.reason}).`);
       return { ok: false, reason: used.reason, problems: used.problems };
     }
-    const inspected = used.store.inspectLock() as { ok: boolean; held?: boolean; stale?: boolean; reason?: string };
+    const inspected = used.store.inspectLock() as { ok: boolean; held?: boolean; stale?: boolean; detail?: string; reason?: string };
     if (!inspected.ok) {
       if (interactive) void vscode.window.showErrorMessage(`Could not inspect storage lock (${inspected.reason ?? 'unknown'}).`);
       return inspected;
@@ -420,16 +429,22 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     let force = Boolean(options?.force);
     let confirm = options?.confirm;
     if (interactive && confirm !== CONFIRM_RECOVER) {
+      const plan = lockRecoveryPlan(inspected);
+      // A lock whose owner is still running is never removed from here, however old the file looks.
+      if (plan.blocked) {
+        void vscode.window.showWarningMessage(plan.refusal ?? 'The private storage lock is in use.');
+        return { ok: false, recovered: false, reason: 'owner-appears-running' };
+      }
       const choice = await vscode.window.showWarningMessage(
         inspected.stale
           ? 'The private storage single-writer lock is stale. Recover it only if no other VS Code window is writing.'
           : 'The private storage single-writer lock is held. Recover it only if no other VS Code window is writing.',
-        { modal: true, detail: 'Recovering removes the lock file. A lock whose owner may still be running is refused.' },
+        { modal: true, detail: `${plan.ownerLine}\n\nRecovering removes the lock file. If another window is still writing, removing it can corrupt that window's data.` },
         RECOVER_LOCK_LABEL
       );
       if (choice !== RECOVER_LOCK_LABEL) return { ok: false, recovered: false, reason: 'cancelled' };
       confirm = CONFIRM_RECOVER;
-      if (options?.force === undefined) force = inspected.stale === true;
+      if (options?.force === undefined) force = plan.force;
     }
     const outcome = used.store.recoverLock({ force, confirm }) as { ok: boolean; recovered?: boolean; reason?: string };
     this.refresh();
@@ -454,8 +469,8 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     let confirmToken = options?.confirm;
     if (interactive) {
       const choice = await vscode.window.showWarningMessage(
-        'Clear all Multiagent private storage files owned by this extension? Unrecognized backup files are preserved.',
-        { modal: true },
+        'Clear all Multiagent private storage files owned by this extension?',
+        { modal: true, detail: 'This permanently deletes the store file (every saved account profile, role group, session, limit, report note, broadcast and tool consent) and the backups this extension made and can verify. It cannot be undone. Backup files it does not recognize are kept. Sign-in tokens held by VS Code secret storage are NOT removed by this command.' },
         'Clear Private Storage'
       );
       if (choice !== 'Clear Private Storage') return { ok: false, reason: 'cancelled' };
