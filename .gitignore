@@ -1,7 +1,8 @@
 .agent-artifacts/
 .agent-eye/
 .agents/
-.claude/
+.claude/*
+!.claude/skills/
 .codex/
 node_modules/
 .vscode-test/
