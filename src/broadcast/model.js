@@ -1,6 +1,7 @@
 'use strict';
 
 const { scanPublication } = require('../publish/scan');
+const { markIssuedBroadcastRule } = require('./issued');
 
 // A "broadcast" is the local-machine administrator's instruction to some or all agents. This
 // module only validates its shape and turns a live one into a rule at the existing `user` layer
@@ -136,7 +137,7 @@ function broadcastStatus(broadcast, now) {
  * src/memory/rules.js already enforces for every rule at that layer, without any change there.
  */
 function broadcastRule(broadcast) {
-  return Object.freeze({ id: `broadcast:${broadcast.id}`, layer: 'user', type: 'instruction', text: broadcast.text, version: broadcast.version });
+  return markIssuedBroadcastRule(Object.freeze({ id: `broadcast:${broadcast.id}`, layer: 'user', type: 'instruction', text: broadcast.text, version: broadcast.version }));
 }
 
 /**
