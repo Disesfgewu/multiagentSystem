@@ -311,13 +311,14 @@ test('inputs are validated before anything is created', async () => {
   assert.deepEqual(r.manager.list(), []);
 });
 
-test('a failure while registering disposes the terminal that was just created', async () => {
+test('an id collision is refused before any terminal is created, and the live session keeps its terminal', async () => {
   const r = rig({ newId: () => 'same-id' });
   await start(r);
   await rejectsWithCode(start(r, { name: 'Second' }), 'session-exists');
-  assert.equal(r.terminals.length, 2);
-  assert.equal(r.terminals[1].disposed, 1);
+  assert.equal(r.terminals.length, 1, 'no second terminal was created');
+  assert.equal(r.terminals[0].disposed, 0, 'the live session\'s terminal was not disposed');
   assert.equal(r.manager.list().length, 1);
+  assert.equal(r.manager.list()[0].terminalOpen, true);
 });
 
 test('sessions are saved as identity and name only: no state, token, terminal or observation', async () => {
@@ -617,4 +618,28 @@ test('cleanName rejects control, C1, separator and bidirectional characters but 
   assert.equal(cleanName('代理 1'), '代理 1');
   assert.equal(cleanName(`می${cp(0x200c)}خواهم`), `می${cp(0x200c)}خواهم`, 'ZWNJ is needed by Persian');
   assert.equal(cleanName(`👩${cp(0x200d)}💻 dev`), `👩${cp(0x200d)}💻 dev`, 'ZWJ is needed by emoji sequences');
+});
+
+test('starting or reopening with an id that is already in use fails before any terminal is created and never disturbs the live session', async () => {
+  const r = rig();
+  const live = await start(r, { id: 'dup' });
+  assert.equal(live.terminalOpen, true);
+  const before = r.terminals.length;
+  const stateBefore = r.manager.list().find((entry) => entry.id === 'dup')?.state;
+  await rejectsWithCode(start(r, { id: 'dup' }), 'session-exists');
+  assert.equal(r.terminals.length, before, 'no second terminal was even created');
+  assert.equal(r.terminals[0].disposed, 0, 'the live session\'s terminal is untouched');
+  const after = r.manager.list().find((entry) => entry.id === 'dup');
+  assert.equal(after?.terminalOpen, true);
+  assert.equal(after?.state, stateBefore, 'its state is exactly what it was');
+  // The live session can still be stopped normally afterwards.
+  assert.equal(r.manager.stop('dup').terminalOpen, false);
+  assert.equal(r.terminals[0].disposed, 1);
+
+  const r2 = rig();
+  const first = await start(r2, { id: 'first' });
+  const second = await start(r2, { id: 'second', name: 'Worker 2' });
+  r2.manager.stop(first.id);
+  await rejectsWithCode(r2.manager.reopen(first.id, { newId: second.id }), 'session-exists');
+  assert.equal(r2.manager.list().find((entry) => entry.id === second.id)?.terminalOpen, true, 'the other live session survives a reopen that reuses its id');
 });
