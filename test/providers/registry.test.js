@@ -36,7 +36,11 @@ test('claude and codex keep dedicated support', () => {
   assert.equal(builtIn.get('claude').support, 'dedicated');
   assert.equal(builtIn.get('codex').support, 'dedicated');
   assert.equal(builtIn.capability('claude', 'accountIsolation'), 'unverified');
+  assert.equal(builtIn.capability('claude', 'statusEvents'), 'unverified');
+  assert.equal(builtIn.capability('codex', 'statusEvents'), 'unverified');
   assert.equal(builtIn.capability('codex', 'resume'), 'unknown');
+  assert.equal(builtIn.capability('agy', 'statusEvents'), 'unknown');
+  assert.equal(builtIn.capability('agy', 'usageObservation'), 'unknown');
 });
 
 test('lookups never guess: unknown ids and capabilities give null or unknown', () => {

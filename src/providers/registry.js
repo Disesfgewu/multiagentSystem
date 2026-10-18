@@ -123,7 +123,8 @@ const BUILT_IN = [
       terminalLaunch: 'unverified',
       accountIsolation: 'unverified',
       identityVerification: 'unverified',
-      ruleInjection: 'unverified'
+      ruleInjection: 'unverified',
+      statusEvents: 'unverified'
     }
   },
   // Only a terminal launch is assumed. Its flags, login, account isolation, status events, usage
