@@ -18,6 +18,7 @@ const {
   formatConsentManifest,
   getConsentRecord,
   isConsentActive,
+  consentFingerprint,
   grantConsent,
   revokeConsent,
   listResearchTools,
@@ -323,4 +324,40 @@ test('revoke reports whether the installed files were really removed', () => {
     try { assert.equal(revokeConsent('zhtw-mcp', { store, root }).cleanup, 'failed'); } finally { fs.rmSync = realRm; }
     assert.equal(isConsentActive('zhtw-mcp', store), false, 'consent is revoked even when cleanup failed');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('consent is outdated when the credentials a tool needs or the tools it exposes change, and stays valid when only the order changes', () => {
+  const store = new FakeStore();
+  const base = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'github-mcp-server');
+  const withChange = (change) => [validateCatalogItem({ ...base, ...change })];
+  grantConsent('github-mcp-server', { store });
+  assert.equal(isConsentActive('github-mcp-server', store), true);
+
+  const changes = {
+    'a new secret credential key': { env: { ...base.env, NEW_PRIVATE_KEY: { secret: true } } },
+    'a credential key removed': { env: {} },
+    'a credential key renamed': { env: { OTHER_TOKEN_NAME: { secret: true } } },
+    'a different tool list': { tools: [{ name: 'other_tool', readOnly: true, description: 'x' }] },
+    'a tool added': { tools: [...base.tools, { name: 'list_issues', readOnly: true, description: 'Lists issues' }] },
+    'a tool removed': { tools: base.tools.slice(1) },
+    'a tool description changed': { tools: base.tools.map((tool, index) => (index === 0 ? { ...tool, description: 'Does something else now' } : tool)) },
+    'the tool name text changed': { name: 'Renamed Research Server' },
+    'the tool description text changed': { description: 'A different promise' },
+    'the argument order changed': { command: [...base.command].reverse() }
+  };
+  for (const [label, change] of Object.entries(changes)) {
+    const catalog = withChange(change); // every case must be a valid catalog entry: an invalid one fails loudly
+    assert.equal(isConsentActive('github-mcp-server', store, catalog), false, label);
+  }
+
+  // The same meaning in a different order is the same agreement.
+  const reorderedTools = withChange({ tools: [...base.tools].reverse() });
+  const reorderedEnv = withChange({ env: Object.fromEntries(Object.entries({ ...base.env, EXTRA_KEY: { secret: true } }).reverse()) });
+  assert.equal(isConsentActive('github-mcp-server', store, reorderedTools), true, 'tools listed in another order');
+  assert.equal(consentFingerprint(reorderedTools[0]), consentFingerprint(validateCatalogItem(base)));
+  assert.notEqual(consentFingerprint(reorderedEnv[0]), consentFingerprint(validateCatalogItem(base)), 'an extra key is a change, order aside');
+  const a = validateCatalogItem({ ...base, env: { A_KEY: { secret: true }, B_KEY: { secret: true } } });
+  const b = validateCatalogItem({ ...base, env: { B_KEY: { secret: true }, A_KEY: { secret: true } } });
+  assert.equal(consentFingerprint(a), consentFingerprint(b), 'env keys in another order');
+  assert.equal(JSON.stringify(consentFingerprint(a)).includes('secret'), false);
 });

@@ -119,10 +119,32 @@ const assertServerId = (serverId) => {
  * catalog update that changes any of them asks again instead of inheriting the old agreement.
  */
 function consentFingerprint(tool) {
-  const canonical = JSON.stringify([
-    tool.serverId, tool.version, tool.source, tool.integrity, tool.license,
-    [...tool.command], [...(RESEARCH_TOOL_PERMISSIONS[tool.serverId] || [])]
-  ]);
+  const byText = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+  const envKeys = Object.keys(tool.env || {}).sort(byText);
+  // Everything the consent screen shows the person is part of what they agreed to: the identity and
+  // text of the tool, its command, the credential keys it needs (never their values), the tools it
+  // exposes with their declared read-only flags, and the permissions and exclusions that apply. Lists whose
+  // order carries no meaning are sorted, so reordering them does not ask again; the command is an argv
+  // and keeps its order.
+  const canonical = JSON.stringify({
+    format: 2,
+    serverId: tool.serverId,
+    name: tool.name,
+    description: tool.description ?? null,
+    version: tool.version,
+    source: tool.source,
+    integrity: tool.integrity,
+    license: tool.license,
+    status: tool.status ?? null,
+    sandboxEnforced: tool.sandboxEnforced === true,
+    command: [...tool.command],
+    env: envKeys.map((key) => [key, tool.env[key] && tool.env[key].secret === true]),
+    tools: [...(tool.tools || [])]
+      .map((item) => [item.name, item.readOnly === true, item.description ?? null])
+      .sort((left, right) => byText(left[0], right[0])),
+    permissions: [...(RESEARCH_TOOL_PERMISSIONS[tool.serverId] || [])].sort(byText),
+    prohibited: [...(PROHIBITED_AGENT_TOOLS[tool.serverId] || [])].sort(byText)
+  });
   return createHash('sha256').update(canonical).digest('hex');
 }
 
