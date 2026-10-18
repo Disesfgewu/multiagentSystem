@@ -19,12 +19,16 @@ const TEMPLATE_FILES = Object.freeze([
   { source: ['pull_request_template.md'], rel: '.github/pull_request_template.md' }
 ]);
 
-// Claude Code reads project skills from .claude/skills/<name>/SKILL.md. No official, verified
-// skill mechanism is known for the other providers, so nothing is written for them.
+// Official discovery paths, verified in docs/AGENT_SKILLS.md. OpenCode shares these paths.
+const SKILL_TARGETS = Object.freeze(['.claude/skills', '.agents/skills']);
+const AUTO_DISABLED_PREFIX = 'multiagentSystem.agentSkills.autoDisabled:';
 const PROVIDER_SUPPORT = Object.freeze({
-  claude: Object.freeze({ label: 'Claude Code', supported: true, note: 'Writes .claude/skills/<name>/SKILL.md in this workspace.' }),
-  codex: Object.freeze({ label: 'Codex', supported: false, note: 'Not supported: no verified official skill mechanism. Nothing is written for Codex.' }),
-  agy: Object.freeze({ label: 'agy', supported: false, note: 'Not supported: no verified official skill mechanism. Nothing is written for agy.' })
+  claude: Object.freeze({ label: 'Claude Code', supported: true, note: 'Project skills in .claude/skills; actual CLI loading is unverified.' }),
+  codex: Object.freeze({ label: 'Codex', supported: true, note: 'Project skills in .agents/skills; actual CLI loading is unverified.' }),
+  opencode: Object.freeze({ label: 'OpenCode', supported: true, note: 'Discovers the existing .claude/skills and .agents/skills locations; no third copy is installed. Actual loading is unverified.' }),
+  agy: Object.freeze({ label: 'agy', supported: false, note: 'Loading protocol unverified. No invented install path.' }),
+  openrouter: Object.freeze({ label: 'OpenRouter', supported: false, note: 'Model provider: skills are discovered by the hosting CLI, such as OpenCode.' }),
+  deepseek: Object.freeze({ label: 'DeepSeek', supported: false, note: 'Model provider: skills are discovered by the hosting CLI, such as OpenCode.' })
 });
 
 class SkillsError extends Error {
@@ -50,7 +54,8 @@ function readSourceFile(file) {
 // Returns [{ rel, conflictRel, content, sha256 }] for every bundled skill, sorted by name.
 // conflictRel is the skill directory: an existing directory with the same name is treated as
 // a user's own skill and skipped as a whole.
-function loadBundledSkills(skillsRoot) {
+function loadBundledSkills(skillsRoot, targets = ['.claude/skills']) {
+  if (!Array.isArray(targets) || targets.some((target) => !SKILL_TARGETS.includes(target))) throw new SkillsError('path-escape', 'Unknown skill discovery location.');
   let names;
   try {
     const rootStat = fs.lstatSync(skillsRoot);
@@ -65,7 +70,7 @@ function loadBundledSkills(skillsRoot) {
     if (!entry.isDirectory()) continue;
     if (!SKILL_NAME.test(entry.name)) throw new SkillsError('source-invalid', `Bundled skill has an invalid name: ${entry.name}`);
     const content = readSourceFile(path.join(skillsRoot, entry.name, 'SKILL.md'));
-    entries.push({ rel: `.claude/skills/${entry.name}/SKILL.md`, conflictRel: `.claude/skills/${entry.name}`, content, sha256: sha256(content) });
+    for (const target of targets) entries.push({ rel: `${target}/${entry.name}/SKILL.md`, conflictRel: `${target}/${entry.name}`, content, sha256: sha256(content) });
   }
   if (entries.length === 0) throw new SkillsError('source-missing', 'Bundled agent skills are missing from the extension.');
   return entries.sort((a, b) => a.rel.localeCompare(b.rel));
@@ -213,8 +218,8 @@ const recordKey = (root) => `${RECORD_KEY_PREFIX}${root}`;
 
 // The installer only ever writes these shapes, so a record naming anything else (an escaping,
 // absolute or unrelated path) has been tampered with or corrupted.
-const SKILL_FILE_PATH = /^\.claude\/skills\/[a-z0-9][a-z0-9-]{0,63}\/SKILL\.md$/;
-const SKILL_DIR_PATH = /^\.claude(?:\/skills(?:\/[a-z0-9][a-z0-9-]{0,63})?)?$/;
+const SKILL_FILE_PATH = /^\.(?:claude|agents)\/skills\/[a-z0-9][a-z0-9-]{0,63}\/SKILL\.md$/;
+const SKILL_DIR_PATH = /^\.(?:claude|agents)(?:\/skills(?:\/[a-z0-9][a-z0-9-]{0,63})?)?$/;
 const TEMPLATE_DIRS = new Set(['.github', '.github/ISSUE_TEMPLATE']);
 const isRecordedFilePath = (value) => typeof value === 'string' && (SKILL_FILE_PATH.test(value) || TEMPLATE_FILES.some((file) => file.rel === value));
 const isRecordedDirPath = (value) => typeof value === 'string' && (SKILL_DIR_PATH.test(value) || TEMPLATE_DIRS.has(value));
@@ -320,7 +325,7 @@ async function runInstall(deps) {
   try {
     if (!workspaceRoot) return report({ ok: false, code: 'no-workspace', message: 'Open a workspace folder before installing agent skills.' });
     let record = readRecord(store, workspaceRoot);
-    const skills = loadBundledSkills(skillsRoot);
+    const skills = loadBundledSkills(skillsRoot, deps.skillTargets ?? SKILL_TARGETS);
     const plan = planInstall(workspaceRoot, skills);
     let skillResult = { written: [], conflicts: plan.conflicts, createdDirs: [] };
     if (plan.writes.length > 0) {
@@ -333,7 +338,7 @@ async function runInstall(deps) {
           '',
           'Nothing is written until you choose Install. Existing files are never overwritten.'
         ].join('\n');
-        if (!await ui.confirm('Install agent skills for Claude Code in this workspace?', detail, 'Install')) return { ok: false, code: 'cancelled', message: 'Nothing was written.' };
+        if (!await ui.confirm('Install agent skills for supported CLIs in this workspace?', detail, 'Install')) return { ok: false, code: 'cancelled', message: 'Nothing was written.' };
       }
       skillResult = applyInstall(workspaceRoot, plan.writes);
       skillResult.conflicts = plan.conflicts.concat(skillResult.conflicts);
@@ -374,8 +379,9 @@ async function runInstall(deps) {
     const written = skillResult.written.concat(templateResult.written).map((file) => file.path);
     const conflicts = skillResult.conflicts.concat(templateResult.conflicts);
     const message = written.length
-      ? `Wrote ${written.length} file(s) for Claude Code.${conflicts.length ? ` Skipped ${conflicts.length} existing: ${conflicts.join(', ')}.` : ''} Codex and agy are not supported.`
+      ? `Wrote ${written.length} file(s) for supported CLIs.${conflicts.length ? ` Skipped ${conflicts.length} existing: ${conflicts.join(', ')}.` : ''} Actual CLI loading is unverified; agy requires a verified adapter.`
       : `No files written.${conflicts.length ? ` Already present and left unchanged: ${conflicts.join(', ')}.` : ''}`;
+    await store.update(`${AUTO_DISABLED_PREFIX}${workspaceRoot}`, undefined);
     return report({ ok: true, code: written.length ? 'installed' : 'nothing-to-write', written, conflicts, message });
   } catch (error) {
     return report(errorResult(error));
@@ -399,6 +405,7 @@ async function runRemove(deps) {
     const toRemove = plan.filter((item) => item.status === 'remove').map((item) => item.path);
     const kept = plan.filter((item) => item.status === 'modified' || item.status === 'refused').map((item) => item.path);
     if (toRemove.length === 0) {
+      await store.update(`${AUTO_DISABLED_PREFIX}${workspaceRoot}`, true);
       const next = applyRemoval(workspaceRoot, record, plan);
       await saveRecord(store, workspaceRoot, next.record);
       return report({ ok: true, code: 'nothing-to-remove', removed: [], kept, message: kept.length ? `Nothing removed. Changed since install, left in place: ${kept.join(', ')}.` : 'No agent skills installed by Multiagent were found in this workspace.' });
@@ -412,6 +419,7 @@ async function runRemove(deps) {
       ].join('\n');
       if (!await ui.confirm('Remove agent skills installed by Multiagent?', detail, 'Remove')) return { ok: false, code: 'cancelled', message: 'Nothing was removed.' };
     }
+    await store.update(`${AUTO_DISABLED_PREFIX}${workspaceRoot}`, true);
     const next = applyRemoval(workspaceRoot, record, plan);
     await saveRecord(store, workspaceRoot, next.record);
     const keptPaths = next.kept.map((item) => item.path);
@@ -421,7 +429,25 @@ async function runRemove(deps) {
   }
 }
 
+// Activation-only path: it installs reviewed bundled text, never downloads, executes, adds
+// GitHub templates or grants permissions. No public command accepts an automatic/consent flag.
+async function runAutomaticInstall({ workspaceRoot, skillsRoot, store, trusted, enabled, local }) {
+  if (trusted !== true || enabled !== true || local !== true) return { ok: true, code: 'skipped', written: [], conflicts: [] };
+  try {
+    if (store.get(`${AUTO_DISABLED_PREFIX}${workspaceRoot}`) === true) return { ok: true, code: 'disabled', written: [], conflicts: [] };
+    let record = readRecord(store, workspaceRoot);
+    const plan = planInstall(workspaceRoot, loadBundledSkills(skillsRoot, SKILL_TARGETS));
+    const result = applyInstall(workspaceRoot, plan.writes);
+    record = mergeRecord(record, result);
+    await saveRecord(store, workspaceRoot, record);
+    if (result.error) throw result.error;
+    return { ok: true, code: 'prepared', written: result.written.map((file) => file.path), conflicts: plan.conflicts.concat(result.conflicts) };
+  } catch (error) { return errorResult(error); }
+}
+
 module.exports = {
+  SKILL_TARGETS,
+  runAutomaticInstall,
   PROVIDER_SUPPORT,
   RECORD_KEY_PREFIX,
   SkillsError,

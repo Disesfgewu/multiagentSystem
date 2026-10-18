@@ -40,7 +40,7 @@ function listFiles(dir) {
   return fs.readdirSync(dir, { recursive: true }).map((p) => String(p).split(path.sep).join('/')).sort();
 }
 
-const deps = (workspace, over = {}) => ({ isTestMode: false, arg: undefined, workspaceRoot: workspace, skillsRoot, templatesRoot, store: memoryStore(), ui: fakeUi(), ...over });
+const deps = (workspace, over = {}) => ({ skillTargets: ['.claude/skills'], isTestMode: false, arg: undefined, workspaceRoot: workspace, skillsRoot, templatesRoot, store: memoryStore(), ui: fakeUi(), ...over });
 
 test('bundled skills are the eight generic procedures with no repository-specific values', () => {
   const loaded = skills.loadBundledSkills(skillsRoot);
@@ -84,7 +84,7 @@ test('nothing is written before consent, and the dialog lists exactly the files 
   const [dialog] = ui.calls;
   assert.equal(dialog.button, 'Install');
   for (const name of BUNDLED) assert.ok(dialog.detail.includes(`.claude/skills/${name}/SKILL.md`), name);
-  assert.match(dialog.detail, /Codex: not supported/);
+  assert.match(dialog.detail, /Codex: supported/);
   assert.match(dialog.detail, /agy: not supported/);
   assert.equal(ui.calls.length, 1, 'templates are not offered when skills were declined');
 });
@@ -285,9 +285,9 @@ test('Extension Test mode may skip the dialog, and templates then need an explic
   assert.deepEqual(withTemplates.written.sort(), ['.github/ISSUE_TEMPLATE/standard.md', '.github/pull_request_template.md']);
 });
 
-test('only Claude Code is reported as supported', () => {
+test('verified skill discovery hosts are reported separately from providers', () => {
   assert.equal(skills.PROVIDER_SUPPORT.claude.supported, true);
-  assert.equal(skills.PROVIDER_SUPPORT.codex.supported, false);
+  assert.equal(skills.PROVIDER_SUPPORT.codex.supported, true);
   assert.equal(skills.PROVIDER_SUPPORT.agy.supported, false);
 });
 
@@ -300,4 +300,47 @@ test('the commands are contributed and the VSIX ignore list ships the resources 
   assert.ok(ignore.includes('.claude/**'));
   assert.ok(ignore.includes('!resources/agent-skills/**'));
   assert.ok(ignore.includes('!resources/agent-templates/**'));
+});
+
+test('automatic preparation installs both discovery locations, protects custom skills, records ownership and never adds templates', async (t) => {
+  const { workspace } = world(t);
+  const store = memoryStore();
+  const custom = path.join(workspace, '.agents/skills/fetch-prs');
+  fs.mkdirSync(custom, { recursive: true });
+  fs.writeFileSync(path.join(custom, 'SKILL.md'), 'custom');
+  const options = { workspaceRoot: workspace, skillsRoot, store, trusted: true, enabled: true, local: true };
+  const result = await skills.runAutomaticInstall(options);
+  assert.equal(result.ok, true);
+  assert.equal(result.written.length, 15);
+  assert.deepEqual(result.conflicts, ['.agents/skills/fetch-prs/SKILL.md']);
+  assert.equal(fs.readFileSync(path.join(custom, 'SKILL.md'), 'utf8'), 'custom');
+  for (const base of ['.claude', '.agents']) for (const name of BUNDLED) assert.ok(fs.existsSync(path.join(workspace, base, 'skills', name, 'SKILL.md')));
+  assert.equal(fs.existsSync(path.join(workspace, '.github')), false);
+  assert.equal(skills.parseRecord(store.get(skills.recordKey(workspace))).files.length, 15);
+  assert.deepEqual((await skills.runAutomaticInstall(options)).written, [], 'repeat activation does not overwrite');
+  fs.writeFileSync(path.join(workspace, '.agents/skills/fetch-issues/SKILL.md'), 'edited');
+  assert.equal((await skills.runRemove(deps(workspace, { store, isTestMode: true, arg: { interactive: false } }))).ok, true);
+  assert.equal(fs.readFileSync(path.join(custom, 'SKILL.md'), 'utf8'), 'custom');
+  assert.equal(fs.readFileSync(path.join(workspace, '.agents/skills/fetch-issues/SKILL.md'), 'utf8'), 'edited');
+  assert.equal(fs.existsSync(path.join(workspace, '.claude/skills/fetch-prs/SKILL.md')), false);
+  assert.equal((await skills.runAutomaticInstall(options)).code, 'disabled', 'removal persists across activation');
+});
+
+test('automatic preparation refuses untrusted, remote, disabled, corrupt-record and symlink cases', async (t) => {
+  const { workspace, sandbox } = world(t);
+  const store = memoryStore();
+  const options = { workspaceRoot: workspace, skillsRoot, store, trusted: true, enabled: true, local: true };
+  for (const field of ['trusted', 'enabled', 'local']) {
+    assert.equal((await skills.runAutomaticInstall({ ...options, [field]: false })).code, 'skipped');
+    assert.deepEqual(listFiles(workspace), []);
+  }
+  await store.update(skills.recordKey(workspace), { version: 1, files: [{ path: '../escape', sha256: '0'.repeat(64) }], dirs: [] });
+  assert.equal((await skills.runAutomaticInstall(options)).code, 'record-invalid');
+  assert.deepEqual(listFiles(workspace), []);
+  await store.update(skills.recordKey(workspace), undefined);
+  const outside = path.join(sandbox, 'outside'); fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(workspace, '.agents'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal((await skills.runAutomaticInstall(options)).ok, false);
+  assert.deepEqual(listFiles(outside), []);
+  assert.equal(fs.existsSync(path.join(workspace, '.claude')), false, 'preflight refuses whole plan');
 });

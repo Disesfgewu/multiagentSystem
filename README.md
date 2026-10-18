@@ -37,3 +37,7 @@ npm run test:host    # 在隔離的 Extension Host 載入建置結果並執行�
 - 既有的 `test/**/*.test.js`（純 Node 的 P0 模組測試）與編譯後的 TypeScript 測試一起由 `npm run test:unit` 執行；新增 JavaScript 模組時放在 `src/`，會隨 `allowJs` 原樣輸出到 `out/`。
 
 此雛形尚未實作帳號隔離、額度讀取、Issue／PR 寫入操作、身份規則或防外洩強制控制，也尚未完成 macOS／Windows 的四格實機驗收。給 Claude Code worker 的持續實作指令與 PM 工作方式見 [Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
+
+### 協作 skills
+
+VSIX 首次啟用受信任的本機工作區時，會自動準備八個內建協作 skills，供 Claude Code、Codex 與 OpenCode 的官方目錄發現機制使用；既有自訂 skills 不覆寫。可透過 `multiagentSystem.skills.autoInstall` 停用，或執行 **Remove Installed Agent Skills** 移除未修改的檔案並停止該工作區自動重裝。agy 載入協定仍未驗證；OpenRouter／DeepSeek 透過承載它們的 CLI 使用 skills。實際 CLI 載入與 token 節省仍須驗證，詳見 [使用說明](docs/AGENT_SKILLS.md)。
