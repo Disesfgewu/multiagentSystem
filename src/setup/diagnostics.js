@@ -165,11 +165,16 @@ function diagnose({
   const runtime = checkRuntimeVersions({ vscodeVersion, nodeVersion });
   const ghTool = classifyManagedTool(managedTools.gh);
   const codexTool = classifyManagedTool(managedTools.codex);
+  const claudeTool = classifyManagedTool(managedTools.claude);
   const agyTool = classifyManagedTool(managedTools.agy || { state: 'unsupported', reason: 'unverified-source-and-terms' });
 
   const providers = builtIn.list().map((provider) => {
     const onPath = Boolean(executables[provider.id]);
-    const managedReady = provider.id === 'codex' ? codexTool.state === 'ready' : false;
+    const managedReady = provider.id === 'codex'
+      ? codexTool.state === 'ready'
+      : provider.id === 'claude'
+        ? claudeTool.state === 'ready'
+        : false;
     const capabilities = {};
     for (const cap of CAPABILITIES) {
       capabilities[cap] = provider.capabilities[cap] || 'unknown';
@@ -322,18 +327,34 @@ function diagnose({
     });
   }
 
+  if (claudeTool.category === 'download-or-integrity-failed') {
+    actions.push({
+      code: 'tool-claude-download-or-integrity-failed',
+      severity: 'error',
+      summary: `Managed Claude Code CLI setup failed download or SHA-256 verification (${claudeTool.reason}).`,
+      nextAction: 'Run Retry Verified Claude Code CLI Setup in Tools Setup.',
+      command: 'multiagentSystem.setup.retryClaude'
+    });
+  }
+
   for (const provider of providers) {
     if (!provider.cliAvailable) {
       actions.push({
         code: `provider-cli-missing:${provider.id}`,
         severity: 'warning',
-        summary: `Provider CLI '${provider.id}' is not installed on PATH${provider.id === 'codex' ? ' or in managed tools' : ''}.`,
+        summary: `Provider CLI '${provider.id}' is not installed on PATH${provider.id === 'codex' || provider.id === 'claude' ? ' or in managed tools' : ''}.`,
         nextAction: provider.id === 'codex'
           ? 'Run Retry Verified Codex CLI Setup or install codex on PATH.'
-          : provider.id === 'agy'
-            ? 'Install official \'agy\' CLI on PATH manually (managed auto-deployment is unverified and unsupported).'
-            : `Install '${provider.id}' on PATH before launching '${provider.id}' sessions.`,
-        command: provider.id === 'codex' ? 'multiagentSystem.setup.retryCodex' : 'multiagentSystem.setup.refresh'
+          : provider.id === 'claude'
+            ? 'Run Retry Verified Claude Code CLI Setup or install claude on PATH.'
+            : provider.id === 'agy'
+              ? 'Install official \'agy\' CLI on PATH manually (managed auto-deployment is unverified and unsupported).'
+              : `Install '${provider.id}' on PATH before launching '${provider.id}' sessions.`,
+        command: provider.id === 'codex'
+          ? 'multiagentSystem.setup.retryCodex'
+          : provider.id === 'claude'
+            ? 'multiagentSystem.setup.retryClaude'
+            : 'multiagentSystem.setup.refresh'
       });
     }
   }
@@ -401,6 +422,7 @@ function diagnose({
       ghOnPath: Boolean(executables.gh),
       managedGh: ghTool,
       managedCodex: codexTool,
+      managedClaude: claudeTool,
       managedAgy: agyTool
     },
     providers,
@@ -442,6 +464,7 @@ function formatDiagnosticReport(report) {
     `- git on PATH: ${report.tools.gitOnPath ? 'yes' : 'no'}`,
     `- gh: managed=${report.tools.managedGh.state} (${report.tools.managedGh.category}${report.tools.managedGh.reason ? `:${report.tools.managedGh.reason}` : ''}), onPath=${report.tools.ghOnPath ? 'yes' : 'no'}`,
     `- codex (managed): ${report.tools.managedCodex.state} (${report.tools.managedCodex.category}${report.tools.managedCodex.reason ? `:${report.tools.managedCodex.reason}` : ''})`,
+    `- claude (managed): ${report.tools.managedClaude.state} (${report.tools.managedClaude.category}${report.tools.managedClaude.reason ? `:${report.tools.managedClaude.reason}` : ''})`,
     `- agy (managed): ${report.tools.managedAgy.state} (${report.tools.managedAgy.category}${report.tools.managedAgy.reason ? `:${report.tools.managedAgy.reason}` : ''})`,
     ''
   ];
