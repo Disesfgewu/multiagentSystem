@@ -76,7 +76,9 @@
     "onCommand:multiagentSystem.research.reviewAndConsent",
     "onCommand:multiagentSystem.research.revokeConsent",
     "onCommand:multiagentSystem.research.inspectTool",
-    "onCommand:multiagentSystem.research.prepareTool"
+    "onCommand:multiagentSystem.research.prepareTool",
+    "onCommand:multiagentSystem.skills.install",
+    "onCommand:multiagentSystem.skills.remove"
   ],
   "contributes": {
     "viewsContainers": {
@@ -272,7 +274,9 @@
       { "command": "multiagentSystem.research.reviewAndConsent", "title": "Multiagent: Review & Consent Research MCP Tool", "icon": "$(shield)" },
       { "command": "multiagentSystem.research.revokeConsent", "title": "Multiagent: Revoke Research MCP Tool Consent", "icon": "$(discard)" },
       { "command": "multiagentSystem.research.inspectTool", "title": "Multiagent: Inspect Research MCP Tool Security Manifest", "icon": "$(info)" },
-      { "command": "multiagentSystem.research.prepareTool", "title": "Multiagent: Prepare Consented Research MCP Tool" }
+      { "command": "multiagentSystem.research.prepareTool", "title": "Multiagent: Prepare Consented Research MCP Tool" },
+      { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace (Claude Code only)" },
+      { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
     ],
     "menus": {
       "editor/title": [
@@ -304,7 +308,9 @@
         { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@2" },
         { "command": "multiagentSystem.setup.migrateStorage", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@1" },
         { "command": "multiagentSystem.setup.recoverStorageLock", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@2" },
-        { "command": "multiagentSystem.setup.clearStorage", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@3" }
+        { "command": "multiagentSystem.setup.clearStorage", "when": "view == multiagentSystem.toolsSetupView", "group": "maintenance@3" },
+        { "command": "multiagentSystem.skills.install", "when": "view == multiagentSystem.toolsSetupView", "group": "skills@1" },
+        { "command": "multiagentSystem.skills.remove", "when": "view == multiagentSystem.toolsSetupView", "group": "skills@2" }
       ],
       "view/item/context": [
         { "command": "multiagentSystem.overview.openReport", "when": "view == multiagentSystem.overviewView && viewItem =~ /^multiagentOverviewAgent(Live|Closed)Pr$/", "group": "inline@0" },
