@@ -69,6 +69,7 @@ export function registerSkillCommands(context: vscode.ExtensionContext): vscode.
     return value === true;
   };
 
+  const reportedFailures = new Set<string>();
   const prepare = async (folder: vscode.WorkspaceFolder) => serial(folder.uri.fsPath, async () => {
     const result = await runAutomaticInstall({
       workspaceRoot: folder.uri.fsPath, skillsRoot, store,
@@ -76,7 +77,12 @@ export function registerSkillCommands(context: vscode.ExtensionContext): vscode.
       local: folder.uri.scheme === 'file',
       enabled: autoInstallEnabled()
     });
-    if (!result.ok) ui.error(`Agent skills preparation failed: ${result.message}`);
+    if (!result.ok) {
+      // The same unfixable problem (for example a symlinked skills folder) would otherwise pop up on
+      // every activation and settings change; say it once per workspace and reason per session.
+      const shown = `${folder.uri.fsPath}\0${result.message}`;
+      if (!reportedFailures.has(shown)) { reportedFailures.add(shown); ui.error(`Agent skills preparation failed: ${result.message}`); }
+    }
     else if (result.written?.length) ui.info(`Prepared ${result.written.length} bundled skill files for Claude Code, Codex and OpenCode. Actual CLI loading is unverified.${result.conflicts?.length ? ` Skipped ${result.conflicts.length} existing files.` : ''}`);
     return result;
   });
