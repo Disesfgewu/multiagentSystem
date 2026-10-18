@@ -232,3 +232,36 @@ test('diagnose flags failed Claude download or integrity check and provides retr
   assert.equal(claudeAction.command, 'multiagentSystem.setup.retryClaude');
   assert.match(claudeAction.summary, /archive-integrity-failed/);
 });
+
+test('free text reaching a diagnostic (a status reason, problems, store detail, tool reason) is replaced, never copied: paths, addresses and tokens cannot ride along', () => {
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  const hostile = [
+    'C:\\Users\\Zoë Müller\\work', '/Users/bob/project failed', 'file:///Users/bob/x', 'bob@example.invalid', `sk-ant-${cp(0x200b)}abcdefghijkl`,
+    '~alice/.ssh/id_rsa', '\\\\server\\share\\x', 'has space', 'UPPER', '', 'x'.repeat(65), 'line\nbreak', 42, null, undefined
+  ];
+  const report = diagnose({
+    vscodeVersion: '1.95.0',
+    storageStatus: { state: 'unavailable', reason: hostile[0], problems: hostile },
+    storeStatus: { ok: false, reason: hostile[1], detail: hostile[2] },
+    managedTools: { gh: { state: 'missing', reason: hostile[3] }, codex: { state: 'missing', reason: hostile[4] }, claude: { state: 'unsupported', reason: hostile[5] } }
+  });
+  const text = formatDiagnosticReport(report);
+  for (const leak of ['Zoë', 'Müller', 'bob', 'alice', 'example.invalid', 'sk-ant', 'server', 'has space', 'UPPER', 'line\nbreak']) {
+    assert.equal(text.includes(leak), false, `the report repeats ${JSON.stringify(leak)}`);
+  }
+  assert.ok(report.storage.problems.every((problem) => /^[a-z0-9][a-z0-9:_.-]{0,63}$/.test(problem)), 'every problem is a plain code');
+  assert.equal(report.storage.problems.length, hostile.length);
+});
+
+test('real status codes still pass through untouched, so the report stays useful', () => {
+  const report = diagnose({
+    vscodeVersion: '1.95.0',
+    storageStatus: { state: 'unavailable', reason: 'private-directory-rejected', problems: ['repo-root-unresolvable', 'private-store-locked'] },
+    storeStatus: { ok: false, reason: 'lock-failed', detail: 'owner-alive' },
+    managedTools: { gh: { state: 'missing', reason: 'download-or-install-failed' } }
+  });
+  assert.equal(report.storage.reason, 'private-directory-rejected');
+  assert.deepEqual(report.storage.problems, ['repo-root-unresolvable', 'private-store-locked']);
+  assert.deepEqual([report.storage.store.reason, report.storage.store.detail], ['lock-failed', 'owner-alive']);
+  assert.match(formatDiagnosticReport(report), /download-or-install-failed/);
+});
