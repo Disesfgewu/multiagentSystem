@@ -154,3 +154,17 @@ test('prepare() rejects an oversized download on its own, independent of the inj
   assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
   assert.equal(fs.existsSync(path.join(root, 'installs')), false, 'nothing was installed from the oversized download');
 });
+
+test('a repair after the installed binary was changed leaves only the new install, not one folder per attempt', async (t) => {
+  const root = world(t); let n = 0;
+  const manager = new ManagedClaude({ root, release: release(), download: async () => binary, newId: () => `try${n++}` });
+  const first = await manager.prepare();
+  assert.equal(first.state, 'ready');
+  if (first.state !== 'ready') return;
+  fs.writeFileSync(first.executable, 'changed after verification');
+  assert.equal((await manager.status()).state, 'corrupt');
+  const repaired = await manager.prepare();
+  assert.equal(repaired.state, 'ready');
+  assert.equal(fs.readdirSync(path.join(root, 'installs')).length, 1, 'the corrupt install was pruned');
+  assert.equal((await manager.status()).state, 'ready');
+});
