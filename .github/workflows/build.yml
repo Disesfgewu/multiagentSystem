@@ -45,7 +45,7 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run vsix:package
 
   # Startup smoke test only: it proves the built extension loads in a real
