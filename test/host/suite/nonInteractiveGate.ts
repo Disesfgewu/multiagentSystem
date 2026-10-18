@@ -107,5 +107,10 @@ export async function runNonInteractiveGateChecks(workspace: string): Promise<st
   const checked = await outsideTestMode(() => run<unknown>(ACCOUNT_COMMANDS.check, { id: 'acct-does-not-exist', interactive: false }));
   assert.equal(checked.result, undefined);
   assert.ok(checked.prompts.length > 0, 'outside test mode account check reports to the person instead of running silently');
-  return 'host smoke: outside test mode interactive:false no longer skips the session-start account prompt or the account check report';
+
+  const statusLineAttempt = await outsideTestMode(() => run<{ ok: boolean; status?: string }>(ACCOUNT_COMMANDS.configureStatusLine, { id: 'acct-does-not-exist', interactive: false, consent: true }));
+  assert.equal(statusLineAttempt.result?.ok, false, 'outside test mode configureStatusLine fails closed');
+  assert.ok(statusLineAttempt.prompts.length > 0, 'outside test mode configureStatusLine reports to user instead of executing silently');
+
+  return 'host smoke: outside test mode interactive:false no longer skips the session-start account prompt, account check report, or statusLine wizard';
 }

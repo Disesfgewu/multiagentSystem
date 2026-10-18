@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import { accountService, SessionUse } from './accountRuntime';
+import { quotaObservations, registerProfileForQuota } from './claudeStatusLine';
+
+export { quotaObservations, registerProfileForQuota };
 
 const { loadPolicy, savePolicy, QuotaDispatcher } = require('./quota-policy') as {
   loadPolicy(store: unknown, id: string): { ok: boolean; policy?: Record<string, unknown>; stored?: boolean };
@@ -14,11 +17,6 @@ const { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurre
   describeCurrentState(decision: { action: string; lines: string[] }): string;
   policyFromInput(input: Record<string, unknown>): { ok: boolean; policy?: Record<string, unknown>; problems: string[] };
 };
-
-/** Usage readings for an account. No verified source is connected yet, so there are none. */
-export function quotaObservations(_accountProfileId: string): unknown[] {
-  return [];
-}
 
 // One dispatcher per window: every gated launch (start or reopen) reserves a slot here before it is
 // allowed through, via `commitDispatch` (quota-gate.js), and whoever holds the outcome must call
@@ -40,20 +38,26 @@ export type GateOutcome = { ok: true; release: () => void } | { ok: false; code:
 export async function gateAccountLaunch(accountProfileId: string, interactive: boolean, sessions: () => SessionUse[]): Promise<GateOutcome> {
   const accounts = await accountService(sessions);
   if (!accounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be checked because private storage is not ready, so no new agent was started.' };
+  const loadedProfile = accounts.service.get(accountProfileId);
+  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
+  if (profile) registerProfileForQuota(profile);
   const policyRead = loadPolicy(accounts.store, accountProfileId);
-  const observations = quotaObservations(accountProfileId);
+  const observations = quotaObservations(accountProfileId, profile);
   const now = new Date();
   if (!policyRead.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
   const commit = async (approval?: 'confirm' | 'override'): Promise<GateOutcome> => {
     // Recheck after every await/dialog, then decide and reserve synchronously from fresh inputs.
     const latestAccounts = await accountService(sessions);
     if (!latestAccounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be read again, so no new agent was started.' };
+    const latestLoaded = latestAccounts.service.get(accountProfileId);
+    const latestProfile = latestLoaded.ok ? latestLoaded.profile : undefined;
+    if (latestProfile) registerProfileForQuota(latestProfile);
     const latest = loadPolicy(latestAccounts.store, accountProfileId);
     if (!latest.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
     if (latest.stored !== policyRead.stored || JSON.stringify(latest.policy) !== JSON.stringify(policyRead.policy)) {
       return { ok: false, code: 'quota-gate', message: 'Account limits changed while this launch was being checked. Try again to review the current limits.' };
     }
-    return commitDispatch({ policyRead: latest, observations: quotaObservations(accountProfileId), now: new Date(), dispatcher, accountKey: accountProfileId, approval });
+    return commitDispatch({ policyRead: latest, observations: quotaObservations(accountProfileId, latestProfile), now: new Date(), dispatcher, accountKey: accountProfileId, approval });
   };
   if (policyRead.stored !== true) return commit();
   // The running count that decides what to SHOW is a plain read, for responsive dialog wording; the
@@ -93,7 +97,10 @@ export async function currentGateState(accountProfileId: string, sessions: () =>
   const accounts = await accountService(sessions);
   const policyRead = accounts.ok ? loadPolicy(accounts.store, accountProfileId) : { ok: false };
   if (!policyRead.ok || policyRead.stored !== true) return null;
-  const observations = quotaObservations(accountProfileId);
+  const loadedProfile = accounts.ok ? accounts.service.get(accountProfileId) : { ok: false };
+  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
+  if (profile) registerProfileForQuota(profile);
+  const observations = quotaObservations(accountProfileId, profile);
   const now = new Date();
   const running = dispatcher.running(accountProfileId);
   const decision = gateLaunch({ policyRead, observations, now, running });
@@ -105,7 +112,10 @@ export async function currentGateState(accountProfileId: string, sessions: () =>
 export async function limitLines(accountProfileId: string, sessions: () => SessionUse[]): Promise<string[]> {
   const accounts = await accountService(sessions);
   const policyRead = accounts.ok ? loadPolicy(accounts.store, accountProfileId) : { ok: false };
-  const lines = [describePolicy(policyRead), ...describeQuota(quotaObservations(accountProfileId), new Date())];
+  const loadedProfile = accounts.ok ? accounts.service.get(accountProfileId) : { ok: false };
+  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
+  if (profile) registerProfileForQuota(profile);
+  const lines = [describePolicy(policyRead), ...describeQuota(quotaObservations(accountProfileId, profile), new Date())];
   const current = await currentGateState(accountProfileId, sessions);
   if (current) lines.push(current.line);
   return lines;

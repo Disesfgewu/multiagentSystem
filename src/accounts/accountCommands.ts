@@ -6,7 +6,8 @@ import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
-import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
+import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
+import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
 
 const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
@@ -30,7 +31,8 @@ export const ACCOUNT_COMMANDS = {
   login: 'multiagentSystem.accounts.login',
   launch: 'multiagentSystem.accounts.launch',
   check: 'multiagentSystem.accounts.check',
-  limits: 'multiagentSystem.accounts.limits'
+  limits: 'multiagentSystem.accounts.limits',
+  configureStatusLine: 'multiagentSystem.accounts.configureStatusLine'
 } as const;
 
 const LOGIN_COMMANDS: Record<string, string> = {
@@ -239,7 +241,10 @@ async function pickConfigFolder(provider: string, label: string, profiles: any[]
   return chooseConfigFolder({ provider, label, profiles, repoRoot, homeDir: os.homedir(), ui: folderUi });
 }
 
+let extensionContext: vscode.ExtensionContext | undefined;
+
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
+  extensionContext = context;
   sessions = sessionCommands;
   const tree = new AccountTree();
   currentTree = tree;
@@ -257,7 +262,8 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.login, (id?: unknown) => login(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.launch, (id?: unknown) => launch(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id)),
-    vscode.commands.registerCommand(ACCOUNT_COMMANDS.limits, (value?: unknown) => limits(value))
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.limits, (value?: unknown) => limits(value)),
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureStatusLine, (value?: unknown) => configureStatusLine(value))
   );
 }
 
@@ -309,6 +315,12 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     identityLine,
     `Login method: ${described.loginMethod.state === 'reported' ? described.loginMethod.value : 'unknown'}`,
     `Subscription plan: ${plan ?? 'unknown (the CLI did not report one)'}`,
+    ...(profile.provider === 'claude' ? [(() => {
+      const info = inspectStatusLineConfig(profile.configDir, getBridgeScriptPath(extensionContext?.extensionPath));
+      if (info.status === 'active') return 'Status line bridge: configured (receipt and freshness are shown separately in quota readings)';
+      if (info.status === 'custom') return `Status line bridge: custom command (${info.currentCommand ?? 'custom'})`;
+      return 'Status line bridge: not configured (use Configure Claude Status Line Bridge)';
+    })()] : []),
     `Health: ${described.health}`,
     lastCheckedText(id),
     `Account isolation: ${isolation}`,
@@ -498,3 +510,90 @@ async function launch(value: unknown): Promise<void> {
   if (!name) return;
   await sessions.launchWithAccount({ interactive: true, provider: loaded.profile.provider, name, cwd: folder.uri.fsPath, accountProfileId: loaded.profile.id });
 }
+
+/** Configures or manages the Claude Code status line bridge for real quota reporting. */
+export async function configureStatusLine(value: unknown): Promise<unknown> {
+  const rawOptions = value && typeof value === 'object' && !(value instanceof vscode.TreeItem)
+    ? (value as { id?: unknown; interactive?: boolean; consent?: boolean; action?: 'enable' | 'disable' })
+    : {};
+  const testMode = isExtensionTestMode();
+  const interactive = testMode ? (rawOptions.interactive !== false) : true;
+  const consent = testMode ? rawOptions.consent : undefined;
+  const action = testMode ? rawOptions.action : undefined;
+  const id = selectedId(rawOptions.id ?? value);
+  const profile = id ? undefined : await chooseProfile('claude');
+  const selected = profile ?? (id ? { id } : undefined);
+  if (!selected) return { ok: false, status: 'cancelled' };
+
+  const result = await accountService(() => sessions?.list() ?? []);
+  if (!result.ok) {
+    if (interactive) void vscode.window.showErrorMessage(result.message);
+    return { ok: false, status: 'failed', message: result.message };
+  }
+  const loaded = result.service.get(selected.id);
+  if (!loaded.ok) {
+    if (interactive) void vscode.window.showErrorMessage(errorFor(loaded));
+    return { ok: false, status: 'failed', message: errorFor(loaded) };
+  }
+
+  const vscodeStatusLineUi: StatusLineUi = {
+    async confirmEnable(label, settingsPath, bridgeCommand) {
+      const answer = await vscode.window.showInformationMessage(
+        `Enable Claude status line bridge for “${label}”?`,
+        {
+          modal: true,
+          detail: `Multiagent will configure statusLine in settings.json (${settingsPath}):\n\nCommand: ${bridgeCommand}\n\nWhen Claude Code runs, it will feed session metrics to this bridge via stdin and write 5-hour and 7-day rate limits to local storage.\n\nNote: Only claude.ai Pro/Max subscription accounts report rate limits, and only after the first API response in an active session. Non-subscription accounts will show unknown quota.`
+        },
+        'Enable Status Line Bridge'
+      );
+      return answer === 'Enable Status Line Bridge';
+    },
+    async confirmOverwrite(label, currentCommand, bridgeCommand) {
+      const answer = await vscode.window.showWarningMessage(
+        `Overwrite existing statusLine in “${label}” settings.json?`,
+        {
+          modal: true,
+          detail: `Current statusLine command:\n${currentCommand}\n\nOverwriting will replace this statusLine command with the Multiagent bridge script:\n${bridgeCommand}\n\nNote: Real rate limits (5-hour and 7-day windows) are only reported by Claude Code for claude.ai Pro/Max subscription accounts after the first API response in an active session.`
+        },
+        'Overwrite and Enable Bridge'
+      );
+      return answer === 'Overwrite and Enable Bridge';
+    },
+    async promptActiveChoice(label) {
+      const picked = await vscode.window.showQuickPick([
+        { label: '$(check) Keep Status Line Bridge Enabled', description: 'Currently capturing rate limits into Multiagent', value: 'keep' as const },
+        { label: '$(trash) Disable / Remove Status Line Bridge', description: 'Remove statusLine from settings.json and delete local quota observations', value: 'disable' as const }
+      ], { placeHolder: `Status Line Bridge is active for “${label}”` });
+      return picked?.value;
+    },
+    async confirmDisable(label) {
+      const confirm = await vscode.window.showWarningMessage(
+        `Remove statusLine bridge from “${label}”?`,
+        {
+          modal: true,
+          detail: 'This removes the statusLine command from settings.json and clears the local quota reading. Other settings will remain untouched.'
+        },
+        'Remove Bridge'
+      );
+      return confirm === 'Remove Bridge';
+    },
+    showInfo(message) {
+      void vscode.window.showInformationMessage(message);
+    },
+    showError(message) {
+      void vscode.window.showErrorMessage(message);
+    }
+  };
+
+  const outcome = await configureStatusLineWizard(loaded.profile, {
+    interactive,
+    consent,
+    action,
+    extensionPath: extensionContext?.extensionPath,
+    ui: vscodeStatusLineUi
+  });
+
+  currentTree?.refresh();
+  return outcome;
+}
+
