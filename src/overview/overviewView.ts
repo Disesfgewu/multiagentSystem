@@ -150,7 +150,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   }
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
-  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel }));
+  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel }));
   const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
     const gate = await currentGateState(profile.id, () => sessions.list());

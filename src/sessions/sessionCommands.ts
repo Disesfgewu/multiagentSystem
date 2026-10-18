@@ -14,6 +14,13 @@ import { privateStorage } from '../storage/storageCommands';
 import { prepareInstructionSnapshot, isSnapshotStale, cleanupSessionPlan } from './managedInstructions';
 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
+const { SessionObservationRuntime } = require('../observations/runtime') as {
+  SessionObservationRuntime: new () => {
+    prepare(input: { sessionId: string; provider: string; accountProfileId: string; env?: Record<string, string | null> }): { env?: Record<string, string | null>; active: boolean };
+    enrich(sessions: SessionView[]): SessionView[];
+    release(sessionId: string): void;
+  };
+};
 const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
@@ -131,6 +138,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   // either has no account assigned, is still awaiting handoff, or was already released.
   const reservations = new Map<string, () => void>();
   const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
+  const observations = new SessionObservationRuntime();
   const manager = new SessionManager<vscode.Terminal>({
     store: new PrivateSessionSnapshot({
       workspaceKey: () => sessionWorkspaceKey((vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.toString()), vscode.workspace.workspaceFile?.toString()),
@@ -223,6 +231,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     // Set once a quota-gate reservation is taken; released on every exit path below except the one
     // success path, which instead hands it off to this new session's own lifetime.
     let release: (() => void) | undefined;
+    let targetSessionId: string | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -296,7 +305,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         env = prepared.env;
       }
       let instructions: any;
-      const targetSessionId = randomUUID();
+      targetSessionId = randomUUID();
       const openedStorage = await privateStorage()?.use();
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
@@ -372,7 +381,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         accountProfileId: input.accountProfileId,
         roleGroupId: input.roleGroupId,
         requestedModel,
-        env,
+        env: observations.prepare({
+          sessionId: targetSessionId,
+          provider,
+          accountProfileId: input.accountProfileId ?? 'unassigned',
+          env
+        }).env,
         launch: input.launch,
         instructions
       });
@@ -380,6 +394,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       changed.fire();
       return { ok: true, session };
     } catch (error) {
+      if (typeof targetSessionId !== 'undefined') observations.release(targetSessionId);
       return failure(error, interactive);
     } finally {
       // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
@@ -459,6 +474,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       } else if (action === 'stop') {
         session = manager.stop(id);
         releaseReservation(id);
+        observations.release(id);
       } else {
         let prior = manager.get(id) ?? undefined;
         if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
@@ -476,6 +492,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
             releaseReservation(id);
+            observations.release(id);
             changed.fire();
           } else {
             throw Object.assign(new Error('session-still-open'), { code: 'session-still-open' });
@@ -590,7 +607,18 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           instructions = prep;
         }
 
-        session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env, instructions });
+        const observedLaunch = observations.prepare({
+          sessionId: newSessionId,
+          provider: prior.provider,
+          accountProfileId: prior.accountProfileId,
+          env
+        });
+        try {
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions });
+        } catch (error) {
+          observations.release(newSessionId);
+          throw error;
+        }
         if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       }
       changed.fire();
@@ -604,7 +632,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   async function list(value: unknown): Promise<SessionOutcome> {
     const input = options(value);
-    if (input.interactive === false) return { ok: true, sessions: manager.list() };
+    if (input.interactive === false) return { ok: true, sessions: observations.enrich(manager.list()) };
     const picked = await pickSession('Sessions in this window (state is shown only when there is evidence)', () => true);
     if (!picked) return { ok: true, sessions: manager.list() };
     const actions = picked.terminalOpen
@@ -632,13 +660,16 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       const doc = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(doc, { preview: true });
     }
-    return { ok: true, sessions: manager.list() };
+    return { ok: true, sessions: observations.enrich(manager.list()) };
   }
 
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
       const closedId = manager.handleTerminalClosed(terminal);
-      if (closedId) releaseReservation(closedId);
+      if (closedId) {
+        releaseReservation(closedId);
+        observations.release(closedId);
+      }
       changed.fire();
     }),
     // list with `interactive: false` only returns the in-memory session list and opens no picker.
@@ -654,5 +685,5 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   );
 
   void manager.initialize().then(() => changed.fire()).catch((error) => failure(error, true));
-  return { launch, launchWithAccount: startWithAccount, list: () => manager.list(), onDidChange: (listener) => changed.event(listener) };
+  return { launch, launchWithAccount: startWithAccount, list: () => observations.enrich(manager.list()), onDidChange: (listener) => changed.event(listener) };
 }

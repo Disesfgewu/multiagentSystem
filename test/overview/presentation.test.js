@@ -134,6 +134,22 @@ test('a launch model request never becomes an actual model observation', () => {
   assert.match(presentAgent(row(), { name: 'A' }).tooltip.join('\n'), /Requested model: CLI default/);
 });
 
+test('fresh provider evidence shows actual model and estimated session cost without inventing state', () => {
+  const providerObservation = {
+    status: { confidence: 'unknown', value: null },
+    model: { confidence: 'actual', value: 'claude-sonnet-4-5' },
+    usage: [{ field: 'usage.cost_usd', confidence: 'estimated', value: 0.125 }]
+  };
+  const shown = presentAgent(row({ state: 'launch-requested' }), {
+    name: 'A', providerLabel: 'Claude Code', lifecycleState: 'CLI launch requested, not confirmed', providerObservation
+  });
+  const tooltip = shown.tooltip.join('\n');
+  assert.match(tooltip, /Actual model: claude-sonnet-4-5/);
+  assert.match(tooltip, /Session cost: \$0\.125 estimated/);
+  assert.match(tooltip, /Provider state: unknown/);
+  assert.equal(/working/.test(shown.description), false);
+});
+
 test('a state that is a property of every object is unknown, never shown as an object', () => {
   for (const state of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
     const shown = presentAgent({ ...row({}), sessionState: { state: 'known', value: state } }, { name: 'A', providerLabel: 'P' });

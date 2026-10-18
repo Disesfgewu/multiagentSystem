@@ -47,6 +47,18 @@ test('structured Claude evidence carries model, source, time, freshness and fixe
   assert.deepEqual([value.model.value, value.model.source, value.model.confidence], ['documented-model-id', CLAUDE_SOURCE, 'actual']);
 });
 
+test('model-only status-line evidence stays useful without inventing a provider state', () => {
+  const { core, adapter } = setup();
+  assert.deepEqual(adapter.accept({
+    eventId: 'status-1', observedAt: START, sequence: 1,
+    statusLine: { model: { id: 'claude-sonnet-4-5' }, cost: { total_cost_usd: 0.25 } }
+  }), { ok: true, reason: 'accepted', accepted: true });
+  const value = core.snapshot('session-a', START);
+  assert.deepEqual([value.status.confidence, value.status.reason], ['unknown', 'not-reported']);
+  assert.deepEqual([value.model.value, value.model.confidence, value.freshness], ['claude-sonnet-4-5', 'actual', 'fresh']);
+  assert.equal(byField(value)['usage.cost_usd'].confidence, 'estimated');
+});
+
 test('expired state and usage become unknown instead of being carried forward', () => {
   const { core, adapter, advance, now } = setup();
   adapter.accept(evidence({ model: 'documented-model-id', usage: [{ field: 'usage.input_tokens', value: 12, measurement: 'actual', scope: 'session-cumulative' }] }));
