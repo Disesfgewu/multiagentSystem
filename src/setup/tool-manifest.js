@@ -65,6 +65,36 @@ function codexRelease(platform = process.platform, arch = process.arch) {
   return asset ? Object.freeze({ tool: 'codex', version: CODEX_VERSION, platform, arch, ...asset }) : null;
 }
 
+const CLAUDE_VERSION = '2.1.89';
+const CLAUDE_BASE = `https://downloads.claude.ai/claude-code-releases/${CLAUDE_VERSION}`;
+const CLAUDE_ASSETS = Object.freeze({
+  'darwin-x64': Object.freeze({
+    url: `${CLAUDE_BASE}/darwin-x64/claude`,
+    sha256: '1322c5eecec8047e9cd7114f7d547ef6a9596563d6bbc7e594167d0f8bc8b406',
+    format: 'raw', entry: null, executable: 'claude'
+  }),
+  'darwin-arm64': Object.freeze({
+    url: `${CLAUDE_BASE}/darwin-arm64/claude`,
+    sha256: 'f903a5e53f845b1ac5566296b713193827665f28da16300fdca7539cb0669a7f',
+    format: 'raw', entry: null, executable: 'claude'
+  }),
+  'win32-x64': Object.freeze({
+    url: `${CLAUDE_BASE}/win32-x64/claude.exe`,
+    sha256: '2e312000b538f11d13f1dfc52d4131996895b9a07bd8897d8f9153635d4ea092',
+    format: 'raw', entry: null, executable: 'claude.exe'
+  }),
+  'win32-arm64': Object.freeze({
+    url: `${CLAUDE_BASE}/win32-arm64/claude.exe`,
+    sha256: '5f1d597c542aac3a11f557e12c92d0c49220ab77e741014b0599a572d81ca679',
+    format: 'raw', entry: null, executable: 'claude.exe'
+  })
+});
+
+function claudeRelease(platform = process.platform, arch = process.arch) {
+  const asset = CLAUDE_ASSETS[`${platform}-${arch}`];
+  return asset ? Object.freeze({ tool: 'claude', version: CLAUDE_VERSION, platform, arch, ...asset }) : null;
+}
+
 /**
  * agy CLI deployment support assessment (Refs #73, #94, docs/AGY_INVESTIGATION.md).
  * Returns null for all platforms. Google Antigravity CLI does not publish fixed standalone
@@ -75,5 +105,10 @@ function agyRelease(_platform = process.platform, _arch = process.arch) {
   return null;
 }
 
-module.exports = { GH_VERSION, GH_ASSETS, ghRelease, CODEX_VERSION, CODEX_ASSETS, codexRelease, agyRelease };
+module.exports = {
+  GH_VERSION, GH_ASSETS, ghRelease,
+  CODEX_VERSION, CODEX_ASSETS, codexRelease,
+  CLAUDE_VERSION, CLAUDE_ASSETS, claudeRelease,
+  agyRelease
+};
 

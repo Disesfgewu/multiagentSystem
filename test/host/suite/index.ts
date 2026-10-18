@@ -23,6 +23,7 @@ import { gzipSync, zipSync } from 'fflate';
 import { SETUP_COMMANDS, managedPathContributionForTests, setSetupDepsForTests, setupTreeForTests } from '../../../src/setup/setupView';
 import { GhRelease } from '../../../src/setup/managedGh';
 import { CodexRelease } from '../../../src/setup/managedCodex';
+import { ClaudeRelease } from '../../../src/setup/managedClaude';
 
 const COMMANDS = [
   'multiagentSystem.openTerminalGroup',
@@ -39,7 +40,7 @@ const COMMANDS = [
   ACCOUNT_COMMANDS.edit, ACCOUNT_COMMANDS.remove, ACCOUNT_COMMANDS.login, ACCOUNT_COMMANDS.launch,
   ROLE_COMMANDS.refresh, ROLE_COMMANDS.create, ROLE_COMMANDS.edit, ROLE_COMMANDS.preview, ROLE_COMMANDS.remove,
   BROADCAST_COMMANDS.refresh, BROADCAST_COMMANDS.send, BROADCAST_COMMANDS.revoke, BROADCAST_COMMANDS.details,
-  SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh
+  SETUP_COMMANDS.refresh, SETUP_COMMANDS.retryGh, SETUP_COMMANDS.retryCodex, SETUP_COMMANDS.retryClaude
 ];
 const EXPECTED_TITLES = ['PM', 'Worker 1', 'Worker 2', 'Worker 3'].map((name) => `Multiagent: ${name}`);
 
@@ -324,30 +325,46 @@ async function setupFlow(): Promise<void> {
     sha256: createHash('sha256').update(codexAsset).digest('hex'), format: platform === 'win32' ? 'raw' : 'tar.gz',
     entry: platform === 'win32' ? null : `codex-${codexTarget}`, executable: codexExecutable
   };
-  let downloads = 0; let codexDownloads = 0;
+  const claudeExecutable = platform === 'win32' ? 'claude.exe' : 'claude';
+  const claudeBytes = Buffer.from('synthetic managed claude; it is never executed');
+  const claudeRelease: ClaudeRelease = {
+    tool: 'claude', version: '2.1.89', platform, arch,
+    url: `https://downloads.claude.ai/claude-code-releases/2.1.89/${platform}-${arch}/${claudeExecutable}`,
+    sha256: createHash('sha256').update(claudeBytes).digest('hex'), format: 'raw',
+    entry: null, executable: claudeExecutable
+  };
+  let downloads = 0; let codexDownloads = 0; let claudeDownloads = 0;
   setSetupDepsForTests({
     platform, arch, release, download: async () => { downloads += 1; return archive; }, codexRelease,
-    codexDownload: async () => { codexDownloads += 1; return codexAsset; }
+    codexDownload: async () => { codexDownloads += 1; return codexAsset; }, claudeRelease,
+    claudeDownload: async () => { claudeDownloads += 1; return claudeBytes; }
   });
   const before = (await setupTreeForTests().getChildren()) ?? [];
   assert.match(String(before.find((item) => String(item.label).includes('GitHub CLI'))?.description), /Needs setup/);
   assert.match(String(before.find((item) => String(item.label) === 'Codex CLI')?.description), /Needs setup/);
+  assert.match(String(before.find((item) => String(item.label) === 'Claude Code')?.description), /Needs setup/);
   const result = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryGh);
   assert.deepEqual([result.state, result.version], ['ready', '2.102.0']);
   const codexResult = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryCodex);
   assert.deepEqual([codexResult.state, codexResult.version], ['ready', '0.163.0']);
+  const claudeResult = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryClaude);
+  assert.deepEqual([claudeResult.state, claudeResult.version], ['ready', '2.1.89']);
   assert.equal(downloads, 1);
   assert.equal(codexDownloads, 1);
+  assert.equal(claudeDownloads, 1);
   const after = (await setupTreeForTests().getChildren()) ?? [];
   const gh = after.find((item) => String(item.label).includes('GitHub CLI'));
   assert.match(String(gh?.description), /Ready · 2\.102\.0/);
   const codex = after.find((item) => String(item.label) === 'Codex CLI');
   assert.match(String(codex?.description), /Ready · 0\.163\.0/);
   assert.match(String(codex?.tooltip), /Sign-in, identity, quota and rule injection are not implied/);
+  const claude = after.find((item) => String(item.label) === 'Claude Code');
+  assert.match(String(claude?.description), /Ready · 2\.1\.89/);
+  assert.match(String(claude?.tooltip), /Sign-in, identity, quota and rule injection are not implied/);
   assert.equal(String(gh?.tooltip).includes('synthetic managed gh'), false, 'status does not display binary content');
   const contributed = managedPathContributionForTests();
   assert.ok(contributed, 'verified managed bin directories are contributed to new native terminal PATHs');
-  assert.equal(contributed.split(path.delimiter).length, 2, 'both verified gh and Codex directories remain on the managed PATH');
+  assert.equal(contributed.split(path.delimiter).length, 3, 'all three verified gh, Codex and Claude directories remain on the managed PATH');
   if (platform !== 'win32') {
     const sentinel = process.env.MULTIAGENT_TEST_GH_SENTINEL;
     assert.ok(sentinel);
@@ -359,7 +376,7 @@ async function setupFlow(): Promise<void> {
       assert.equal(fs.readFileSync(sentinel, 'utf8'), 'synthetic');
     } finally { terminal.dispose(); }
   }
-  console.log('host smoke: Tools Setup installs synthetic gh and Codex assets only after SHA-256 verification; real downloads and execution are not tested');
+  console.log('host smoke: Tools Setup installs synthetic gh, Codex and Claude assets only after SHA-256 verification; real downloads and execution are not tested');
 }
 
 async function roleFlow(workspace: string): Promise<void> {

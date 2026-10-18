@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ManagedGh, Downloader, GhRelease, GhStatus } from './managedGh';
 import { ManagedCodex, CodexRelease, CodexStatus } from './managedCodex';
+import { ManagedClaude, ClaudeRelease, ClaudeStatus } from './managedClaude';
 import { privateStorage } from '../storage/storageCommands';
 import { describeStorage } from '../storage/extensionStorage';
 import { CONFIRM_CLEAR } from '../storage/private-store';
@@ -22,6 +23,7 @@ export const SETUP_COMMANDS = {
   refresh: 'multiagentSystem.setup.refresh',
   retryGh: 'multiagentSystem.setup.retryGh',
   retryCodex: 'multiagentSystem.setup.retryCodex',
+  retryClaude: 'multiagentSystem.setup.retryClaude',
   diagnose: 'multiagentSystem.setup.diagnose',
   migrateStorage: 'multiagentSystem.setup.migrateStorage',
   recoverStorageLock: 'multiagentSystem.setup.recoverStorageLock',
@@ -31,6 +33,7 @@ export const SETUP_COMMANDS = {
 interface SetupOverrides {
   platform?: string; arch?: string; release?: GhRelease | null; download?: Downloader;
   codexRelease?: CodexRelease | null; codexDownload?: Downloader;
+  claudeRelease?: ClaudeRelease | null; claudeDownload?: Downloader;
 }
 let overrides: SetupOverrides = {};
 let active: SetupController | undefined;
@@ -56,19 +59,23 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
   readonly onDidChangeTreeData = this.changed.event;
   private ghManager: ManagedGh;
   private codexManager: ManagedCodex;
+  private claudeManager: ManagedClaude;
   private preparingGh = false;
   private preparingCodex = false;
-  private readonly managedBins = new Map<'gh' | 'codex', string>();
+  private preparingClaude = false;
+  private readonly managedBins = new Map<'gh' | 'codex' | 'claude', string>();
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.ghManager = this.createGhManager();
     this.codexManager = this.createCodexManager();
+    this.claudeManager = this.createClaudeManager();
     this.context.environmentVariableCollection.description = 'Verified tools prepared by Multiagent';
   }
   dispose(): void { this.changed.dispose(); }
   replaceManager(): void {
     this.ghManager = this.createGhManager();
     this.codexManager = this.createCodexManager();
+    this.claudeManager = this.createClaudeManager();
     this.managedBins.clear();
     this.applyPath();
     this.refresh();
@@ -82,6 +89,12 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       platform: overrides.platform, arch: overrides.arch, release: overrides.codexRelease, download: overrides.codexDownload
     });
   }
+  private createClaudeManager(): ManagedClaude {
+    return new ManagedClaude({
+      root: path.join(this.context.globalStorageUri.fsPath, 'managed-tools', 'claude'), boundary: this.context.globalStorageUri.fsPath,
+      platform: overrides.platform, arch: overrides.arch, release: overrides.claudeRelease, download: overrides.claudeDownload
+    });
+  }
   refresh(): void { this.changed.fire(undefined); }
   getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
 
@@ -90,7 +103,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     const value = [...this.managedBins.values()].join(path.delimiter);
     if (value) this.context.environmentVariableCollection.prepend('PATH', `${value}${path.delimiter}`);
   }
-  private syncPath(tool: 'gh' | 'codex', status: GhStatus | CodexStatus): void {
+  private syncPath(tool: 'gh' | 'codex' | 'claude', status: GhStatus | CodexStatus | ClaudeStatus): void {
     if (status.state === 'ready') this.managedBins.set(tool, status.binDir);
     else this.managedBins.delete(tool);
     this.applyPath();
@@ -110,13 +123,21 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     this.syncPath('codex', status);
     return status;
   }
+  async claudeStatus(): Promise<ClaudeStatus> {
+    const status = await this.storageAllowed() ? await this.claudeManager.status() : { state: 'missing', reason: 'private-storage-unavailable' } as ClaudeStatus;
+    this.syncPath('claude', status);
+    return status;
+  }
   managedBinForTests(): string | undefined { return [...this.managedBins.values()].join(path.delimiter) || undefined; }
 
   async getChildren(): Promise<vscode.TreeItem[]> {
-    const [gh, codex] = await Promise.all([this.ghStatus(), this.codexStatus()]);
+    const [gh, codex, claude] = await Promise.all([this.ghStatus(), this.codexStatus(), this.claudeStatus()]);
     const ghItem = gh.state === 'ready'
       ? new ToolItem('GitHub CLI (gh)', `Ready · ${gh.version}`, `Verified SHA-256 after extraction. Source: ${gh.source}\nChecked: ${gh.verifiedAt}`, 'verified-filled', 'multiagentSetupGh')
       : new ToolItem('GitHub CLI (gh)', this.preparingGh ? 'Preparing…' : gh.state === 'unsupported' ? 'Unavailable on this platform' : 'Needs setup', `Managed setup: ${gh.reason}. Retry downloads only the fixed official release and verifies its SHA-256 before use.`, this.preparingGh ? 'sync~spin' : 'warning', 'multiagentSetupGh');
+    const claudeItem = claude.state === 'ready'
+      ? new ToolItem('Claude Code', `Ready · ${claude.version}`, `Verified from the pinned Anthropic release asset. Source: ${claude.source}\nChecked: ${claude.verifiedAt}\nSign-in, identity, quota and rule injection are not implied.`, 'verified-filled', 'multiagentSetupClaude')
+      : new ToolItem('Claude Code', this.preparingClaude ? 'Preparing…' : claude.state === 'unsupported' ? 'Unavailable on this platform' : 'Needs setup', `Managed setup: ${claude.reason}. Retry uses only the pinned Anthropic release asset and verifies SHA-256 before use.`, this.preparingClaude ? 'sync~spin' : 'warning', 'multiagentSetupClaude');
     const codexItem = codex.state === 'ready'
       ? new ToolItem('Codex CLI', `Ready · ${codex.version}`, `Verified from the pinned OpenAI release asset. Source: ${codex.source}\nChecked: ${codex.verifiedAt}\nSign-in, identity, quota and rule injection are not implied.`, 'verified-filled', 'multiagentSetupCodex')
       : new ToolItem('Codex CLI', this.preparingCodex ? 'Preparing…' : codex.state === 'unsupported' ? 'Unavailable on this platform' : 'Needs setup', `Managed setup: ${codex.reason}. Retry uses only the pinned OpenAI release asset and verifies SHA-256 before use.`, this.preparingCodex ? 'sync~spin' : 'warning', 'multiagentSetupCodex');
@@ -154,7 +175,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     return [
       new ToolItem('Git', observed('git'), 'Required for worktrees. Managed deployment is still blocked by the macOS source gap and has not been implemented.', 'question'),
       ghItem,
-      new ToolItem('Claude Code', observed('claude'), 'Provider tool. Direct asset and redistribution conditions are not verified, so setup does not download it.', 'question'),
+      claudeItem,
       codexItem,
       new ToolItem(
         'agy',
@@ -232,14 +253,47 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     } finally { this.preparingCodex = false; this.refresh(); }
   }
 
+  async prepareClaude(interactive: boolean): Promise<ClaudeStatus> {
+    if (this.preparingClaude) return this.claudeManager.status();
+    this.preparingClaude = true;
+    this.refresh();
+    try {
+      if (!await this.storageAllowed()) {
+        const refused: ClaudeStatus = { state: 'missing', reason: 'private-storage-unavailable' };
+        this.syncPath('claude', refused);
+        if (interactive) void vscode.window.showErrorMessage('Tool setup is unavailable because the extension storage folder could not be verified outside the project.');
+        return refused;
+      }
+      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>): Promise<ClaudeStatus> => {
+        let last = 0;
+        return this.claudeManager.prepare(({ received, total }) => {
+          if (!progress || !total || total <= 0) return;
+          const percent = Math.min(100, Math.floor(received / total * 100));
+          progress.report({ increment: Math.max(0, percent - last), message: `${percent}% downloaded and awaiting verification` });
+          last = percent;
+        });
+      };
+      const result = interactive
+        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified Claude Code CLI', cancellable: false }, run)
+        : await run();
+      this.syncPath('claude', result);
+      if (interactive) {
+        if (result.state === 'ready') void vscode.window.showInformationMessage(`Claude Code CLI ${result.version} is verified and ready for new managed terminals. Sign-in is still required.`);
+        else void vscode.window.showErrorMessage('Claude Code CLI setup did not complete. Open Tools Setup for the current status and retry.');
+      }
+      return result;
+    } finally { this.preparingClaude = false; this.refresh(); }
+  }
+
   async autoPrepare(): Promise<void> {
     if (!await this.storageAllowed()) {
       this.syncPath('gh', { state: 'missing', reason: 'private-storage-unavailable' });
       this.syncPath('codex', { state: 'missing', reason: 'private-storage-unavailable' });
+      this.syncPath('claude', { state: 'missing', reason: 'private-storage-unavailable' });
       void vscode.window.showWarningMessage('First-use tool setup is unavailable because the extension storage folder could not be verified outside the project.');
       return;
     }
-    const [gh] = await Promise.all([this.ghStatus(), this.codexStatus()]);
+    const [gh] = await Promise.all([this.ghStatus(), this.codexStatus(), this.claudeStatus()]);
     // gh is required by #73 and keeps the automatic first-use path. Codex is an optional provider
     // and its official asset is large, so it is prepared only after the user invokes its visible
     // Tools Setup action. A CLI download is never treated as consent to sign in or enable a provider.
@@ -285,7 +339,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       }
     }
 
-    const [gh, codex] = await Promise.all([this.ghStatus(), this.codexStatus()]);
+    const [gh, codex, claude] = await Promise.all([this.ghStatus(), this.codexStatus(), this.claudeStatus()]);
     const executables = {
       git: executableAvailable('git'),
       gh: executableAvailable('gh'),
@@ -305,7 +359,7 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
       observations: observationsFor(profiles),
       repoRoot,
       executables,
-      managedTools: { gh, codex }
+      managedTools: { gh, codex, claude }
     });
     const text = formatDiagnosticReport(report);
     const uri = vscode.Uri.parse(`${DIAGNOSTICS_SCHEME}:/setup-and-storage.md`);
@@ -436,6 +490,7 @@ export function registerSetup(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(SETUP_COMMANDS.refresh, () => controller.refresh()),
     vscode.commands.registerCommand(SETUP_COMMANDS.retryGh, () => controller.prepareGh(true)),
     vscode.commands.registerCommand(SETUP_COMMANDS.retryCodex, () => controller.prepareCodex(true)),
+    vscode.commands.registerCommand(SETUP_COMMANDS.retryClaude, () => controller.prepareClaude(true)),
     vscode.commands.registerCommand(SETUP_COMMANDS.diagnose, (arg?: unknown) =>
       controller.runDiagnostics(arg && typeof arg === 'object' ? (arg as { interactive?: boolean; probeSecrets?: boolean }) : undefined)),
     vscode.commands.registerCommand(SETUP_COMMANDS.migrateStorage, (arg?: unknown) =>

@@ -71,3 +71,10 @@ Tools Setup 現在也可準備上表固定的 Codex CLI `rust-v0.163.0`。macOS 
      - 若系統 `PATH` 上未找到 `agy`，明確顯示 `Unverified · auto-deployment unsupported`，引導使用者依官方文件手動安裝至 `PATH`，而非誤導使用者等待擴充套件自動下載。
    - 在診斷報告（`diagnose`）中，`tools.managedAgy` 誠實報告為 `unsupported`（`platform-unsupported:unverified-source-and-terms`），動作指引提示手動安裝官方 CLI，禁止偽稱已備妥。
 
+## Claude Code CLI 首次設定實作狀態（2026-10-18）
+
+Tools Setup 現在也可準備官方固定的 Claude Code `2.1.89`。macOS x64／arm64 與原生 Windows x64／arm64 均由官方 `https://downloads.claude.ai/claude-code-releases/2.1.89/` 下載精確的二進位資產（macOS 為 `claude`，Windows 為 `claude.exe`）。下載位址、版本、平台、架構、格式與發行端公告之 SHA-256 均寫死於程式，不從工作區或設定取得。
+
+下載、重試、受管路徑、原子切換與每次狀態重驗沿用 `gh` 與 `codex` 的失敗關閉（fail-closed）界線；保留的官方資產必須仍符合固定 SHA，且受管目錄中的目前執行檔與保留資產雜湊相符，才顯示 Ready 並將受管 bin 目錄注入新 terminal 的 PATH。
+
+下載中斷、雜湊不符、平台不符、檔案異常或受管路徑遭竄改/替換時一律保持 missing/corrupt 狀態，不執行未驗證檔案，並提供重試入口。登入、額度與身份驗證不因工具備妥而自動完成，仍誠實呈現目前狀態。

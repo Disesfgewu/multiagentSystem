@@ -149,7 +149,8 @@ test('diagnose produces actionable codes and omits private labels, paths, and se
     executables: { git: true, gh: false, claude: true, codex: false, agy: false },
     managedTools: {
       gh: { state: 'missing', reason: 'checksum-mismatch' },
-      codex: { state: 'ready', version: '0.163.0' }
+      codex: { state: 'ready', version: '0.163.0' },
+      claude: { state: 'ready', version: '2.1.89' }
     },
     now: () => Date.parse('2026-10-17T12:00:00.000Z')
   });
@@ -178,6 +179,11 @@ test('diagnose produces actionable codes and omits private labels, paths, and se
   assert.equal(codex.managedReady, true);
   assert.equal(codex.cliAvailable, true);
 
+  // Verify claude is marked available via managedReady
+  const claude = report.providers.find((p) => p.id === 'claude');
+  assert.equal(claude.managedReady, true);
+  assert.equal(claude.cliAvailable, true);
+
   // Format report and verify zero private leakage
   const formatted = formatDiagnosticReport(report);
   assert.equal(formatted.includes(secretPath), false, 'no local path in diagnostic output');
@@ -196,11 +202,33 @@ test('diagnose flags corrupt store and recommends clearStorage recovery', () => 
     storeStatus: { ok: false, reason: 'corrupt-store', detail: null, schemaVersion: 1, onDiskVersion: null, pendingMigration: false },
     lockStatus: { ok: true, held: false, stale: false },
     executables: { git: true, gh: true, claude: true, codex: true, agy: true },
-    managedTools: { gh: { state: 'ready', version: '2.102.0' }, codex: { state: 'ready', version: '0.163.0' } }
+    managedTools: { gh: { state: 'ready', version: '2.102.0' }, codex: { state: 'ready', version: '0.163.0' }, claude: { state: 'ready', version: '2.1.89' } }
   });
 
   assert.equal(report.overall, 'error');
   const corruptAction = report.actions.find((a) => a.code === 'store-unusable:corrupt-store');
   assert.ok(corruptAction);
   assert.equal(corruptAction.command, 'multiagentSystem.setup.clearStorage');
+});
+
+test('diagnose flags failed Claude download or integrity check and provides retryClaude action', () => {
+  const report = diagnose({
+    vscodeVersion: '1.95.0',
+    nodeVersion: '20.11.0',
+    storageStatus: { state: 'available', reason: null, problems: [], secrets: 'reachable', coverage: null },
+    storeStatus: { ok: true, reason: null, detail: null, schemaVersion: 2, onDiskVersion: 2, pendingMigration: false },
+    lockStatus: { ok: true, held: false, stale: false },
+    executables: { git: true, gh: true, claude: false, codex: true, agy: true },
+    managedTools: {
+      gh: { state: 'ready', version: '2.102.0' },
+      codex: { state: 'ready', version: '0.163.0' },
+      claude: { state: 'missing', reason: 'archive-integrity-failed' }
+    }
+  });
+
+  assert.equal(report.overall, 'error');
+  const claudeAction = report.actions.find((a) => a.code === 'tool-claude-download-or-integrity-failed');
+  assert.ok(claudeAction);
+  assert.equal(claudeAction.command, 'multiagentSystem.setup.retryClaude');
+  assert.match(claudeAction.summary, /archive-integrity-failed/);
 });

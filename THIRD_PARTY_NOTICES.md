@@ -1,7 +1,7 @@
 # Third party notices
 
 The extension uses the following package at runtime to read the fixed GitHub CLI ZIP archive and
-the fixed Codex CLI gzip archive. The CLI assets are downloaded to extension-private user storage;
+the fixed Codex CLI gzip archive. The CLI assets (gh, Codex, Claude Code) are downloaded to extension-private user storage;
 they are not bundled in the VSIX. Their source, version, digest, and licenses are recorded in
 `docs/TOOL_SOURCE_MATRIX.md`.
 
