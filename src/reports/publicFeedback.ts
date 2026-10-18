@@ -4,6 +4,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor, GITHUB_AUTH_PROVIDER, GITHUB_SCOPES } from '../github/githubCommands';
 import { WorktreeService } from '../projects/worktrees';
 import { COLLECTIONS } from '../storage/extensionStorage';
+const { classifyWrite } = require('./writeOutcome') as { classifyWrite(response: { ok: boolean; status: number }, verified: boolean): 'done' | 'refused' | 'unknown' };
 const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> } };
 
 const REPOSITORY = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/;
@@ -219,14 +220,20 @@ async function realComment(auth: vscode.AuthenticationSession, repository: { own
   const data = response.ok ? await response.json() as any : null;
   const url = typeof data?.html_url === 'string' ? data.html_url : '';
   const exact = new RegExp(`^https://github\\.com/${repository.owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/${repository.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(?:issues|pull)/${number}#issuecomment-\\d+$`, 'i');
-  return response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && data.body === body && exact.test(url) ? { ok: true, number: data.id } : { ok: false };
+  const verified = response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && data.body === body && exact.test(url);
+  const outcome = classifyWrite(response, verified);
+  // A throw is how the broker learns the outcome is unknown: it keeps the guard against sending again.
+  if (outcome === 'unknown') throw new Error('write-outcome-unknown');
+  return verified ? { ok: true, number: data.id } : { ok: false };
 }
 async function realReview(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, decision: ReviewDecision, body: string, expectedHeadSha: string): Promise<{ ok: boolean; number?: number }> {
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/reviews`;
   const event = decision === 'approve' ? 'APPROVE' : decision === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT';
   const response = await api(auth.accessToken, endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commit_id: expectedHeadSha, event, body }) });
   const data = response.ok ? await response.json() as any : null;
-  return response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && typeof data?.commit_id === 'string' && data.commit_id.toLowerCase() === expectedHeadSha.toLowerCase() && data?.body === body ? { ok: true, number: data.id } : { ok: false };
+  const verified = response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && typeof data?.commit_id === 'string' && data.commit_id.toLowerCase() === expectedHeadSha.toLowerCase() && data?.body === body;
+  if (classifyWrite(response, verified) === 'unknown') throw new Error('write-outcome-unknown');
+  return verified ? { ok: true, number: data.id } : { ok: false };
 }
 async function realMerge(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, expectedHeadSha: string, commitTitle: string, commitMessage: string): Promise<{ ok: boolean; reason?: string; sha?: string }> {
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/merge`;
