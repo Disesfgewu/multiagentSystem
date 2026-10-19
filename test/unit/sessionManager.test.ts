@@ -33,6 +33,28 @@ test('a requested model is launched, kept on reopen and stored as a request rath
   assert.equal(restored.manager.get(reopened.id)?.state, 'unknown');
 });
 
+test('an unrecognized shell refuses start and reopen: no terminal, no text, no running session', async () => {
+  let shell: 'posix' | null = 'posix';
+  const r = rig({ detectShellType: () => shell });
+  await r.manager.initialize();
+  const first = await start(r, {});
+  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude', newline: true }]);
+  r.manager.stop(first.id);
+  const terminalsBefore = r.terminals.length;
+  const sessionsBefore = r.manager.list().length;
+  shell = null;
+  await rejectsWithCode(start(r, { name: 'Unknown shell' }), 'unsupported-shell');
+  await rejectsWithCode(r.manager.reopen(first.id), 'unsupported-shell');
+  assert.equal(r.terminals.length, terminalsBefore, 'no terminal is created for a shell that cannot be quoted for');
+  assert.ok(r.terminals.every((terminal) => terminal.sent.length <= 1), 'nothing was typed');
+  assert.equal(r.manager.list().length, sessionsBefore, 'no session record was created');
+  assert.equal(r.manager.list().some((session) => session.state === 'launch-requested'), false);
+  // A shell-only terminal types nothing, so it needs no quoting and is still allowed.
+  const shellOnly = await start(r, { launch: false, name: 'Shell only' });
+  assert.equal(shellOnly.state, 'terminal-open');
+  assert.deepEqual(r.terminals[r.terminals.length - 1].sent, []);
+});
+
 test('invalid or unsupported model requests never create terminals, including shell-only starts', async () => {
   for (const requestedModel of ['bad;echo', '--dangerously-bypass-approvals-and-sandbox', 'bad\ncommand']) {
     const r = rig();

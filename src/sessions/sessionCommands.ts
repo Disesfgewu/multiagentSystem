@@ -27,6 +27,7 @@ const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
 import { gateAccountLaunch } from '../accounts/quotaGateUi';
+import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
@@ -103,9 +104,14 @@ async function resolveProject(cwd: string): Promise<{ repoId: string }> {
   }
 }
 
+function unsupportedShellMessage(shell: string | undefined): string {
+  const found = shellFileName(shell);
+  return `${found ? `The terminal shell "${found}"` : 'The terminal shell (it could not be identified)'} is not one this extension can type a command into safely, so nothing was started. Set the VS Code default terminal profile to bash, zsh, sh, PowerShell or Command Prompt, then retry.`;
+}
+
 function failure(error: unknown, interactive: boolean): SessionOutcome {
   const code = typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : 'unexpected-error';
-  const message = code === 'quota-gate' ? errorMessage(error) : MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
+  const message = code === 'unsupported-shell' ? unsupportedShellMessage(vscode.env.shell) : code === 'quota-gate' ? errorMessage(error) : MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
   if (interactive) void vscode.window.showErrorMessage(message);
   return { ok: false, code, message };
 }
@@ -172,16 +178,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
     },
     terminalTitle,
-    detectShellType: () => {
-      const shell = (vscode.env.shell ?? '').toLowerCase();
-      if (shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe') || shell.endsWith('pwsh')) {
-        return 'powershell';
-      }
-      if (shell.endsWith('cmd.exe') || shell.endsWith('cmd')) {
-        return 'cmd';
-      }
-      return process.platform === 'win32' ? 'powershell' : 'posix';
-    },
+    detectShellType: () => detectShellType(vscode.env.shell, process.platform),
     onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved. Existing saved records were left untouched. These sessions remain in this window only; reload the workspace before trying to save again.'),
     onPersistenceBlocked: () =>
       void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
