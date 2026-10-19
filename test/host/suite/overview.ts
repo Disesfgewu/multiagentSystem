@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
-import { overviewTreeForTests, setJoinDepsForTests, OVERVIEW_VIEW, OVERVIEW_REFRESH, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT, OVERVIEW_SHOW_DIFF } from '../../../src/overview/overviewView';
+import { overviewTreeForTests, setJoinDepsForTests, setGitEvidenceReaderForTests, OVERVIEW_VIEW, OVERVIEW_REFRESH, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT, OVERVIEW_SHOW_DIFF } from '../../../src/overview/overviewView';
 import { setReportDepsForTests } from '../../../src/reports/reportsView';
 
 interface Started { ok: boolean; session?: { id: string } }
@@ -60,6 +60,8 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
     });
     const rowNow = async () => ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Overview Session');
     try {
+      // The working folder of this host run is not the subject of the PR checks below: a clean, known state keeps them exact.
+      setGitEvidenceReaderForTests(async () => ({ state: 'known', source: 'local git', changed: 0, untracked: 0, dirty: false, head: 'abcdef123456', branch: 'feat/host', upstream: { ahead: 0, behind: 0 } }));
       setJoinDepsForTests(fakeDeps({ kind: 'ok', data: [pullRequest()] }) as never);
       const withPr = await rowNow();
       assert.match(String(withPr?.description ?? ''), /· PR #5 · CI passing$/);
@@ -103,7 +105,18 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
       const partial = await rowNow();
       assert.doesNotMatch(String(partial?.description ?? ''), /PR #/, 'an incomplete read shows no pull request');
       assert.match(String(partial?.tooltip ?? ''), /Pull request: unknown/);
+
+      // Local Git evidence is shown as facts on the row, and an unreadable folder is unknown, never clean.
+      setGitEvidenceReaderForTests(async () => ({ state: 'known', source: 'local git', changed: 2, untracked: 1, dirty: true, head: 'abcdef123456', branch: 'feat/host', upstream: { ahead: 1, behind: 0 } }));
+      const dirty = await rowNow();
+      assert.match(String(dirty?.description ?? ''), /uncommitted changes$/);
+      assert.match(String(dirty?.tooltip ?? ''), /Git \(local, read just now\): 2 changed, 1 untracked; 1 ahead, 0 behind its upstream; at abcdef123456/);
+      setGitEvidenceReaderForTests(async () => { throw new Error('git is not available'); });
+      const unreadable = await rowNow();
+      assert.doesNotMatch(String(unreadable?.description ?? ''), /uncommitted/);
+      assert.match(String(unreadable?.tooltip ?? ''), /Git: unknown \(Git could not read the working folder\)/);
     } finally {
+      setGitEvidenceReaderForTests(undefined);
       setJoinDepsForTests(undefined);
       setReportDepsForTests(undefined);
     }

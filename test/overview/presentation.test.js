@@ -325,3 +325,17 @@ test('the tooltip says whether the evidence is matched to the CLI session, uncon
   assert.match(tooltipFor('surprise'), /unknown/i);
   assert.equal(presentAgent(row(), { name: 'n', providerObservation: {} }).tooltip.some((line) => line.startsWith('Provider session:')), false, 'no line without any observation');
 });
+
+test('an agent row states local Git evidence as facts, flags uncommitted work, and says unknown when it was not read', () => {
+  const known = (over = {}) => ({ state: 'known', source: 'local git', changed: 2, untracked: 1, dirty: true, head: 'abcdef123456', branch: 'feat/x', upstream: { ahead: 3, behind: 0 }, ...over });
+  const dirty = presentAgent(row(), { name: 'n', gitEvidence: known() });
+  assert.match(dirty.description, /uncommitted changes$/);
+  assert.ok(dirty.tooltip.includes('Git (local, read just now): 2 changed, 1 untracked; 3 ahead, 0 behind its upstream; at abcdef123456'));
+  const clean = presentAgent(row(), { name: 'n', gitEvidence: known({ changed: 0, untracked: 0, dirty: false, upstream: null }) });
+  assert.doesNotMatch(clean.description, /uncommitted/);
+  assert.ok(clean.tooltip.some((line) => /no uncommitted changes; upstream unknown/.test(line)), 'no upstream is unknown, not zero');
+  const unreadable = presentAgent(row(), { name: 'n', gitEvidence: { state: 'unknown', reason: 'not-readable' } });
+  assert.doesNotMatch(unreadable.description, /uncommitted/);
+  assert.ok(unreadable.tooltip.some((line) => line.startsWith('Git: unknown (Git could not read')));
+  assert.equal(presentAgent(row(), { name: 'n' }).tooltip.some((line) => line.startsWith('Git')), false, 'no Git line when nothing was asked');
+});

@@ -5,6 +5,7 @@ import { accountService } from '../accounts/accountRuntime';
 import { limitLines, currentGateState, CurrentGate } from '../accounts/quotaGateUi';
 import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor } from '../github/githubCommands';
+import { inspectWorktree } from '../projects/gitEvidence';
 import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
 import { isGitHubWebUrl } from '../github/controller';
 import { markOwnUiItem } from '../shared/uiOrigin';
@@ -32,6 +33,23 @@ const pullRequestUrls = new Map<string, string>();
 const pullRequestNumbers = new Map<string, number>();
 
 let joinDeps: JoinDeps | undefined;
+type GitEvidenceReader = (folder: string) => Promise<unknown>;
+let gitEvidenceReader: GitEvidenceReader | undefined;
+export function setGitEvidenceReaderForTests(next: GitEvidenceReader | undefined): void { gitEvidenceReader = next; }
+
+/** Local Git facts per session, read a few at a time so many agents never mean many Git processes at once. */
+async function readGitEvidence(entries: Array<{ id: string; worktree?: string | null }>): Promise<Map<string, unknown>> {
+  const read = gitEvidenceReader ?? inspectWorktree;
+  const out = new Map<string, unknown>();
+  const queue = entries.filter((entry) => typeof entry.worktree === 'string');
+  const worker = async (): Promise<void> => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      try { out.set(next.id, await read(next.worktree as string)); } catch { out.set(next.id, { state: 'unknown', reason: 'not-readable' }); }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+  return out;
+}
 /** Replaces how branches and pull requests are found. Only the Extension Host test does this. */
 export function setJoinDepsForTests(next: JoinDeps | undefined): void { joinDeps = next; }
 
@@ -134,6 +152,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
     const group = entry?.value?.group;
     if (group && typeof group.name === 'string' && typeof group.id === 'string') roleNames[group.id] = group.name;
   }
+  const gitEvidence = await readGitEvidence(live.map((entry) => ({ id: entry.id, worktree: entry.worktree })));
   const join = await collectGitHub(live.map((entry) => ({ id: entry.id, worktree: entry.worktree })), joinDeps ?? realJoinDeps);
   const rowsById = new Map<string, any>();
   let problems = 0;
@@ -150,7 +169,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   }
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
-  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel }));
+  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel, ...(gitEvidence.has(entry.id) ? { gitEvidence: gitEvidence.get(entry.id) } : {}) }));
   const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
     const gate = await currentGateState(profile.id, () => sessions.list());
