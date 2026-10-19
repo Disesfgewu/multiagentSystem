@@ -308,3 +308,12 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
   assert.equal(costFor(3), 'Session cost: $3.00 estimated');
   for (const bad of [-1, Number.NaN, Infinity, 1e21, 1e7]) assert.match(costFor(bad), /unknown/i);
 });
+
+test('the tooltip says whether the evidence is matched to the CLI session, unconfirmed, or switched off', () => {
+  const tooltipFor = (providerSession) => presentAgent(row(), { name: 'n', providerObservation: { providerSession } }).tooltip.find((line) => line.startsWith('Provider session:'));
+  assert.match(tooltipFor('bound'), /matched to the CLI's own session id/);
+  assert.match(tooltipFor('unbound'), /not confirmed/);
+  assert.match(tooltipFor('mismatch'), /turned off/);
+  assert.match(tooltipFor('surprise'), /unknown/i);
+  assert.equal(presentAgent(row(), { name: 'n', providerObservation: {} }).tooltip.some((line) => line.startsWith('Provider session:')), false, 'no line without any observation');
+});

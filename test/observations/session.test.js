@@ -160,3 +160,17 @@ test('event objects are copied into observations and never retained by reference
   assert.equal(value.status.value, 'working');
   assert.equal(byField(value)['usage.output_tokens'].value, 3);
 });
+
+test('retract withdraws everything for a session, refuses later evidence, and reads as unknown with the reason', () => {
+  const NOW = '2026-01-01T00:00:00.000Z';
+  const core = new SessionObservationCore({ now: () => NOW, ttlMs: 60_000 });
+  core.register({ sessionId: 's1', provider: 'claude', accountProfileId: 'a1' });
+  const event = (sequence) => ({ schemaVersion: 1, eventId: `e${sequence}`, sessionId: 's1', provider: 'claude', accountProfileId: 'a1', source: 'claude-structured-evidence-v1', observedAt: NOW, sequence, state: 'working', model: 'claude-sonnet-4-5' });
+  assert.equal(core.ingest(event(1)).ok, true);
+  assert.equal(core.retract('s1', 'provider-session-changed').ok, true);
+  const snapshot = core.snapshot('s1', NOW);
+  assert.deepEqual([snapshot.status.confidence, snapshot.model.confidence, snapshot.model.reason], ['unknown', 'unknown', 'provider-session-changed']);
+  assert.deepEqual(core.ingest(event(2)), { ok: false, reason: 'provider-session-changed' });
+  assert.equal(core.retract('nobody', 'provider-session-changed').ok, false);
+  assert.throws(() => core.retract('s1', 'Not A Code'), TypeError);
+});
