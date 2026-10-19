@@ -311,7 +311,17 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
 
 test('an unobservable CLI session says why its state, model and cost are unknown', () => {
   const view = presentAgent(row(), { name: 'n', providerObservation: { providerSession: 'unavailable' } });
-  assert.ok(view.tooltip.some((line) => /no verified event source for a native terminal/.test(line)));
+  assert.match(view.tooltip.find((line) => line.startsWith('Provider session:')), /no verified event source for a native terminal/);
   assert.match(view.tooltip.find((line) => line.startsWith('Actual model:')), /unknown/i);
   assert.match(view.tooltip.find((line) => line.startsWith('Session cost:')), /unknown/i);
+});
+
+test('the tooltip says whether the evidence is matched to the CLI session, unconfirmed, or switched off', () => {
+  const tooltipFor = (providerSession) => presentAgent(row(), { name: 'n', providerObservation: { providerSession } }).tooltip.find((line) => line.startsWith('Provider session:'));
+  assert.match(tooltipFor('bound'), /id is consistent; terminal routing is not verified/);
+  assert.doesNotMatch(tooltipFor('bound'), /verified identity|matched/);
+  assert.match(tooltipFor('unbound'), /not confirmed/);
+  assert.match(tooltipFor('mismatch'), /turned off/);
+  assert.match(tooltipFor('surprise'), /unknown/i);
+  assert.equal(presentAgent(row(), { name: 'n', providerObservation: {} }).tooltip.some((line) => line.startsWith('Provider session:')), false, 'no line without any observation');
 });

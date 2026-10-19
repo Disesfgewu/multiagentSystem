@@ -14,13 +14,24 @@ import {
   bodyText,
   isGitHubWebUrl,
   parseNumber,
-  parseRepository
+  parseRepository,
+  rateLimitMessage
 } from '../../src/github/controller';
 
 // Everything here is synthetic: no real account, repository, token or network.
 const TOKEN = 'synthetic-token-for-tests-0000';
 const SHA = 'a'.repeat(40);
 const WEB = 'https://github.com/example-org/example-repo';
+
+test('rate-limit message distinguishes anonymous and VS Code identity without trusting arbitrary fields', () => {
+  const anonymous = rateLimitMessage({ authMode: 'anonymous', scope: 'primary', resetAt: '2026-10-19T04:00:00Z' });
+  assert.match(anonymous, /anonymous GitHub access \(primary\).*Retry after 2026-10-19T04:00:00.000Z/);
+  assert.match(anonymous, /Multiagent: Sign In to GitHub/);
+  const signedIn = rateLimitMessage({ authMode: 'vscode-session', scope: 'secondary', resetAt: '<script>' });
+  assert.match(signedIn, /VS Code GitHub session \(secondary\).*Retry time unknown/);
+  assert.doesNotMatch(signedIn, /Sign In to GitHub|script/);
+  assert.match(rateLimitMessage({}), /unknown GitHub identity \(unknown-type\).*Retry time unknown/);
+});
 
 interface Call {
   method: string;
@@ -230,7 +241,7 @@ test('a failed read is a failure with its own message and never an empty list', 
     {
       name: 'rate limit',
       setup: (g) => g.on('GET', ISSUES, () => json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1792000000' })),
-      code: 'rate-limited', message: /rate limiting.*Try again after 20/
+      code: 'rate-limited', message: /rate limit reached.*Retry after 20/
     },
     { name: '500', setup: (g) => g.on('GET', ISSUES, () => json(500, { message: 'oops' })), code: 'transient', message: /did not answer reliably/ },
     {
@@ -707,7 +718,7 @@ test('error messages distinguish session expiration from transient errors and ra
   gRate.on('GET', ISSUES, () => json(403, { message: 'rate limit' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1792000000' }));
   const rateLimit = await cRate.browse({ interactive: true, repository: REPO, kind: 'issues' });
   assert.equal(!rateLimit.ok && rateLimit.code, 'rate-limited');
-  assert.match(!rateLimit.ok ? rateLimit.message : '', /sign-in is intact/);
+  assert.match(!rateLimit.ok ? rateLimit.message : '', /anonymous GitHub access \(primary\).*Multiagent: Sign In to GitHub/);
   assert.doesNotMatch(!rateLimit.ok ? rateLimit.message : '', /Signing in raises the limit/);
 
   const { github: gTransient, controller: cTransient } = rig();

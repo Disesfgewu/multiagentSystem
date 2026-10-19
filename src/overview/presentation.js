@@ -43,6 +43,13 @@ function formatEstimatedCost(value) {
   return `$${whole}.${cents} estimated`;
 }
 
+const PROVIDER_SESSION_TEXT = Object.freeze({
+  bound: 'the observation file\'s id is consistent; terminal routing is not verified',
+  unbound: 'not confirmed (evidence is routed by the managed terminal only)',
+  mismatch: 'the CLI session changed, so its evidence is turned off for this session',
+  unavailable: 'this CLI has no verified event source for a native terminal, so its state, model and usage stay unknown'
+});
+
 function presentAgent(row, session) {
   const name = shown(session?.name, 'Session');
   const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
@@ -75,7 +82,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
-      ...(providerObservation?.providerSession === 'unavailable' ? ['Observation: this CLI has no verified event source for a native terminal, so its state, model and usage stay unknown'] : []),
+      ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
       `Provider state: ${providerStateText}`,

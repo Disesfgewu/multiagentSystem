@@ -8,7 +8,8 @@ const { createClaudeSessionEvidenceAdapter } = require('./claude');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
-const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine']);
+const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine', 'providerSessionId']);
+const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 const STATUS_KEYS = new Set(['model', 'cost']);
 // A record holds an id, a time and two short fields: a few hundred bytes. Anything larger is not one.
 const MAX_RECORD_BYTES = 8 * 1024;
@@ -54,7 +55,8 @@ function readRecord(file) {
     if (!isPlain(parsed) || Object.keys(parsed).some(key => !RECORD_KEYS.has(key)) || parsed.schemaVersion !== 1 ||
         typeof parsed.eventId !== 'string' || typeof parsed.observedAt !== 'string' ||
         !Number.isSafeInteger(parsed.sequence) || !isPlain(parsed.statusLine) ||
-        Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key))) return null;
+        Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key)) ||
+        (parsed.providerSessionId !== undefined && !(typeof parsed.providerSessionId === 'string' && PROVIDER_SESSION_ID.test(parsed.providerSessionId)))) return null;
     return parsed;
   } catch {
     return null;
@@ -156,6 +158,26 @@ class SessionObservationRuntime {
     return { env, active: false };
   }
 
+  /**
+   * Ties a record to the managed session by the provider's own session id. The first record that
+   * carries one fixes the mapping. After that, a record with another id (the same terminal now runs a
+   * different Claude session, or two instances write to one file) or without one withdraws all
+   * evidence for this managed session for good: values may never be attributed to the wrong session.
+   * Records that never carried an id stay "unbound": routed by the managed terminal's environment only.
+   */
+  #judgeProvider(sessionId, binding, record) {
+    if (binding.providerSession === 'mismatch') return;
+    const id = record.providerSessionId;
+    if (binding.providerSessionId === null) {
+      if (id !== undefined) { binding.providerSessionId = id; binding.providerSession = 'bound'; }
+      return;
+    }
+    if (id !== binding.providerSessionId) {
+      binding.providerSession = 'mismatch';
+      this.core.retract(sessionId, id === undefined ? 'provider-session-missing' : 'provider-session-changed');
+    }
+  }
+
   #notify(sessionId) {
     for (const listener of [...this.listeners]) {
       try { listener(sessionId); } catch { /* one listener's failure never stops another */ }
@@ -170,6 +192,7 @@ class SessionObservationRuntime {
       if (signature !== binding.signature) {
         binding.signature = signature;
         const record = signature === 'absent' ? null : readRecord(binding.file);
+        if (record) this.#judgeProvider(sessionId, binding, record);
         const observed = record ? Date.parse(record.observedAt) : Number.NaN;
         binding.expiresAtMs = Number.isFinite(observed) ? observed + this.ttlMs : null;
         binding.expiryNotified = false;
@@ -200,6 +223,8 @@ class SessionObservationRuntime {
       file,
       adapter: createClaudeSessionEvidenceAdapter({ core: this.core, sessionId, accountProfileId }),
       signature: fileSignature(file),
+      providerSessionId: null,
+      providerSession: 'unbound',
       expiresAtMs: null,
       expiryNotified: false
     });
@@ -226,10 +251,14 @@ class SessionObservationRuntime {
     if (!binding) return null;
     const record = readRecord(binding.file);
     if (record) {
-      const { eventId, observedAt, sequence, statusLine } = record;
-      binding.adapter.accept({ eventId, observedAt, sequence, statusLine });
+      this.#judgeProvider(sessionId, binding, record);
+      if (binding.providerSession !== 'mismatch') {
+        const { eventId, observedAt, sequence, statusLine } = record;
+        binding.adapter.accept({ eventId, observedAt, sequence, statusLine });
+      }
     }
-    return this.core.snapshot(sessionId, at);
+    const snapshot = this.core.snapshot(sessionId, at);
+    return snapshot ? { ...snapshot, providerSession: binding.providerSession } : snapshot;
   }
 
   enrich(sessions, at = new Date().toISOString()) {

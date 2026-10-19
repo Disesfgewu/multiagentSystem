@@ -284,3 +284,106 @@ test('a Codex terminal session is registered as having no verified event source:
   assert.equal(runtime.prepare({ sessionId: 'agy-a', provider: 'agy', accountProfileId: 'account-a', env }).active, false);
   assert.equal(runtime.snapshot('agy-a', NOW), null, 'only the Codex slice is registered here');
 });
+
+function providerSessionFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-provider-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 60_000 });
+  t.after(() => runtime.dispose());
+  const start = (sessionId) => {
+    runtime.prepare({ sessionId, provider: 'claude', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
+    return observationPath(root, sessionId);
+  };
+  const write = (file, sequence, providerSessionId, model = 'claude-sonnet-4-5') => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const record = { schemaVersion: 1, eventId: `event-${sequence}`, observedAt: NOW, sequence, statusLine: { model: { id: model } } };
+    if (providerSessionId !== undefined) record.providerSessionId = providerSessionId;
+    // Like the real bridge: write a temporary file, then replace the record by rename, so each record is a
+    // new file (an in-place rewrite of an equally long record can leave the change marker unchanged on Windows).
+    const temporary = `${file}.tmp.${sequence}`;
+    fs.writeFileSync(temporary, JSON.stringify(record));
+    fs.renameSync(temporary, file);
+  };
+  return { runtime, start, write };
+}
+
+test('the first record carrying a provider session id fixes the mapping; the same id keeps matching', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  assert.equal(runtime.snapshot('session-a', NOW).providerSession, 'unbound', 'nothing seen yet: not confirmed');
+  write(file, 1, 'claude-own-1');
+  let snapshot = runtime.snapshot('session-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.model.value, snapshot.model.confidence], ['bound', 'claude-sonnet-4-5', 'actual']);
+  write(file, 2, 'claude-own-1', 'claude-opus-4-1');
+  snapshot = runtime.snapshot('session-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.model.value], ['bound', 'claude-opus-4-1']);
+});
+
+test('records that never carry an id stay unbound: still shown, but never called matched', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  write(file, 1, undefined);
+  const snapshot = runtime.snapshot('session-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.model.value], ['unbound', 'claude-sonnet-4-5']);
+});
+
+test('a different provider session id withdraws every value for good, even when the old id comes back', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  write(file, 1, 'claude-own-1');
+  assert.equal(runtime.snapshot('session-a', NOW).model.confidence, 'actual');
+  write(file, 2, 'claude-own-2', 'claude-opus-4-1');
+  let snapshot = runtime.snapshot('session-a', NOW);
+  assert.equal(snapshot.providerSession, 'mismatch');
+  assert.deepEqual([snapshot.model.confidence, snapshot.model.reason, snapshot.status.confidence], ['unknown', 'provider-session-changed', 'unknown']);
+  assert.ok(snapshot.usage.every((entry) => entry.confidence === 'unknown'), 'no usage survives');
+  write(file, 3, 'claude-own-1');
+  snapshot = runtime.snapshot('session-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.model.confidence], ['mismatch', 'unknown']);
+});
+
+test('once matched, a record that lost its id is treated as another writer: evidence is withdrawn', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  write(file, 1, 'claude-own-1');
+  runtime.snapshot('session-a', NOW);
+  write(file, 2, undefined);
+  const snapshot = runtime.snapshot('session-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.model.reason], ['mismatch', 'provider-session-missing']);
+});
+
+test('a change is noticed by the poll too, so the screen drops the value without anyone asking for a snapshot', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  const seen = [];
+  t.after(runtime.onDidChange((id) => seen.push(id)).dispose);
+  write(file, 1, 'claude-own-1');
+  runtime.poll();
+  write(file, 2, 'claude-own-2');
+  runtime.poll();
+  assert.equal(seen.length, 2);
+  assert.equal(runtime.core.snapshot('session-a', NOW).model.reason, 'provider-session-changed', 'withdrawn by the poll itself');
+});
+
+test('the mapping belongs to one managed session: reopening starts clean, and two sessions never share an id', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const first = start('session-a');
+  write(first, 1, 'claude-own-1');
+  runtime.snapshot('session-a', NOW);
+  write(first, 2, 'claude-own-2');
+  assert.equal(runtime.snapshot('session-a', NOW).providerSession, 'mismatch');
+  runtime.release('session-a');
+  const reopened = start('session-b');
+  write(reopened, 1, 'claude-own-2');
+  assert.deepEqual([runtime.snapshot('session-b', NOW).providerSession, runtime.snapshot('session-b', NOW).model.confidence], ['bound', 'actual']);
+});
+
+test('a malformed provider session id makes the record unreadable instead of being trusted', (t) => {
+  const { runtime, start, write } = providerSessionFixture(t);
+  const file = start('session-a');
+  for (const bad of ['', '../x', 'a b', 'x'.repeat(200), 5, null]) {
+    write(file, 1, bad);
+    assert.equal(readRecord(file), null, JSON.stringify(bad));
+  }
+  assert.equal(runtime.snapshot('session-a', NOW).model.confidence, 'unknown');
+});

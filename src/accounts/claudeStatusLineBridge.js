@@ -7,6 +7,8 @@ const { randomUUID } = require('node:crypto');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
+// Claude Code's own session id, as documented for the status line input: an opaque, short token.
+const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 
 /**
  * Claude Code statusLine bridge script.
@@ -137,6 +139,10 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
             sequence: Date.parse(observedAt),
             statusLine
           };
+          // Only the id itself, and only when it has the documented shape; never the transcript path.
+          if (typeof payload.session_id === 'string' && PROVIDER_SESSION_ID.test(payload.session_id)) {
+            record.providerSessionId = payload.session_id;
+          }
           const observationDir = path.dirname(observationPath);
           // Only a real directory owned by this account folder: a symlink here would send the record
           // wherever it points. Created private (0700); an existing one is tightened to match.

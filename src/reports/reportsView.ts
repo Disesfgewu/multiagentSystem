@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
 import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
+import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
 import { configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
@@ -48,7 +49,7 @@ export const REPORT_COMMANDS = {
 } as const;
 
 type Kind = 'issue' | 'pullRequest';
-type Result = { kind: string; data?: any };
+type Result = { kind: string; data?: any; reason?: string; authMode?: 'vscode-session' | 'anonymous'; scope?: 'primary' | 'secondary' | 'unknown'; resetAt?: string };
 // The read-only calls a report needs. The real reader is the GitHub read adapter (GET only).
 export interface ReportReader {
   listIssues(filter: { state: 'open' | 'closed' }): Promise<Result>;
@@ -116,10 +117,10 @@ class Message extends vscode.TreeItem {
   constructor(text: string, signIn = false) {
     super(text, vscode.TreeItemCollapsibleState.None);
     this.iconPath = new vscode.ThemeIcon(signIn ? 'key' : 'info');
-    // Only an expired or refused GitHub session offers the button; a rate limit or a network blip
-    // resolves by itself and must not suggest the account is the problem.
+    // An expired session or anonymous rate limit can be addressed by signing in. An authenticated
+    // rate limit or a network blip must not suggest the account is the problem.
     if (signIn) {
-      this.tooltip = 'Click to sign in to GitHub again.';
+      this.tooltip = 'Click to sign in with a VS Code GitHub session.';
       this.command = { command: 'multiagentSystem.github.signIn', title: 'Sign In to GitHub' };
     }
   }
@@ -142,7 +143,7 @@ class Entry extends vscode.TreeItem {
   }
 }
 
-const incompleteMessage = (what: string, kind: string, reason?: string): string => {
+const incompleteMessage = (what: string, kind: string, reason?: string, result?: Result): string => {
   if (kind === 'denied') {
     if (reason === 'bad_credentials' || reason === 'credential_unavailable') {
       return `${what} could not be read: GitHub session expired or invalid. Please sign in again.`;
@@ -150,7 +151,7 @@ const incompleteMessage = (what: string, kind: string, reason?: string): string 
     return `${what} could not be read: sign in to GitHub or check access.`;
   }
   if (kind === 'rate_limited') {
-    return `${what} could not be read: GitHub rate limit reached (temporary; will resume automatically).`;
+    return `${what} could not be read: ${rateLimitMessage(result ?? { kind: 'rate_limited' })}`;
   }
   if (kind === 'transient') {
     return `${what} could not be read: temporary GitHub server issue (will retry automatically).`;
@@ -213,7 +214,8 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       this.setBadge(null);
       const failed = openItems === null ? result : closed;
       const failureKind = failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid';
-      return [new Message(incompleteMessage(what, failureKind, (failed as any)?.reason), failureKind === 'denied')];
+      return [new Message(incompleteMessage(what, failureKind, failed?.reason, failed),
+        failureKind === 'denied' || (failureKind === 'rate_limited' && failed?.authMode === 'anonymous'))];
     }
     const all = [...openItems, ...closedItems];
     if (new Set(all.map((entry) => entry.number)).size !== all.length) { this.setBadge(null); return [new Message(incompleteMessage(what, 'duplicate'))]; }

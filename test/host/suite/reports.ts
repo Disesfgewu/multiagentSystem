@@ -484,10 +484,16 @@ export async function runReportChecks(): Promise<string> {
       assert.equal(shown.length, 1, kind);
       assert.equal(shown.some((label) => label.includes('99')), false, kind);
       assert.equal(reportBadgeForTests('issue'), undefined, kind);
-      // Only an expired or refused session offers a one-click sign-in; temporary failures must not.
+      // Only an expired or refused session offers a one-click sign-in among these unknown-mode failures.
       const row = ((await reportTreeForTests('issue').getChildren()) ?? [])[0];
       assert.equal(row?.command?.command, kind === 'denied' ? 'multiagentSystem.github.signIn' : undefined, `${kind}: sign-in action`);
     }
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      listIssues: async () => ({ kind: 'rate_limited', authMode: 'anonymous', scope: 'primary', resetAt: '2026-10-19T04:00:00Z' })
+    }) });
+    const anonymousRate = ((await reportTreeForTests('issue').getChildren()) ?? [])[0];
+    assert.match(anonymousRate.label?.toString() ?? '', /anonymous GitHub access.*Retry after 2026-10-19T04:00:00.000Z/);
+    assert.equal(anonymousRate.command?.command, 'multiagentSystem.github.signIn');
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({ listIssues: async () => { throw new Error('network down'); } }) });
     assert.match((await labels('issue'))[0], /could not be read/);
     assert.equal(reportBadgeForTests('issue'), undefined, 'a failed read clears a previously shown count, rather than leaving it stale');

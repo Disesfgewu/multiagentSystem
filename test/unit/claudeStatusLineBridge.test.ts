@@ -77,7 +77,7 @@ test('managed session output contains only documented model and cost fields in i
     const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
     const result = spawnSync('node', [bridgeScript, quotaPath], {
       input: JSON.stringify({
-        session_id: 'provider-private-id',
+        session_id: 'claude-own-7',
         transcript_path: '/private/transcript',
         cwd: '/private/project',
         model: { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet' },
@@ -90,12 +90,13 @@ test('managed session output contains only documented model and cost fields in i
     assert.equal(result.status, 0);
     const file = path.join(tempDir, 'session-observations', 'managed-session-1.json');
     const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.deepEqual(Object.keys(record).sort(), ['eventId', 'observedAt', 'schemaVersion', 'sequence', 'statusLine']);
+    assert.deepEqual(Object.keys(record).sort(), ['eventId', 'observedAt', 'providerSessionId', 'schemaVersion', 'sequence', 'statusLine']);
     assert.deepEqual(record.statusLine, {
       model: { id: 'claude-sonnet-4-5' },
       cost: { total_cost_usd: 0.125 }
     });
-    assert.doesNotMatch(JSON.stringify(record), /transcript|private|provider-private-id|cwd/);
+    assert.equal(record.providerSessionId, 'claude-own-7');
+    assert.doesNotMatch(JSON.stringify(record), /transcript|private|cwd/);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -112,6 +113,24 @@ test('untrusted session ids cannot select a path outside the account directory',
     });
     assert.equal(result.status, 0);
     assert.equal(fs.existsSync(path.join(tempDir, 'session-observations')), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('a provider session id without the documented shape is never written', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-id-shape-'));
+  try {
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    for (const bad of ['../../etc/passwd', 'a b', 'x'.repeat(200), 12, '']) {
+      spawnSync('node', [bridgeScript, path.join(tempDir, 'quota.json')], {
+        input: JSON.stringify({ session_id: bad, model: { id: 'claude-sonnet-4-5' } }),
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir, MULTIAGENT_CLAUDE_SESSION_ID: 'managed-session-3' }
+      });
+      const record = JSON.parse(fs.readFileSync(path.join(tempDir, 'session-observations', 'managed-session-3.json'), 'utf8'));
+      assert.equal(Object.hasOwn(record, 'providerSessionId'), false, JSON.stringify(bad));
+    }
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
