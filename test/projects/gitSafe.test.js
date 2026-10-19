@@ -52,10 +52,23 @@ test('every configured content filter is emptied for the call, whatever its name
 });
 
 test('a filter name that cannot be passed safely makes the call refuse instead of guessing', async () => {
-  const unsafe = async () => `filter.a=b.clean\0`;
-  await assert.rejects(safeArgs(async () => unsafe()), { code: 'filter-name-unsafe' });
-  assert.deepEqual(await safeArgs(async () => 'core.editor\0user.name\0'), [...BASE], 'keys that are not filters are ignored');
+  await assert.rejects(safeArgs(async () => 'local\tfilter.a=b.clean\n'), { code: 'filter-name-unsafe' });
+  assert.deepEqual(await safeArgs(async () => 'local\tcore.editor\nlocal\tuser.name\n'), [...BASE], 'keys that are not filters are ignored');
+  assert.deepEqual(await safeArgs(async () => 'global\tfilter.lfs.clean\nsystem\tfilter.lfs.smudge\n'), [...BASE], 'filters the person installed themselves are left alone');
+  assert.ok((await safeArgs(async () => 'command\tfilter.x.clean\nworktree\tfilter.y.process\n')).includes('filter.y.process='), 'worktree and command-line settings are not the person\'s');
   await assert.rejects(safeArgs(async () => { throw Object.assign(new Error('boom'), { code: 128 }); }), /boom/, 'a real failure is not read as "no filters"');
+});
+
+test('a filter the person installed in their own configuration keeps working, but the repository cannot take it over', skipWindows, async (t) => {
+  const { temporary, root } = await repo(t);
+  const userConfig = path.join(temporary, 'user-gitconfig');
+  await fs.writeFile(userConfig, '[filter "probe"]\n\tclean = cat\n');
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: userConfig, GIT_CONFIG_NOSYSTEM: '1' };
+  const run = (probe) => exec('git', probe, { cwd: root, encoding: 'utf8', env }).then((result) => result.stdout);
+  assert.deepEqual(await safeArgs(run), [...BASE], 'their own (global) filter is not emptied');
+  await git(root, 'config', '--local', 'filter.probe.clean', 'sh -c "touch x; cat"');
+  const args = await safeArgs(run);
+  assert.ok(args.includes('filter.probe.clean='), 'but the same name redefined by the repository is');
 });
 
 test('reading Git evidence never runs a repository-configured content filter', skipWindows, async (t) => {
