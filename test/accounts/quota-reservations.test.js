@@ -223,3 +223,96 @@ test('two real processes racing for the last slot: exactly one gets it, while bo
   const winners = results.filter((result) => result.ok && result.allowed);
   assert.equal(winners.length, 1, JSON.stringify(results));
 });
+
+test('linked account keys share concurrency limits: a lease on profile A blocks launch on duplicate profile B, and releasing on A frees capacity for B', (t) => {
+  const [firstWindow, secondWindow] = stores(t);
+  const ACCT_A = 'prof-dup-a';
+  const ACCT_B = 'prof-dup-b';
+  assert.equal(savePolicy(firstWindow, ACCT_A, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  assert.equal(savePolicy(firstWindow, ACCT_B, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  const expectedA = loadPolicy(firstWindow, ACCT_A);
+  const expectedB = loadPolicy(firstWindow, ACCT_B);
+
+  // Take a slot on Profile A, linked to Profile B
+  const first = reserveSlot({
+    store: firstWindow,
+    accountKey: ACCT_A,
+    linkedAccountKeys: [ACCT_B],
+    expectedPolicyRead: expectedA,
+    observations: [reading()],
+    now: NOW,
+    leaseId: FIRST
+  });
+  assert.deepEqual([first.ok, first.decision.allowed], [true, true]);
+
+  // Running count on Profile B (linked to Profile A) shows 1 running
+  assert.deepEqual(runningSlots(secondWindow, ACCT_B, NOW, { linkedAccountKeys: [ACCT_A] }), { ok: true, running: 1, orphaned: 0 });
+
+  // Attempt to take a slot on Profile B: blocked by shared concurrency limit!
+  const second = reserveSlot({
+    store: secondWindow,
+    accountKey: ACCT_B,
+    linkedAccountKeys: [ACCT_A],
+    expectedPolicyRead: expectedB,
+    observations: [reading()],
+    now: NOW,
+    leaseId: SECOND
+  });
+  assert.deepEqual([second.ok, second.decision.allowed, second.decision.reasons[0].code], [true, false, 'concurrency-limit']);
+
+  // Unlinked Profile C is independent and not blocked
+  const ACCT_C = 'prof-independent';
+  assert.equal(savePolicy(firstWindow, ACCT_C, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  const third = reserveSlot({
+    store: secondWindow,
+    accountKey: ACCT_C,
+    linkedAccountKeys: [],
+    expectedPolicyRead: loadPolicy(secondWindow, ACCT_C),
+    observations: [reading()],
+    now: NOW,
+    leaseId: THIRD_ID
+  });
+  assert.deepEqual([third.ok, third.decision.allowed], [true, true]);
+
+  // Release on Profile A
+  assert.deepEqual(releaseSlot(firstWindow, first.decision.reservation, NOW), { ok: true, released: true });
+
+  // Running count on Profile B is now 0
+  assert.deepEqual(runningSlots(secondWindow, ACCT_B, NOW, { linkedAccountKeys: [ACCT_A] }), { ok: true, running: 0, orphaned: 0 });
+
+  // Now Profile B can successfully take its slot
+  const retryB = reserveSlot({
+    store: secondWindow,
+    accountKey: ACCT_B,
+    linkedAccountKeys: [ACCT_A],
+    expectedPolicyRead: expectedB,
+    observations: [reading()],
+    now: NOW,
+    leaseId: SECOND
+  });
+  assert.deepEqual([retryB.ok, retryB.decision.allowed], [true, true]);
+
+  // Now Profile A is blocked by Profile B's running lease
+  const retryA = reserveSlot({
+    store: firstWindow,
+    accountKey: ACCT_A,
+    linkedAccountKeys: [ACCT_B],
+    expectedPolicyRead: expectedA,
+    observations: [reading()],
+    now: NOW,
+    leaseId: FIRST
+  });
+  assert.deepEqual([retryA.ok, retryA.decision.allowed, retryA.decision.reasons[0].code], [true, false, 'concurrency-limit']);
+});
+
+test('invalid linkedAccountKeys fail closed with reservation-input-invalid', (t) => {
+  const [store] = stores(t);
+  assert.deepEqual(runningSlots(store, 'prof-a', NOW, { linkedAccountKeys: ['bad/key'] }), { ok: false, reason: 'reservation-input-invalid' });
+  assert.deepEqual(reserveSlot({
+    store,
+    accountKey: 'prof-a',
+    linkedAccountKeys: [null],
+    expectedPolicyRead: { ok: true, stored: false },
+    now: NOW
+  }), { ok: false, reason: 'reservation-input-invalid' });
+});

@@ -5,7 +5,7 @@ import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
-import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState } from './quotaGateUi';
+import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState, recordVerifiedIdentity, setIdentityProbe } from './quotaGateUi';
 import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
 import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
 
@@ -243,9 +243,26 @@ async function pickConfigFolder(provider: string, label: string, profiles: any[]
 
 let extensionContext: vscode.ExtensionContext | undefined;
 
+/**
+ * Asks the profile's CLI who is signed in right now, with the same check the person can run by hand. A
+ * launch uses it to compare with what the profile was verified as. Any failure reads as "could not tell".
+ */
+async function probeIdentity(profileId: string): Promise<unknown> {
+  const result = await accountService(() => sessions?.list() ?? []);
+  if (!result.ok) return null;
+  const loaded = result.service.get(profileId);
+  if (!loaded.ok) return null;
+  const repoRoot = (result.store as { repoRoot: string }).repoRoot;
+  const prepared = await launchEnvironment(loaded.profile.id, loaded.profile.provider, () => sessions?.list() ?? []);
+  if (!prepared.ok) return null;
+  return checkAccountIdentity({ profile: loaded.profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: runCommand });
+}
+
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
   extensionContext = context;
   sessions = sessionCommands;
+  setIdentityProbe(probeIdentity);
+  context.subscriptions.push({ dispose: () => setIdentityProbe(undefined) });
   const tree = new AccountTree();
   currentTree = tree;
   treeForTest = context.extensionMode === vscode.ExtensionMode.Test ? tree : undefined;
@@ -450,6 +467,9 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
       : await run();
   }
   checkResults.set(loaded.profile.id, outcome);
+  // What a successful check verified is saved in the shared private store, so the profile's account group
+  // is the same in every window and after a restart. A failed or signed-out check never removes it.
+  if (outcome.ok && outcome.identity) recordVerifiedIdentity(result.store, loaded.profile.id, outcome.identity, new Date());
   currentTree?.refresh();
   if (!interactive) return outcome;
   const words = describeCheck(outcome);

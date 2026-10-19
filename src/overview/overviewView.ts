@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { builtIn } from '../providers/registry';
 import { accountService } from '../accounts/accountRuntime';
+import { observationsFor } from '../accounts/accountCommands';
 import { limitLines, currentGateState, CurrentGate } from '../accounts/quotaGateUi';
 import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor } from '../github/githubCommands';
@@ -19,7 +20,7 @@ const { presentAgent, presentAccount, onboardingSteps, guideVisible, countRunnin
   onboardingSteps(counts: { accounts: number | null; roleGroups: number | null; sessions: number | null }): Array<{ id: string; title: string; done: boolean | 'unknown' | 'not-tracked'; command: string; button: string; missing: string }>;
   guideVisible(steps: unknown[]): boolean;
 };
-const { describeAccounts } = require('../accounts/profile-view') as { describeAccounts(input: { profiles: any[]; context: { repoRoot: string } }): any[] };
+const { describeAccounts } = require('../accounts/profile-view') as { describeAccounts(input: { profiles: any[]; observations?: Map<string, unknown>; context: { repoRoot: string } }): any[] };
 
 export const OVERVIEW_VIEW = 'multiagentSystem.overviewView';
 export const OVERVIEW_REFRESH = 'multiagentSystem.overview.refresh';
@@ -135,7 +136,11 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
     const loaded = accounts.service.list();
     if (loaded.ok) {
       profiles = loaded.profiles;
-      described = describeAccounts({ profiles: loaded.profiles, context: { repoRoot: (accounts.store as { repoRoot: string }).repoRoot } });
+      described = describeAccounts({
+        profiles: loaded.profiles,
+        observations: observationsFor(loaded.profiles),
+        context: { repoRoot: (accounts.store as { repoRoot: string }).repoRoot }
+      });
     } else notes.push('Account profiles could not be read.');
   } else notes.push('Account profiles are not available yet: private storage is not ready.');
 
@@ -170,10 +175,18 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
   const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel, ...(gitEvidence.has(entry.id) ? { gitEvidence: gitEvidence.get(entry.id) } : {}) }));
-  const accountRows = profiles ? await Promise.all(profiles.map(async (profile) => {
+  const accountRows = profiles ? await Promise.all(profiles.map(async (profile, index) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
     const gate = await currentGateState(profile.id, () => sessions.list());
-    return { id: profile.id, label: cleanTitle(profile.label) || 'Account', provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown', policy: policy ?? 'Limits: could not be read.', usage, gate };
+    return {
+      id: profile.id,
+      label: cleanTitle(profile.label) || 'Account',
+      provider: builtIn.get(profile.provider)?.label ?? 'Provider unknown',
+      policy: policy ?? 'Limits: could not be read.',
+      usage,
+      gate,
+      duplicateOf: described[index]?.duplicateOf ?? []
+    };
   })) : [];
   pullRequestUrls.clear();
   pullRequestNumbers.clear();

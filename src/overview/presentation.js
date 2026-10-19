@@ -177,12 +177,15 @@ function presentAccount(entry) {
     ? `${provider}${gateStatus} · ${policy}`
     : `${provider} · ${usage[0] ?? 'Usage: unknown.'} · ${policy}`;
 
+  const duplicateOf = Array.isArray(entry?.duplicateOf) ? entry.duplicateOf : [];
+
   const tooltip = [
     `Account: ${label}`,
     `Provider: ${provider}`,
     ...(action === 'block' ? [`Status: BLOCKED NOW${reason ? ` (${reason})` : ''}`, 'Action: Click Set Account Limits to change limits, or close active sessions.'] : []),
     ...(action === 'confirm' ? [`Status: Needs confirmation${reason ? ` (${reason})` : ''}`, 'Action: Click Set Account Limits to change limits, or confirm when starting.'] : []),
     ...(action === 'warn' ? [`Status: Near limit${reason ? ` (${reason})` : ''}`] : []),
+    ...(duplicateOf.length > 0 ? [`Duplicate account: shares limits with other profiles for this account (${duplicateOf.join(', ')}).`] : []),
     policy,
     ...usage
   ];
@@ -195,7 +198,8 @@ function presentAccount(entry) {
     icon,
     contextValue,
     gateAction: action,
-    blockedReason: action === 'block' ? (reason ?? 'new agents held back') : null
+    blockedReason: action === 'block' ? (reason ?? 'new agents held back') : null,
+    duplicateOf
   };
 }
 
