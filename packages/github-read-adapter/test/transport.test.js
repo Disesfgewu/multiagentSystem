@@ -70,3 +70,38 @@ test('an abort is rethrown as is so the client can report cancelled', async () =
 test('a fetch implementation is required', () => {
   assert.throws(() => createFetchTransport(null), TypeError);
 });
+
+test('a response larger than the cap is refused before or while it is read, and never buffered whole', async () => {
+  const request = { method: 'GET', url: 'https://api.github.com/x', headers: {} };
+  // Declared too large: refused without reading the body.
+  let cancelled = false;
+  const declared = new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(1024)); }, cancel() { cancelled = true; } }), { headers: { 'content-length': String(10 * 1024 * 1024) } });
+  await assert.rejects(createFetchTransport(async () => declared, { maxBodyBytes: 1024 * 1024 })(request), (error) => error.code === 'RESPONSE_TOO_LARGE');
+  assert.equal(cancelled, true, 'the stream is cancelled, not drained');
+
+  // No content-length (chunked): stopped as soon as the cap is crossed.
+  let pulled = 0;
+  let streamCancelled = false;
+  const endless = new Response(new ReadableStream({ pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(64 * 1024)); }, cancel() { streamCancelled = true; } }));
+  await assert.rejects(createFetchTransport(async () => endless, { maxBodyBytes: 256 * 1024 })(request), (error) => error.code === 'RESPONSE_TOO_LARGE');
+  assert.equal(streamCancelled, true);
+  assert.ok(pulled < 10, `an endless body was read ${pulled} times before being stopped`);
+
+  // A body under the cap is returned intact, including multi-byte characters split across chunks.
+  const text = JSON.stringify({ title: '中文標題 ✓' });
+  const bytes = new TextEncoder().encode(text);
+  const chunked = new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes.slice(0, 7)); controller.enqueue(bytes.slice(7)); controller.close(); } }), { status: 200 });
+  const ok = await createFetchTransport(async () => chunked, { maxBodyBytes: 1024 })(request);
+  assert.equal(ok.body, text);
+  assert.equal(ok.status, 200);
+});
+
+test('the client reports an oversized response as invalid, once, and does not retry it', async () => {
+  let calls = 0;
+  const transport = async () => { calls += 1; throw new TransportError('response too large', { code: 'RESPONSE_TOO_LARGE' }); };
+  const client = createGitHubClient({ transport, getToken: () => 'synthetic-token', sleep: async () => {} });
+  const result = await client.getJson('/x');
+  assert.equal(result.kind, 'invalid');
+  assert.equal(result.reason, 'response_too_large');
+  assert.equal(calls, 1);
+});

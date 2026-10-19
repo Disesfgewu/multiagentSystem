@@ -139,3 +139,53 @@ test('unsupported platforms, mismatched format and non-Anthropic sources never d
   }
   assert.equal(downloaded, false);
 });
+
+test('prepare() rejects an oversized download on its own, independent of the injected downloader\'s limit', async (t) => {
+  // The real downloader aborts mid-stream past maxBytes, but prepare() is also reachable with any
+  // downloader a caller supplies, so its own size check must not rely on that. No matching digest is
+  // needed: the size is checked before the hash is compared, and nothing may be installed.
+  const root = world(t);
+  const limit = 384 * 1024 * 1024;
+  let askedFor = 0;
+  const oversized = new Uint8Array(limit + 1);
+  const manager = new ManagedClaude({ root, release: release(), download: async (_url, maxBytes) => { askedFor = maxBytes; return oversized; }, newId: () => 'oversized' });
+  assert.deepEqual(await manager.prepare(), { state: 'missing', reason: 'download-or-install-failed' });
+  assert.equal(askedFor, limit, 'the downloader is told the same cap that prepare() enforces');
+  assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'installs')), false, 'nothing was installed from the oversized download');
+});
+
+test('a repair after the retained archive was damaged removes the broken install once it is old enough, and keeps a working one', async (t) => {
+  const root = world(t); let n = 0;
+  const manager = new ManagedClaude({ root, release: release(), download: async () => binary, newId: () => `try${n++}` });
+  const first = await manager.prepare();
+  assert.equal(first.state, 'ready');
+  if (first.state !== 'ready') return;
+  const installs = path.join(root, 'installs');
+  const [firstId] = fs.readdirSync(installs);
+  fs.chmodSync(path.join(installs, firstId, 'asset.bin'), 0o600); // it is retained read-only; simulate someone altering it
+  fs.writeFileSync(path.join(installs, firstId, 'asset.bin'), 'damaged after verification');
+  const old = new Date(Date.now() - 24 * 60 * 60_000);
+  fs.utimesSync(path.join(installs, firstId), old, old);
+  assert.equal((await manager.status()).state, 'corrupt');
+  const repaired = await manager.prepare();
+  assert.equal(repaired.state, 'ready');
+  assert.deepEqual(fs.readdirSync(installs).filter((name) => name === firstId), [], 'the broken install is gone');
+  assert.equal(fs.readdirSync(installs).length, 1);
+  assert.equal((await manager.status()).state, 'ready');
+});
+
+test('two managers preparing at once on the same root never delete each other\'s valid install, and the final pointer is readable', async (t) => {
+  const root = world(t); let n = 0;
+  const make = () => new ManagedClaude({ root, release: release(), download: async () => binary, newId: () => `concurrent${n++}` });
+  const [a, b] = [make(), make()];
+  const results = await Promise.all([a.prepare(), b.prepare()]);
+  for (const result of results) assert.equal(result.state, 'ready', JSON.stringify(result));
+  assert.equal((await a.status()).state, 'ready');
+  assert.equal((await b.status()).state, 'ready');
+  const ids = fs.readdirSync(path.join(root, 'installs'));
+  assert.ok(ids.length >= 1);
+  const pointer = JSON.parse(fs.readFileSync(path.join(root, 'current.json'), 'utf8'));
+  assert.ok(ids.includes(pointer.installId), 'the pointer names an install that still exists');
+  for (const result of results) if (result.state === 'ready') assert.equal(fs.existsSync(result.executable), true, 'each prepare\'s executable is still there');
+});

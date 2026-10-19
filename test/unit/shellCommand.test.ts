@@ -76,3 +76,51 @@ test('formatShellCommandLine rejects empty executable or control characters', ()
   assert.throws(() => formatShellCommandLine('claude\nrm -rf /', []), /Unsafe control characters/);
   assert.throws(() => formatShellCommandLine('claude', ['good', 'bad\narg']), /Unsafe control characters/);
 });
+
+// PowerShell reads a single-quoted string like this: any of the five single-quote characters ends the
+// string unless the next character is also one of them, in which case the pair is one literal quote.
+// This reader lets the tests prove that a quoted argument is ONE string that ends at its last character.
+function readPowerShellSingleQuoted(text: string): { value: string; end: number } | null {
+  const quotes = new Set(["'", '\u2018', '\u2019', '\u201a', '\u201b']);
+  if (!quotes.has(text[0])) return null;
+  let value = '';
+  let index = 1;
+  while (index < text.length) {
+    const char = text[index];
+    if (quotes.has(char)) {
+      if (index + 1 < text.length && quotes.has(text[index + 1])) { value += char; index += 2; continue; }
+      return { value, end: index + 1 };
+    }
+    value += char;
+    index += 1;
+  }
+  return null;
+}
+
+test('quotePowerShell treats the typographic single quotes as quotes: an argument cannot end its own string and run the rest as commands', () => {
+  const hostile = [
+    'a\u2019; calc; \u2018b', '\u2018', '\u2019', '\u201a', '\u201b', "x'y\u2019z\u2018w", '\u2019\u2019', 'end\u2019', '\u2018start',
+    "it's", 'C:\\Users\\x y\\a\u2019s file', '\u201cdouble\u201d and \u2018single\u2019'
+  ];
+  for (const arg of hostile) {
+    const quoted = quotePowerShell(arg);
+    const parsed = readPowerShellSingleQuoted(quoted);
+    assert.ok(parsed, JSON.stringify(arg));
+    assert.equal(parsed.end, quoted.length, `${JSON.stringify(arg)} must be one string that ends at the last character, got ${quoted}`);
+    assert.equal(parsed.value, arg, 'and it must read back as exactly the original');
+  }
+  assert.equal(quotePowerShell('a\u2019b'), "'a\u2019\u2019b'");
+});
+
+test('formatShellCommandLine keeps a hostile executable path and arguments inside their strings for PowerShell', () => {
+  const line = formatShellCommandLine('C:\\Program Files\\tool\u2019s\\claude.exe', ['--append-system-prompt-file', 'C:\\p\\a\u2019; calc; \u2018b.md'], { shellType: 'powershell' });
+  const reader = (text: string) => readPowerShellSingleQuoted(text);
+  assert.ok(line.startsWith('& '));
+  const exe = reader(line.slice(2));
+  assert.ok(exe);
+  const rest = line.slice(2 + exe.end);
+  assert.equal(rest.startsWith(' --append-system-prompt-file '), true);
+  const arg = reader(rest.slice(' --append-system-prompt-file '.length));
+  assert.ok(arg);
+  assert.equal(arg.end, rest.length - ' --append-system-prompt-file '.length, 'nothing follows the last argument');
+});

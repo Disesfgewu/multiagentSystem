@@ -2,14 +2,16 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { zipSync } = require('fflate');
 const { verifyVsix } = require('../../scripts/verify-vsix');
 
-const lock = { packages: { 'node_modules/fflate': { version: '0.8.3', license: 'MIT' } } };
+const lock = { packages: { '': { version: '0.0.3' }, 'node_modules/fflate': { version: '0.8.3', license: 'MIT' } } };
 const base = {
   '[Content_Types].xml': '<Types/>',
   'extension.vsixmanifest': '<PackageManifest/>',
-  'extension/package.json': JSON.stringify({ main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '0.8.3' } }),
+  'extension/package.json': JSON.stringify({ name: 'multiagentsystem', version: '0.0.3', main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '0.8.3' } }),
   'extension/readme.md': 'Multiagent extension',
   'extension/LICENSE.txt': 'MIT License',
   'extension/THIRD_PARTY_NOTICES.md': 'fflate 0.8.3\nMIT License',
@@ -33,7 +35,8 @@ test('VSIX verifier accepts only the intended runtime files with the locked MIT 
 
 test('VSIX verifier rejects private paths in packaged text and altered runtime metadata', () => {
   assert.throws(() => verifyVsix(archive({ 'extension/readme.md': 'Private file: /Users/alice/private/session.json' }), lock), /publication scan blocked/);
-  assert.throws(() => verifyVsix(archive({ 'extension/package.json': JSON.stringify({ main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '9.9.9' } }) }), lock), /runtime manifest/);
+  assert.throws(() => verifyVsix(archive({ 'extension/package.json': JSON.stringify({ name: 'multiagentsystem', version: '0.0.3', main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '9.9.9' } }) }), lock), /runtime manifest/);
+  assert.throws(() => verifyVsix(archive({ 'extension/package.json': JSON.stringify({ name: 'multiagentsystem', version: '0.0.2', main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '0.8.3' } }) }), lock), /identity\/version/);
 });
 
 test('VSIX verifier accepts the bundled agent skill and template resources but still rejects .claude and other resources', () => {
@@ -51,4 +54,10 @@ test('VSIX verifier accepts the bundled agent skill and template resources but s
   assert.throws(() => verifyVsix(archive({ 'extension/resources/agent-skills/Fetch_PRs/SKILL.md': 'x' }), lock), /unexpected entry/);
   assert.throws(() => verifyVsix(archive({ 'extension/resources/other/file.md': 'x' }), lock), /unexpected entry/);
   assert.throws(() => verifyVsix(archive({ 'extension/resources/agent-skills/fetch-prs/SKILL.md': 'see /Users/alice/private/notes.md' }), lock), /publication scan blocked/);
+});
+
+test('generated candidate artifacts are excluded from every later VSIX package', () => {
+  const ignore = fs.readFileSync(path.join(__dirname, '..', '..', '.vscodeignore'), 'utf8');
+  assert.match(ignore, /^artifacts\/\*\*$/m);
+  assert.throws(() => verifyVsix(archive({ 'extension/artifacts/release-candidate.json': '{}' }), lock), /unexpected entry/);
 });

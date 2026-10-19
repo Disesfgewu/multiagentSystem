@@ -133,8 +133,14 @@ function parseLinkNext(header) {
 
 function parseIntegerHeader(value) {
   if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) return undefined;
-  return Number.parseInt(value.trim(), 10);
+  const parsed = Number.parseInt(value.trim(), 10);
+  // A header is untrusted input: a value beyond the safe integer range is not a usable number.
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
+
+// No rate-limit wait longer than a week is believable; anything beyond is reported as that, not as a
+// date that cannot even be represented.
+const MAX_REPORTED_WAIT_MS = 7 * 24 * 60 * 60 * 1000;
 
 function fingerprint(token) {
   return createHash('sha256').update(token).digest('hex').slice(0, 16);
@@ -179,7 +185,12 @@ function createGitHubClient(options) {
   const cache = new Map();
   let lastRateLimit;
 
-  const iso = (ms) => new Date(ms).toISOString();
+  // null for a time that cannot be represented (a hostile header), never a throw.
+  const isoOrNull = (ms) => {
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  };
+  const iso = (ms) => isoOrNull(ms) ?? new Date(0).toISOString();
   const fail = (kind, fields) => ({ kind, observedAt: iso(now()), ...fields });
 
   function isInsideApi(candidate) {
@@ -225,7 +236,7 @@ function createGitHubClient(options) {
     lastRateLimit = {
       limit: limit === undefined ? null : limit,
       remaining: remaining === undefined ? null : remaining,
-      resetAt: reset === undefined ? null : iso(reset * 1000),
+      resetAt: reset === undefined ? null : isoOrNull(reset * 1000),
       resource: headers['x-ratelimit-resource'] || null,
       observedAt: iso(now())
     };
@@ -259,8 +270,9 @@ function createGitHubClient(options) {
     if (retryAfterSeconds !== undefined) resetAtMs = now() + retryAfterSeconds * 1000;
     else if (reset !== undefined) resetAtMs = reset * 1000;
     if (resetAtMs !== undefined) {
-      fields.resetAt = iso(resetAtMs);
-      fields.retryAfterMs = Math.max(0, resetAtMs - now());
+      const resetAt = isoOrNull(resetAtMs);
+      if (resetAt !== null) fields.resetAt = resetAt;
+      fields.retryAfterMs = Math.min(MAX_REPORTED_WAIT_MS, Math.max(0, resetAtMs - now()));
     }
     fields.scope = retryAfterSeconds !== undefined ? 'secondary' : 'primary';
     return { limited, fields };
@@ -348,6 +360,7 @@ function createGitHubClient(options) {
       } else if (outcome.error) {
         const code = errorCode(outcome.error);
         if (code === 'INVALID_RESPONSE') return { failure: fail('invalid', { reason: 'invalid_transport_response' }) };
+        if (code === 'RESPONSE_TOO_LARGE') return { failure: fail('invalid', { reason: 'response_too_large' }) };
         if (isOfflineError(outcome.error)) {
           return { failure: fail('offline', { code, attempts: attempt + 1 }) };
         }

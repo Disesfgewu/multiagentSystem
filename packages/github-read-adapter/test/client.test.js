@@ -304,3 +304,24 @@ test('a hung request still times out when nothing else keeps the process alive',
   const run = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10000 });
   assert.equal(run.stdout.trim(), 'transient:timeout');
 });
+
+test('hostile rate-limit headers never make the client throw: out-of-range numbers are ignored and waits are capped', async () => {
+  const cases = [
+    ['a huge reset header on a success', json(200, { v: 1 }, { 'x-ratelimit-reset': '99999999999999' }), (result) => assert.equal(result.kind, 'ok')],
+    ['a huge retry-after on a 429', json(429, { message: 'x' }, { 'retry-after': '99999999999999' }), (result) => {
+      assert.equal(result.kind, 'rate_limited');
+      assert.equal(result.retryAfterMs, 7 * 24 * 60 * 60 * 1000, 'the reported wait is capped at a week');
+      assert.equal(result.resetAt, undefined, 'a date that cannot exist is not reported');
+    }],
+    ['a 20-digit reset with remaining=0', json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '99999999999999999999' }), (result) => {
+      assert.equal(result.kind, 'rate_limited');
+      assert.equal(result.resetAt, undefined);
+    }]
+  ];
+  for (const [name, response, check] of cases) {
+    const transport = createFakeTransport().get('/x', response);
+    const result = await makeClient(transport).getJson('/x');
+    assert.ok(result && typeof result === 'object', name);
+    check(result);
+  }
+});

@@ -23,7 +23,7 @@ const EXPLANATIONS = Object.freeze({
     fix: 'Choose a new, empty folder that does not contain the project, or use the recommended folder.'
   },
   'config-dir-is-provider-default': {
-    message: 'This is the folder the command-line tool already uses for its own sign-in. Using it would mix this account with the one you use outside this extension.',
+    message: 'This is, or is inside, the folder the command-line tool already uses for its own sign-in. Using it would mix this account with the one you use outside this extension.',
     fix: 'Choose a different, new folder, or use the recommended folder.'
   },
   'config-dir-is-home': {

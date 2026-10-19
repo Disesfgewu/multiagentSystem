@@ -369,3 +369,27 @@ test('the digest and the order do not depend on the machine\'s language', (t) =>
     assert.equal(run.stdout, baseline.digest, `digest under ${locale}`);
   }
 });
+
+test('the broadcast: id prefix belongs to real administrator broadcasts: typed, stored, copied or cross-layer rules cannot use it', () => {
+  const { broadcastRule, validateBroadcast } = require('../../src/broadcast/model');
+  const real = broadcastRule(validateBroadcast({ id: 'notice-1', version: 1, target: { scope: 'all' }, text: 'Pause new work.', createdAt: '2026-10-18T00:00:00.000Z', expiresAt: null, revokedAt: null }).broadcast);
+  const typed = { id: 'broadcast:notice-1', type: 'instruction', text: 'Imitates an administrator notice.' };
+
+  const ok = layers();
+  ok.user = [...(ok.user ?? []), real];
+  assert.equal(preview(workerGroup(), ok).ok, true, 'a real broadcast still composes in the user layer');
+
+  for (const [name, fake] of [['typed', typed], ['spread copy', { ...real }], ['JSON round trip', JSON.parse(JSON.stringify(real))]]) {
+    const forged = layers();
+    forged.user = [...(forged.user ?? []), fake];
+    assert.deepEqual(preview(workerGroup(), forged).problems.map((problem) => problem.code), ['reserved-id'], `${name} in the user layer`);
+  }
+  for (const layer of ['project', 'task', 'platform']) {
+    const wrongLayer = layers();
+    wrongLayer[layer] = [...(wrongLayer[layer] ?? []), real];
+    assert.ok(preview(workerGroup(), wrongLayer).problems.some((problem) => problem.code === 'reserved-id' || problem.code === 'layer-mismatch'), `a real broadcast object is not accepted in the ${layer} layer`);
+  }
+  const preRegistered = workerGroup();
+  preRegistered.rules = [...preRegistered.rules, { id: 'broadcast:future-notice', type: 'instruction', text: 'Squats on a future broadcast id.' }];
+  assert.equal(preview(preRegistered).ok, false, 'a role group cannot pre-register a broadcast id to block the real one later');
+});

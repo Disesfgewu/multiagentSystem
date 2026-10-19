@@ -1,12 +1,14 @@
 # multiagentSystem
 
+目前的 0.0.3 版本是待審查的 Beta 候選；安裝、雜湊核對、已知限制與回復方式見 [Beta 0.0.3 候選說明](docs/BETA_0.0.3.md)。
+
 以支援 macOS 與 Windows 的 VS Code 擴充套件管理同一個 GitHub 專案中的多個 CLI coding agents。每個 agent 使用可直接操作的真實終端機；使用者可在同一畫面查看工作、程式碼、角色、帳戶及可取得的用量資訊。
 
 產品將支援 PM 與 worker 等自訂身份組、依身份共享的精選記憶，以及以 GitHub Issues／PRs 為主的任務與 review 流程：PM 定義 issue，coding agent 領取任務並提交 PR，PM review 通過後由人工或依設定由 PM merge。使用者可為同一 CLI provider 登入多個帳號，指定各 agent 使用的帳號並查看可取得的各帳號額度。執行階段 agent 資訊不得進入 GitHub 提交與協作內容。
 
 第一階段內建三個 CLI provider：Claude Code、Codex CLI 與 agy（見 [Provider 登錄](docs/PROVIDERS.md)）。啟動選單與身份組現在都使用登錄；agy 可選擇在原生 terminal 啟動，規則與記憶以手動方式注入，其餘能力一律未知；使用者自訂 provider 尚未支援。
 
-目前已有原生 terminal、GitHub 清單、Agent 總覽，以及帳號與身份組的部分操作入口；PM 報告、決策佇列、完整帳號額度控制、MCP 權限與共享記憶尚未完成，不能視為可用的管理平台。以 GitHub Issues／PRs 追蹤目前需求與交付：整體進度見 [Issue #76](https://github.com/Disesfgewu/multiagentSystem/issues/76)，決策工作台見 [Issue #106](https://github.com/Disesfgewu/multiagentSystem/issues/106)。[舊交付台帳](docs/MASTER_PLAN.md)僅供查閱歷史紀錄，不再是側欄功能或即時狀態來源。需求與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)，PM 工作規則見 [PM system prompt](docs/PM_SYSTEM_PROMPT.md)。
+目前已有原生 terminal 與 session 管理、GitHub 清單、Agent 總覽、Issues／PRs 報告（含 PM 報告、決策佇列、本機與公開回饋、套件內正式 review 與 merge 指令，皆受身分與 gate 限制）、帳號與身份組操作、帳號額度門檻（目前僅 Claude 經 status line 橋接有真實來源，其餘顯示未知）、管理者廣播、受管 CLI 準備與協作 skills；共享記憶、MCP 實際接入與各 CLI 的實機行為尚未完成或未驗證，不能視為已驗收的管理平台。以 GitHub Issues／PRs 追蹤目前需求與交付：整體進度見 [Issue #76](https://github.com/Disesfgewu/multiagentSystem/issues/76)，決策工作台見 [Issue #106](https://github.com/Disesfgewu/multiagentSystem/issues/106)。[舊交付台帳](docs/MASTER_PLAN.md)僅供查閱歷史紀錄，不再是側欄功能或即時狀態來源。需求與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)，PM 工作規則見 [PM system prompt](docs/PM_SYSTEM_PROMPT.md)。
 
 ## 試用 P0 雛形
 
@@ -36,7 +38,7 @@ npm run test:host    # 在隔離的 Extension Host 載入建置結果並執行�
 - CI 在 macOS 與 Windows 分開回報兩類結果：**型別檢查與單元測試**，以及 **Extension Host 冒煙測試**（只證明建置結果可載入、命令可執行且建立四個原生 terminal）。輸入、互動提示、`Ctrl+C`、重啟與分格排列等**實機驗收不在 CI 內**，仍須在真實視窗中人工驗證。
 - 既有的 `test/**/*.test.js`（純 Node 的 P0 模組測試）與編譯後的 TypeScript 測試一起由 `npm run test:unit` 執行；新增 JavaScript 模組時放在 `src/`，會隨 `allowJs` 原樣輸出到 `out/`。
 
-此雛形尚未實作帳號隔離、額度讀取、Issue／PR 寫入操作、身份規則或防外洩強制控制，也尚未完成 macOS／Windows 的四格實機驗收。給 Claude Code worker 的持續實作指令與 PM 工作方式見 [Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
+尚未完成的部分：真實 CLI／真實帳號下的帳號隔離與身份規則注入驗證、Codex／agy 的額度來源、防外洩的強制（非預覽）控制，以及 macOS／原生 Windows 的四格與整體實機驗收；這些集中記錄於 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)，沒有證據的能力一律維持未知。給 Claude Code worker 的持續實作指令與 PM 工作方式見 [Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
 
 ### 協作 skills
 

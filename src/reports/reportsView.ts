@@ -95,8 +95,8 @@ async function localFeedback(repository: string, kind: Kind, number: number): Pr
   } catch { return { state: 'unknown' }; }
 }
 
-async function mergeAuthoritySection(): Promise<string> {
-  const mode = await readMergeAuthority();
+async function mergeAuthoritySection(repository: string): Promise<string> {
+  const mode = await readMergeAuthority(repository);
   if (mode === 'pm') return '\nMERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval, passing CI, resolved threads, supported branch rules, and a clear publication scan.\n';
   if (mode === 'human') return '\nMERGE AUTHORITY\nHuman only (default): PM merge is refused.\n';
   return '\nMERGE AUTHORITY\nUnknown: merge authority policy could not be read from private storage (fails closed).\n';
@@ -104,7 +104,7 @@ async function mergeAuthoritySection(): Promise<string> {
 
 async function withFeedback(report: string, repository: string, kind: Kind, number: number, currentHead: string | null): Promise<string> {
   const found = await localFeedback(repository, kind, number);
-  const authority = kind === 'pullRequest' ? await mergeAuthoritySection() : '';
+  const authority = kind === 'pullRequest' ? await mergeAuthoritySection(repository) : '';
   if (found.state === 'unknown') return `${report}\nLOCAL FEEDBACK\nUnknown: private feedback could not be read.\n${authority}`;
   if (found.state === 'missing') return `${report}\nLOCAL FEEDBACK\nNone saved on this machine. Nothing was sent to GitHub.\n${authority}`;
   const record = found.record!;
@@ -113,7 +113,16 @@ async function withFeedback(report: string, repository: string, kind: Kind, numb
 }
 
 class Message extends vscode.TreeItem {
-  constructor(text: string) { super(text, vscode.TreeItemCollapsibleState.None); this.iconPath = new vscode.ThemeIcon('info'); }
+  constructor(text: string, signIn = false) {
+    super(text, vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon(signIn ? 'key' : 'info');
+    // Only an expired or refused GitHub session offers the button; a rate limit or a network blip
+    // resolves by itself and must not suggest the account is the problem.
+    if (signIn) {
+      this.tooltip = 'Click to sign in to GitHub again.';
+      this.command = { command: 'multiagentSystem.github.signIn', title: 'Sign In to GitHub' };
+    }
+  }
 }
 
 class Category extends vscode.TreeItem {
@@ -203,7 +212,8 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (generation === readGeneration) order[this.kind] = [];
       this.setBadge(null);
       const failed = openItems === null ? result : closed;
-      return [new Message(incompleteMessage(what, failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid', (failed as any)?.reason))];
+      const failureKind = failed?.kind === 'ok' || failed?.kind === 'empty' ? 'invalid' : failed?.kind ?? 'invalid';
+      return [new Message(incompleteMessage(what, failureKind, (failed as any)?.reason), failureKind === 'denied')];
     }
     const all = [...openItems, ...closedItems];
     if (new Set(all.map((entry) => entry.number)).size !== all.length) { this.setBadge(null); return [new Message(incompleteMessage(what, 'duplicate'))]; }

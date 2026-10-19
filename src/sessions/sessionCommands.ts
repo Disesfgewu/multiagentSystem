@@ -21,6 +21,7 @@ import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
+const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -45,6 +46,7 @@ const MESSAGES: Record<string, string> = {
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
   'worktree-missing': 'The folder does not exist, so no terminal was started there.',
+  'worktree-outside-project': 'The saved folder is no longer part of this project (or is a link that now points elsewhere), so no terminal was started there. Start a new session instead.',
   'invalid-snapshot': 'Saved sessions could not be read. They were left untouched and nothing will be saved in this window.',
   'store-unavailable': 'Saved sessions could not be loaded. They were left untouched and nothing will be saved in this window.',
   'confirm-unknown-reopen': 'This session\'s earlier terminal may still be running in that folder. Confirm to open a new one anyway.'
@@ -103,6 +105,7 @@ function workspaceFolder(): string | undefined {
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
+const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice.';
 
 class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
   private readonly docs = new Map<string, string>();
@@ -308,6 +311,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
         }
+        // No role group means nothing to protect, so the agent still starts, but live administrator
+        // notices live in the same private storage and could not be read: say so instead of skipping them.
+        if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
       } else {
         const store = openedStorage.store as any;
         const privateDir = store.dir;
@@ -333,7 +339,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (interactive && prep.digest) {
           const answer = await vscode.window.showInformationMessage(
             `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
-            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nInstructions written exclusively to managed session storage.` },
+            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nThe instructions are written to a private file outside the workspace (for Codex, inside the account's Codex home); they are removed when the session ends. Whether the CLI reads them is not verified.` },
             'Start Agent',
             'View Instructions'
           );
@@ -503,6 +509,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!fs.existsSync(prior.worktree) || !fs.statSync(prior.worktree).isDirectory()) {
           throw Object.assign(new Error('worktree-missing'), { code: 'worktree-missing' });
         }
+        // The saved path came from private storage: before it becomes a terminal's cwd, confirm it is
+        // still this project's own folder or a worktree of the same repository.
+        const projectFolders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+        if (!await worktreeInProject(prior.worktree, projectFolders, { commonDir: async (dir: string) => { try { return (await WorktreeService.open(dir)).commonDir as string; } catch { return null; } } })) {
+          throw Object.assign(new Error('worktree-outside-project'), { code: 'worktree-outside-project' });
+        }
 
         let env: Record<string, string | null> | undefined;
         if (prior.accountProfileId !== 'unassigned') {
@@ -533,6 +545,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
           }
+          if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
         } else {
           const store = openedStorage.store as any;
           const privateDir = store.dir;

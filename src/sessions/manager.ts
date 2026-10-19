@@ -148,8 +148,10 @@ export function describeState(state: SessionState): string {
 const randomId = (): string => randomUUID();
 
 const MAX_NAME = 80;
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/;
+// Control characters (including the C1 range), line and paragraph separators, and invisible format
+// characters such as the bidirectional overrides that make a name read differently from how it is
+// stored. The joiners U+200C and U+200D stay allowed: scripts such as Persian and Indic need them.
+const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]|(?![\u200c\u200d])\p{Cf}/u;
 
 /** One rule for every name, whether typed now or restored from a snapshot. */
 export function cleanName(value: unknown): string | null {
@@ -342,7 +344,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     let identity: SessionIdentity | undefined;
     try {
       const project = await this.deps.resolveProject(input.cwd);
-      identity = {
+      const candidate: SessionIdentity = {
         id: input.id ?? (this.deps.newId ?? randomId)(),
         repoId: project.repoId,
         roleGroupId: input.roleGroupId ?? UNASSIGNED,
@@ -350,6 +352,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: input.accountProfileId ?? UNASSIGNED,
         worktree: input.cwd
       };
+      // An id that is already in use belongs to a live or restored session. Refuse before any terminal
+      // is created, and before `identity` is set: the cleanup below acts on `identity.id` and must never
+      // reach another session's terminal, plan or bookkeeping.
+      if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
+      identity = candidate;
       this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions);
       await this.persist();
       return this.view(identity.id);
@@ -521,7 +528,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       }
       if (!this.deps.directoryExists(old.worktree)) throw new SessionError('worktree-missing');
       const executable = this.executableFor(old.provider);
-      identity = {
+      const candidate: SessionIdentity = {
         id: options.newId ?? (this.deps.newId ?? randomId)(),
         repoId: old.repoId,
         roleGroupId: old.roleGroupId,
@@ -529,6 +536,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
         accountProfileId: old.accountProfileId,
         worktree: old.worktree
       };
+      if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
+      identity = candidate;
       this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions);
       await this.persist();
       return this.view(identity.id);

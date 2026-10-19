@@ -437,7 +437,11 @@ async function runAutomaticInstall({ workspaceRoot, skillsRoot, store, trusted, 
     if (store.get(`${AUTO_DISABLED_PREFIX}${workspaceRoot}`) === true) return { ok: true, code: 'disabled', written: [], conflicts: [] };
     let record = readRecord(store, workspaceRoot);
     const plan = planInstall(workspaceRoot, loadBundledSkills(skillsRoot, SKILL_TARGETS));
-    const result = applyInstall(workspaceRoot, plan.writes);
+    // A file this installer wrote earlier and that is gone now was deleted on purpose: automatic
+    // preparation must not quietly bring it back on every activation. Only an explicit install does.
+    const previouslyWritten = new Set(record.files.map((file) => file.path));
+    const writes = plan.writes.filter((entry) => !previouslyWritten.has(entry.rel));
+    const result = applyInstall(workspaceRoot, writes);
     record = mergeRecord(record, result);
     await saveRecord(store, workspaceRoot, record);
     if (result.error) throw result.error;
