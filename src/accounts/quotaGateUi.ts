@@ -246,8 +246,8 @@ export async function editLimits(accountProfileId: string, label: string, sessio
 }
 
 /**
- * Slots held by windows that are gone keep blocking new agents: their agents may still be running, so
- * nothing frees them by itself. This tells the person how many there are and, only after an explicit
+ * Slots held by windows or records that cannot be confirmed to be running keep blocking new agents:
+ * their agents may still be running, so nothing frees them by itself. This tells the person how many there are and, only after an explicit
  * confirmation, stops counting them. Returns the number freed (0 when none or declined).
  */
 export async function offerSlotRecovery(accountProfileId: string, label: string, sessions: () => SessionUse[]): Promise<number> {
@@ -257,8 +257,8 @@ export async function offerSlotRecovery(accountProfileId: string, label: string,
   if (!slots.ok || !Number.isInteger(slots.orphaned) || (slots.orphaned as number) < 1) return 0;
   const count = slots.orphaned as number;
   const answer = await vscode.window.showWarningMessage(
-    `“${label}”: ${count} running-agent slot${count === 1 ? ' is' : 's are'} held by a VS Code window that no longer exists.`,
-    { modal: true, detail: 'The agents that window started may still be running in terminals nobody tracks any more. Free these slots only if you have checked that they have stopped, otherwise the account may exceed its running-agent limit.' },
+    `“${label}”: ${count} running-agent slot${count === 1 ? ' is' : 's are'} held by a window or record that cannot be confirmed to still be running.`,
+    { modal: true, detail: 'Nothing shows that the agents behind these slots have stopped: the window may have closed or crashed, the computer may have been renamed, or the record may be from an older version. Free them only if you have checked that those agents are not running, otherwise the account may exceed its running-agent limit.' },
     'Free These Slots'
   );
   if (answer !== 'Free These Slots') return 0;

@@ -120,23 +120,42 @@ test('a lease lost from the record while its owner is running can be re-register
   assert.equal(take(secondWindow, expected, SECOND, { now: NOW, ownerPid: 5252, ownerHost: 'host-a', ...ALIVE }).decision.allowed, false, 'new launches are blocked again');
 });
 
-test('when the owner cannot be judged (an older record without an owner, another computer, or a liveness check that fails) the safe reading applies', (t) => {
-  const { firstWindow, secondWindow } = policyFor(t);
+test('a lease that cannot be judged here (no owner, another or renamed host, or a failing liveness check) is never dropped by time: it keeps blocking until a confirmed recovery', (t) => {
+  const { firstWindow, secondWindow, expected } = policyFor(t);
   const lease = { id: FIRST, expiresAt: new Date(NOW.getTime() + 60_000).toISOString() };
   const later = new Date(NOW.getTime() + 120_000);
-  // Reclaiming rewrites the record, so each reading starts from a freshly written one.
-  const running = (leases, at, options) => {
-    assert.equal(firstWindow.put('quotaReservations', `slots-${ACCOUNT}`, { schemaVersion: 1, leases }).ok, true);
-    return runningSlots(secondWindow, ACCOUNT, at, options).running;
+  const here = { ownerHost: 'this-computer', ...ALIVE };
+  // Every reading starts from a freshly written record.
+  const put = (leases) => assert.equal(firstWindow.put('quotaReservations', `slots-${ACCOUNT}`, { schemaVersion: 1, leases }).ok, true);
+  const cases = {
+    'no owner recorded': lease,
+    'another or renamed computer': { ...lease, ownerPid: 4242, ownerHost: 'another-computer' }
   };
-  assert.equal(running([lease], NOW, GONE), 1, 'no owner recorded: the expiry decides, and it has not passed');
-  assert.equal(running([lease], later, ALIVE), 0, 'no owner recorded and expired: reclaimed');
-  const elsewhere = { ...lease, ownerPid: 4242, ownerHost: 'another-computer' };
-  assert.equal(running([elsewhere], NOW, { ownerHost: 'this-computer', ...ALIVE }), 1, 'another computer\'s lease, not yet expired');
-  assert.equal(running([elsewhere], later, { ownerHost: 'this-computer', ...ALIVE }), 0, 'another computer\'s process cannot be checked here: only the expiry applies');
-  const local = { ...lease, ownerPid: 4242, ownerHost: 'this-computer' };
+  for (const [name, entry] of Object.entries(cases)) {
+    put([entry]);
+    assert.deepEqual(runningSlots(secondWindow, ACCOUNT, NOW, here), { ok: true, running: 1, orphaned: 0 }, `${name}: counted, and not yet recoverable while unexpired`);
+    assert.deepEqual(runningSlots(secondWindow, ACCOUNT, later, here), { ok: true, running: 1, orphaned: 1 }, `${name}: expired, still counted, offered for recovery`);
+    assert.equal(take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'this-computer', ...ALIVE }).decision.allowed, false, `${name}: still blocks a new launch`);
+    assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, NOW, here), { ok: true, recovered: 0 }, `${name}: an unexpired one is not recoverable`);
+    assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, later, here), { ok: true, recovered: 1 }, `${name}: freed only by the confirmed recovery`);
+    assert.equal(runningSlots(secondWindow, ACCOUNT, later, here).running, 0);
+  }
+  put([{ ...lease, ownerPid: 4242, ownerHost: 'this-computer' }]);
   const throwing = { ownerHost: 'this-computer', isOwnerAlive: () => { throw new Error('cannot tell'); } };
-  assert.equal(running([local], later, throwing), 1, 'a failed liveness check counts the slot (assume busy)');
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, later, throwing), { ok: true, running: 1, orphaned: 0 }, 'a failed liveness check counts the slot and offers nothing');
+  assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, later, throwing), { ok: true, recovered: 0 });
+});
+
+test('a renamed computer: a live process\'s lease recorded under the old host name still counts, with no liveness stub', (t) => {
+  const { firstWindow, secondWindow, expected } = policyFor(t);
+  const expired = new Date(Date.now() - 1_000).toISOString();
+  assert.equal(firstWindow.put('quotaReservations', `slots-${ACCOUNT}`, { schemaVersion: 1, leases: [{ id: FIRST, expiresAt: expired, ownerPid: process.pid, ownerHost: 'the-old-host-name' }] }).ok, true);
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, new Date()), { ok: true, running: 1, orphaned: 1 });
+  const blocked = take(secondWindow, expected, SECOND, { now: new Date() });
+  assert.deepEqual([blocked.ok, blocked.decision.allowed], [true, false]);
+  // The live owner's next heartbeat re-registers it under the current host name, so it is judged normally again.
+  assert.deepEqual(renewSlot(firstWindow, { accountKey: ACCOUNT, id: FIRST }, new Date(), 60_000), { ok: true, renewed: true });
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, new Date()), { ok: true, running: 1, orphaned: 0 });
 });
 
 test('the default liveness check uses the operating system, and a finished owner never releases a slot that a still-running agent process depends on', (t) => {

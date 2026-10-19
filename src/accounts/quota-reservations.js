@@ -78,19 +78,22 @@ function ownerGone(lease, ctx) {
   try { return ctx.isAlive(lease.ownerPid) === false; } catch { return false; }
 }
 
+/** A lease nobody can judge from here: an older record without an owner, or one whose host is not this computer's name (another computer, or this one renamed). */
+const unjudgeable = (lease, ctx) => lease.ownerPid === undefined || lease.ownerHost !== ctx.host;
+
 /**
- * Whether a lease still holds a slot. A lease's time only says when its owner last renewed it; it
- * cannot say whether the agent it stands for has stopped. A machine that slept, or an Extension Host
- * that was blocked for longer than the lease, resumes with its agents still running, and a window that
- * closed or crashed leaves agents running in terminals nobody tracks any more. So a lease taken on
- * this computer is never dropped because of time or because its owner vanished: only a recorded end
- * (releaseSlot) or an explicit, confirmed recovery (recoverOrphanedSlots) frees it, and an orphaned
- * lease keeps blocking new launches until then. Only a lease that cannot be judged here (an old record
- * without an owner, or one taken on another computer) is decided by its expiry time.
+ * Every stored lease holds a slot until it is released: time and a vanished or unknown
+ * owner say nothing about whether the agent it stands for has stopped. A machine that slept, or an
+ * Extension Host that was blocked for longer than the lease, resumes with its agents running; a
+ * window that closed or crashed leaves agents running in terminals nobody tracks; a computer that
+ * was renamed or a record from before owners were recorded cannot be tied to any process at all.
+ * Only a recorded end (releaseSlot) or an explicit, confirmed recovery (recoverOrphanedSlots) frees a
+ * slot, and until then it keeps blocking new launches. What a confirmed recovery may remove is below.
  */
-function leaseHoldsSlot(lease, nowMs, ctx) {
-  if (lease.ownerPid !== undefined && lease.ownerHost === ctx.host) return true;
-  return Date.parse(lease.expiresAt) > nowMs;
+
+/** Whether a confirmed recovery may remove the lease: its owner is confirmed gone, or it cannot be judged here and has also gone unrenewed past its expiry. */
+function recoverable(lease, nowMs, ctx) {
+  return ownerGone(lease, ctx) || (unjudgeable(lease, ctx) && Date.parse(lease.expiresAt) <= nowMs);
 }
 
 function readPolicy(tx, accountKey) {
@@ -110,8 +113,8 @@ function samePolicy(a, b) {
 function activeRecord(tx, accountKey, nowMs, ctx) {
   const parsed = parseRecord(tx.get(COLLECTION, recordId(accountKey)));
   if (!parsed.ok) return parsed;
-  const active = parsed.leases.filter((lease) => leaseHoldsSlot(lease, nowMs, ctx));
-  return { ok: true, leases: active, changed: active.length !== parsed.leases.length };
+  // Nothing is dropped here: see the note above about what may free a slot.
+  return { ok: true, leases: parsed.leases, changed: false };
 }
 
 function writeRecord(tx, accountKey, leases) {
@@ -130,15 +133,16 @@ function runningSlots(store, accountKey, now = new Date(), options = {}) {
     const record = activeRecord(tx, accountKey, nowMs, ctx);
     if (!record.ok) return record;
     if (record.changed) writeRecord(tx, accountKey, record.leases);
-    return { ok: true, running: record.leases.length, orphaned: record.leases.filter((lease) => ownerGone(lease, ctx)).length };
+    return { ok: true, running: record.leases.length, orphaned: record.leases.filter((lease) => recoverable(lease, nowMs, ctx)).length };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
 }
 
 /**
- * Removes the leases of an account whose owner process is confirmed gone from this computer, and only
- * those. The caller must have asked the person first: the agents those windows started may still be
- * running, and this stops counting them. Leases that cannot be judged here are never touched.
+ * Removes the leases that are recoverable: owner confirmed gone from this computer, or not judgeable
+ * here (no owner recorded, another or renamed host) and unrenewed past its expiry. The caller must have
+ * asked the person first: nothing proves the agents behind them have stopped, and this stops counting
+ * them. A lease whose owner is still running, or an unjudgeable one that has not expired, is kept.
  */
 function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {}) {
   const ctx = ownerContext(options);
@@ -149,7 +153,7 @@ function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {})
   const outcome = store.transact((tx) => {
     const record = activeRecord(tx, accountKey, nowMs, ctx);
     if (!record.ok) return record;
-    const kept = record.leases.filter((lease) => !ownerGone(lease, ctx));
+    const kept = record.leases.filter((lease) => !recoverable(lease, nowMs, ctx));
     const recovered = record.leases.length - kept.length;
     if (recovered > 0 || record.changed) writeRecord(tx, accountKey, kept);
     return { ok: true, recovered };
