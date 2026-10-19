@@ -60,4 +60,36 @@ function clearRoleDefaults(roleStore, groups, profileId) {
   return { cleared, failed };
 }
 
-module.exports = { roleGroupsUsingProfile, describeGroups, clearRoleDefaults, MAX_SHOWN };
+const BUTTON_CLEAR = 'Remove and Clear Defaults';
+const BUTTON_PLAIN = 'Remove Profile';
+
+/**
+ * The whole "remove an account profile" interaction, with the dialogs injected so it can be tested without the editor.
+ * `ui.confirmRemove(detailText, button)` and `ui.confirmHistorical()` answer true or false; `service.remove` is the
+ * profile service's. Order: read who uses the profile (unreadable means nothing is removed), ask, remove, then
+ * look again and clear every group that names the profile now, so a group changed in another window between the first
+ * read and the removal is cleared too. A removal that cannot clear everything says so; the group's launch is
+ * refused later because the profile no longer exists.
+ * @returns {Promise<{ outcome: 'roles-unreadable' | 'cancelled' | 'error', code?: string } | { outcome: 'removed', cleared: number, failed: number, rolesUnknown: boolean }>}
+ */
+async function removeProfileFlow({ service, roleStore, profileId, ui }) {
+  const usage = roleGroupsUsingProfile(roleStore, profileId);
+  if (!usage.ok) return { outcome: 'roles-unreadable' };
+  const button = usage.groups.length > 0 ? BUTTON_CLEAR : BUTTON_PLAIN;
+  const answered = await ui.confirmRemove(usage.groups, button);
+  if (answered !== true) return { outcome: 'cancelled' };
+  let removed = await service.remove(profileId);
+  if (!removed.ok && removed.code === 'profile-referenced') {
+    if ((await ui.confirmHistorical()) !== true) return { outcome: 'cancelled' };
+    removed = await service.remove(profileId, { allowHistoricalReferences: true });
+  }
+  if (!removed.ok) return { outcome: 'error', code: removed.code };
+  const after = roleGroupsUsingProfile(roleStore, profileId);
+  // Unreadable now: the profile is gone and nobody can say what still names it.
+  if (!after.ok) return { outcome: 'removed', cleared: 0, failed: 0, rolesUnknown: true };
+  if (after.groups.length === 0) return { outcome: 'removed', cleared: 0, failed: 0, rolesUnknown: false };
+  const tidy = clearRoleDefaults(roleStore, after.groups, profileId);
+  return { outcome: 'removed', cleared: tidy.cleared.length, failed: tidy.failed.length, rolesUnknown: false };
+}
+
+module.exports = { roleGroupsUsingProfile, describeGroups, clearRoleDefaults, removeProfileFlow, BUTTON_CLEAR, BUTTON_PLAIN, MAX_SHOWN };
