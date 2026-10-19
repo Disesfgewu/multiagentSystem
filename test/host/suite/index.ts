@@ -961,13 +961,23 @@ export async function run(): Promise<void> {
     }
     assert.ok(groups.some((group) => group.tabs.some((tab) => tab.label === 'file.txt')), 'the previously open project file remains in an editor group');
 
+    // What is under test is that running the command again focuses the group that is already open: the same
+    // terminal objects, none created and none replaced. A count cannot say that. A shell on a CI machine can exit
+    // on its own before this point; with only part of a group open the command focuses what is there and tells the
+    // person to close the group first, which is not what is being checked. So a partial group is closed and a whole
+    // one is created again (what that message asks the person to do), and the log says it happened.
+    const groupTerminals = (): vscode.Terminal[] => vscode.window.terminals.filter((terminal) => EXPECTED_TITLES.includes(terminal.name));
+    const whole = (list: vscode.Terminal[]): boolean => list.length === EXPECTED_TITLES.length && list.every((terminal) => terminal.exitStatus === undefined);
+    let openBefore = groupTerminals();
+    if (!whole(openBefore)) {
+      console.log(`host smoke: ${openBefore.length} of ${EXPECTED_TITLES.length} group terminals were still open (a shell exited on its own); closing the rest and creating the group again before checking that rerunning it opens no duplicates`);
+      for (const terminal of openBefore) terminal.dispose();
+      await waitFor(() => (groupTerminals().length === 0 ? [] : undefined), 20000);
+      await vscode.commands.executeCommand('multiagentSystem.openTerminalGroup');
+      openBefore = await waitFor(() => { const current = groupTerminals(); return whole(current) ? current : undefined; }, 20000);
+    }
     const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
     await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
-    // Only the terminals of this group are counted: other terminals of the same window (sessions closed a moment ago by earlier
-    // checks) come and go on their own schedule, so the total is not a statement about duplicates.
-    const groupTerminals = (): number => vscode.window.terminals.filter((terminal) => EXPECTED_TITLES.includes(terminal.name)).length;
-    const countBeforeRepeat = groupTerminals();
-    assert.equal(countBeforeRepeat, EXPECTED_TITLES.length, 'the group is open once before it is run again');
     const repeatMessages: string[] = [];
     (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
       repeatMessages.push(message);
@@ -978,12 +988,16 @@ export async function run(): Promise<void> {
     } finally {
       (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
     }
-    assert.equal(groupTerminals(), countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
+    const openAfter = groupTerminals();
+    assert.equal(openAfter.length, EXPECTED_TITLES.length, 'rerunning opens no extra terminal of the group');
+    assert.ok(openAfter.every((terminal) => openBefore.includes(terminal)) && openBefore.every((terminal) => openAfter.includes(terminal)), 'rerunning focuses the very same terminals: none created, none replaced');
     assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
   } finally {
     for (const terminal of created) terminal.dispose();
+    // A group restored during the check is not in `created`.
+    for (const terminal of vscode.window.terminals.filter((candidate) => EXPECTED_TITLES.includes(candidate.name))) terminal.dispose();
   }
 
   await runAgentSkillChecks(workspace);
