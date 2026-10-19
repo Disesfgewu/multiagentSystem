@@ -126,14 +126,22 @@ function writeRecord(tx, accountKey, leases) {
 function runningSlots(store, accountKey, now = new Date(), options = {}) {
   const ctx = ownerContext(options);
   const nowMs = timeOf(now);
-  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !Number.isFinite(nowMs)) {
+  const linked = Array.isArray(options.linkedAccountKeys) ? options.linkedAccountKeys : [];
+  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !linked.every(checkedAccount) || !Number.isFinite(nowMs)) {
     return { ok: false, reason: 'reservation-input-invalid' };
   }
+  const allKeys = [...new Set([accountKey, ...linked])];
   const outcome = store.transact((tx) => {
-    const record = activeRecord(tx, accountKey, nowMs, ctx);
-    if (!record.ok) return record;
-    if (record.changed) writeRecord(tx, accountKey, record.leases);
-    return { ok: true, running: record.leases.length, orphaned: record.leases.filter((lease) => recoverable(lease, nowMs, ctx)).length };
+    let running = 0;
+    let orphaned = 0;
+    for (const key of allKeys) {
+      const record = activeRecord(tx, key, nowMs, ctx);
+      if (!record.ok) return record;
+      if (record.changed) writeRecord(tx, key, record.leases);
+      running += record.leases.length;
+      orphaned += record.leases.filter((lease) => recoverable(lease, nowMs, ctx)).length;
+    }
+    return { ok: true, running, orphaned };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
 }
@@ -147,16 +155,22 @@ function runningSlots(store, accountKey, now = new Date(), options = {}) {
 function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {}) {
   const ctx = ownerContext(options);
   const nowMs = timeOf(now);
-  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !Number.isFinite(nowMs)) {
+  const linked = Array.isArray(options.linkedAccountKeys) ? options.linkedAccountKeys : [];
+  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !linked.every(checkedAccount) || !Number.isFinite(nowMs)) {
     return { ok: false, reason: 'reservation-input-invalid' };
   }
+  const allKeys = [...new Set([accountKey, ...linked])];
   const outcome = store.transact((tx) => {
-    const record = activeRecord(tx, accountKey, nowMs, ctx);
-    if (!record.ok) return record;
-    const kept = record.leases.filter((lease) => !recoverable(lease, nowMs, ctx));
-    const recovered = record.leases.length - kept.length;
-    if (recovered > 0 || record.changed) writeRecord(tx, accountKey, kept);
-    return { ok: true, recovered };
+    let totalRecovered = 0;
+    for (const key of allKeys) {
+      const record = activeRecord(tx, key, nowMs, ctx);
+      if (!record.ok) return record;
+      const kept = record.leases.filter((lease) => !recoverable(lease, nowMs, ctx));
+      const recovered = record.leases.length - kept.length;
+      if (recovered > 0 || record.changed) writeRecord(tx, key, kept);
+      totalRecovered += recovered;
+    }
+    return { ok: true, recovered: totalRecovered };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
 }
@@ -165,34 +179,76 @@ function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {})
  * Rechecks the policy and takes a lease in the same PrivateStore transaction. Two Extension Hosts
  * therefore cannot both take the last slot. A malformed record is an error, never an empty list.
  */
-function reserveSlot({ store, accountKey, expectedPolicyRead, observations = [], now = new Date(), approval, leaseMs = LEASE_MS, leaseId = randomUUID(), ownerPid, ownerHost, isOwnerAlive } = {}) {
+function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedPolicyRead, observations = [], now = new Date(), approval, leaseMs = LEASE_MS, leaseId = randomUUID(), ownerPid, ownerHost, isOwnerAlive } = {}) {
   const nowMs = timeOf(now);
   const ctx = ownerContext({ ownerPid, ownerHost, isOwnerAlive });
-  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !Number.isFinite(nowMs) ||
+  const linked = Array.isArray(linkedAccountKeys) ? linkedAccountKeys : [];
+  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !linked.every(checkedAccount) || !Number.isFinite(nowMs) ||
       !Number.isInteger(leaseMs) || leaseMs < 1_000 || leaseMs > 24 * 60 * 60_000 || !LEASE_ID.test(leaseId)) {
     return { ok: false, reason: 'reservation-input-invalid' };
   }
+  const allKeys = [...new Set([accountKey, ...linked])];
   const outcome = store.transact((tx) => {
     const policyRead = readPolicy(tx, accountKey);
     if (!policyRead.ok) return policyRead;
     if (!samePolicy(policyRead, expectedPolicyRead)) return { ok: false, reason: 'policy-changed' };
-    const record = activeRecord(tx, accountKey, nowMs, ctx);
-    if (!record.ok) return record;
-    const constrained = policyRead.stored === true;
+    const myRecord = activeRecord(tx, accountKey, nowMs, ctx);
+    if (!myRecord.ok) return myRecord;
+
+    let totalRunning = myRecord.leases.length;
+    const otherRecords = [];
+    for (const otherKey of allKeys) {
+      if (otherKey === accountKey) continue;
+      const otherRec = activeRecord(tx, otherKey, nowMs, ctx);
+      if (!otherRec.ok) return otherRec;
+      totalRunning += otherRec.leases.length;
+      otherRecords.push({ key: otherKey, record: otherRec });
+    }
+
+    let effectivePolicy = policyRead.policy;
+    let constrained = policyRead.stored === true;
+    for (const otherKey of allKeys) {
+      if (otherKey === accountKey) continue;
+      const otherPolicy = readPolicy(tx, otherKey);
+      if (!otherPolicy.ok) return otherPolicy;
+      if (otherPolicy.stored === true) {
+        constrained = true;
+        effectivePolicy = {
+          ...effectivePolicy,
+          ...(otherPolicy.policy.maxConcurrent !== undefined
+            ? { maxConcurrent: effectivePolicy.maxConcurrent !== undefined ? Math.min(effectivePolicy.maxConcurrent, otherPolicy.policy.maxConcurrent) : otherPolicy.policy.maxConcurrent }
+            : {}),
+          ...(otherPolicy.policy.warnAtPercent !== undefined
+            ? { warnAtPercent: effectivePolicy.warnAtPercent !== undefined ? Math.min(effectivePolicy.warnAtPercent, otherPolicy.policy.warnAtPercent) : otherPolicy.policy.warnAtPercent }
+            : {}),
+          ...(otherPolicy.policy.blockAtPercent !== undefined
+            ? { blockAtPercent: effectivePolicy.blockAtPercent !== undefined ? Math.min(effectivePolicy.blockAtPercent, otherPolicy.policy.blockAtPercent) : otherPolicy.policy.blockAtPercent }
+            : {}),
+          unknownQuota: otherPolicy.policy.unknownQuota === 'block' || effectivePolicy.unknownQuota === 'block' ? 'block' : (effectivePolicy.unknownQuota || 'require-confirmation')
+        };
+      }
+    }
+
     const decision = decideDispatch({
-      policy: constrained ? policyRead.policy : DEFAULT_POLICY,
+      policy: constrained ? effectivePolicy : DEFAULT_POLICY,
       observations: constrained ? observations : [],
       now: new Date(nowMs),
-      running: record.leases.length,
+      running: totalRunning,
       approval: constrained ? approval : 'override'
     });
     if (!decision.allowed) {
-      if (record.changed) writeRecord(tx, accountKey, record.leases);
+      if (myRecord.changed) writeRecord(tx, accountKey, myRecord.leases);
+      for (const other of otherRecords) {
+        if (other.record.changed) writeRecord(tx, other.key, other.record.leases);
+      }
       return { ok: true, decision };
     }
-    if (record.leases.length >= MAX_LEASES) return { ok: false, reason: 'reservation-capacity' };
+    if (myRecord.leases.length >= MAX_LEASES) return { ok: false, reason: 'reservation-capacity' };
     const reservation = { accountKey, id: leaseId };
-    writeRecord(tx, accountKey, [...record.leases, { id: leaseId, expiresAt: new Date(nowMs + leaseMs).toISOString(), ...ownerFields(ctx) }]);
+    writeRecord(tx, accountKey, [...myRecord.leases, { id: leaseId, expiresAt: new Date(nowMs + leaseMs).toISOString(), ...ownerFields(ctx) }]);
+    for (const other of otherRecords) {
+      if (other.record.changed) writeRecord(tx, other.key, other.record.leases);
+    }
     return { ok: true, decision: { ...decision, reservation } };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };

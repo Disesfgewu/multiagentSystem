@@ -60,9 +60,22 @@ type CheckResult = { ok: boolean; state: string; reason: string; checkedAt: stri
 // a login method, never the CLI's output or an email address.
 const checkResults = new Map<string, CheckResult>();
 
+const {
+  registerProfileIdentity,
+  getProfileIdentity
+} = require('./identity-registry') as {
+  registerProfileIdentity(profileId: string, identity: unknown): void;
+  getProfileIdentity(profileId: string): unknown;
+};
+
 export function observationsFor(profiles: Array<{ id: string }>): Map<string, { identity: unknown }> {
   const observed = new Map<string, { identity: unknown }>();
   for (const profile of profiles) {
+    const fromRegistry = getProfileIdentity(profile.id);
+    if (fromRegistry) {
+      observed.set(profile.id, { identity: fromRegistry });
+      continue;
+    }
     const result = checkResults.get(profile.id);
     if (result?.ok && result.identity) observed.set(profile.id, { identity: result.identity });
   }
@@ -450,6 +463,11 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
       : await run();
   }
   checkResults.set(loaded.profile.id, outcome);
+  if (outcome.ok && outcome.identity) {
+    registerProfileIdentity(loaded.profile.id, outcome.identity);
+  } else {
+    registerProfileIdentity(loaded.profile.id, null);
+  }
   currentTree?.refresh();
   if (!interactive) return outcome;
   const words = describeCheck(outcome);
