@@ -141,16 +141,38 @@ class WorktreeService {
       if (contains(existing, destination) && contains(destination, existing)) selected.push(item);
     }
     if (selected.length !== 1) throw new WorktreeError('worktree-not-found');
-    const primary = worktrees[0];
-    if (!primary || !/^[a-f0-9]{40,64}$/.test(primary.headSha ?? '')) throw new WorktreeError('base-invalid');
     const safe = await safeArgs((probe) => git(selected[0].path, probe));
-    const base = line(await git(selected[0].path, [...safe, 'merge-base', primary.headSha, 'HEAD']));
+    // Compared with the project's integration branch, never with whatever the primary worktree happens to have
+    // checked out (it may be on another branch, detached, or a bare repository without a checkout at all).
+    const integration = await this.#integrationCommit(selected[0].path, safe);
+    const base = line(await git(selected[0].path, [...safe, 'merge-base', integration, 'HEAD']));
     if (!/^[a-f0-9]{40,64}$/.test(base)) throw new WorktreeError('base-invalid');
     const tracked = await git(selected[0].path, [...safe, 'diff', '--name-only', '-z', '--no-renames', base, '--']);
     const untracked = await git(selected[0].path, [...safe, 'ls-files', '--others', '--exclude-standard', '-z']);
     const files = new Set([...tracked.split('\0'), ...untracked.split('\0')].filter(Boolean));
     const list = [...files].sort();
     return { files: list.slice(0, limit), truncated: list.length > limit };
+  }
+
+  /**
+   * The commit of the integration branch: the remote's default branch if the repository knows it
+   * (refs/remotes/origin/HEAD), otherwise a local `main`, otherwise `master`. If none of them exists there is no
+   * stated integration branch and nothing is guessed: the caller gets `base-invalid` and reports the worktree as unread.
+   */
+  async #integrationCommit(cwd, safe) {
+    const candidates = [];
+    try {
+      const ref = line(await git(cwd, [...safe, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD']));
+      if (/^refs\/remotes\/origin\/[A-Za-z0-9._\/-]{1,200}$/.test(ref)) candidates.push(ref);
+    } catch { /* no remote default branch is recorded */ }
+    candidates.push('refs/heads/main', 'refs/heads/master');
+    for (const ref of candidates) {
+      try {
+        const commit = line(await git(cwd, [...safe, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]));
+        if (/^[a-f0-9]{40,64}$/.test(commit)) return commit;
+      } catch { /* this candidate does not exist */ }
+    }
+    throw new WorktreeError('base-invalid');
   }
 
   async create({ branch, target, base = 'HEAD' }) {
