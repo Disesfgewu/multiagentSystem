@@ -6,7 +6,7 @@ const path = require('node:path');
 const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
 const { savePolicy, loadPolicy, decideDispatch } = require('../../src/accounts/quota-policy');
-const { runningSlots, reserveSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
+const { runningSlots, reserveSlot, releaseSlot, recoverOrphanedSlots } = require('../../src/accounts/quota-reservations');
 const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, readingsTrust, trustedReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
@@ -460,20 +460,46 @@ test('B to A: readings left from before a profile took on this account never lif
   assert.equal(gateDecision(store, service, p1.id, fresh).decision.allowed, true, 'a reading after the change is its account\'s reading');
 });
 
-test('a session that was already running when the profile changed account keeps its readings untrusted until it ends', (t) => {
+test('a session that was already running when the profile changed account: its readings stay untrusted while it runs and after it ends, until a later reading follows', (t) => {
+  const { store, service, box } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
+  assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  const at = (secondsAgo) => new Date(NOW.getTime() - secondsAgo * 1000);
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [percent(10, 61_000)], now: at(60), leaseId: LEASE_A });
+  assert.equal(taken.decision.allowed, true);
+  // The profile is verified as A at T-30s while the B session keeps running; at T-20s that B session writes 20%.
+  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), at(30));
+  const fromOldSession = { [p1.id]: [percent(20, 20_000)] };
+  assert.deepEqual(readingsTrust(store, p1.id).trusted, false, 'the old session is still running and may still be reporting B');
+  assert.equal(gateDecision(store, service, p1.id, fromOldSession).decision.allowed, false, 'its reading is not used while it runs');
+  // The B session ends at T-10s. The file was not written again, but ending does not make its 20% account A's.
+  assert.equal(releaseSlot(store, taken.decision.reservation, at(10)).ok, true);
+  assert.equal(readingsTrust(store, p1.id).trusted, true, 'nothing from before the change is still running');
+  assert.equal(gateDecision(store, service, p1.id, fromOldSession).decision.allowed, false, 'the reading the old session left behind is still not trusted');
+  // A reading written after it ended, by a session that started under account A, is account A's.
+  assert.equal(gateDecision(store, service, p1.id, { [p1.id]: [percent(20, 1_000)] }).decision.allowed, true, 'a later reading is trusted');
+  // The barrier is kept in the store: another host, or this one after a restart, does not bring the old file back.
+  const restarted = new PrivateStore({ dir: box.dir, repoRoot: box.repoRoot, collections: COLLECTION_NAMES });
+  assert.equal(gateDecision(restarted, service, p1.id, fromOldSession).decision.allowed, false);
+  assert.equal(gateDecision(restarted, service, p1.id, { [p1.id]: [percent(20, 1_000)] }).decision.allowed, true);
+});
+
+test('a session that was recovered instead of ended moves the barrier the same way', (t) => {
   const { store, service } = setupEnvironment(t);
   const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
   recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
   assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
-  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [percent(10, 1_000)], now: NOW, leaseId: LEASE_A });
+  const at = (secondsAgo) => new Date(NOW.getTime() - secondsAgo * 1000);
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [percent(10, 61_000)], now: at(60), leaseId: LEASE_B, ownerPid: 4242, ownerHost: 'host-a', isOwnerAlive: () => true });
   assert.equal(taken.decision.allowed, true);
-  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 30_000));
-  const later = { [p1.id]: [percent(20, 1_000)] };
-  assert.deepEqual(readingsTrust(store, p1.id).trusted, false, 'the old session is still running and may still be reporting B');
-  assert.equal(gateDecision(store, service, p1.id, later).decision.allowed, false, 'so even a newer reading is not used');
-  assert.equal(releaseSlot(store, taken.decision.reservation, NOW).ok, true);
-  assert.deepEqual(readingsTrust(store, p1.id).trusted, true);
-  assert.equal(gateDecision(store, service, p1.id, later).decision.allowed, true, 'once it ended, readings after the change are trusted');
+  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), at(30));
+  const left = { [p1.id]: [percent(20, 20_000)] };
+  assert.equal(readingsTrust(store, p1.id).trusted, false);
+  assert.deepEqual(recoverOrphanedSlots(store, p1.id, at(10), { ownerHost: 'host-a', isOwnerAlive: () => false }), { ok: true, recovered: 1 });
+  assert.equal(readingsTrust(store, p1.id).trusted, true);
+  assert.equal(gateDecision(store, service, p1.id, left).decision.allowed, false, 'a recovered session\'s leftovers are not trusted either');
+  assert.equal(gateDecision(store, service, p1.id, { [p1.id]: [percent(20, 1_000)] }).decision.allowed, true);
 });
 
 test('a profile that never changed account keeps all its readings, old or new', (t) => {

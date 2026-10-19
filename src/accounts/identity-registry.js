@@ -147,10 +147,28 @@ function resolveGroup(store, listProfiles, profileId) {
 }
 
 /**
+ * Called, inside the transaction that removes leases of a profile, with the ids that were removed. When the
+ * last session that was running at the profile's change of account ends, whatever it wrote before it ended
+ * still describes the old account, and ending does not change that: the barrier moves to the end, so only
+ * readings written after it (by sessions that started under the new account) can be trusted. The barrier is
+ * kept in the store, so a restart does not bring the old file back.
+ */
+function settleSwitchLeases(tx, profileId, removedIds, now) {
+  if (!Array.isArray(removedIds) || removedIds.length === 0) return;
+  const link = tx.get(COLLECTION, linkId(profileId));
+  if (!link || !validLink(link) || !link.switchLeases || link.switchLeases.length === 0) return;
+  const remaining = link.switchLeases.filter((id) => !removedIds.includes(id));
+  if (remaining.length === link.switchLeases.length) return;
+  const at = new Date(now).toISOString();
+  tx.put(COLLECTION, linkId(profileId), { ...link, switchLeases: remaining, since: remaining.length === 0 ? at : link.since });
+}
+
+/**
  * Whether a profile's usage readings can be taken as describing the account it is signed in as now.
  * A profile that never changed account is trusted as before. After a change, only readings written after
  * the change count, and none do while a session that was already running at the change is still running
- * (it may keep reporting its old account into the same file). Anything unreadable is untrusted.
+ * (it may keep reporting its old account into the same file); when the last of those ends, the barrier moves
+ * to that moment (settleSwitchLeases). Anything unreadable is untrusted.
  * @returns {{ ok: boolean, trusted: boolean, since: number | null }}
  */
 function readingsTrust(store, profileId) {
@@ -291,5 +309,6 @@ module.exports = {
   groupReadings,
   readingsTrust,
   trustedReadings,
+  settleSwitchLeases,
   coordinatePolicies
 };

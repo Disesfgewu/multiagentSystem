@@ -2,7 +2,7 @@
 
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
-const { coordinatePolicies } = require('./identity-registry');
+const { coordinatePolicies, settleSwitchLeases } = require('./identity-registry');
 const { decideDispatch, validatePolicy, DEFAULT_POLICY } = require('./quota-policy');
 
 const COLLECTION = 'quotaReservations';
@@ -169,6 +169,7 @@ function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {})
       const kept = record.leases.filter((lease) => !recoverable(lease, nowMs, ctx));
       const recovered = record.leases.length - kept.length;
       if (recovered > 0 || record.changed) writeRecord(tx, key, kept);
+      if (recovered > 0) settleSwitchLeases(tx, key, record.leases.filter((lease) => !kept.includes(lease)).map((lease) => lease.id), nowMs);
       totalRecovered += recovered;
     }
     return { ok: true, recovered: totalRecovered };
@@ -288,6 +289,7 @@ function releaseSlot(store, reservation, now = new Date(), options = {}) {
     const remaining = record.leases.filter((lease) => lease.id !== reservation.id);
     const released = remaining.length !== record.leases.length;
     if (released || record.changed) writeRecord(tx, reservation.accountKey, remaining);
+    if (released) settleSwitchLeases(tx, reservation.accountKey, [reservation.id], nowMs);
     return { ok: true, released };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
