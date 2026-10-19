@@ -7,6 +7,7 @@ const { observe, CONFIDENCE } = require('../../src/accounts/observation');
 const {
   recordVerifiedIdentity,
   linkedProfiles,
+  resolveGroup,
   assessLaunchIdentity,
   readLinks,
   deduplicateQuotaObservations,
@@ -85,7 +86,7 @@ test('a profile that is verified as another account keeps counting toward the gr
   assert.deepEqual(linkedProfiles(store, 'p2', all).ids, ['p1', 'p3']);
   recordVerifiedIdentity(store, 'p2', identity(C), NOW);
   recordVerifiedIdentity(store, 'p2', identity(A), NOW);
-  assert.deepEqual(linkedProfiles(store, 'p3', all).ids, ['p2'], 'the history is bounded but never forgets the latest previous accounts');
+  assert.deepEqual(linkedProfiles(store, 'p3', all).ids, ['p2'], 'moving back and forth keeps the earlier accounts');
 });
 
 test('at launch the account the CLI reports now is compared with the one that was verified', (t) => {
@@ -156,4 +157,32 @@ test('coordinatePolicies enforces strictest limits across duplicate profiles of 
   assert.equal(coordinated.policy.warnAtPercent, 70);
   assert.equal(coordinated.policy.blockAtPercent, 85);
   assert.equal(coordinated.policy.unknownQuota, 'block');
+});
+
+test('switching accounts many times never forgets an older group: at capacity the new account is refused instead', (t) => {
+  const { store } = open(t);
+  const all = ['p1', 'p2'];
+  recordVerifiedIdentity(store, 'p1', identity(A), NOW);
+  recordVerifiedIdentity(store, 'p2', identity(A), NOW);
+  const switches = Array.from({ length: 16 }, (_, index) => subjectOf(`d${index.toString(16)}`));
+  for (const subject of switches) assert.equal(recordVerifiedIdentity(store, 'p1', identity(subject), NOW).ok, true, 'within capacity');
+  assert.deepEqual(linkedProfiles(store, 'p1', all).ids, ['p2'], 'sixteen switches later p2 still shares the first account with p1');
+  const refused = recordVerifiedIdentity(store, 'p1', identity(subjectOf('eee')), NOW);
+  assert.deepEqual(refused, { ok: false, reason: 'identity-history-full' });
+  assert.deepEqual(linkedProfiles(store, 'p1', all).ids, ['p2'], 'nothing was forgotten');
+  assert.equal(readLinks(store).links.get('p1').subject, switches[15], 'and the record is unchanged');
+  const launch = assessLaunchIdentity(store, 'p1', answer(identity(subjectOf('eee'))), NOW);
+  assert.deepEqual(launch, { ok: false, code: 'identity-unavailable' }, 'a launch is stopped while the history is full');
+});
+
+test('a profile listing that cannot be read is an unknown group, never an empty one', (t) => {
+  const { store } = open(t);
+  recordVerifiedIdentity(store, 'p1', identity(A), NOW);
+  recordVerifiedIdentity(store, 'p2', identity(A), NOW);
+  const profiles = [{ id: 'p1' }, { id: 'p2' }];
+  assert.deepEqual(resolveGroup(store, () => ({ ok: true, profiles }), 'p1'), { ok: true, ids: ['p2'], known: true, profiles });
+  for (const broken of [() => ({ ok: false }), () => ({ ok: true }), () => ({ ok: true, profiles: 'x' }), () => null, () => { throw new Error('storage'); }]) {
+    assert.deepEqual(resolveGroup(store, broken, 'p1'), { ok: false, reason: 'profiles-unavailable' });
+  }
+  assert.equal(resolveGroup(store, () => ({ ok: true, profiles }), 'p1').ids.length, 1, 'after the failure the group is intact');
 });

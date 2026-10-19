@@ -316,4 +316,3 @@ test('invalid linkedAccountKeys fail closed with reservation-input-invalid', (t)
     now: NOW
   }), { ok: false, reason: 'reservation-input-invalid' });
 });
-

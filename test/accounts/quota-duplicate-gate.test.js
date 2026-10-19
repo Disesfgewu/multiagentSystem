@@ -7,7 +7,7 @@ const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
 const { savePolicy, loadPolicy } = require('../../src/accounts/quota-policy');
 const { runningSlots, reserveSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
-const { recordVerifiedIdentity, linkedProfiles, coordinatePolicies } = require('../../src/accounts/identity-registry');
+const { recordVerifiedIdentity, linkedProfiles, resolveGroup, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
 const { observe, CONFIDENCE } = require('../../src/accounts/observation');
@@ -370,4 +370,22 @@ test('a linked profile\'s limits changing before the lease is taken is caught in
   assert.deepEqual([refused.ok, refused.reason], [false, 'policy-changed']);
   assert.equal(runningSlots(store, p1.id, NOW, { linkedAccountKeys: ids }).running, 0, 'no lease was taken');
   assert.equal(reserve(store, p1.id, ids, LEASE_A).decision.allowed, true, 'with the current limits shown, it goes through');
+});
+
+test('when the profile list cannot be read after links and leases exist, the group is unknown and nothing is reserved on a guess', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'shared@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'shared@example.com'));
+  assert.equal(savePolicy(store, p1.id, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  assert.equal(reserve(store, p1.id, [p2.id], LEASE_A).decision.allowed, true);
+  assert.deepEqual(resolveGroup(store, () => service.list(), p2.id).ids, [p1.id], 'with a readable list the sibling is known');
+  const realList = service.list.bind(service);
+  service.list = () => ({ ok: false, reason: 'store-unavailable' });
+  const unknown = resolveGroup(store, () => service.list(), p2.id);
+  assert.deepEqual(unknown, { ok: false, reason: 'profiles-unavailable' }, 'not an empty group');
+  assert.equal(runningSlots(store, p1.id, NOW, { linkedAccountKeys: [p2.id] }).running, 1, 'p1\'s lease is still there to be counted once the list is readable');
+  service.list = realList;
+  assert.deepEqual(resolveGroup(store, () => service.list(), p2.id).ids, [p1.id], 'back to normal');
 });

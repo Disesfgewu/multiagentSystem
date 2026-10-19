@@ -7,7 +7,10 @@ const PREFIX = 'identity-';
 const PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$/;
 const SUBJECT = /^[a-f0-9]{32}$/;
 const PROVIDER = /^[a-z][a-z0-9-]{0,40}$/;
-const MAX_PREVIOUS = 3;
+// Every account a profile was verified as before keeps it in its group, so this is a capacity, not a window
+// of recent history. When it is full, a new account is refused (see recordVerifiedIdentity) rather than
+// forgetting the oldest one, which could still have a running agent under a shared limit.
+const MAX_PREVIOUS = 16;
 
 // Which real provider account each profile was last verified as, kept in the PrivateStore so that every
 // Extension Host (another window, or the same one after a restart) sees the same groups. It holds the
@@ -56,7 +59,9 @@ function recordVerifiedIdentity(store, profileId, identity, now = new Date()) {
       previous = found.previous;
       if (found.provider !== verified.provider || found.subject !== verified.subject) {
         changed = true;
-        previous = [found.subject, ...found.previous].filter((key, index, all) => key !== verified.subject && all.indexOf(key) === index).slice(0, MAX_PREVIOUS);
+        previous = [found.subject, ...found.previous].filter((key, index, all) => key !== verified.subject && all.indexOf(key) === index);
+        // Nothing is ever dropped from the history: at capacity the new account is not recorded at all.
+        if (previous.length > MAX_PREVIOUS) return { ok: false, reason: 'identity-history-full' };
       }
     }
     tx.put(COLLECTION, linkId(profileId), { schemaVersion: 1, provider: verified.provider, subject: verified.subject, previous, verifiedAt: at });
@@ -96,6 +101,18 @@ function linkedProfiles(store, profileId, existingIds) {
     if (subjectsOf(link).some((key) => mine.has(key))) ids.push(id);
   }
   return { ok: true, ids: ids.sort(), known: true };
+}
+
+/**
+ * The group of a profile from the shared store and the list of profiles that exist. A listing that could
+ * not be read is an unknown group, never an empty one: `ok: false`, and the caller starts nothing.
+ */
+function resolveGroup(store, listProfiles, profileId) {
+  let listed;
+  try { listed = listProfiles(); } catch { return { ok: false, reason: 'profiles-unavailable' }; }
+  if (!listed || listed.ok !== true || !Array.isArray(listed.profiles)) return { ok: false, reason: 'profiles-unavailable' };
+  const found = linkedProfiles(store, profileId, listed.profiles.map((profile) => profile.id));
+  return found.ok ? { ok: true, ids: found.ids, known: found.known === true, profiles: listed.profiles } : { ok: false, reason: found.reason };
 }
 
 /**
@@ -191,6 +208,7 @@ module.exports = {
   recordVerifiedIdentity,
   readLinks,
   linkedProfiles,
+  resolveGroup,
   assessLaunchIdentity,
   deduplicateQuotaObservations,
   coordinatePolicies

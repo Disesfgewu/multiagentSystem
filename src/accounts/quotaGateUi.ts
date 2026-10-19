@@ -27,13 +27,13 @@ const { runningSlots, recoverOrphanedSlots, reserveSlot, renewSlot, releaseSlot,
 };
 const {
   recordVerifiedIdentity,
-  linkedProfiles,
+  resolveGroup,
   assessLaunchIdentity,
   deduplicateQuotaObservations,
   coordinatePolicies
 } = require('./identity-registry') as {
   recordVerifiedIdentity(store: unknown, profileId: string, identity: unknown, now?: Date): { ok: boolean; recorded?: boolean; changed?: boolean; reason?: string };
-  linkedProfiles(store: unknown, profileId: string, existingIds: string[]): { ok: boolean; ids?: string[]; known?: boolean; reason?: string };
+  resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; known?: boolean; profiles?: any[]; reason?: string };
   assessLaunchIdentity(store: unknown, profileId: string, outcome: unknown, now?: Date): { ok: boolean; unverified?: boolean; code?: string };
   deduplicateQuotaObservations(observationLists: any[][], now?: Date): any[];
   coordinatePolicies(policyReads: any[]): { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
@@ -49,13 +49,11 @@ export type IdentityProbe = (profileId: string) => Promise<unknown>;
 let identityProbe: IdentityProbe | undefined;
 export function setIdentityProbe(probe: IdentityProbe | undefined): void { identityProbe = probe; }
 
-interface GroupRead { ok: boolean; ids: string[]; known: boolean }
+interface GroupRead { ok: boolean; ids: string[]; known: boolean; profiles: any[] }
 /** The other profiles that share this profile's verified provider account, from the shared private store. */
 function groupOf(accounts: { store: unknown; service: { list(): { ok: boolean; profiles?: Array<{ id: string }> } } }, profileId: string): GroupRead {
-  const listed = accounts.service.list();
-  const existing = listed.ok && Array.isArray(listed.profiles) ? listed.profiles.map((profile) => profile.id) : [];
-  const found = linkedProfiles(accounts.store, profileId, existing);
-  return found.ok ? { ok: true, ids: found.ids ?? [], known: found.known === true } : { ok: false, ids: [], known: false };
+  const found = resolveGroup(accounts.store, () => accounts.service.list(), profileId);
+  return found.ok ? { ok: true, ids: found.ids ?? [], known: found.known === true, profiles: found.profiles ?? [] } : { ok: false, ids: [], known: false, profiles: [] };
 }
 
 interface GroupState {
@@ -78,8 +76,7 @@ function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): Gro
   const failed = (message: string): GroupState => ({ ok: false, message, ids: [], policyRead: { ok: false }, observations: [] });
   const group = groupOf(accounts as any, profileId);
   if (!group.ok) return failed('Which profiles share this account could not be established safely, so no new agent was started. Use Setup Diagnostics to check Private Storage.');
-  const listed = accounts.service.list();
-  const all = listed.ok && Array.isArray(listed.profiles) ? listed.profiles : [];
+  const all = group.profiles;
   const own = accounts.service.get(profileId);
   const ownProfile = own.ok ? own.profile : undefined;
   if (ownProfile) registerProfileForQuota(ownProfile);
