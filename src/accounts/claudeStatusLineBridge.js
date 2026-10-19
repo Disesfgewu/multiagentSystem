@@ -138,7 +138,12 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
             statusLine
           };
           const observationDir = path.dirname(observationPath);
-          fs.mkdirSync(observationDir, { recursive: true });
+          // Only a real directory owned by this account folder: a symlink here would send the record
+          // wherever it points. Created private (0700); an existing one is tightened to match.
+          fs.mkdirSync(observationDir, { recursive: true, mode: 0o700 });
+          const dirInfo = fs.lstatSync(observationDir);
+          if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink()) throw new Error('observation-dir-not-a-directory');
+          if (process.platform !== 'win32') fs.chmodSync(observationDir, 0o700);
           const tempFile = `${observationPath}.tmp.${process.pid}.${Date.now()}`;
           fs.writeFileSync(tempFile, JSON.stringify(record), { mode: 0o600 });
           fs.renameSync(tempFile, observationPath);

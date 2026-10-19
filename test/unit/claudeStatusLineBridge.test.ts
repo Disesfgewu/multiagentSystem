@@ -117,6 +117,32 @@ test('untrusted session ids cannot select a path outside the account directory',
   }
 });
 
+test('the observation folder is private, and a symlinked one is never written through', { skip: process.platform === 'win32' }, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-dir-'));
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-elsewhere-'));
+  try {
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const run = () => spawnSync('node', [bridgeScript, path.join(tempDir, 'quota.json')], {
+      input: JSON.stringify({ model: { id: 'claude-sonnet-4-5' } }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir, MULTIAGENT_CLAUDE_SESSION_ID: 'managed-session-2' }
+    });
+    assert.equal(run().status, 0);
+    const dir = path.join(tempDir, 'session-observations');
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+    fs.chmodSync(dir, 0o755);
+    run();
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700, 'an existing folder is tightened');
+    fs.rmSync(dir, { recursive: true });
+    fs.symlinkSync(elsewhere, dir);
+    assert.equal(run().status, 0);
+    assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing is written through the link');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
 test('Claude status line bridge: fail-closed on corrupt or empty stdin', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-test-'));
   try {
