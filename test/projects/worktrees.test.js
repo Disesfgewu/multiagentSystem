@@ -128,3 +128,53 @@ test('parallel requests for one branch do not create two worktrees', async t => 
   assert.equal(outcomes.filter(o => o.status === 'fulfilled').length, 1);
   assert.equal((await service.list()).filter(w => w.branch === 'feature/one').length, 1);
 });
+
+test('changed files are measured against the integration branch, not against whatever the primary worktree has checked out', async (t) => {
+  const { temporary, root, service } = await fixture(t);
+  // main gets a second commit; dev branches from the first one and adds its own.
+  const first = await git(root, 'rev-parse', 'HEAD');
+  await fs.writeFile(path.join(root, 'main-later.txt'), 'later\n');
+  await git(root, 'add', '-A');
+  await git(root, 'commit', '-m', 'main later');
+  await git(root, 'switch', '-c', 'dev', first);
+  await fs.writeFile(path.join(root, 'dev-only.txt'), 'dev\n');
+  await git(root, 'add', '-A');
+  await git(root, 'commit', '-m', 'dev work');
+  // The primary worktree is now on dev. An agent worktree is made from main and changes one file of its own.
+  const agent = path.join(temporary, 'agent');
+  await git(root, 'worktree', 'add', '-b', 'feat/agent', agent, 'main');
+  assert.deepEqual((await service.changedFiles(agent)).files, [], 'nothing changed yet: main\'s later commit is not the agent\'s work');
+  await fs.writeFile(path.join(agent, 'agent.txt'), 'x\n');
+  assert.deepEqual((await service.changedFiles(agent)).files, ['agent.txt']);
+  // A detached primary changes nothing either.
+  await git(root, 'switch', '--detach', first);
+  assert.deepEqual((await service.changedFiles(agent)).files, ['agent.txt']);
+});
+
+test('a bare repository with worktrees has an integration branch too', async (t) => {
+  const { temporary, root } = await fixture(t);
+  const bare = path.join(temporary, 'bare.git');
+  await exec('git', ['clone', '--bare', root, bare]);
+  const wt = path.join(temporary, 'bare-agent');
+  await git(bare, 'worktree', 'add', '-b', 'feat/x', wt, 'main');
+  await fs.writeFile(path.join(wt, 'new.txt'), 'x\n');
+  const service = await WorktreeService.open(wt);
+  assert.deepEqual((await service.changedFiles(wt)).files, ['new.txt']);
+});
+
+test('without a stated integration branch nothing is guessed: the worktree is reported as unreadable', async (t) => {
+  const { temporary, root } = await fixture(t);
+  await git(root, 'branch', '-m', 'main', 'trunk');
+  const service = await WorktreeService.open(root);
+  const wt = path.join(temporary, 'agent');
+  await git(root, 'worktree', 'add', '-b', 'feat/agent', wt, 'trunk');
+  await assert.rejects(service.changedFiles(wt), { code: 'base-invalid' });
+  // The remote's recorded default branch is what names it.
+  const remote = path.join(temporary, 'remote.git');
+  await exec('git', ['init', '--bare', '-b', 'trunk', remote]);
+  await git(root, 'remote', 'add', 'origin', remote);
+  await git(root, 'push', 'origin', 'trunk');
+  await git(root, 'remote', 'set-head', 'origin', 'trunk');
+  await fs.writeFile(path.join(wt, 'agent.txt'), 'x\n');
+  assert.deepEqual((await service.changedFiles(wt)).files, ['agent.txt']);
+});
