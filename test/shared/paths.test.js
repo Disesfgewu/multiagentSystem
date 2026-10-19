@@ -59,3 +59,21 @@ test('a directory created between realpath and lstat is rechecked once', () => {
   assert.deepEqual(shared.checkPrivateRoot('C:\\private', 'C:\\repo', unresolved).problems,
     ['private-root-unresolvable', 'repo-root-unresolvable']);
 });
+
+test('isSameOrInside: identity mode never folds case on macOS, conservative mode does; Windows folds in both; Linux in neither', () => {
+  const posixPath = path.posix;
+  const win = path.win32;
+  const inside = (p, platform, a, b, options) => shared.isSameOrInside(p, platform, a, b, options);
+  assert.equal(inside(posixPath, 'darwin', '/data/Work/x', '/data/work'), false, 'an allow check must not accept another folder');
+  assert.equal(inside(posixPath, 'darwin', '/data/work/x', '/data/work'), true);
+  assert.equal(inside(posixPath, 'darwin', '/data/Work/x', '/data/work', { conservative: true }), true, 'a conflict check may refuse it');
+  assert.equal(inside(posixPath, 'linux', '/data/Work', '/data/work', { conservative: true }), false);
+  assert.equal(inside(win, 'win32', 'C:\\Data\\Work', 'c:\\data\\work'), true);
+  assert.equal(inside(win, 'win32', 'C:\\Data\\Work', 'c:\\data\\work', { conservative: true }), true);
+});
+
+test('checkPrivateRoot stays conservative on macOS: a private root that might be the repository is refused', () => {
+  const context = { realpath: (v) => v, isDirectory: () => true, lstat: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); } };
+  const verdict = shared.checkPrivateRoot('/Users/Me/Repo/private', '/users/me/repo', { ...context, platform: 'darwin' });
+  assert.ok(verdict.problems.includes('private-root-inside-repo'));
+});
