@@ -13,8 +13,20 @@ function isStableAbsolute(p, platform, value) {
   return /^([A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+)/.test(value);
 }
 
-function isSameOrInside(p, platform, candidate, parent) {
-  const fold = (value) => (platform === 'win32' ? value.toLowerCase() : value);
+// Windows volumes are case-insensitive, so there two spellings that differ only in case are one folder.
+// macOS volumes usually are, but a volume can be formatted case-sensitive, and nothing here can tell which
+// one a path is on (a folder that does not exist yet cannot be asked). So the comparison has two modes:
+//  - identity / allow (default): "is this really that folder?" decides what may be trusted or accepted
+//    (a CLI's reported config home, files kept inside the data directory). It never folds case on macOS,
+//    so two distinct folders of a case-sensitive volume are never taken for one.
+//  - conservative: "could these be the same folder?" decides what to refuse (profile folders that might
+//    collide, a private root that might sit in the repository). It also folds case on macOS; being wrong
+//    there only refuses a name, which is the safe way to be wrong.
+const CONSERVATIVE = Object.freeze({ conservative: true });
+
+function isSameOrInside(p, platform, candidate, parent, { conservative = false } = {}) {
+  const folds = platform === 'win32' || (conservative && platform === 'darwin');
+  const fold = (value) => (folds ? value.toLowerCase() : value);
   const rel = p.relative(fold(parent), fold(candidate));
   if (rel === '') return true;
   if (rel === '..' || rel.startsWith(`..${p.sep}`)) return false;
@@ -129,8 +141,8 @@ function checkPrivateRoot(dir, repoRoot, context) {
     problems.push('repo-root-unresolvable');
   }
   if (target && repo) {
-    if (isSameOrInside(p, platform, target, repo)) problems.push('private-root-inside-repo');
-    if (isSameOrInside(p, platform, repo, target)) problems.push('private-root-contains-repo');
+    if (isSameOrInside(p, platform, target, repo, CONSERVATIVE)) problems.push('private-root-inside-repo');
+    if (isSameOrInside(p, platform, repo, target, CONSERVATIVE)) problems.push('private-root-contains-repo');
   }
   return { ok: problems.length === 0, problems };
 }

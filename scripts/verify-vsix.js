@@ -47,6 +47,8 @@ function verifyVsix(archive, lock) {
   for (const name of MUST_HAVE) if (!entries[name]) fail(`missing entry: ${name}`);
 
   const manifest = JSON.parse(readText(entries, 'extension/package.json'));
+  const expectedVersion = lock?.packages?.['']?.version;
+  if (typeof expectedVersion !== 'string' || manifest.name !== 'multiagentsystem' || manifest.version !== expectedVersion) fail('extension identity/version differs from lockfile');
   if (manifest.main !== './out/src/extension.js' || manifest.license !== 'MIT' || JSON.stringify(manifest.dependencies) !== JSON.stringify({ fflate: '0.8.3' })) fail('unexpected runtime manifest');
   const notice = readText(entries, 'extension/THIRD_PARTY_NOTICES.md');
   if (!notice.includes('fflate 0.8.3') || !notice.includes('MIT License')) fail('missing runtime dependency notice');
@@ -58,7 +60,7 @@ function verifyVsix(archive, lock) {
     const result = name.endsWith('.js') ? scanCode(name, source) : scanPublication([{ kind: 'pr-body', text: source }]);
     if (result.status !== 'clear' || result.truncated) fail(`publication scan ${result.status} for ${name}: ${result.findings.map((finding) => finding.code).join(',') || result.reason || 'incomplete'}`);
   }
-  return { fileCount: names.length, runtimeDependencies: ['fflate@0.8.3 (MIT)'] };
+  return { version: manifest.version, fileCount: names.length, runtimeDependencies: ['fflate 0.8.3 (MIT)'] };
 }
 
 if (require.main === module) {

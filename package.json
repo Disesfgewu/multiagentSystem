@@ -2,7 +2,7 @@
   "name": "multiagentsystem",
   "displayName": "Multiagent System",
   "description": "Native terminal prototype for coordinating CLI coding agents in VS Code.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/Disesfgewu/multiagentSystem.git" },
@@ -87,6 +87,7 @@
         "multiagentSystem.skills.autoInstall": {
           "type": "boolean",
           "default": true,
+          "scope": "application",
           "description": "Automatically prepare bundled collaboration skills for Claude Code, Codex and OpenCode in trusted local workspaces. Existing skills are preserved. Does not install CLIs or grant permissions."
         }
       }
@@ -363,7 +364,7 @@
     "test:host": "npm run build && node out/test/host/runTest.js",
     "test": "npm run check && npm run test:unit",
     "vscode:prepublish": "npm run build",
-    "vsix:package": "node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --out artifacts/multiagentsystem.vsix && node scripts/verify-vsix.js artifacts/multiagentsystem.vsix"
+    "vsix:package": "node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --out artifacts/multiagentsystem.vsix && node scripts/verify-vsix.js artifacts/multiagentsystem.vsix && node scripts/release-candidate.js artifacts/multiagentsystem.vsix artifacts/release-candidate.json"
   },
   "devDependencies": {
     "@types/node": "20.19.43",

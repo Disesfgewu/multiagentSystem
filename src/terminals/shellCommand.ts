@@ -55,12 +55,16 @@ export function quotePosix(arg: string): string {
  * Quotes an argument for PowerShell (powershell.exe, pwsh).
  * In PowerShell, single-quoted strings are verbatim literals.
  * Internal single quotes are escaped by doubling them: ''
+ *
+ * PowerShell treats the typographic single quotes U+2018, U+2019, U+201A and U+201B exactly like the
+ * ASCII one: each can close the string, and each is escaped by doubling. Doubling only the ASCII
+ * quote would let an argument such as `a’; calc; ‘b` end the string and run the rest as commands.
  */
 export function quotePowerShell(arg: string): string {
   assertNoControlChars(arg, 'argument');
   if (arg === '') return "''";
   if (SAFE_UNQUOTED.test(arg)) return arg;
-  return `'${arg.replace(/'/g, "''")}'`;
+  return `'${arg.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`;
 }
 
 /**

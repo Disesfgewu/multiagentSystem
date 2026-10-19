@@ -4,6 +4,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor, GITHUB_AUTH_PROVIDER, GITHUB_SCOPES } from '../github/githubCommands';
 import { WorktreeService } from '../projects/worktrees';
 import { COLLECTIONS } from '../storage/extensionStorage';
+const { classifyWrite } = require('./writeOutcome') as { classifyWrite(response: { ok: boolean; status: number }, verified: boolean): 'done' | 'refused' | 'unknown' };
 const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> } };
 
 const REPOSITORY = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/;
@@ -19,6 +20,11 @@ const recordId = (repository: string, kind: string, number: number): string => `
 const reviewRecordId = (repository: string, number: number): string => `pr-review-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const mergeRecordId = (repository: string, number: number): string => `pr-merge-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const plainText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && Array.from(value).length <= 4000 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
+
+const { publisherFor, mergeModeFor } = require('./publisherPolicy') as {
+  publisherFor(found: any, repository?: string): { actorId: string; login: string } | 'unreadable' | null;
+  mergeModeFor(found: any, repository?: string): 'human' | 'pm' | 'unreadable';
+};
 
 type Kind = 'issue' | 'pullRequest';
 export type ReviewDecision = 'approve' | 'request_changes' | 'comment';
@@ -55,18 +61,14 @@ export async function configurePublicFeedback(): Promise<{ ok: boolean; code?: s
   return saved?.ok ? { ok: true } : { ok: false, code: 'private-storage-unavailable' };
 }
 
-function mergeAuthorityOf(store: Store): MergeAuthorityMode | 'unreadable' {
-  const found = store.get(COLLECTION, MERGE_POLICY_ID);
-  if (!found?.ok) return 'unreadable';
-  if (!found.found) return 'human';
-  const value = found.value;
-  return value?.kind === 'merge-authority-policy-v1' && (value.mode === 'human' || value.mode === 'pm') ? value.mode : 'unreadable';
+function mergeAuthorityOf(store: Store, repository?: string): MergeAuthorityMode | 'unreadable' {
+  return mergeModeFor(store.get(COLLECTION, MERGE_POLICY_ID), repository);
 }
 
-export async function readMergeAuthority(): Promise<MergeAuthorityMode | 'unreadable'> {
+export async function readMergeAuthority(repository?: string): Promise<MergeAuthorityMode | 'unreadable'> {
   try {
     const opened = await privateStorage()?.use(); const store = useStore(opened);
-    return store ? mergeAuthorityOf(store) : 'unreadable';
+    return store ? mergeAuthorityOf(store, repository) : 'unreadable';
   } catch { return 'unreadable'; }
 }
 
@@ -90,12 +92,8 @@ export async function configureMergeAuthority(input?: { mode?: unknown; interact
   return saved?.ok ? { ok: true, mode: picked } : { ok: false, code: 'private-storage-unavailable' };
 }
 
-function publisher(store: Store): { actorId: string; login: string } | 'unreadable' | null {
-  const found = store.get(COLLECTION, POLICY_ID);
-  if (!found?.ok) return 'unreadable';
-  if (!found.found) return null;
-  const value = found.value;
-  return value?.kind === 'public-feedback-publisher-v1' && typeof value.actorId === 'string' && /^\d+$/.test(value.actorId) && typeof value.login === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(value.login) ? value : 'unreadable';
+function publisher(store: Store, repository: string): { actorId: string; login: string } | 'unreadable' | null {
+  return publisherFor(store.get(COLLECTION, POLICY_ID), repository);
 }
 function previous(store: Store, target: PublicTarget): any {
   const found = store.get(COLLECTION, recordId(target.repository, target.kind, target.number));
@@ -219,14 +217,20 @@ async function realComment(auth: vscode.AuthenticationSession, repository: { own
   const data = response.ok ? await response.json() as any : null;
   const url = typeof data?.html_url === 'string' ? data.html_url : '';
   const exact = new RegExp(`^https://github\\.com/${repository.owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/${repository.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(?:issues|pull)/${number}#issuecomment-\\d+$`, 'i');
-  return response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && data.body === body && exact.test(url) ? { ok: true, number: data.id } : { ok: false };
+  const verified = response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && data.body === body && exact.test(url);
+  const outcome = classifyWrite(response, verified);
+  // A throw is how the broker learns the outcome is unknown: it keeps the guard against sending again.
+  if (outcome === 'unknown') throw new Error('write-outcome-unknown');
+  return verified ? { ok: true, number: data.id } : { ok: false };
 }
 async function realReview(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, decision: ReviewDecision, body: string, expectedHeadSha: string): Promise<{ ok: boolean; number?: number }> {
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/reviews`;
   const event = decision === 'approve' ? 'APPROVE' : decision === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT';
   const response = await api(auth.accessToken, endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commit_id: expectedHeadSha, event, body }) });
   const data = response.ok ? await response.json() as any : null;
-  return response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && typeof data?.commit_id === 'string' && data.commit_id.toLowerCase() === expectedHeadSha.toLowerCase() && data?.body === body ? { ok: true, number: data.id } : { ok: false };
+  const verified = response.ok && Number.isSafeInteger(data?.id) && data.id > 0 && typeof data?.commit_id === 'string' && data.commit_id.toLowerCase() === expectedHeadSha.toLowerCase() && data?.body === body;
+  if (classifyWrite(response, verified) === 'unknown') throw new Error('write-outcome-unknown');
+  return verified ? { ok: true, number: data.id } : { ok: false };
 }
 async function realMerge(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, expectedHeadSha: string, commitTitle: string, commitMessage: string): Promise<{ ok: boolean; reason?: string; sha?: string }> {
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls/${number}/merge`;
@@ -276,7 +280,7 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   if (!REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
   const old = previous(store, target);
@@ -318,7 +322,7 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
   const id = reviewRecordId(target.repository, target.number);
@@ -377,10 +381,10 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
-  const configured = publisher(store);
+  const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
-  const authority = mergeAuthorityOf(store);
+  const authority = mergeAuthorityOf(store, target.repository);
   if (authority === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   const id = mergeRecordId(target.repository, target.number);
   const old = previousBy(store, id, 'pr-merge-request-v1');
@@ -389,7 +393,7 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
   if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-merged' };
   const allowBypass = testMode && input?.interactive === false;
   if (authority === 'pm' && !allowBypass) {
-    if (!await hooks.confirm(`Merge ${target.repository} PR #${target.number} (head ${target.version}) after verifying current-head PM approval, passing CI, resolved threads, supported branch rules, and publication scan?`, 'Merge pull request')) return { ok: false, code: 'cancelled' };
+    if (!await hooks.confirm(`Merge ${target.repository} PR #${target.number} (head ${target.version}) after verifying current-head PM approval, passing CI, resolved threads, supported branch rules, and publication scan? The merge commit title and body come from the pull request, with attribution trailer lines (Co-authored-by, Signed-off-by and similar) removed.`, 'Merge pull request')) return { ok: false, code: 'cancelled' };
   }
   if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };
   const auth = await hooks.session(false); if (!auth) return { ok: false, code: 'github-sign-in-required' };

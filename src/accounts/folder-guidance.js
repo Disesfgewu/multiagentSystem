@@ -23,7 +23,7 @@ const EXPLANATIONS = Object.freeze({
     fix: 'Choose a new, empty folder that does not contain the project, or use the recommended folder.'
   },
   'config-dir-is-provider-default': {
-    message: 'This is the folder the command-line tool already uses for its own sign-in. Using it would mix this account with the one you use outside this extension.',
+    message: 'This is, or is inside, the folder the command-line tool already uses for its own sign-in. Using it would mix this account with the one you use outside this extension.',
     fix: 'Choose a different, new folder, or use the recommended folder.'
   },
   'config-dir-is-home': {
@@ -172,7 +172,7 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
         const real = (value) => canonicalize(value, p, (target) => fs.realpathSync.native(target), (target) => fs.statSync(target).isDirectory(), (target) => fs.lstatSync(target));
         const dir = real(configDir);
         const root = real(p.join(home, PARENT_NAME));
-        if (isSameOrInside(p, (context && context.platform) || process.platform, dir, root) && isSameOrInside(p, (context && context.platform) || process.platform, root, dir)) problems.push('config-dir-is-recommended-root');
+        if (isSameOrInside(p, (context && context.platform) || process.platform, dir, root, { conservative: true }) && isSameOrInside(p, (context && context.platform) || process.platform, root, dir, { conservative: true })) problems.push('config-dir-is-recommended-root');
       } catch { /* a path that cannot be resolved was already reported by the checks above */ }
     }
   }

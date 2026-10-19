@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { unzipSync, UnzipFileInfo } from 'fflate';
+import { pruneInstalls } from './pruneInstalls';
+const { fetchWithAllowedRedirects, GITHUB_RELEASE_HOSTS } = require('./allowedRedirects') as { fetchWithAllowedRedirects(url: string, options: { allowedHosts: readonly string[]; init?: RequestInit }): Promise<Response>; GITHUB_RELEASE_HOSTS: readonly string[] };
 
 const { ghRelease } = require('./tool-manifest') as {
   ghRelease(platform?: string, arch?: string): GhRelease | null;
@@ -109,7 +111,7 @@ export const downloadHttps: Downloader = async (url, maxBytes, progress) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
   try {
-    const response = await fetch(url, { redirect: 'follow', signal: controller.signal, headers: { accept: 'application/octet-stream' } });
+    const response = await fetchWithAllowedRedirects(url, { allowedHosts: GITHUB_RELEASE_HOSTS, init: { signal: controller.signal, headers: { accept: 'application/octet-stream' } } });
     if (!response.ok || !response.body) throw new Error('download-failed');
     const declared = Number(response.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > maxBytes) throw new Error('download-too-large');
@@ -263,6 +265,7 @@ export class ManagedGh {
       await fs.promises.rename(staging, install);
       await fs.promises.writeFile(pointerTemp, JSON.stringify(pointer), { mode: 0o600, flag: 'wx' });
       await fs.promises.rename(pointerTemp, this.pointerPath());
+      await pruneInstalls(installsDir, id, { pointerFile: this.pointerPath() });
       return await this.status();
     } catch (error) {
       // Do not follow a replaced parent while cleaning up. In that case leaving this attempt's

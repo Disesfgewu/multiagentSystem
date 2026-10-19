@@ -192,7 +192,8 @@ export async function runStorageChecks(registered: string[], workspace: string):
       SETUP_COMMANDS.migrateStorage,
       { interactive: false }
     )));
-    assert.ok(bypassMigrate.prompts.some((prompt) => prompt.startsWith('Private storage schema')), 'outside test mode a migration is reported to the person');
+    assert.ok(bypassMigrate.prompts.some((prompt) => prompt.startsWith('Migrate the private storage schema')), 'outside test mode the person is asked before a migration (and a payload cannot answer for them)');
+    assert.deepEqual(bypassMigrate.result, { ok: false, reason: 'cancelled' });
 
     // 4. Removing the secret and clearing the data via the clearStorage command leave nothing behind.
     assert.deepEqual(await within('SecretStorage delete', used.vault.remove(saved.secretRef)), { ok: true });

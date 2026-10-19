@@ -372,3 +372,37 @@ test('the result says whether any private material was supplied to compare again
   assert.equal(scanPublication(unit, { rules: [{ id: 'r', text: 'some private rule text here' }] }).privateReference, 'supplied');
   assert.equal(scanPublication(unit, { knownValues: [{ id: 'k', value: 'private-value' }] }).privateReference, 'supplied');
 });
+
+test('a private value hidden with fullwidth letters or invisible format characters is still found, and plain non-ASCII text is not blocked', () => {
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  const knownValues = [{ id: 'mail', value: 'reviewer.private@corp-example.invalid' }, { id: 'sess', value: 'sess-9f8e7d6c5b4a' }];
+  const blocked = (text, options = { knownValues }) => scan('comment', text, options);
+  const zeroWidth = blocked(`please write to reviewer.private@corp-${cp(0x200b)}example.invalid`);
+  assert.equal(zeroWidth.status, 'blocked');
+  assert.ok(zeroWidth.findings.some((finding) => finding.id === 'mail'), 'the caller id is reported');
+  assert.ok(zeroWidth.findings.every((finding) => finding.line === null && finding.column === null), 'found only in the folded copy: reported for the text as a whole');
+  assert.equal(JSON.stringify(zeroWidth).includes('reviewer.private'), false, 'the value is never echoed');
+  assert.equal(blocked(`id ${cp(0xff53, 0xff45, 0xff53, 0xff53)}-9f8e7d6c5b4a`).status, 'blocked', 'fullwidth letters fold to the ASCII value');
+  assert.equal(blocked(`token ghp_synthetic${cp(0x200d)}synthetic${cp(0x2060)}synthetic1234`, {}).status, 'blocked', 'a credential with invisible characters inside');
+  assert.equal(blocked('這是一般的說明文字，沒有任何私人資訊。', {}).status, 'clear');
+  assert.equal(blocked('Ünïcödé résumé — naïve café', { knownValues }).status, 'clear');
+  const inDiff = scan('diff', newFileDiff('notes.md', [`contact reviewer.private@corp-${cp(0x200b)}example.invalid`]), { knownValues });
+  assert.equal(inDiff.status, 'blocked', 'the same fold applies to added lines of a diff');
+});
+
+test('the unicode fold keeps the scan linear on very long non-ASCII input', () => {
+  const started = Date.now();
+  for (const text of ['語'.repeat(390000), 'ａ'.repeat(390000), `${'a'.repeat(200000)}${String.fromCodePoint(0x200b)}${'b'.repeat(190000)}`]) {
+    assert.notEqual(scan('comment', text, {}).status, 'error');
+  }
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
+test('more local path shapes are blocked: another user\'s home dotfiles, Windows profile variables, /var/root', () => {
+  for (const text of ['see ~alice/.ssh/id_rsa', 'in %USERPROFILE%\\Documents\\x', 'open %APPDATA%/tool', 'at /var/root/notes', 'also ~/.aws']) {
+    assert.equal(scan('comment', text, {}).status, 'blocked', text);
+  }
+  for (const text of ['the ~ operator', 'about 50% done and 100% sure', '/var/rooted/x', 'use ~alice for the nickname', 'a ~/not-a-dotfile path']) {
+    assert.equal(scan('comment', text, {}).status, 'clear', text);
+  }
+});

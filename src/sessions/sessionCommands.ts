@@ -30,6 +30,7 @@ import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
+const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
@@ -54,6 +55,7 @@ const MESSAGES: Record<string, string> = {
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
   'worktree-missing': 'The folder does not exist, so no terminal was started there.',
+  'worktree-outside-project': 'The saved folder is no longer part of this project (or is a link that now points elsewhere), so no terminal was started there. Start a new session instead.',
   'invalid-snapshot': 'Saved sessions could not be read. They were left untouched and nothing will be saved in this window.',
   'store-unavailable': 'Saved sessions could not be loaded. They were left untouched and nothing will be saved in this window.',
   'confirm-unknown-reopen': 'This session\'s earlier terminal may still be running in that folder. Confirm to open a new one anyway.'
@@ -112,6 +114,7 @@ function workspaceFolder(): string | undefined {
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
+const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice.';
 
 class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
   private readonly docs = new Map<string, string>();
@@ -138,8 +141,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   // One quota-dispatch reservation per account-bound session, including those with no limits, released
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
   // either has no account assigned, is still awaiting handoff, or was already released.
-  const reservations = new Map<string, () => void>();
-  const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
+  const reservations = new Map<string, () => Promise<void>>();
+  const releaseReservation = async (id: string): Promise<void> => {
+    const release = reservations.get(id);
+    reservations.delete(id);
+    await release?.();
+  };
   const observations = new SessionObservationRuntime();
   // New or aged-out provider evidence refreshes the same views a session change does (the Overview reads
   // the evidence when it renders). The runtime has no timer unless a session is bound.
@@ -235,7 +242,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const interactive = input.interactive !== false;
     // Set once a quota-gate reservation is taken; released on every exit path below except the one
     // success path, which instead hands it off to this new session's own lifetime.
-    let release: (() => void) | undefined;
+    let release: (() => Promise<void>) | undefined;
     let targetSessionId: string | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
@@ -315,9 +322,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
         }
+        // No role group means nothing to protect, so the agent still starts, but live administrator
+        // notices live in the same private storage and could not be read: say so instead of skipping them.
+        if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
       } else {
         const store = openedStorage.store as any;
         const privateDir = store.dir;
@@ -337,19 +347,19 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           codexHome
         });
         if (!prep.ok) {
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
         }
         if (interactive && prep.digest) {
           const answer = await vscode.window.showInformationMessage(
             `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
-            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nInstructions written exclusively to managed session storage.` },
+            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nThe instructions are written to a private file outside the workspace (for Codex, inside the account's Codex home); they are removed when the session ends. Whether the CLI reads them is not verified.` },
             'Start Agent',
             'View Instructions'
           );
           if (!answer) {
             cleanupSessionPlan(prep.plan);
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           }
           if (answer === 'View Instructions') {
@@ -363,7 +373,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (proceed !== 'Start Agent') {
               cleanupSessionPlan(prep.plan);
-              if (release) { release(); release = undefined; }
+              if (release) { await release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
           }
@@ -371,7 +381,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: cwd });
         if (staleCheck.stale) {
           cleanupSessionPlan(prep.plan);
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please start again.`;
           if (interactive) void vscode.window.showErrorMessage(msg);
           return { ok: false, code: 'stale-instructions', message: msg };
@@ -404,7 +414,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     } finally {
       // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
       // finished and the reservation could be handed off. A successful handoff clears release.
-      release?.();
+      await release?.();
     }
   }
 
@@ -430,7 +440,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const input = options(value);
     const interactive = input.interactive !== false;
     // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
-    let release: (() => void) | undefined;
+    let release: (() => Promise<void>) | undefined;
     try {
       let id = input.id;
       // A caller that names the session skips the picker, so outside the extension's own tests the
@@ -478,7 +488,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
       } else if (action === 'stop') {
         session = manager.stop(id);
-        releaseReservation(id);
+        await releaseReservation(id);
         observations.release(id);
       } else {
         let prior = manager.get(id) ?? undefined;
@@ -496,7 +506,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
-            releaseReservation(id);
+            await releaseReservation(id);
             observations.release(id);
             changed.fire();
           } else {
@@ -520,6 +530,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
         if (!fs.existsSync(prior.worktree) || !fs.statSync(prior.worktree).isDirectory()) {
           throw Object.assign(new Error('worktree-missing'), { code: 'worktree-missing' });
+        }
+        // The saved path came from private storage: before it becomes a terminal's cwd, confirm it is
+        // still this project's own folder or a worktree of the same repository.
+        const projectFolders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+        if (!await worktreeInProject(prior.worktree, projectFolders, { commonDir: async (dir: string) => { try { return (await WorktreeService.open(dir)).commonDir as string; } catch { return null; } } })) {
+          throw Object.assign(new Error('worktree-outside-project'), { code: 'worktree-outside-project' });
         }
 
         let env: Record<string, string | null> | undefined;
@@ -548,9 +564,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
           }
+          if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
         } else {
           const store = openedStorage.store as any;
           const privateDir = store.dir;
@@ -570,7 +587,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             codexHome
           });
           if (!prep.ok) {
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
           }
           if (interactive && prep.digest) {
@@ -582,7 +599,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (!answer) {
               cleanupSessionPlan(prep.plan);
-              if (release) { release(); release = undefined; }
+              if (release) { await release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
             if (answer === 'View Instructions') {
@@ -596,7 +613,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
               );
               if (proceed !== 'Reopen Session') {
                 cleanupSessionPlan(prep.plan);
-                if (release) { release(); release = undefined; }
+                if (release) { await release(); release = undefined; }
                 return { ok: false, code: 'cancelled', message: 'Cancelled.' };
               }
             }
@@ -604,7 +621,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: prior.worktree });
           if (staleCheck.stale) {
             cleanupSessionPlan(prep.plan);
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please reopen again.`;
             if (interactive) void vscode.window.showErrorMessage(msg);
             return { ok: false, code: 'stale-instructions', message: msg };
@@ -631,7 +648,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     } catch (error) {
       return failure(error, interactive);
     } finally {
-      release?.();
+      await release?.();
     }
   }
 
@@ -672,7 +689,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.window.onDidCloseTerminal((terminal) => {
       const closedId = manager.handleTerminalClosed(terminal);
       if (closedId) {
-        releaseReservation(closedId);
+        void releaseReservation(closedId);
         observations.release(closedId);
       }
       changed.fire();
