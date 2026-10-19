@@ -330,9 +330,14 @@ export class WorktreeController {
       const failure = describeFailure(error);
       return this.fail(failure.code, failure.message, interactive);
     }
-    const label = (entry: WorktreeEntry): string => entry.branch ?? (entry.headSha ? `(detached ${entry.headSha.slice(0, 7)})` : '(no branch)');
+    // A worktree is identified by its folder, never by what it is called: two detached worktrees at the same
+    // commit, or two folders on the same branch name, are two worktrees. Names are for display only.
+    const identity = (entry: WorktreeEntry): string => realPathOf(entry.path) ?? path.resolve(entry.path);
+    const baseLabel = (entry: WorktreeEntry): string => entry.branch ?? (entry.headSha ? `(detached ${entry.headSha.slice(0, 7)})` : '(no branch)');
     const candidates = entries.filter((entry) => !entry.primary && !entry.bare);
-    const read: Array<{ id: string; files: string[]; folder: string }> = [];
+    const duplicates = new Set(candidates.map(baseLabel).filter((name, index, all) => all.indexOf(name) !== index));
+    const label = (entry: WorktreeEntry): string => (duplicates.has(baseLabel(entry)) ? `${baseLabel(entry)} in ${path.basename(entry.path)}` : baseLabel(entry));
+    const read: Array<{ id: string; label: string; files: string[]; folder: string }> = [];
     const unread: string[] = [];
     for (const entry of candidates) {
       // A folder that is missing is a worktree whose changes are unknown, not one without changes.
@@ -340,13 +345,17 @@ export class WorktreeController {
       try {
         const changed = await project.changedFiles(entry.path);
         if (changed.truncated) unread.push(label(entry));
-        else read.push({ id: label(entry), files: changed.files, folder: entry.path });
+        else read.push({ id: identity(entry), label: label(entry), files: changed.files, folder: entry.path });
       } catch {
         unread.push(label(entry));
       }
     }
-    const folderOf = new Map(read.map((item) => [item.id, item.folder]));
-    const overlaps: OverlapItem[] = findOverlaps(read).map((item) => ({ ...item, folders: item.worktrees.map((id) => folderOf.get(id) as string) }));
+    const byId = new Map(read.map((item) => [item.id, item]));
+    const overlaps: OverlapItem[] = findOverlaps(read).map((item) => ({
+      file: item.file,
+      worktrees: item.worktrees.map((id) => (byId.get(id) as { label: string }).label),
+      folders: item.worktrees.map((id) => (byId.get(id) as { folder: string }).folder)
+    }));
     const base = summarizeOverlaps(overlaps);
     const summary = unread.length > 0 ? `${base} Could not read the changes of ${unread.length} worktree${unread.length === 1 ? '' : 's'} (${unread.join(', ')}), so their overlaps are unknown.` : base;
     const result: OverlapResult = { ok: true, checked: read.length, overlaps, unread, summary };
@@ -365,9 +374,11 @@ export class WorktreeController {
     );
     if (picked) {
       const folder = picked.overlap.folders[0];
-      const absolute = path.resolve(folder, picked.overlap.file);
-      // A name from Git stays inside its worktree; anything else is never opened.
-      if (absolute.startsWith(path.resolve(folder) + path.sep)) await this.deps.ui.openFile(absolute);
+      // Opened only if the file really lies inside its worktree: compared by real path, so a link in the
+      // worktree that points elsewhere (or a junction) is never followed out of it.
+      const real = realPathOf(path.resolve(folder, picked.overlap.file));
+      const realFolder = realPathOf(folder);
+      if (real && realFolder && real.startsWith(realFolder + path.sep)) await this.deps.ui.openFile(real);
     }
     return result;
   }
