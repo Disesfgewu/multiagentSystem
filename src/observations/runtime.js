@@ -19,6 +19,8 @@ const POLL_MS = 2000;
 const STALE_MS = 24 * 60 * 60 * 1000;
 const MAX_SWEEP = 200;
 const RECORD_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}\.json$/;
+// What the bridge leaves behind if it stops between writing a temporary file and renaming it.
+const TEMP_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}\.json\.tmp\.[A-Za-z0-9.-]{1,80}$/;
 
 const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -77,13 +79,14 @@ function sweepStale(dir, nowMs, keep = new Set()) {
   } catch { return 0; }
   let removed = 0;
   for (const name of names.slice(0, MAX_SWEEP)) {
-    if (!RECORD_FILE.test(name) || keep.has(name)) continue;
+    const temporary = TEMP_FILE.test(name);
+    if (!(RECORD_FILE.test(name) || temporary) || keep.has(name)) continue;
     const file = path.join(dir, name);
     try {
       const info = fs.lstatSync(file);
       if (!info.isFile() || info.isSymbolicLink() || nowMs - info.mtimeMs < STALE_MS) continue;
       // Only a recognizable record of this feature, not any old file that happens to have such a name.
-      if (readRecord(file) === null) continue;
+      if (!temporary && readRecord(file) === null) continue;
       fs.rmSync(file, { force: true });
       removed += 1;
     } catch { /* Best effort: a file that cannot be judged stays. */ }
@@ -218,6 +221,8 @@ class SessionObservationRuntime {
     const file = observationPath(env.CLAUDE_CONFIG_DIR, sessionId);
     removeRecord(file);
     sweepStale(path.dirname(file), this.nowMs(), new Set([...this.bindings.values()].map((binding) => path.basename(binding.file))));
+    // Preparing an id again starts it afresh: nothing seen for an earlier run of that id carries over.
+    this.core.unregister(sessionId);
     this.core.register({ sessionId, provider, accountProfileId });
     this.bindings.set(sessionId, {
       file,
@@ -271,6 +276,7 @@ class SessionObservationRuntime {
     this.bindings.delete(sessionId);
     if (binding) {
       removeRecord(binding.file);
+      this.core.unregister(sessionId);
     }
     this.#syncTimer();
   }
