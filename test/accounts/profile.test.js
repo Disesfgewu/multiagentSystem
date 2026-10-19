@@ -128,6 +128,34 @@ test('Windows config directory conflicts ignore case', () => {
   assert.deepEqual(findConfigDirConflicts(profiles, win), [{ a: 'a', b: 'b', kind: 'same' }]);
 });
 
+test('macOS config directory conflicts ignore case too, even while neither folder exists yet; Linux keeps them distinct', () => {
+  const profiles = [
+    profile({ id: 'a', configDir: '/home/user/accounts/Work' }),
+    profile({ id: 'b', configDir: '/home/user/accounts/work' }),
+    profile({ id: 'c', configDir: '/home/user/ACCOUNTS/work/child' })
+  ];
+  assert.deepEqual(findConfigDirConflicts(profiles, posix), [
+    { a: 'a', b: 'b', kind: 'same' },
+    { a: 'a', b: 'c', kind: 'nested' },
+    { a: 'b', b: 'c', kind: 'nested' }
+  ]);
+  assert.deepEqual(findConfigDirConflicts(profiles, { ...posix, platform: 'linux' }), [], 'a case-sensitive platform keeps them apart');
+});
+
+test('a profile folder that differs from the home or repo folder only in case is refused on macOS (it might be that folder), and left alone on Linux', () => {
+  assert.ok(validateProfile(profile({ configDir: '/HOME/user' }), posix).problems.includes('config-dir-is-home'));
+  assert.ok(validateProfile(profile({ configDir: '/Work/Project/sub' }), posix).problems.includes('config-dir-inside-repo'));
+  assert.equal(validateProfile(profile({ configDir: '/data/Case-Sensitive-Linux' }), { ...posix, platform: 'linux', homeDir: '/home/user' }).ok, true);
+});
+
+test('identity comparison never folds case on macOS (a case-sensitive volume has distinct folders), while Windows still does', () => {
+  const sameOn = (platform, a, b) => sameDirectory(a, b, { ...posix, platform });
+  assert.equal(sameOn('darwin', '/home/user/accounts/Work', '/home/user/accounts/work'), false, 'distinct on a case-sensitive macOS volume');
+  assert.equal(sameOn('darwin', '/home/user/accounts/Work', '/home/user/accounts/Work'), true);
+  assert.equal(sameOn('linux', '/home/user/accounts/Work', '/home/user/accounts/work'), false);
+  assert.equal(sameDirectory('C:\\Users\\Me\\Work', 'c:\\users\\me\\work', win), true, 'Windows is case-insensitive');
+});
+
 test('launch env points each provider at its own variable and leaves base env untouched', () => {
   const base = { PATH: '/usr/bin', HOME: '/home/user' };
   const claude = buildLaunchEnv(profile(), base, posix);

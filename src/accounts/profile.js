@@ -44,9 +44,13 @@ function defaultContext(context) {
   };
 }
 
-function samePath(p, platform, left, right) {
-  return isSameOrInside(p, platform, left, right) && isSameOrInside(p, platform, right, left);
+// `mode` is passed to isSameOrInside: conservative for "might these collide" checks that refuse a
+// folder, nothing for "is this really that folder" identity checks.
+function samePath(p, platform, left, right, mode) {
+  return isSameOrInside(p, platform, left, right, mode) && isSameOrInside(p, platform, right, left, mode);
 }
+
+const CONSERVATIVE = Object.freeze({ conservative: true });
 
 // true / false when both sides resolve, null when either cannot be resolved.
 function sameDirectory(a, b, context) {
@@ -140,19 +144,19 @@ function validateProfile(profile, context) {
   }
 
   if (dir.value && repo.value) {
-    if (isSameOrInside(p, ctx.platform, dir.value, repo.value)) problems.push('config-dir-inside-repo');
-    if (isSameOrInside(p, ctx.platform, repo.value, dir.value)) problems.push('config-dir-contains-repo');
+    if (isSameOrInside(p, ctx.platform, dir.value, repo.value, CONSERVATIVE)) problems.push('config-dir-inside-repo');
+    if (isSameOrInside(p, ctx.platform, repo.value, dir.value, CONSERVATIVE)) problems.push('config-dir-contains-repo');
   }
   // The default folder the tool uses outside this extension: not the folder itself, and not a folder
   // inside it (the unmanaged account's own tree would then hold this account). A folder that merely
   // contains it is the home folder or one of its parents, which have their own checks.
-  if (dir.value && providerDefault.value && isSameOrInside(p, ctx.platform, dir.value, providerDefault.value)) {
+  if (dir.value && providerDefault.value && isSameOrInside(p, ctx.platform, dir.value, providerDefault.value, CONSERVATIVE)) {
     problems.push('config-dir-is-provider-default');
   }
   if (dir.value) {
     // The home folder holds everything a person owns; it is never an account folder.
     const home = tryCanonicalize(ctx.homeDir, p, ctx.realpath, ctx.isDirectory, ctx.lstat);
-    if (home.value && samePath(p, ctx.platform, dir.value, home.value)) problems.push('config-dir-is-home');
+    if (home.value && samePath(p, ctx.platform, dir.value, home.value, CONSERVATIVE)) problems.push('config-dir-is-home');
   }
 
   return { ok: problems.length === 0, problems };
@@ -174,10 +178,10 @@ function findConfigDirConflicts(profiles, context) {
     for (let j = i + 1; j < dirs.length; j += 1) {
       const a = dirs[i];
       const b = dirs[j];
-      if (samePath(p, ctx.platform, a.dir, b.dir)) {
+      if (samePath(p, ctx.platform, a.dir, b.dir, CONSERVATIVE)) {
         conflicts.push({ a: a.id, b: b.id, kind: 'same' });
-      } else if (isSameOrInside(p, ctx.platform, a.dir, b.dir) ||
-                 isSameOrInside(p, ctx.platform, b.dir, a.dir)) {
+      } else if (isSameOrInside(p, ctx.platform, a.dir, b.dir, CONSERVATIVE) ||
+                 isSameOrInside(p, ctx.platform, b.dir, a.dir, CONSERVATIVE)) {
         conflicts.push({ a: a.id, b: b.id, kind: 'nested' });
       }
     }
