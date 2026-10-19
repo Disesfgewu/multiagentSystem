@@ -62,6 +62,12 @@ test('rejects the provider default directory used by unmanaged terminals', () =>
     validateProfile(profile({ provider: 'codex', configDir: '/home/user/.codex' }), posix).problems,
     ['config-dir-is-provider-default']
   );
+  // Nor a folder inside it: the unmanaged account's own tree would then hold this one.
+  assert.deepEqual(validateProfile(profile({ configDir: '/home/user/.claude/work' }), posix).problems, ['config-dir-is-provider-default']);
+  assert.deepEqual(validateProfile(profile({ provider: 'codex', configDir: '/home/user/.codex/a/b' }), posix).problems, ['config-dir-is-provider-default']);
+  // A sibling whose name merely starts the same is a different folder.
+  assert.equal(validateProfile(profile({ configDir: '/home/user/.claude-work' }), posix).ok, true);
+  assert.equal(validateProfile(profile({ configDir: '/home/user/.claudette' }), posix).ok, true);
   // .claude is the default for Claude only, not for Codex.
   assert.equal(validateProfile(profile({ provider: 'codex', configDir: '/home/user/.claude' }), posix).ok, true);
 });

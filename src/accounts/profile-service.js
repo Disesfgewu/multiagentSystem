@@ -17,8 +17,10 @@ const COLLECTION = 'profiles';
 const MAX_PROFILES = 50;
 const MAX_LABEL = 80;
 const AUTH_METHOD = /^[A-Za-z0-9._:-]{1,40}$/;
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/;
+// Control characters (including the C1 range), line and paragraph separators, and invisible format
+// characters such as the bidirectional overrides, which make a label read differently from how it is
+// stored. The joiners U+200C and U+200D stay allowed: scripts such as Persian and Indic need them.
+const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]|(?![\u200c\u200d])\p{Cf}/u;
 
 // What a caller may change on an existing profile. Changing the directory or the secret
 // changes which account a session started from this profile runs as, so those two are
