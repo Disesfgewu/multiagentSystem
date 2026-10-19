@@ -673,6 +673,20 @@ test('stopping a session releases its terminal and records the stop even when th
   assert.equal(JSON.stringify(stopped).includes(file), false, 'the private path is not exposed');
 });
 
+test('a CLI that exited does not claim its instruction file was cleaned up when removing it failed', { skip: cannotRemove }, async (t) => {
+  const r = rig();
+  await r.manager.initialize();
+  const stuck = stuckPlan(t);
+  const failed = await r.manager.start({ provider: 'claude', name: 'Stuck', cwd: '/synthetic/project', instructions: withPlan(stuck.plan) });
+  const view = r.manager.cliExited(failed.id);
+  assert.equal(view.state, 'cli-exited');
+  assert.match(view.instructionStatusLabel ?? '', /could not be removed/i);
+  assert.doesNotMatch(view.instructionStatusLabel ?? '', /cleaned up/i);
+  assert.equal(JSON.stringify(view).includes(stuck.file), false);
+  const fine = await r.manager.start({ provider: 'claude', name: 'Fine', cwd: '/synthetic/project', instructions: withPlan({ created: [] }) });
+  assert.match(r.manager.cliExited(fine.id).instructionStatusLabel ?? '', /cleaned up/, 'a successful cleanup still says so');
+});
+
 test('a terminal closed by the user is recorded as closed even when the instruction file cannot be removed', { skip: cannotRemove }, async (t) => {
   const r = rig();
   await r.manager.initialize();

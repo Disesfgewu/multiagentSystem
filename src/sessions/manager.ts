@@ -483,11 +483,13 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    * running, or replace the error that was being reported: the failure is only noted on the session,
    * without the path or the system message.
    */
-  private cleanupPlanSafely(plan: unknown, id?: string): void {
+  private cleanupPlanSafely(plan: unknown, id?: string): boolean {
     try {
       cleanupSessionPlan(plan);
+      return true;
     } catch {
       if (id) this.instructionLabels.set(id, 'Instruction files could not be removed; check the project\'s instruction folder');
+      return false;
     }
   }
 
@@ -591,12 +593,14 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     const binding = this.bound.get(terminal) as { id: string; token: string };
     this.registry.cliExited(id, binding.token);
     const plan = this.activePlans.get(id);
+    let cleaned = true;
     if (plan) {
-      this.cleanupPlanSafely(plan, id);
+      cleaned = this.cleanupPlanSafely(plan, id);
       this.activePlans.delete(id);
     }
     const prevState = this.instructionStates.get(id);
-    if (prevState && prevState !== 'none') {
+    // A failed removal keeps its own label: the file is still there, so it must not be called cleaned up.
+    if (cleaned && prevState && prevState !== 'none') {
       this.instructionLabels.set(id, 'CLI exited (instructions file cleaned up; reopen as new session to relaunch)');
     }
     return this.view(id);
