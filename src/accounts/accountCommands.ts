@@ -392,6 +392,13 @@ async function edit(value: unknown, tree: AccountTree): Promise<void> {
   void vscode.window.showInformationMessage(`Account profile “${updated.profile.label}” was updated.`);
 }
 
+const { RoleStore } = require('../roles/role-store') as { RoleStore: new (store: unknown) => unknown };
+const { roleGroupsUsingProfile, describeGroups, clearRoleDefaults } = require('../roles/profile-usage') as {
+  roleGroupsUsingProfile(roleStore: unknown, profileId: string): { ok: true; groups: Array<{ id: string; name: string; revision: number; record: unknown }> } | { ok: false; reason: string };
+  describeGroups(groups: Array<{ name: string }>): string;
+  clearRoleDefaults(roleStore: unknown, groups: Array<{ id: string }>, profileId: string): { cleared: string[]; failed: Array<{ id: string; reason: string }> };
+};
+
 async function remove(value: unknown, tree: AccountTree): Promise<void> {
   let profileId = selectedId(value);
   const profile = profileId ? undefined : await chooseProfile();
@@ -401,8 +408,18 @@ async function remove(value: unknown, tree: AccountTree): Promise<void> {
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }
   const current = result.service.get(profileId);
   if (!current.ok) { void vscode.window.showErrorMessage(errorFor(current)); tree.refresh(); return; }
-  const answer = await vscode.window.showWarningMessage(`Remove account profile “${current.profile.label}”?`, { modal: true, detail: 'This removes only the extension profile. It keeps the CLI configuration folder and does not delete CLI login data.' }, 'Remove Profile');
-  if (answer !== 'Remove Profile') return;
+  // Role groups that name this profile as their default would keep pointing at an account that no longer exists.
+  // If they cannot be read, nobody can say none does: nothing is removed.
+  const roleStore = new RoleStore(result.store);
+  const usage = roleGroupsUsingProfile(roleStore, profileId);
+  if (!usage.ok) { void vscode.window.showErrorMessage('Role groups could not be read, so it is not known whether any of them uses this account as its default. Nothing was removed. Check Private Storage diagnostics and try again.'); return; }
+  const usedBy = usage.groups;
+  const baseDetail = 'This removes only the extension profile. It keeps the CLI configuration folder and does not delete CLI login data.';
+  const detail = usedBy.length > 0
+    ? `${baseDetail}\n\n${usedBy.length === 1 ? 'This role group uses' : `These ${usedBy.length} role groups use`} the account as ${usedBy.length === 1 ? 'its' : 'their'} default: ${describeGroups(usedBy)}. Their default account will be cleared; you can choose another account when you create an agent from them.`
+    : baseDetail;
+  const answer = await vscode.window.showWarningMessage(`Remove account profile “${current.profile.label}”?`, { modal: true, detail }, usedBy.length > 0 ? 'Remove and Clear Defaults' : 'Remove Profile');
+  if (answer !== (usedBy.length > 0 ? 'Remove and Clear Defaults' : 'Remove Profile')) return;
   let removed = await result.service.remove(profileId);
   if (!removed.ok && removed.code === 'profile-referenced') {
     const confirm = await vscode.window.showWarningMessage('Earlier sessions still refer to this profile.', { modal: true, detail: 'Those sessions will no longer be reopenable with this account profile. The CLI folder and sign-in data will remain.' }, 'Delete Anyway');
@@ -411,7 +428,12 @@ async function remove(value: unknown, tree: AccountTree): Promise<void> {
   }
   if (!removed.ok) { void vscode.window.showErrorMessage(errorFor(removed)); return; }
   tree.refresh();
-  void vscode.window.showInformationMessage('Account profile removed. Its CLI configuration folder was kept.');
+  const tidy = usedBy.length > 0 ? clearRoleDefaults(roleStore, usedBy, profileId) : { cleared: [], failed: [] };
+  if (tidy.failed.length > 0) {
+    void vscode.window.showWarningMessage(`Account profile removed. ${tidy.failed.length} role group${tidy.failed.length === 1 ? '' : 's'} still name${tidy.failed.length === 1 ? 's' : ''} it as the default and could not be updated; starting an agent from ${tidy.failed.length === 1 ? 'it' : 'them'} is refused until you edit the role group and choose an available account.`);
+    return;
+  }
+  void vscode.window.showInformationMessage(`Account profile removed. Its CLI configuration folder was kept.${tidy.cleared.length > 0 ? ` The default account of ${tidy.cleared.length} role group${tidy.cleared.length === 1 ? '' : 's'} was cleared.` : ''}`);
 }
 
 async function login(value: unknown): Promise<void> {
