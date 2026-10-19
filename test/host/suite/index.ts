@@ -961,7 +961,11 @@ export async function run(): Promise<void> {
 
     const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
     await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
-    const countBeforeRepeat = vscode.window.terminals.length;
+    // Only the terminals of this group are counted: other terminals of the same window (sessions closed a moment ago by earlier
+    // checks) come and go on their own schedule, so the total is not a statement about duplicates.
+    const groupTerminals = (): number => vscode.window.terminals.filter((terminal) => EXPECTED_TITLES.includes(terminal.name)).length;
+    const countBeforeRepeat = groupTerminals();
+    assert.equal(countBeforeRepeat, EXPECTED_TITLES.length, 'the group is open once before it is run again');
     const repeatMessages: string[] = [];
     (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
       repeatMessages.push(message);
@@ -972,7 +976,7 @@ export async function run(): Promise<void> {
     } finally {
       (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
     }
-    assert.equal(vscode.window.terminals.length, countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
+    assert.equal(groupTerminals(), countBeforeRepeat, 'rerunning focuses the existing terminals without duplicates');
     assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
