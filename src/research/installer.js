@@ -255,6 +255,9 @@ function revokeConsent(serverId, { store, root, now = () => new Date() } = {}) {
 }
 
 const PREPARED_MANIFEST = '.prepared.json';
+// Schema 2 records the SHA-256 of the installed program itself. An install made under schema 1 has no such record
+// and is reported as stale: prepare it again.
+const PREPARED_SCHEMA = 2;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 
 /**
@@ -268,9 +271,15 @@ function preparedState(dir, tool) {
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, PREPARED_MANIFEST), 'utf8'));
     const name = manifest && manifest.executable;
     if (name !== tool.command[0] && name !== `${tool.command[0]}.exe`) return 'stale';
-    const executable = fs.lstatSync(path.join(dir, name));
-    return manifest.schema === 1 && manifest.fingerprint === consentFingerprint(tool) && executable.isFile() && !executable.isSymbolicLink()
-      ? 'ready' : 'stale';
+    const file = path.join(dir, name);
+    const executable = fs.lstatSync(file);
+    if (manifest.schema !== PREPARED_SCHEMA || manifest.fingerprint !== consentFingerprint(tool) || !executable.isFile() || executable.isSymbolicLink()) return 'stale';
+    // The bytes on disk must still be the bytes that were verified and installed: a replaced, edited or truncated
+    // program is not ready, and neither is a record that says nothing about the program's content (an older install).
+    if (typeof manifest.executableSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.executableSha256)) return 'stale';
+    if (executable.size > MAX_ASSET_BYTES) return 'stale';
+    const actual = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    return actual === manifest.executableSha256 ? 'ready' : 'stale';
   } catch {
     return 'stale';
   }
@@ -301,7 +310,7 @@ function listResearchTools({ store, catalog = CANDIDATE_RESEARCH_TOOLS, root } =
     if (installState === 'stale') {
       statusLabel = 'Prepared files do not match the current tool entry: prepare again';
     } else if (isConsented && isInstalled) {
-      statusLabel = 'Consented · Prepared (hash verified when installed; not re-checked, not running)';
+      statusLabel = 'Consented · Prepared (the program hash matches what was verified when installed; not running)';
     } else if (isConsented) {
       statusLabel = 'Consented · Not installed';
     }
@@ -418,8 +427,8 @@ async function prepareResearchTool(serverId, deps) {
   try {
     fs.writeFileSync(path.join(stagingDir, executableName), bytes, { mode: 0o755 });
     fs.writeFileSync(path.join(stagingDir, PREPARED_MANIFEST), JSON.stringify({
-      schema: 1, serverId: valid.serverId, version: valid.version, integrity: valid.integrity,
-      fingerprint: consentFingerprint(valid), executable: executableName, verifiedAt: now().toISOString()
+      schema: PREPARED_SCHEMA, serverId: valid.serverId, version: valid.version, integrity: valid.integrity,
+      fingerprint: consentFingerprint(valid), executable: executableName, executableSha256: createHash('sha256').update(bytes).digest('hex'), verifiedAt: now().toISOString()
     }), { mode: 0o600 });
 
     if (signal && signal.aborted) {
