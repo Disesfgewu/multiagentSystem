@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   ManagerDeps,
   SessionManager,
@@ -642,4 +646,50 @@ test('starting or reopening with an id that is already in use fails before any t
   r2.manager.stop(first.id);
   await rejectsWithCode(r2.manager.reopen(first.id, { newId: second.id }), 'session-exists');
   assert.equal(r2.manager.list().find((entry) => entry.id === second.id)?.terminalOpen, true, 'the other live session survives a reopen that reuses its id');
+});
+
+// A plan whose created file cannot be removed (its folder is read-only), so cleaning it up throws.
+const cannotRemove = process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0);
+function stuckPlan(t: { after(fn: () => void): void }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-stuck-plan-'));
+  const file = path.join(dir, 'instructions.md');
+  fs.writeFileSync(file, 'x');
+  const stat = fs.lstatSync(file, { bigint: true });
+  fs.chmodSync(dir, 0o500);
+  t.after(() => { fs.chmodSync(dir, 0o700); fs.rmSync(dir, { recursive: true, force: true }); });
+  return { plan: { created: [{ kind: 'file', path: file, identity: { dev: stat.dev, ino: stat.ino }, size: 1, digest: createHash('sha256').update('x').digest('hex') }] }, file };
+}
+const withPlan = (plan: unknown) => ({ plan, digest: 'd', method: 'file', argv: [], injectionState: 'prepared' as const, injectionStatusLabel: 'prepared' });
+
+test('stopping a session releases its terminal and records the stop even when the instruction file cannot be removed', { skip: cannotRemove }, async (t) => {
+  const r = rig();
+  await r.manager.initialize();
+  const { plan, file } = stuckPlan(t);
+  const session = await r.manager.start({ provider: 'claude', name: 'Stuck', cwd: '/synthetic/project', instructions: withPlan(plan) });
+  const stopped = r.manager.stop(session.id);
+  assert.equal(r.terminals[0].disposed, 1, 'the terminal is closed');
+  assert.equal(stopped.terminalOpen, false, 'the stop is recorded');
+  assert.match(stopped.instructionStatusLabel ?? '', /could not be removed/i);
+  assert.equal(JSON.stringify(stopped).includes(file), false, 'the private path is not exposed');
+});
+
+test('a terminal closed by the user is recorded as closed even when the instruction file cannot be removed', { skip: cannotRemove }, async (t) => {
+  const r = rig();
+  await r.manager.initialize();
+  const { plan } = stuckPlan(t);
+  const session = await r.manager.start({ provider: 'claude', name: 'Stuck', cwd: '/synthetic/project', instructions: withPlan(plan) });
+  assert.equal(r.manager.handleTerminalClosed(r.terminals[0]), session.id);
+  assert.equal(r.manager.get(session.id)?.terminalOpen, false);
+  assert.equal(r.manager.handleTerminalClosed(r.terminals[0]), null, 'handled once');
+});
+
+test('a failed start reports its own error, not the cleanup failure', { skip: cannotRemove }, async (t) => {
+  const r = rig({ terminals: { create: () => { throw new Error('terminal-creation-failed'); } } });
+  await r.manager.initialize();
+  const { plan } = stuckPlan(t);
+  await assert.rejects(
+    r.manager.start({ provider: 'claude', name: 'Stuck', cwd: '/synthetic/project', instructions: withPlan(plan) }),
+    { message: 'terminal-creation-failed' }
+  );
+  assert.deepEqual(r.manager.list(), [], 'nothing is left behind');
 });
