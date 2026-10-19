@@ -5,6 +5,7 @@
 // and a terminal that exists is never described as an agent that is working.
 
 const { cleanTitle } = require('./model');
+const { describeEvidence } = require('../projects/gitEvidence');
 
 const UNKNOWN = 'unknown';
 const SHOWN_LIMIT = 80;
@@ -73,7 +74,7 @@ function presentAgent(row, session) {
   return {
     id: row.sessionId,
     label: name,
-    description: `${role} · ${provider} · ${account} · ${stateText}${prText}`,
+    description: `${role} · ${provider} · ${account} · ${stateText}${prText}${session?.gitEvidence?.state === 'known' && session.gitEvidence.dirty ? ' · uncommitted changes' : ''}`,
     pullRequestUrl: row.pullRequest.state === 'open' && typeof row.pullRequest.url === 'string' ? row.pullRequest.url : null,
     pullRequestNumber: row.pullRequest.state === 'open' && Number.isSafeInteger(row.pullRequest.number) ? row.pullRequest.number : null,
     issueNumber: row.issue && row.issue.state === 'known' && Number.isSafeInteger(row.issue.number) ? row.issue.number : null,
@@ -82,6 +83,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
+      ...(session && 'gitEvidence' in session ? [describeEvidence(session.gitEvidence)] : []),
       ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
