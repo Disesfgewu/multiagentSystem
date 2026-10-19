@@ -112,6 +112,76 @@ export function writeSettingsAtomic(settingsPath: string, text: string, expected
   }
 }
 
+const OWNER_FILE_NAME = 'statusline-bridge-owner.json';
+const MAX_OWNED_COMMANDS = 10;
+const MAX_OWNER_FILE_BYTES = 64 * 1024;
+
+/**
+ * The exact statusLine commands this extension has written into this profile's settings, kept in a small
+ * file beside the quota file (never in the user's settings). A command's shape cannot prove who wrote it:
+ * a user's own script may share the file name and the quota destination. Only a command this extension is
+ * recorded as having written counts as its own after the script has moved. An unreadable, oversized, linked
+ * or malformed record is no evidence at all.
+ */
+export function readOwnedBridgeCommands(configDir: string): Set<string> {
+  const owned = new Set<string>();
+  try {
+    const file = path.join(configDir, OWNER_FILE_NAME);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_OWNER_FILE_BYTES) return owned;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || parsed.schema !== 1 || !Array.isArray(parsed.commands)) return owned;
+    for (const command of parsed.commands.slice(-MAX_OWNED_COMMANDS)) {
+      if (typeof command === 'string' && command.length > 0 && command.length <= 4096) owned.add(command);
+    }
+  } catch { /* no usable record: no evidence */ }
+  return owned;
+}
+
+function recordOwnedBridgeCommand(configDir: string, command: string): boolean {
+  let temp: string | undefined;
+  try {
+    const file = path.join(configDir, OWNER_FILE_NAME);
+    let existing: string[] = [];
+    try {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink()) return false;
+      existing = [...readOwnedBridgeCommands(configDir)];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+    const commands = [...existing.filter((entry) => entry !== command), command].slice(-MAX_OWNED_COMMANDS);
+    temp = `${file}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(temp, JSON.stringify({ schema: 1, commands }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.renameSync(temp, file);
+    temp = undefined;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (temp) { try { fs.unlinkSync(temp); } catch { /* already gone */ } }
+  }
+}
+
+/**
+ * True only for a bridge command this extension is recorded as having written earlier and whose script
+ * has since moved (an extension upgrade installs into a new versioned folder). The record is the proof;
+ * the shape check on top only confirms it still points at this profile's own quota file.
+ */
+export function isStaleBridgeCommand(statusLine: unknown, quotaPath: string, isWindows: boolean = process.platform === 'win32', owned: ReadonlySet<string> = new Set()): boolean {
+  let command: string | undefined;
+  if (typeof statusLine === 'string') command = statusLine;
+  else if (statusLine && typeof statusLine === 'object' && typeof (statusLine as { command?: unknown }).command === 'string') command = (statusLine as { command: string }).command;
+  if (!command || !owned.has(command) || !isSafePath(quotaPath, isWindows)) return false;
+  const quote = isWindows ? '"' : "'";
+  const prefix = `node ${quote}`;
+  const suffix = `${quote} ${quote}${quotaPath}${quote}`;
+  if (!command.startsWith(prefix) || !command.endsWith(suffix)) return false;
+  const script = command.slice(prefix.length, command.length - suffix.length);
+  if (!isSafePath(script, isWindows)) return false;
+  return /(^|[\\/])claudeStatusLineBridge\.js$/.test(script);
+}
+
 export interface StatusLineInspection {
   status: 'disabled' | 'active' | 'custom' | 'unreadable';
   currentCommand?: string;
@@ -241,7 +311,15 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
     const command = buildBridgeCommand(bridgeScriptPath, quotaPath, isWindows);
 
     // If an existing statusLine is present and not our bridge, back it up so disable can restore it
-    if (settings.statusLine !== undefined && !isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
+    // A bridge command left by an older install is ours, not the user's: backing it up would replace the
+    // real original with a dead command and lose it for good.
+    const owned = readOwnedBridgeCommands(configDir);
+    if (settings.statusLine !== undefined
+      && !isBridgeCommand(settings.statusLine, bridgeScriptPath, quotaPath)
+      && !isStaleBridgeCommand(settings.statusLine, quotaPath, isWindows, owned)) {
+      // Not provably ours, so it is the user's own and must be kept. An earlier backup is never replaced:
+      // overwriting it would destroy the only copy of the user's original command.
+      if (settings._multiagentStatusLineBackup !== undefined) return { ok: false, reason: 'statusline-backup-exists' };
       settings._multiagentStatusLineBackup = settings.statusLine;
     }
 
@@ -250,6 +328,9 @@ export function enableStatusLineBridge(configDir: string, bridgeScriptPath: stri
       command
     };
 
+    // Record what is about to be written BEFORE writing it: a record with no matching setting is harmless,
+    // a setting with no record could not be recognised as ours after an upgrade.
+    if (!recordOwnedBridgeCommand(configDir, command)) return { ok: false, reason: 'owner-record-unavailable' };
     return writeSettingsAtomic(settingsPath, JSON.stringify(settings, null, 2), originalContent);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'write-failed' };
@@ -284,7 +365,8 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
     }
 
     // Refuse to touch settings if statusLine is not our bridge command
-    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath, path.join(configDir, STATUSLINE_QUOTA_FILE_NAME))) {
+    const ownQuotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
+    if (!isBridgeCommand(settings.statusLine, bridgeScriptPath, ownQuotaPath) && !isStaleBridgeCommand(settings.statusLine, ownQuotaPath, process.platform === 'win32', readOwnedBridgeCommands(configDir))) {
       return { ok: false, reason: 'statusline-not-our-bridge' };
     }
 
@@ -297,6 +379,9 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
 
     const written = writeSettingsAtomic(settingsPath, JSON.stringify(settings, null, 2), content);
     if (!written.ok) return written;
+
+    // The bridge is gone from the settings, so the record of what was written no longer applies.
+    try { fs.unlinkSync(path.join(configDir, OWNER_FILE_NAME)); } catch { /* absent or already gone */ }
 
     const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
     if (fs.existsSync(quotaPath)) {

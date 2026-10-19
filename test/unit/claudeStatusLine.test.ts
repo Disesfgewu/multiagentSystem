@@ -10,6 +10,7 @@ import {
   isBridgeCommand,
   inspectStatusLineConfig,
   enableStatusLineBridge,
+  readOwnedBridgeCommands,
   writeSettingsAtomic,
   disableStatusLineBridge,
   readClaudeQuotaFile,
@@ -473,5 +474,124 @@ test('writeSettingsAtomic writes a new file privately and an unchanged one in pl
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     assert.equal(writeSettingsAtomic(file, '{"n":2}', '{"n":1}').ok, true);
     assert.equal(fs.readFileSync(file, 'utf8'), '{"n":2}');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('re-enabling after the extension moved (new bridge path) keeps the user\'s original statusLine backup, and disable still restores it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-upgrade-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const original = { type: 'command', command: 'my-custom-statusline-helper' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: original, theme: 'light' }));
+    const oldBridge = path.join(root, 'ext-1.0.0', 'claudeStatusLineBridge.js');
+    const newBridge = path.join(root, 'ext-1.1.0', 'claudeStatusLineBridge.js');
+    assert.equal(enableStatusLineBridge(root, oldBridge).ok, true);
+    // The extension is upgraded: the installed bridge now lives at a different path.
+    assert.equal(enableStatusLineBridge(root, newBridge).ok, true);
+    const afterReEnable = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(afterReEnable._multiagentStatusLineBackup, original, 'the old bridge command must never replace the real backup');
+    assert.ok(afterReEnable.statusLine.command.includes('ext-1.1.0'));
+    assert.equal(disableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original);
+    // A stale bridge left behind by an upgrade can also be disabled without the new path matching.
+    assert.equal(enableStatusLineBridge(root, oldBridge).ok, true);
+    assert.equal(disableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a bridge command pointing at another destination, or with extra shell, is never treated as our stale bridge', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-stale-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const quota = path.join(root, STATUSLINE_QUOTA_FILE_NAME);
+    const bridge = path.join(root, 'ext', 'claudeStatusLineBridge.js');
+    for (const custom of [
+      `${buildBridgeCommand(bridge, quota)} && echo custom`,
+      buildBridgeCommand(bridge, path.join(root, 'other.json')),
+      buildBridgeCommand(path.join(root, 'ext', 'otherScript.js'), quota)
+    ]) {
+      fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: 'command', command: custom }, _multiagentStatusLineBackup: { command: 'older' } }));
+      assert.equal(disableStatusLineBridge(root, path.join(root, 'new', 'claudeStatusLineBridge.js')).ok, false, custom);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a user\'s own script that merely shares the bridge\'s file name and quota destination is custom: it is backed up and restored, never mistaken for an old bridge', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-owner-evidence-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const quota = path.join(root, STATUSLINE_QUOTA_FILE_NAME);
+    const ownScript = path.join(root, 'my-scripts', 'claudeStatusLineBridge.js');
+    const original = { type: 'command', command: buildBridgeCommand(ownScript, quota) };
+    fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: original, theme: 'light' }));
+    const extensionBridge = path.join(root, 'ext-2.0.0', 'claudeStatusLineBridge.js');
+    assert.equal(enableStatusLineBridge(root, extensionBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))._multiagentStatusLineBackup, original, 'no record of having written it, so it is the user\'s and is backed up');
+    assert.equal(disableStatusLineBridge(root, extensionBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original, 'the original command comes back');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an upgrade is recognised only through the record of what this extension wrote, and the record is private and not part of the user\'s settings', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-owner-record-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const original = { type: 'command', command: 'my-custom-statusline-helper' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: original }));
+    const oldBridge = path.join(root, 'ext-1.0.0', 'claudeStatusLineBridge.js');
+    const newBridge = path.join(root, 'ext-1.1.0', 'claudeStatusLineBridge.js');
+    assert.equal(enableStatusLineBridge(root, oldBridge).ok, true);
+    const recordPath = path.join(root, 'statusline-bridge-owner.json');
+    assert.deepEqual(readOwnedBridgeCommands(root), new Set([buildBridgeCommand(oldBridge, path.join(root, STATUSLINE_QUOTA_FILE_NAME))]));
+    if (process.platform !== 'win32') assert.equal(fs.statSync(recordPath).mode & 0o777, 0o600);
+    assert.equal(Object.keys(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).includes('_multiagentStatusLineOwner'), false);
+    assert.equal(enableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))._multiagentStatusLineBackup, original, 'the real backup survives the upgrade');
+    assert.equal(disableStatusLineBridge(root, newBridge).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine, original);
+    assert.equal(fs.existsSync(recordPath), false, 'the record is removed with the bridge');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('with a backup already present and a statusLine that cannot be proven ours, enabling refuses instead of overwriting the backup', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-legacy-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const oldBridgeCommand = buildBridgeCommand(path.join(root, 'ext-0.0.2', 'claudeStatusLineBridge.js'), path.join(root, STATUSLINE_QUOTA_FILE_NAME));
+    const text = JSON.stringify({ statusLine: { type: 'command', command: oldBridgeCommand }, _multiagentStatusLineBackup: { type: 'command', command: 'the-users-original' } });
+    fs.writeFileSync(settingsPath, text);
+    const result = enableStatusLineBridge(root, path.join(root, 'ext-1.1.0', 'claudeStatusLineBridge.js'));
+    assert.deepEqual([result.ok, result.reason], [false, 'statusline-backup-exists']);
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), text, 'nothing was changed, so the original backup is intact');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('if the ownership record cannot be written, enabling stops before touching settings.json', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-record-blocked-'));
+  try {
+    const settingsPath = path.join(root, 'settings.json');
+    const text = JSON.stringify({ theme: 'light' });
+    fs.writeFileSync(settingsPath, text);
+    fs.symlinkSync(path.join(root, 'elsewhere.json'), path.join(root, 'statusline-bridge-owner.json'));
+    const result = enableStatusLineBridge(root, path.join(root, 'ext', 'claudeStatusLineBridge.js'));
+    assert.deepEqual([result.ok, result.reason], [false, 'owner-record-unavailable']);
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), text);
+    assert.equal(fs.existsSync(path.join(root, 'elsewhere.json')), false, 'a linked record file is not written through');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an ownership record that is oversized, linked, or malformed is no evidence', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-record-bad-'));
+  try {
+    const file = path.join(root, 'statusline-bridge-owner.json');
+    for (const content of ['not json', '{"schema":2,"commands":["x"]}', '{"schema":1,"commands":"x"}', JSON.stringify({ schema: 1, commands: ['y'.repeat(70 * 1024)] })]) {
+      fs.writeFileSync(file, content);
+      assert.equal(readOwnedBridgeCommands(root).size, 0, content.slice(0, 30));
+    }
+    fs.rmSync(file);
+    fs.writeFileSync(path.join(root, 'real.json'), JSON.stringify({ schema: 1, commands: ['node x'] }));
+    fs.symlinkSync(path.join(root, 'real.json'), file);
+    assert.equal(readOwnedBridgeCommands(root).size, 0, 'a symlinked record is not read');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
