@@ -24,6 +24,11 @@ const block = (value, limit) => {
   return chars.length > limit ? `${chars.slice(0, limit).join('')}\n… (${chars.length - limit} more characters not shown)` : cleaned;
 };
 
+// Text that comes from GitHub is shown indented. Every heading, navigation label and file bullet this
+// report generates starts at the first column, so no line of remote text can ever read as one of them
+// (and the places that look for them by their exact text can only find the real ones).
+const indent = (text, spaces = 2) => String(text).split('\n').map((row) => `${' '.repeat(spaces)}${row}`).join('\n');
+
 const WHAT_IS_NOT_VERIFIED = Object.freeze([
   'This report is read-only. Nothing in it was approved, merged or changed by you or by this extension.',
   'Only an explicitly marked, complete report by the repository owner is shown as a PM report; other comments remain comments.',
@@ -61,14 +66,17 @@ const APPLIES = Object.freeze({
   'head-not-stated': 'does not say which head it covers'
 });
 
-function commentLines(comments, currentHead, { limit = 100000 } = {}) {
+function commentLines(comments, currentHead, { limit = 100000, owner = '' } = {}) {
   const items = dataOf(comments);
   if (items === null) return [];
   const lines = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const conclusion = currentHead ? parseConclusion(item.body, currentHead) : null;
-    lines.push(`- ${line(item.author ?? 'unknown', 60)}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}${conclusion ? ` · verdict "${conclusion.verdict}" ${APPLIES[conclusion.applies]}` : ''}`);
+    const byOwner = typeof item.author === 'string' && owner !== '' && item.author.toLowerCase() === owner.toLowerCase();
+    // Anyone can type "Pass" and a commit id: only the repository owner's words are read as a verdict.
+    const verdict = conclusion ? (byOwner ? ` · verdict "${conclusion.verdict}" ${APPLIES[conclusion.applies]}` : ` · says "${conclusion.verdict}" but is not the repository owner, so this is not a review result`) : '';
+    lines.push(`- ${line(item.author ?? 'unknown', 60)}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}${verdict}`);
     lines.push(`  ${block(item.body, limit).split('\n').join('\n  ')}`);
   }
   return lines;
@@ -153,7 +161,7 @@ function pmReportLines(comments, repository, version) {
   if (result.state === 'unknown') return ['PM REPORT', result.reason === 'invalid-pm-report' ? 'Unknown: the newest marked PM report has an invalid format.' : 'Unknown: comments could not be read completely.'];
   if (result.state === 'missing') return ['PM REPORT', 'Pending: no structured PM report was found. Ordinary comments are not a PM report.'];
   return ['PM REPORT', `Declared by repository owner · ${result.state === 'current' ? 'evidence version matches this report' : 'STALE: evidence version does not match this report'}`,
-    ...FIELDS.map((key) => `${PM_LABELS[key]}: ${block(result.fields[key], 2000)}`)];
+    ...FIELDS.map((key) => `${PM_LABELS[key]}:\n${indent(block(result.fields[key], 2000))}`)];
 }
 
 /**
@@ -164,7 +172,7 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
   const lines = [...header('Issue', repository, issue), '', 'OPEN DISCUSSION (click to jump)'];
   lines.push(`Labels: ${(Array.isArray(issue.labels) ? issue.labels : []).map((name) => line(name, 60)).join(', ') || '(none)'}`);
   lines.push(`Assigned to: ${(Array.isArray(issue.assignees) ? issue.assignees : []).map((name) => line(name, 60)).join(', ') || '(nobody)'}`);
-  lines.push('', 'REQUIREMENT AND SCOPE', block(issue.body, 20000));
+  lines.push('', 'REQUIREMENT AND SCOPE', indent(block(issue.body, 20000)));
   lines.push('', ...pmReportLines(comments, repository, issueEvidenceVersion(issue)));
   lines.push('', 'RELATED PULL REQUESTS');
   const prs = dataOf(pullRequests);
@@ -199,7 +207,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   lines.push(`Latest head: ${head ? line(head, 40) : 'unknown'}`);
   const referenced = Array.isArray(pr.referencedIssues) ? pr.referencedIssues.filter((ref) => ref && Number.isSafeInteger(ref.number)) : [];
   lines.push(`Refers to: ${referenced.length ? referenced.map((ref) => `Issue #${ref.number}`).join(', ') : '(no Issue reference found)'}`);
-  lines.push('', 'WHAT THIS CHANGES (author\'s description)', block(pr.body, 20000));
+  lines.push('', 'WHAT THIS CHANGES (author\'s description)', indent(block(pr.body, 20000)));
   lines.push('', ...pmReportLines(comments, repository, head));
 
   lines.push('', 'CHANGED FILES AND DIFF (plain text preview)');
@@ -218,14 +226,16 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
     const displayNames = new Set();
     for (const [index, file] of fileItems.entries()) {
       const baseName = line(file && file.filename, 240) || '(filename unavailable)';
-      const name = displayNames.has(baseName) ? `${baseName} [file ${index + 1}]` : baseName;
-      displayNames.add(baseName);
+      // Two different files must never share one display name: the name is how its patch is found.
+      let name = baseName;
+      for (let attempt = 0; displayNames.has(name); attempt += 1) name = `${baseName} [file ${index + 1}${attempt === 0 ? '' : `.${attempt}`}]`;
+      displayNames.add(name);
       const status = line(file && file.status, 30) || 'unknown';
       const additions = Number.isSafeInteger(file && file.additions) ? file.additions : 'unknown';
       const deletions = Number.isSafeInteger(file && file.deletions) ? file.deletions : 'unknown';
       lines.push(`- ${name} (${status}; +${additions}/-${deletions})`);
       const patch = file && typeof file.patch === 'string' ? file.patch : null;
-      if (index < 12) lines.push(patch !== null ? block(patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
+      if (index < 12) lines.push(patch !== null ? indent(block(patch, 4000), 4) : '  Patch unavailable (binary file or GitHub omitted it).');
       shownFiles.push({ filename: name, status, patch });
     }
   }
@@ -262,7 +272,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   const commentNote = readNote('Comments', comments);
   if (commentNote) lines.push(commentNote);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
-  else lines.push(...commentLines(comments, head));
+  else lines.push(...commentLines(comments, head, { owner: String(repository).split('/')[0] }));
   lines.push('', 'INLINE REVIEW DISCUSSION');
   const inlineNote = readNote('Inline review comments', reviewComments);
   const inlineItems = dataOf(reviewComments);

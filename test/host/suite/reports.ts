@@ -12,7 +12,7 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
   return {
     listIssues: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: issues }),
     getIssue: async (n) => ({ kind: 'ok', data: issues.find((entry) => entry.number === n) }),
-    getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'pm-user', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
+    getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'host', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
     listPullRequests: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: prs }),
     getPullRequest: async (n) => ({ kind: 'ok', data: prs.find((entry) => entry.number === n) }),
     getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),

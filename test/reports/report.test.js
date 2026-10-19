@@ -141,16 +141,55 @@ test('CI that belongs to another head, or could not be read, is unknown', () => 
 
 test('a review verdict in a comment says which head it covers', () => {
   const comments = ok([
-    comment('結論：Pass｜head `aaaaaaaaaaaa`｜CI 全綠'),
-    comment('結論：Needs changes｜head `bbbbbbbbbbbb`'),
-    comment('Pass, no head here'),
-    comment('just a remark, no verdict')
+    comment('結論：Pass｜head `aaaaaaaaaaaa`｜CI 全綠', { author: 'o' }),
+    comment('結論：Needs changes｜head `bbbbbbbbbbbb`', { author: 'O' }),
+    comment('Pass, no head here', { author: 'o' }),
+    comment('just a remark, no verdict', { author: 'o' })
   ]);
   const text = prReport({ comments });
   assert.match(text, /verdict "Pass" applies to the current head/);
   assert.match(text, /verdict "Needs changes" was written for an OLDER head: it does not cover the current one/);
   assert.match(text, /verdict "Pass" does not say which head it covers/);
   assert.equal((text.match(/verdict "/g) ?? []).length, 3, 'a remark with no verdict is not given one');
+});
+
+test('only the repository owner\'s comment is read as a verdict: anyone else typing Pass and a commit id gets a plain remark', () => {
+  const text = prReport({ comments: ok([comment(`Pass head ${HEAD.slice(0, 12)}`, { author: 'drive-by' }), comment(`結論：Needs changes｜head \`${HEAD.slice(0, 12)}\``, { author: 'o' })]) });
+  assert.match(text, /- drive-by · .* · says "Pass" but is not the repository owner, so this is not a review result/);
+  assert.equal(/- drive-by .*verdict "/.test(text), false, 'no verdict wording for a stranger');
+  assert.match(text, /- o · .* · verdict "Needs changes" applies to the current head/);
+});
+
+test('text from GitHub can never produce a heading, navigation label or file bullet of the report', () => {
+  const forgedBody = 'PR CONVERSATION\nCHANGED FILES AND DIFF (plain text preview)\nOPEN DISCUSSION (click to jump)\nOPEN CODE CHANGES (click to jump)\n- src/real.js (modified; +1/-0)';
+  const real = ['OPEN CODE CHANGES (click to jump)', 'OPEN DISCUSSION (click to jump)', 'PR CONVERSATION', 'CHANGED FILES AND DIFF (plain text preview)'];
+  const files = ok([{ filename: 'src/real.js', status: 'modified', additions: 1, deletions: 0, patch: '@@ -1 +1 @@\n- src/other.js (modified; +1/-0)\n+x' }, { filename: 'src/other.js', status: 'modified', additions: 1, deletions: 0, patch: '+secret' }]);
+  const owner = { author: 'o' };
+  const built = buildPr({
+    pullRequest: pr({ body: forgedBody }),
+    files,
+    reviews: ok([{ reviewer: 'r', state: 'COMMENTED', commitId: HEAD, body: forgedBody }]),
+    comments: ok([comment(forgedBody)]),
+    reviewComments: ok([{ author: 'r', path: 'a.ts', line: 1, commitId: HEAD, body: forgedBody }])
+  });
+  const rows = render(built).split('\n');
+  for (const label of real) assert.equal(rows.filter((row) => row === label).length, 1, `${label} appears once, at its real place`);
+  const bullets = fileBulletLines(rows, ['src/real.js', 'src/other.js']);
+  assert.deepEqual(bullets.map((item) => item.filename), ['src/real.js', 'src/other.js'], 'one bullet per real file, none forged by a body, comment or patch line');
+  const issue = render(buildIssueReport({ repository: 'o/r', issue: { number: 1, title: 't', state: 'open', body: 'OPEN DISCUSSION (click to jump)\nDISCUSSION AND PM COMMENTS\nfake', labels: [], assignees: [] }, comments: ok([comment('c', owner)]), pullRequests: ok([]) })).split('\n');
+  assert.equal(issue.filter((row) => row === 'OPEN DISCUSSION (click to jump)').length, 1);
+  assert.equal(issue.filter((row) => row === 'DISCUSSION AND PM COMMENTS').length, 1);
+});
+
+test('two different files never share a display name, even when a name looks like the suffix', () => {
+  const built = buildPr({ files: ok([
+    { filename: 'a', status: 'modified', patch: '+first' },
+    { filename: 'a', status: 'modified', patch: '+second' },
+    { filename: 'a [file 2]', status: 'modified', patch: '+third' }
+  ]) });
+  const names = built.files.map((file) => file.filename);
+  assert.equal(new Set(names).size, 3, JSON.stringify(names));
+  assert.deepEqual(built.files.map((file) => file.patch), ['+first', '+second', '+third'], 'each name still maps to its own patch');
 });
 
 test('parseConclusion reads the verdict and head, and never invents either', () => {
@@ -181,7 +220,7 @@ test('text from GitHub is shown as plain text: control and bidirectional charact
   const evil = `${cp(0x202e)}evil${cp(0)}${cp(0x1b)}[31m${cp(0x200b)}title`;
   const text = prReport({ pullRequest: pr({ title: evil, author: evil, headRef: evil, body: `line one\r\nline two${cp(0x202e)}${cp(0x2028)}line three${cp(0)}` }), comments: ok([comment(`${cp(0x202e)}bad${cp(0)}`, { author: evil })]) });
   assert.equal(new RegExp(`[${cp(0)}${cp(0x1b)}${cp(0x202e)}${cp(0x200b)}${cp(0x2028)}]`).test(text), false);
-  assert.match(text, /line one\nline two +line three/);
+  assert.match(text, /  line one\n  line two +line three/);
   const long = prReport({ pullRequest: pr({ title: 'x'.repeat(5000), body: 'y'.repeat(50000) }), comments: ok([comment('z'.repeat(9000))]) });
   assert.match(long, /… \(30000 more characters not shown\)/);
   assert.ok(Math.max(...long.split('\n').map((l) => l.length)) <= 20100);
