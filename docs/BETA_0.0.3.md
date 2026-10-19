@@ -1,16 +1,14 @@
-# Multiagent System 0.0.3 Beta 候選
+# Multiagent System 0.0.3 Beta
 
-這是供審查與實測的 prerelease 候選。它沒有宣稱完整產品、真實 CLI、真實帳號或雙平台使用流程已通過。
+這是供試用與實測的 prerelease。它沒有宣稱完整產品、真實 CLI、真實帳號或雙平台使用流程已通過。
 
 ## 取得與核對
 
-1. 在來源 commit 的 **Build / Package and inspect VSIX** job 下載與作業系統相符的 `multiagentsystem-0.0.3-beta-*` artifact。
-2. 解開 CI artifact；`multiagentsystem.vsix` 與 `release-candidate.json` 必須來自同一包。
-3. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`，且 `sourceCommit` 等於受審查的完整 commit。
-4. 計算 `multiagentsystem.vsix` 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
-5. GitHub Release 只能由人類管理者在上述證據與所需 CI 通過後建立，並勾選 **Set as a pre-release**。上傳同一份 VSIX 與 JSON，Release 說明附來源 commit、SHA-256、本文件的已知限制及回復方式。
+1. 從 [GitHub Beta Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta/release-candidate.json)。
+2. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`，且 `sourceCommit` 是 `e346ca92fad04dec7ce0cd0edc5552440474cd9d`。
+3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同：`afd5509c9152a6881d95d9901832a366a80a365c1884105b108ffce583e764df`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
 
-CI artifact 是短期審查材料，不是公開發行。此專案沒有設定 publisher，也沒有自動上架 Marketplace。
+此專案沒有設定 publisher，也沒有自動上架 Marketplace。Beta Release 的來源 commit 與目前 `main` 的文件更新可能不同；以上雜湊對應 Release 中的檔案。
 
 ## 安裝與升級
 
@@ -31,12 +29,10 @@ CI artifact 是短期審查材料，不是公開發行。此專案沒有設定 p
 - agy 沒有可核實的固定官方獨立資產與再散布依據，因此只提供手動安裝指引，不會自動部署。
 - Claude 額度需要使用者啟用 status line bridge；Codex／agy 缺少已接通的官方額度來源時維持未知。
 - 角色規則是否真正注入、帳號身份與 provider 能力只在有相應證據時顯示已核實；不同 CLI 的強制力仍有未驗證項目。
-- 發行候選不包含任何登入憑證、帳號資料、工作區內容、terminal transcript 或本機 session 資料。封裝掃描仍無法證明不存在未知格式或編碼的秘密，發布前需要人工檢查。
+- 此 VSIX 的封裝檢查未發現登入憑證、帳號資料、工作區內容、terminal transcript 或本機 session 資料；掃描仍無法證明不存在未知格式或編碼的秘密。
 
-## 人工發行門檻
+## 發行核對結果
 
-- PR 已由 PM Pass 並由人類合併；候選由預定發布的 main commit 重建。
-- Node 20 與 24、macOS 與 Windows 的必要 CI 全綠；VSIX verifier 與 publication scan 通過。
-- `release-candidate.json` 的來源 commit、版本、檔名、大小與 SHA-256 已人工比對。
-- Release 標為 prerelease／Beta，說明未宣稱實機、真 CLI、真帳號或完整產品驗收通過。
-- 發布動作由人類管理者執行；失敗時保留證據與原始 VSIX，不以重新壓縮的檔案沿用舊雜湊。
+- Release tag `v0.0.3-beta` 指向上述來源 commit，並標為 prerelease。
+- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Session observation、Account isolation 五個 GitHub Actions workflow 全部成功；封裝檢查通過，含 173 個檔案。
+- `release-candidate.json` 的來源 commit、版本、檔名、大小（621423 bytes）與 SHA-256 已比對；Release 說明列出未驗證事項。
