@@ -85,6 +85,7 @@ class SessionObservationCore {
       model: null,
       usage: new Map(),
       ended: false,
+      retracted: null,
       seen: new Set(),
       seenOrder: []
     });
@@ -102,6 +103,7 @@ class SessionObservationCore {
       return result(false, 'binding-mismatch');
     }
     if (session.seen.has(event.eventId)) return result(true, 'duplicate', { accepted: false });
+    if (session.retracted) return result(false, session.retracted);
     if (session.ended) return result(false, 'session-ended');
     if (!Number.isSafeInteger(event.sequence) || event.sequence < 0 || event.sequence <= session.lastSequence) {
       return result(false, 'out-of-order');
@@ -166,10 +168,27 @@ class SessionObservationCore {
     return result(true, 'accepted', { accepted: true });
   }
 
+  /**
+   * Withdraws everything seen for a session and refuses further evidence, because the evidence can no
+   * longer be tied to this session (for example the provider's own session identity changed). The
+   * snapshot reads as unknown with the given reason; only a new registration clears it.
+   */
+  retract(sessionId, reason) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return result(false, 'session-unknown');
+    if (!validCode(reason)) throw new TypeError('reason is invalid');
+    session.retracted = reason;
+    session.status = null;
+    session.model = null;
+    session.usage = new Map();
+    return result(true, 'retracted');
+  }
+
   snapshot(sessionId, at = this.now()) {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     if (!validTime(at)) throw new TypeError('snapshot time is invalid');
+    if (session.retracted) return unknownSnapshot(session.binding, at, session.retracted);
     if (!session.status) return unknownSnapshot(session.binding, at, 'not-observed');
 
     const statusFresh = isFresh(session.status, at);
