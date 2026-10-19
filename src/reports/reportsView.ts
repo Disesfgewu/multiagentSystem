@@ -464,9 +464,10 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const editor = vscode.window.activeTextEditor;
       const target = activeTarget();
       if (!editor || target?.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
-      const offset = editor.document.getText().indexOf('CHANGED FILES AND DIFF (plain text preview)');
+      // The whole first-column line: the same words inside some text from GitHub are never a heading.
+      const offset = editor.document.getText().indexOf('\nCHANGED FILES AND DIFF (plain text preview)\n');
       if (offset < 0) return { ok: false, code: 'diff-unavailable' };
-      const position = editor.document.positionAt(offset);
+      const position = editor.document.positionAt(offset + 1);
       editor.selection = new vscode.Selection(position, position);
       editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.AtTop);
       return { ok: true };
