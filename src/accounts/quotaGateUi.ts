@@ -20,7 +20,7 @@ const { gateLaunch, describePolicy, describeQuota, describeCurrentState, policyF
 const { runningSlots, reserveSlot, renewSlot, releaseSlot, RENEW_MS } = require('./quota-reservations') as {
   runningSlots(store: unknown, accountKey: string, now?: Date): { ok: boolean; running?: number; reason?: string };
   reserveSlot(input: Record<string, unknown>): { ok: boolean; reason?: string; decision?: { allowed: boolean; reasons: Array<{ code: string }>; reservation?: { accountKey: string; id: string } } };
-  renewSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date): { ok: boolean; renewed?: boolean };
+  renewSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date, leaseMs?: number, options?: { reacquire?: boolean }): { ok: boolean; renewed?: boolean; reacquired?: boolean };
   releaseSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date): { ok: boolean; released?: boolean };
   RENEW_MS: number;
 };
@@ -34,19 +34,49 @@ function reservationFailure(reason?: string): GateOutcome {
   return { ok: false, code: 'quota-gate', message };
 }
 
+// Releases that could not be written. While this window's process is running, a lease keeps counting
+// even past its expiry (an owner that is still there is assumed busy), so a release that never lands
+// would hold the slot until the window closes: it is retried until it does.
+const pendingReleases = new Map<string, { accountKey: string; id: string }>();
+let pendingTimer: ReturnType<typeof setInterval> | undefined;
+
+async function flushPendingReleases(): Promise<void> {
+  if (pendingReleases.size === 0) return;
+  const opened = await privateStorage()?.use();
+  if (!opened?.ok) return;
+  for (const [id, reservation] of [...pendingReleases]) {
+    if (releaseSlot(opened.store, reservation, new Date()).ok) pendingReleases.delete(id);
+  }
+  if (pendingReleases.size === 0 && pendingTimer) { clearInterval(pendingTimer); pendingTimer = undefined; }
+}
+
+function releaseLater(reservation: { accountKey: string; id: string }): void {
+  pendingReleases.set(reservation.id, reservation);
+  if (!pendingTimer) {
+    pendingTimer = setInterval(() => void flushPendingReleases(), RENEW_MS);
+    pendingTimer.unref?.();
+  }
+}
+
 function holdReservation(reservation: { accountKey: string; id: string }): GateOutcome {
   let released = false;
   let renewing = false;
-  let warned = false;
+  let warnedRefresh = false;
+  let warnedReacquired = false;
   const renew = async (): Promise<void> => {
     if (released || renewing) return;
     renewing = true;
     try {
       const opened = await privateStorage()?.use();
-      const result = opened?.ok ? renewSlot(opened.store, reservation, new Date()) : { ok: false };
-      if ((!result.ok || result.renewed !== true) && !warned) {
-        warned = true;
-        void vscode.window.showWarningMessage('The shared running-session reservation could not be refreshed. Check Private Storage diagnostics; new launches fail closed while storage is unavailable.');
+      // Released while storage was opening: renewing now would put a stopped session's slot back.
+      if (released) return;
+      const result = opened?.ok ? renewSlot(opened.store, reservation, new Date(), undefined, { reacquire: true }) : { ok: false };
+      if (result.ok && result.reacquired === true && !warnedReacquired) {
+        warnedReacquired = true;
+        void vscode.window.showWarningMessage('The shared running-session reservation of an agent that is still running had been lost. It was registered again, so this account may be above its running-agent limit until a session stops.');
+      } else if ((!result.ok || result.renewed !== true) && !warnedRefresh) {
+        warnedRefresh = true;
+        void vscode.window.showWarningMessage('The shared running-session reservation could not be refreshed. It still counts while this window is open; new launches fail closed while storage is unavailable. Check Private Storage diagnostics.');
       }
     } finally {
       renewing = false;
@@ -61,8 +91,8 @@ function holdReservation(reservation: { accountKey: string; id: string }): GateO
       released = true;
       clearInterval(timer);
       const opened = await privateStorage()?.use();
-      if (opened?.ok) releaseSlot(opened.store, reservation, new Date());
-      // If storage cannot be opened, the bounded lease expires without being revived.
+      const result = opened?.ok ? releaseSlot(opened.store, reservation, new Date()) : { ok: false };
+      if (!result.ok) releaseLater(reservation);
     }
   };
 }
@@ -77,6 +107,7 @@ function holdReservation(reservation: { accountKey: string; id: string }): GateO
 export async function gateAccountLaunch(accountProfileId: string, interactive: boolean, sessions: () => SessionUse[]): Promise<GateOutcome> {
   const accounts = await accountService(sessions);
   if (!accounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be checked because private storage is not ready, so no new agent was started.' };
+  await flushPendingReleases();
   const loadedProfile = accounts.service.get(accountProfileId);
   const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
   if (profile) registerProfileForQuota(profile);
