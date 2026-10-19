@@ -67,7 +67,7 @@ test('formatConsentManifest includes pinned repository, commit/version, SHA-256 
   assert.match(text, /# Research MCP Tool Security Manifest: arXiv Research MCP Server/);
   assert.match(text, /Repository.*https:\/\/github\.com\/blazickjp\/arxiv-mcp-server\.git/);
   assert.match(text, /Version.*v0\.8\.2/);
-  assert.match(text, /Integrity Digest.*sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c/);
+  assert.match(text, /Integrity Digest.*sha256:17f2eda9e3a8c38fe12b9055ac07459fe031af346f465b3d3025ff551010608d/);
   assert.match(text, /License.*Apache-2\.0/);
   assert.match(text, /Command.*arxiv-mcp-server/);
   assert.match(text, /Required Permissions/);
@@ -343,7 +343,9 @@ test('consent is outdated when the credentials a tool needs or the tools it expo
     'a tool description changed': { tools: base.tools.map((tool, index) => (index === 0 ? { ...tool, description: 'Does something else now' } : tool)) },
     'the tool name text changed': { name: 'Renamed Research Server' },
     'the tool description text changed': { description: 'A different promise' },
-    'the argument order changed': { command: [...base.command].reverse() }
+    'the argument order changed': { command: [...base.command].reverse(), assets: [] },
+    'a pinned asset hash changed': { assets: base.assets.map((asset, index) => (index === 0 ? { ...asset, sha256: '0'.repeat(64) } : asset)) },
+    'a pinned asset removed': { assets: base.assets.slice(1) }
   };
   for (const [label, change] of Object.entries(changes)) {
     const catalog = withChange(change); // every case must be a valid catalog entry: an invalid one fails loudly

@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { CANDIDATE_RESEARCH_TOOLS, validateCatalogItem } = require('./catalog');
+const { downloadReleaseAsset } = require('./download');
+const { extractEntry } = require('./archive');
 
 /**
  * Reviewed tool requirements and required permissions for academic/research MCP tools.
@@ -127,7 +129,7 @@ function consentFingerprint(tool) {
   // order carries no meaning are sorted, so reordering them does not ask again; the command is an argv
   // and keeps its order.
   const canonical = JSON.stringify({
-    format: 2,
+    format: 3,
     serverId: tool.serverId,
     name: tool.name,
     description: tool.description ?? null,
@@ -138,6 +140,9 @@ function consentFingerprint(tool) {
     status: tool.status ?? null,
     sandboxEnforced: tool.sandboxEnforced === true,
     command: [...tool.command],
+    assets: [...(tool.assets || [])]
+      .map((asset) => [asset.platform, asset.arch, asset.url, asset.format, asset.sha256, asset.entry])
+      .sort((left, right) => byText(left.join('|'), right.join('|'))),
     env: envKeys.map((key) => [key, tool.env[key] && tool.env[key].secret === true]),
     tools: [...(tool.tools || [])]
       .map((item) => [item.name, item.readOnly === true, item.description ?? null])
@@ -250,6 +255,7 @@ function revokeConsent(serverId, { store, root, now = () => new Date() } = {}) {
 }
 
 const PREPARED_MANIFEST = '.prepared.json';
+const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 
 /**
  * A prepared folder counts as ready only if it carries the manifest written when the verified bytes were
@@ -260,8 +266,10 @@ function preparedState(dir, tool) {
   try {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return 'not-installed';
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, PREPARED_MANIFEST), 'utf8'));
-    const executable = fs.lstatSync(path.join(dir, tool.command[0]));
-    return manifest && manifest.schema === 1 && manifest.fingerprint === consentFingerprint(tool) && executable.isFile() && !executable.isSymbolicLink()
+    const name = manifest && manifest.executable;
+    if (name !== tool.command[0] && name !== `${tool.command[0]}.exe`) return 'stale';
+    const executable = fs.lstatSync(path.join(dir, name));
+    return manifest.schema === 1 && manifest.fingerprint === consentFingerprint(tool) && executable.isFile() && !executable.isSymbolicLink()
       ? 'ready' : 'stale';
   } catch {
     return 'stale';
@@ -328,7 +336,10 @@ function listResearchTools({ store, catalog = CANDIDATE_RESEARCH_TOOLS, root } =
  *  - Atomically moves to destination.
  */
 async function prepareResearchTool(serverId, deps) {
-  const { store, root, boundary, download, catalog = CANDIDATE_RESEARCH_TOOLS, now = () => new Date(), assetBytes } = deps;
+  const {
+    store, root, boundary, download, catalog = CANDIDATE_RESEARCH_TOOLS, now = () => new Date(), assetBytes,
+    signal, progress, fetchImpl, platform = process.platform, arch = process.arch
+  } = deps;
 
   if (!isConsentActive(serverId, store, catalog)) {
     throw Object.assign(new Error(`Consent is required before preparing tool '${serverId}'.`), { code: 'consent-required' });
@@ -351,18 +362,52 @@ async function prepareResearchTool(serverId, deps) {
   // The asset is fetched and verified before anything is written. Without verified bytes nothing is
   // created at all (no folder, no placeholder script), so a missing download never looks installed.
   let bytes = assetBytes;
-  if (!bytes && typeof download === 'function') {
-    bytes = await download(valid.source, 64 * 1024 * 1024);
-  }
-  if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-    throw Object.assign(new Error(`No verified asset is available for tool '${valid.serverId}'. Nothing was written.`), { code: 'asset-unavailable' });
-  }
-  const computedHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  if (computedHash.toLowerCase() !== valid.integrity.toLowerCase()) {
-    throw Object.assign(
-      new Error(`Integrity hash mismatch: expected ${valid.integrity}, got ${computedHash}`),
-      { code: 'hash-mismatch', expected: valid.integrity, actual: computedHash }
-    );
+  let executableName = valid.command[0];
+  const asset = bytes ? undefined : (valid.assets || []).find((item) => item.platform === platform && item.arch === arch);
+  if (asset) {
+    // Production path: one pinned release archive for this platform, fetched through the restricted
+    // download layer, checked against its pinned SHA-256, then reduced to the one named executable.
+    let archive;
+    try {
+      archive = typeof download === 'function'
+        ? await download(asset.url, MAX_ASSET_BYTES, signal)
+        : await downloadReleaseAsset(asset, { signal, progress, fetchImpl });
+    } catch (error) {
+      const code = error && typeof error.code === 'string' ? error.code : 'download-failed';
+      throw Object.assign(new Error(`Download of '${valid.serverId}' failed (${code}). Nothing was written.`), { code: code === 'integrity-mismatch' ? 'hash-mismatch' : code });
+    }
+    if (signal && signal.aborted) {
+      throw Object.assign(new Error('Download was cancelled. Nothing was written.'), { code: 'download-cancelled' });
+    }
+    if (!(archive instanceof Uint8Array) || archive.length === 0) {
+      throw Object.assign(new Error(`No verified asset is available for tool '${valid.serverId}'. Nothing was written.`), { code: 'asset-unavailable' });
+    }
+    const archiveHash = createHash('sha256').update(archive).digest('hex');
+    if (archiveHash !== asset.sha256) {
+      throw Object.assign(new Error(`Integrity hash mismatch: expected sha256:${asset.sha256}, got sha256:${archiveHash}`), { code: 'hash-mismatch', expected: `sha256:${asset.sha256}`, actual: `sha256:${archiveHash}` });
+    }
+    try {
+      bytes = extractEntry(archive, asset.format, asset.entry);
+    } catch (error) {
+      throw Object.assign(new Error(`The downloaded archive for '${valid.serverId}' is not usable (${error && error.code}). Nothing was written.`), { code: 'archive-invalid' });
+    }
+    executableName = asset.entry;
+  } else {
+    if (!bytes && !(valid.assets || []).length && typeof download === 'function') {
+      // Test-only legacy hook: a caller-supplied downloader for an entry without pinned assets.
+      bytes = await download(valid.source, MAX_ASSET_BYTES);
+    }
+    if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+      const reason = (valid.assets || []).length === 0 ? 'The catalog has no pinned release asset for it' : `The catalog has no pinned asset for ${platform}/${arch}`;
+      throw Object.assign(new Error(`No verified asset is available for tool '${valid.serverId}'. ${reason}. Nothing was written.`), { code: 'asset-unavailable' });
+    }
+    const computedHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    if (computedHash.toLowerCase() !== valid.integrity.toLowerCase()) {
+      throw Object.assign(
+        new Error(`Integrity hash mismatch: expected ${valid.integrity}, got ${computedHash}`),
+        { code: 'hash-mismatch', expected: valid.integrity, actual: computedHash }
+      );
+    }
   }
 
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -371,13 +416,15 @@ async function prepareResearchTool(serverId, deps) {
   fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
 
   try {
-    const executableName = valid.command[0];
     fs.writeFileSync(path.join(stagingDir, executableName), bytes, { mode: 0o755 });
     fs.writeFileSync(path.join(stagingDir, PREPARED_MANIFEST), JSON.stringify({
       schema: 1, serverId: valid.serverId, version: valid.version, integrity: valid.integrity,
       fingerprint: consentFingerprint(valid), executable: executableName, verifiedAt: now().toISOString()
     }), { mode: 0o600 });
 
+    if (signal && signal.aborted) {
+      throw Object.assign(new Error('Preparation was cancelled before anything was installed.'), { code: 'download-cancelled' });
+    }
     // Swap the old install aside first so a failed rename restores it instead of losing a good install.
     const finalDir = path.join(root, valid.serverId);
     let backup = null;
