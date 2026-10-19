@@ -63,10 +63,15 @@ function readRecord(file) {
 }
 
 /** A cheap change marker that never follows a link: it changes when the file is replaced or rewritten. */
-/** Removes record files nobody has written to for STALE_MS. Plain files with a record name only. */
+/** Removes record files nobody has written to for STALE_MS: plain files with a record name that also read back as a valid record, in a real (not linked) folder. */
 function sweepStale(dir, nowMs, keep = new Set()) {
   let names;
-  try { names = fs.readdirSync(dir); } catch { return 0; }
+  try {
+    // A link here would list (and delete from) whatever it points at.
+    const info = fs.lstatSync(dir);
+    if (!info.isDirectory() || info.isSymbolicLink()) return 0;
+    names = fs.readdirSync(dir);
+  } catch { return 0; }
   let removed = 0;
   for (const name of names.slice(0, MAX_SWEEP)) {
     if (!RECORD_FILE.test(name) || keep.has(name)) continue;
@@ -74,11 +79,23 @@ function sweepStale(dir, nowMs, keep = new Set()) {
     try {
       const info = fs.lstatSync(file);
       if (!info.isFile() || info.isSymbolicLink() || nowMs - info.mtimeMs < STALE_MS) continue;
+      // Only a recognizable record of this feature, not any old file that happens to have such a name.
+      if (readRecord(file) === null) continue;
       fs.rmSync(file, { force: true });
       removed += 1;
     } catch { /* Best effort: a file that cannot be judged stays. */ }
   }
   return removed;
+}
+
+const realFolder = (dir) => {
+  try { const info = fs.lstatSync(dir); return info.isDirectory() && !info.isSymbolicLink(); } catch { return false; }
+};
+
+/** Deletes one record file, but never through a linked folder. */
+function removeRecord(file) {
+  if (!realFolder(path.dirname(file))) return;
+  try { fs.rmSync(file, { force: true }); } catch { /* An unreadable old file stays unknown. */ }
 }
 
 function fileSignature(file) {
@@ -160,7 +177,7 @@ class SessionObservationRuntime {
       return { env, active: false };
     }
     const file = observationPath(env.CLAUDE_CONFIG_DIR, sessionId);
-    try { fs.rmSync(file, { force: true }); } catch { /* An unreadable old file stays unknown. */ }
+    removeRecord(file);
     sweepStale(path.dirname(file), this.nowMs(), new Set([...this.bindings.values()].map((binding) => path.basename(binding.file))));
     this.core.register({ sessionId, provider, accountProfileId });
     this.bindings.set(sessionId, {
@@ -193,7 +210,7 @@ class SessionObservationRuntime {
     const binding = this.bindings.get(sessionId);
     this.bindings.delete(sessionId);
     if (binding) {
-      try { fs.rmSync(binding.file, { force: true }); } catch { /* Local cleanup failure exposes no data. */ }
+      removeRecord(binding.file);
     }
     this.#syncTimer();
   }

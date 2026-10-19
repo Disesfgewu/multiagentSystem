@@ -8,6 +8,7 @@ const path = require('node:path');
 const { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS } = require('../../src/observations/runtime');
 
 const NOW = '2026-01-01T00:00:00.000Z';
+const RECORD = JSON.stringify({ schemaVersion: 1, eventId: 'e', observedAt: NOW, sequence: 1, statusLine: { model: { id: 'm' } } });
 
 test('runtime binds a sanitized status-line record to exactly one managed session and account', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-runtime-'));
@@ -206,7 +207,7 @@ test('starting a session sweeps record files left by sessions that never cleaned
     fs.mkdirSync(dir, { recursive: true });
     const write = (name, ageMs) => {
       const file = path.join(dir, name);
-      fs.writeFileSync(file, '{}');
+      fs.writeFileSync(file, RECORD);
       const at = new Date(Date.now() - ageMs);
       fs.utimesSync(file, at, at);
       return file;
@@ -215,6 +216,9 @@ test('starting a session sweeps record files left by sessions that never cleaned
     const fresh = write('other-window.json', 60_000);
     const foreign = write('notes.txt', STALE_MS * 5);
     const odd = write('..hidden.json', STALE_MS * 5);
+    const notARecord = write('unrelated.json', STALE_MS * 5);
+    fs.writeFileSync(notARecord, '{"setting":true}');
+    fs.utimesSync(notARecord, new Date(Date.now() - STALE_MS * 5), new Date(Date.now() - STALE_MS * 5));
     const linkTarget = path.join(root, 'target.json');
     fs.writeFileSync(linkTarget, '{}');
     const link = path.join(dir, 'linked.json');
@@ -224,11 +228,35 @@ test('starting a session sweeps record files left by sessions that never cleaned
     const runtime = new SessionObservationRuntime();
     runtime.prepare({ sessionId: 'session-new', provider: 'claude', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
     assert.equal(fs.existsSync(stale), false, 'a day-old record is gone');
-    for (const kept of [fresh, foreign, odd, linkTarget]) assert.equal(fs.existsSync(kept), true, kept);
+    for (const kept of [fresh, foreign, odd, notARecord, linkTarget]) assert.equal(fs.existsSync(kept), true, kept);
     assert.equal(fs.lstatSync(link).isSymbolicLink(), true, 'a link is never followed or removed by the sweep');
     assert.equal(sweepStale(path.join(root, 'missing'), Date.now()), 0, 'a missing folder is fine');
     runtime.dispose();
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a linked session-observations folder is never listed, swept or deleted from, through the real prepare and release paths', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-link-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-outside-'));
+  try {
+    const old = new Date(Date.now() - STALE_MS * 5);
+    const victims = ['unrelated.json', 'session-new.json'].map((name) => {
+      const file = path.join(outside, name);
+      fs.writeFileSync(file, RECORD);
+      fs.utimesSync(file, old, old);
+      return file;
+    });
+    fs.symlinkSync(outside, path.dirname(observationPath(root, 'x')));
+    assert.equal(sweepStale(path.dirname(observationPath(root, 'x')), Date.now()), 0);
+    const runtime = new SessionObservationRuntime();
+    runtime.prepare({ sessionId: 'session-new', provider: 'claude', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
+    runtime.release('session-new');
+    runtime.dispose();
+    for (const file of victims) assert.equal(fs.existsSync(file), true, 'nothing outside the account folder is removed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   }
 });
