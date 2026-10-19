@@ -205,21 +205,24 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
         if (interactive) void vscode.window.showErrorMessage('Tool setup is unavailable because the extension storage folder could not be verified outside the project.');
         return refused;
       }
-      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>): Promise<GhStatus> => {
+      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>, token?: vscode.CancellationToken): Promise<GhStatus> => {
         let last = 0;
+        const controller = new AbortController();
+        token?.onCancellationRequested(() => controller.abort());
         return this.ghManager.prepare(({ received, total }) => {
           if (!progress || !total || total <= 0) return;
           const percent = Math.min(100, Math.floor(received / total * 100));
           progress.report({ increment: Math.max(0, percent - last), message: `${percent}% downloaded and awaiting verification` });
           last = percent;
-        });
+        }, controller.signal);
       };
       const result = interactive
-        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified GitHub CLI', cancellable: false }, run)
+        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified GitHub CLI', cancellable: true }, (progress, token) => run(progress, token))
         : await run();
       this.syncPath('gh', result);
       if (interactive) {
         if (result.state === 'ready') void vscode.window.showInformationMessage(`GitHub CLI ${result.version} is verified and ready for new managed terminals.`);
+        else if (result.state === 'missing' && result.reason === 'download-cancelled') void vscode.window.showInformationMessage('GitHub CLI setup was cancelled. Existing files were left clean; retry when ready.');
         else void vscode.window.showErrorMessage('GitHub CLI setup did not complete. Open Tools Setup for the current status and retry.');
       }
       return result;
@@ -237,21 +240,24 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
         if (interactive) void vscode.window.showErrorMessage('Tool setup is unavailable because the extension storage folder could not be verified outside the project.');
         return refused;
       }
-      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>): Promise<CodexStatus> => {
+      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>, token?: vscode.CancellationToken): Promise<CodexStatus> => {
         let last = 0;
+        const controller = new AbortController();
+        token?.onCancellationRequested(() => controller.abort());
         return this.codexManager.prepare(({ received, total }) => {
           if (!progress || !total || total <= 0) return;
           const percent = Math.min(100, Math.floor(received / total * 100));
           progress.report({ increment: Math.max(0, percent - last), message: `${percent}% downloaded and awaiting verification` });
           last = percent;
-        });
+        }, controller.signal);
       };
       const result = interactive
-        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified Codex CLI', cancellable: false }, run)
+        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified Codex CLI', cancellable: true }, (progress, token) => run(progress, token))
         : await run();
       this.syncPath('codex', result);
       if (interactive) {
         if (result.state === 'ready') void vscode.window.showInformationMessage(`Codex CLI ${result.version} is verified and ready for new managed terminals. Sign-in is still required.`);
+        else if (result.state === 'missing' && result.reason === 'download-cancelled') void vscode.window.showInformationMessage('Codex CLI setup was cancelled. Existing files were left clean; retry when ready.');
         else void vscode.window.showErrorMessage('Codex CLI setup did not complete. Open Tools Setup for the current status and retry.');
       }
       return result;
@@ -269,21 +275,24 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
         if (interactive) void vscode.window.showErrorMessage('Tool setup is unavailable because the extension storage folder could not be verified outside the project.');
         return refused;
       }
-      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>): Promise<ClaudeStatus> => {
+      const run = async (progress?: vscode.Progress<{ message?: string; increment?: number }>, token?: vscode.CancellationToken): Promise<ClaudeStatus> => {
         let last = 0;
+        const controller = new AbortController();
+        token?.onCancellationRequested(() => controller.abort());
         return this.claudeManager.prepare(({ received, total }) => {
           if (!progress || !total || total <= 0) return;
           const percent = Math.min(100, Math.floor(received / total * 100));
           progress.report({ increment: Math.max(0, percent - last), message: `${percent}% downloaded and awaiting verification` });
           last = percent;
-        });
+        }, controller.signal);
       };
       const result = interactive
-        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified Claude Code CLI', cancellable: false }, run)
+        ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Preparing verified Claude Code CLI', cancellable: true }, (progress, token) => run(progress, token))
         : await run();
       this.syncPath('claude', result);
       if (interactive) {
         if (result.state === 'ready') void vscode.window.showInformationMessage(`Claude Code CLI ${result.version} is verified and ready for new managed terminals. Sign-in is still required.`);
+        else if (result.state === 'missing' && result.reason === 'download-cancelled') void vscode.window.showInformationMessage('Claude Code CLI setup was cancelled. Existing files were left clean; retry when ready.');
         else void vscode.window.showErrorMessage('Claude Code CLI setup did not complete. Open Tools Setup for the current status and retry.');
       }
       return result;
@@ -303,21 +312,29 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     // and its official asset is large, so it is prepared only after the user invokes its visible
     // Tools Setup action. A CLI download is never treated as consent to sign in or enable a provider.
     if (gh.state === 'ready' || gh.state === 'unsupported') return;
-    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'First-use setup: preparing verified GitHub CLI', cancellable: false }, async (progress) => {
+    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'First-use setup: preparing verified GitHub CLI', cancellable: true }, async (progress, token) => {
       let last = 0;
       this.preparingGh = true;
       this.refresh();
+      const controller = new AbortController();
+      token.onCancellationRequested(() => controller.abort());
       try {
         return await this.ghManager.prepare(({ received, total }) => {
           if (!total || total <= 0) return;
           const percent = Math.min(100, Math.floor(received / total * 100));
           progress.report({ increment: Math.max(0, percent - last), message: `${percent}% downloaded and awaiting verification` });
           last = percent;
-        });
+        }, controller.signal);
       } finally { this.preparingGh = false; this.refresh(); }
     });
     this.syncPath('gh', result);
-    if (result.state !== 'ready') void vscode.window.showWarningMessage('First-use tool setup needs attention. Open Multiagent → Tools Setup to see the unverified or missing item.');
+    if (result.state !== 'ready') {
+      if (result.state === 'missing' && result.reason === 'download-cancelled') {
+        void vscode.window.showInformationMessage('First-use tool setup was cancelled. You can retry anytime from Multiagent → Tools Setup.');
+      } else {
+        void vscode.window.showWarningMessage('First-use tool setup needs attention. Open Multiagent → Tools Setup to see the unverified or missing item.');
+      }
+    }
   }
 
   async runDiagnostics(options?: { interactive?: boolean; probeSecrets?: boolean }): Promise<{ ok: true; report: Record<string, any>; text: string; uri: string }> {

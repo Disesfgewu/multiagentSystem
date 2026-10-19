@@ -189,3 +189,39 @@ test('two managers preparing at once on the same root never delete each other\'s
   assert.ok(ids.includes(pointer.installId), 'the pointer names an install that still exists');
   for (const result of results) if (result.state === 'ready') assert.equal(fs.existsSync(result.executable), true, 'each prepare\'s executable is still there');
 });
+
+test('prepare() handles cancellation via signal cleanly: staging files are removed, ready install is preserved, and retry succeeds', async (t) => {
+  const root = world(t);
+  const controller = new AbortController();
+  let downloadStarted = false;
+  const manager = new ManagedClaude({
+    root,
+    release: release(),
+    download: async (_url, _max, _progress, signal) => {
+      downloadStarted = true;
+      assert.ok(signal);
+      controller.abort();
+      if (signal?.aborted) throw new Error('download-cancelled');
+      return binary;
+    },
+    newId: () => 'cancelled-attempt'
+  });
+
+  const cancelled = await manager.prepare(undefined, controller.signal);
+  assert.equal(downloadStarted, true);
+  assert.deepEqual(cancelled, { state: 'missing', reason: 'download-cancelled' });
+  assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'staging-claude-2-1-89-darwin-arm64-cancelled-attempt')), false, 'staging directory was removed on cancellation');
+
+  // Retry after cancellation recovers cleanly
+  const retryManager = new ManagedClaude({ root, release: release(), download: async () => binary, newId: () => 'retry-attempt' });
+  const recovered = await retryManager.prepare();
+  assert.equal(recovered.state, 'ready');
+
+  // When already ready, calling prepare with an aborted signal preserves the ready installation
+  const abortedAlready = new AbortController();
+  abortedAlready.abort();
+  const preserved = await retryManager.prepare(undefined, abortedAlready.signal);
+  assert.equal(preserved.state, 'ready', 'existing ready install is preserved when signal is aborted');
+});
+
