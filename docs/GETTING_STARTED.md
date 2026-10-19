@@ -9,6 +9,12 @@
 5. 從命令選單執行 **Multiagent: Open Four Native Terminals**。擴充套件在目前專案開四個原生 shell（PM、Worker 1–3），以 2×2 排列；可拖動終端分頁重新排列。此動作只開 shell，不會自動啟動或登入四個 CLI。選擇身份組和帳號後，可使用對應啟動命令在原生 terminal 開始 session。若已有部分同名 terminal，先關閉舊組再建立新的四格。
 6. 要查看 Issue／PR，使用 **Issues Report**／**PRs Report**，點選清單項目後在編輯器讀取報告。報告開頭的 **OPEN DISCUSSION** 可跳到留言與 review；PR 另有 **OPEN CODE CHANGES**，可點選每個檔名在套件內讀取 GitHub 回傳的 patch 全文。GitHub 未提供 patch 或讀取不完整時會明示未知。PR 合併權限預設為 `human`；**Multiagent: Configure Pull Request Merge Authority** 可在已開啟的 GitHub 專案中選擇 `human` 或 `pm`，並要求確認。`pm` 只允許已設定的 PM 發布者在最新 head、review、CI、對話、分支規則與發布掃描等 gate 通過後明確觸發合併；設定不會使 CI 通過後自動合併，也不會改變 GitHub 站外權限。
 
+## 看每個 agent 的程式碼狀態與撞車風險
+
+- **Agent 總覽的 Git 證據**：每個 agent 列在 tooltip 多一行「Git (local, read just now)」，寫出它工作資料夾的未提交變更數、未追蹤檔數、相對上游領先／落後幾個 commit 與 HEAD 短 id；有未提交變更時列尾會標「uncommitted changes」。讀不到（不是 Git 目錄、逾時、Git 失敗）一律顯示「Git: unknown」，沒有設定上游就寫「upstream unknown」，不會顯示成乾淨或 0。這些資訊只來自本機 Git：讀取時不鎖 index、不執行 repo 設定的檔案監看或內容篩選器；畫面不顯示路徑、檔名或 commit 內容。這不是 PR 或 CI 的狀態，那些仍以 GitHub 讀取結果為準。
+- **多個 worktree 改到同一個檔案**：執行 **Multiagent: Find Files Changed in More Than One Worktree**，會列出目前專案各 worktree 之間「同一個檔案同時被修改」的清單與各自的分支（已提交、已暫存／未暫存與未追蹤檔都算）；選一個檔案可在編輯器打開。某個 worktree 讀不到時，報告會寫「無法讀取該 worktree 的變更，所以它的重疊未知」，不會當成沒有重疊。macOS 與 Windows 上大小寫不同或 Unicode 寫法不同的同名檔視為同一個檔案。這只比對檔案名稱，不判斷同一個檔案的不同區段是否真的會衝突。
+- 這兩項都是唯讀，不會改動任何檔案或 Git 狀態；真實大型 repo 的耗時與兩平台實機行為尚待 #135 驗收。
+
 ## 出錯時
 
 | 畫面或情境 | 可採取的動作 |
