@@ -6,7 +6,7 @@ const path = require('node:path');
 const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
 const { savePolicy, loadPolicy, decideDispatch } = require('../../src/accounts/quota-policy');
-const { runningSlots, reserveSlot, releaseSlot, recoverOrphanedSlots } = require('../../src/accounts/quota-reservations');
+const { runningSlots, reserveSlot, releaseSlot, renewSlot, recoverOrphanedSlots } = require('../../src/accounts/quota-reservations');
 const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, readingsTrust, trustedReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
@@ -21,7 +21,8 @@ const duplicatesOf = (store, id, profiles) => {
 // What the gate shows and the reservation rechecks: the limits coordinated over the whole group.
 const coordRead = (store, id, ids) => (ids.length > 0 ? coordinatePolicies([loadPolicy(store, id), ...ids.map((other) => loadPolicy(store, other))]) : loadPolicy(store, id));
 const recordIdentityAt = (store, id, identity, at) => assert.equal(recordVerifiedIdentity(store, id, identity, at).ok, true);
-const recordIdentity = (store, id, identity) => assert.equal(recordVerifiedIdentity(store, id, identity, NOW).ok, true);
+// Profiles in these tests were first verified an hour before the readings they are asked about (the first verification is a barrier too).
+const recordIdentity = (store, id, identity) => assert.equal(recordVerifiedIdentity(store, id, identity, new Date(NOW.getTime() - 3_600_000)).ok, true);
 
 const COLLECTION_NAMES = [...COLLECTIONS, 'quotaReservations'];
 const NOW = new Date('2026-10-19T10:00:00.000Z');
@@ -521,15 +522,30 @@ test('a session that was recovered instead of ended moves the barrier the same w
   assert.equal(gateDecision(store, service, p1.id, { [p1.id]: [percent(20, 1_000)] }).decision.allowed, true);
 });
 
-test('a profile that never changed account keeps all its readings, old or new', (t) => {
+test('the first verification is a barrier too: readings written before the extension knew the account are not trusted, later ones are', (t) => {
   const { store, service } = setupEnvironment(t);
   const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
-  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
-  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
-  assert.deepEqual(readingsTrust(store, p1.id), { ok: true, trusted: true, since: null });
-  assert.equal(trustedReadings([percent(10, 3_600_000)], readingsTrust(store, p1.id)).length, 1);
-  assert.deepEqual(trustedReadings([percent(10, 1)], { ok: false, trusted: false, since: null }), [], 'unreadable trust uses nothing');
-  assert.deepEqual(readingsTrust(store, 'never-verified'), { ok: true, trusted: true, since: null }, 'a profile without a link has no change to account for');
+  recordVerifiedIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 30_000));
+  recordVerifiedIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 5_000));
+  const trust = readingsTrust(store, p1.id);
+  assert.equal(trust.trusted, true);
+  assert.equal(trust.since, NOW.getTime() - 30_000, 'verifying the same account again does not move the barrier');
+  assert.equal(trustedReadings([percent(10, 40_000)], trust).length, 0, 'written before the account was first verified');
+  assert.equal(trustedReadings([percent(10, 10_000)], trust).length, 1, 'written after');
+  assert.deepEqual(trustedReadings([percent(10, 10_000)], { ok: false, trusted: false, since: null }), [], 'unreadable trust uses nothing');
+  assert.deepEqual(readingsTrust(store, 'never-verified'), { ok: true, trusted: true, since: null }, 'a profile without a link has nothing to account for');
+});
+
+test('a session already running when the profile was first verified keeps its readings untrusted until it ends', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [], now: NOW, leaseId: LEASE_A, approval: 'override' });
+  assert.equal(taken.ok, true, JSON.stringify(taken));
+  recordVerifiedIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 30_000));
+  assert.equal(readingsTrust(store, p1.id).trusted, false, 'it was started under an account nobody had verified');
+  assert.equal(releaseSlot(store, taken.decision.reservation, new Date(NOW.getTime() - 10_000)).ok, true);
+  assert.equal(readingsTrust(store, p1.id).trusted, true);
 });
 
 test('a profile with a running lease cannot be removed, so its siblings keep counting it; once nothing runs, removal also drops its account link', async (t) => {
@@ -552,4 +568,67 @@ test('a profile with a running lease cannot be removed, so its siblings keep cou
   assert.equal(removed.ok, true);
   assert.equal(store.get('quotaReservations', `identity-${p1.id}`).found, false, 'its account link went with it');
   assert.deepEqual(linkedProfiles(store, p2.id, [p2.id]).ids, []);
+});
+
+test('a session recovered by mistake and registered again by its still-running window is put back among the untrusted ones', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
+  assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  const at = (secondsAgo) => new Date(NOW.getTime() - secondsAgo * 1000);
+  const host = { ownerPid: 4242, ownerHost: 'host-a' };
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [percent(10, 61_000)], now: at(60), leaseId: LEASE_A, ...host, isOwnerAlive: () => true });
+  assert.equal(taken.decision.allowed, true);
+  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), at(30));
+  assert.equal(readingsTrust(store, p1.id).trusted, false);
+  // Someone confirms a recovery that turns out to be wrong: the old window is alive and renews, which registers the lease again.
+  assert.deepEqual(recoverOrphanedSlots(store, p1.id, at(20), { ownerHost: 'host-a', isOwnerAlive: () => false }), { ok: true, recovered: 1 });
+  assert.equal(readingsTrust(store, p1.id).trusted, true, 'with the lease gone nothing from before the change is running');
+  assert.deepEqual(renewSlot(store, taken.decision.reservation, at(10), 60_000, { reacquire: true, ...host, isOwnerAlive: () => true }), { ok: true, renewed: true, reacquired: true });
+  assert.equal(readingsTrust(store, p1.id).trusted, false, 'registered again: its readings are not trusted again');
+  assert.equal(releaseSlot(store, taken.decision.reservation, at(5)).ok, true);
+  assert.equal(readingsTrust(store, p1.id).trusted, true);
+  assert.equal(trustedReadings([percent(20, 8_000)], readingsTrust(store, p1.id)).length, 0, 'what it wrote before it ended stays untrusted');
+});
+
+test('the group and the trust of its readings are checked again inside the transaction that takes the lease', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  assert.equal(savePolicy(store, p1.id, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  const look = () => resolveGroup(store, () => service.list(), p1.id);
+  const before = look();
+  assert.deepEqual(before.ids, []);
+  // Between the look and the reservation another window verifies p2 as the same account, and p2 has a running agent.
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, p2.id, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  const taken = reserveSlot({ store, accountKey: p2.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p2.id), observations: [reading()], now: NOW, leaseId: LEASE_B });
+  assert.equal(taken.decision.allowed, true);
+  const stale = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: before.ids, expectedGroupFingerprint: before.fingerprint, expectedPolicyRead: loadPolicy(store, p1.id), observations: [reading()], now: NOW, leaseId: LEASE_A });
+  assert.deepEqual([stale.ok, stale.reason], [false, 'group-changed'], 'the group read before p2 joined is not good enough');
+  assert.equal(runningSlots(store, p1.id, NOW, { linkedAccountKeys: [p2.id] }).running, 1, 'and no lease was taken');
+  const after = look();
+  assert.deepEqual(after.ids, [p2.id]);
+  const blocked = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: after.ids, expectedGroupFingerprint: after.fingerprint, expectedPolicyRead: coordRead(store, p1.id, after.ids), observations: [reading()], now: NOW, leaseId: LEASE_A });
+  assert.deepEqual([blocked.ok, blocked.decision.allowed, blocked.decision.reasons[0].code], [true, false, 'concurrency-limit'], 'with the current group the shared limit holds');
+  // A barrier that moved in between is caught the same way.
+  const beforeSwitch = look();
+  recordIdentityAt(store, p2.id, verifiedIdentity(p2.id, 'bob@example.com'), new Date(NOW.getTime() - 1_000));
+  const switched = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: beforeSwitch.ids, expectedGroupFingerprint: beforeSwitch.fingerprint, expectedPolicyRead: coordRead(store, p1.id, beforeSwitch.ids), observations: [reading()], now: NOW, leaseId: LEASE_A });
+  assert.deepEqual([switched.ok, switched.reason], [false, 'group-changed']);
+});
+
+test('the leftover link of a profile that no longer exists does not make every launch of its old siblings fail', async (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  // A link left behind by an older version: the profile record is gone, its identity document is not.
+  assert.equal(store.delete('profiles', p2.id).ok, true);
+  const group = resolveGroup(store, () => service.list(), p1.id);
+  assert.deepEqual(group.ids, []);
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: group.ids, expectedGroupFingerprint: group.fingerprint, expectedPolicyRead: loadPolicy(store, p1.id), observations: [], now: NOW, leaseId: LEASE_A });
+  assert.deepEqual([taken.ok, taken.decision.allowed], [true, true]);
 });
