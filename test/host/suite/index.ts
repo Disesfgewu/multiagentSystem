@@ -991,8 +991,19 @@ export async function run(): Promise<void> {
     } finally {
       (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
     }
+    // The editor removes a closed terminal from its list a moment after the close. So that a slow removal cannot be
+    // mistaken for a duplicate, wait (bounded) until every terminal of the group is one of the ones that were open
+    // before and still running. A terminal that was really created stays in the list and the wait ends without it
+    // going away, so the assertions below still fail on it. Nothing in this wait is a retry of the command.
+    const describe = (list: vscode.Terminal[]): string => JSON.stringify(list.map((terminal) => ({ name: terminal.name, known: openBefore.includes(terminal), exited: terminal.exitStatus === undefined ? null : (terminal.exitStatus.code ?? 'unknown') })));
+    try {
+      await waitFor(() => { const current = groupTerminals(); return current.length === EXPECTED_TITLES.length && current.every((terminal) => openBefore.includes(terminal) && terminal.exitStatus === undefined) ? current : undefined; }, 5000);
+    } catch {
+      // The assertions below report the failure; the log says what was there, to tell a real duplicate from timing.
+    }
     const openAfter = groupTerminals();
-    assert.equal(openAfter.length, EXPECTED_TITLES.length, 'rerunning opens no extra terminal of the group');
+    console.log(`host smoke: group terminals before rerun ${describe(openBefore)}; after ${describe(openAfter)}`);
+    assert.equal(openAfter.length, EXPECTED_TITLES.length, `rerunning opens no extra terminal of the group: ${describe(openAfter)}`);
     assert.ok(openAfter.every((terminal) => openBefore.includes(terminal)) && openBefore.every((terminal) => openAfter.includes(terminal)), 'rerunning focuses the very same terminals: none created, none replaced');
     assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
