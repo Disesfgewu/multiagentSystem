@@ -10,7 +10,6 @@ const {
   resolveGroup,
   assessLaunchIdentity,
   readLinks,
-  deduplicateQuotaObservations,
   groupReadings,
   coordinatePolicies
 } = require('../../src/accounts/identity-registry');
@@ -102,21 +101,6 @@ test('linked profiles and profiles that are the same account now are told apart'
   assert.deepEqual(linkedProfiles(store, 'p1', all), { ok: true, ids: ['p2', 'p3'], current: [], known: true });
 });
 
-test('usage readings join only from profiles that are the same account now, and the highest valid actual percentage wins among them', () => {
-  const field = 'quota.five_hour.used_percent';
-  const own = [reading(field, 95, 60_000, 600_000)];
-  const sameNow = [reading(field, 10, 1_000, 600_000)];
-  const history = [reading(field, 5, 500, 600_000)];
-  const byId = new Map([['same', sameNow], ['moved', history]]);
-  assert.equal(groupReadings(own, ['same'], byId, NOW)[0].value, 95, 'a lower, newer figure never hides the higher one: it may come from a stale link');
-  assert.equal(groupReadings(sameNow, ['same-too'], new Map([['same-too', own]]), NOW)[0].value, 95, 'whichever side holds it');
-  assert.equal(groupReadings(own, [], byId, NOW)[0].value, 95, 'a profile that moved away contributes nothing');
-  assert.equal(groupReadings(own, ['same', 'missing'], byId, NOW)[0].value, 95, 'a profile with no readings is skipped');
-  assert.equal(groupReadings(own, [], new Map(), NOW), own, 'nothing to merge returns the profile\'s own readings');
-  const expired = [reading(field, 99, 700_000, 600_000)];
-  assert.equal(groupReadings(sameNow, ['old'], new Map([['old', expired]]), NOW)[0].value, 10, 'an expired reading is not used at all');
-});
-
 test('at launch the account the CLI reports now is compared with the one that was verified', (t) => {
   const { store } = open(t);
   recordVerifiedIdentity(store, 'p1', identity(A), NOW);
@@ -152,27 +136,28 @@ const reading = (field, value, ageMs, validForMs, confidence = 'actual') => obse
   observedAt: new Date(NOW.getTime() - ageMs), validForMs
 });
 
-test('deduplicated usage keeps the highest valid actual percentage per window and never sums', () => {
+test('a sibling\'s reading may only make the decision stricter: it never fills, replaces or lowers the profile\'s own', () => {
   const field = 'quota.five_hour.used_percent';
-  const merged = deduplicateQuotaObservations([[reading(field, 60, 100_000, 600_000)], [reading(field, 75, 10_000, 600_000), reading('quota.seven_day.used_percent', 40, 10_000, 600_000)]], NOW);
-  assert.equal(merged.find((o) => o.field === field).value, 75);
-  assert.equal(merged.find((o) => o.field === 'quota.seven_day.used_percent').value, 40);
-  assert.equal(merged.length, 2);
+  const other = 'quota.seven_day.used_percent';
+  const own = [reading(field, 50, 60_000, 600_000)];
+  const sibling = (value, ageMs = 1_000, validFor = 600_000, confidence = 'actual', name = field) => new Map([['s', [reading(name, value, ageMs, validFor, confidence)]]]);
+  assert.equal(groupReadings(own, ['s'], sibling(95), NOW)[0].value, 95, 'a higher valid actual figure tightens');
+  assert.equal(groupReadings(own, ['s'], sibling(10), NOW)[0].value, 50, 'a lower, newer figure never lowers it');
+  assert.equal(groupReadings(own, ['s'], sibling(95, 1_000, 600_000, 'estimated'), NOW)[0].value, 50, 'an estimate is not a reading to tighten with');
+  assert.equal(groupReadings(own, ['s'], sibling(95, 700_000, 600_000), NOW)[0].value, 50, 'an expired figure is not used');
+  assert.equal(groupReadings(own, ['s'], sibling(95, 1_000, 600_000, 'actual', other), NOW)[0].value, 50, 'another window is another window');
+  assert.equal(groupReadings(own, [], sibling(95), NOW), own, 'no current sibling, nothing changes');
+  assert.equal(groupReadings(own, ['missing'], sibling(95), NOW)[0].value, 50);
 });
 
-test('a newer weaker reading never hides a valid actual one', () => {
+test('what is missing, unknown or expired in a profile\'s own readings stays so: a sibling cannot fill it in', () => {
   const field = 'quota.five_hour.used_percent';
-  const actual = reading(field, 90, 60_000, 600_000);
-  const newerEstimate = reading(field, 10, 1_000, 600_000, 'estimated');
-  const newerButExpired = reading(field, 5, 2_000, 1_000);
-  const unknownNewer = observe(field, null, { unit: 'percent', scope: 'account', source: 'claude status line', observedAt: new Date(NOW.getTime() - 500), reason: 'not-reported' });
-  for (const weaker of [newerEstimate, newerButExpired, unknownNewer]) {
-    assert.equal(deduplicateQuotaObservations([[actual], [weaker]], NOW)[0].value, 90, weaker.confidence);
-    assert.equal(deduplicateQuotaObservations([[weaker], [actual]], NOW)[0].value, 90, 'whatever the order');
-  }
-  const olderActual = reading(field, 80, 120_000, 600_000);
-  assert.equal(deduplicateQuotaObservations([[olderActual], [actual]], NOW)[0].value, 90, 'among valid actual readings the newest wins');
-  assert.equal(deduplicateQuotaObservations([[newerEstimate], [reading(field, 7, 50_000, 1_000, 'estimated')]], NOW)[0].value, 10, 'with nothing valid the newest is shown');
+  const siblings = new Map([['s', [reading(field, 10, 1_000, 600_000)]]]);
+  assert.deepEqual(groupReadings([], ['s'], siblings, NOW), [], 'no own reading at all: still none');
+  const expired = [reading(field, 95, 700_000, 600_000)];
+  assert.deepEqual(groupReadings(expired, ['s'], siblings, NOW), expired, 'own reading expired: left as it is');
+  const unknown = [observe(field, null, { unit: 'percent', scope: 'account', source: 'claude status line', observedAt: new Date(NOW.getTime() - 500), reason: 'not-reported' })];
+  assert.deepEqual(groupReadings(unknown, ['s'], siblings, NOW), unknown, 'own reading unknown: left unknown');
 });
 
 test('coordinatePolicies enforces strictest limits across duplicate profiles of the same real account', () => {

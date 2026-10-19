@@ -219,47 +219,27 @@ function assessLaunchIdentity(store, profileId, outcome, now = new Date()) {
 }
 
 /**
- * Deduplicates quota observations across profiles that share the same real account. For each window a
- * still-valid actual reading always wins over anything else (a newer estimate or an unknown one never
- * hides it). Among valid actual percentages the HIGHEST wins: two profiles of one account should agree, so
- * a lower, newer figure may belong to a profile whose link is out of date (it signed in as another account
- * since it was last checked), and trusting it could lift a limit. A reset makes the old, higher figure
- * linger until it expires, which only holds a launch back a little longer. Other values: the newest wins.
- * Percentages are never summed.
- */
-function deduplicateQuotaObservations(observationLists, now = new Date()) {
-  const byWindow = new Map();
-  const usable = (item) => item.confidence === CONFIDENCE.ACTUAL && isFresh(item, now);
-  const time = (item) => { const t = Date.parse(item.observedAt); return Number.isFinite(t) ? t : -Infinity; };
-  const better = (item, existing) => {
-    const itemRank = usable(item) ? 1 : 0;
-    const existingRank = usable(existing) ? 1 : 0;
-    if (itemRank !== existingRank) return itemRank > existingRank;
-    if (itemRank === 1 && item.unit === 'percent' && existing.unit === 'percent' && item.value !== existing.value) return item.value > existing.value;
-    return time(item) > time(existing);
-  };
-  for (const list of observationLists) {
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      if (!item || typeof item.field !== 'string') continue;
-      const existing = byWindow.get(item.field);
-      if (!existing || better(item, existing)) byWindow.set(item.field, item);
-    }
-  }
-  return [...byWindow.values()];
-}
-
-/**
- * The usage readings that describe this profile's account. A profile's own readings do once they were
- * filtered by trustedReadings. Another
- * profile's readings join them only when it is signed in as the same account NOW (`currentIds`); a profile
- * that was once in the group but now signs in as another account still counts toward the running limit and
- * the limits, but what it reports about its new account says nothing about this one and is left out.
+ * The usage readings used for a profile's decision. A profile's own readings are the only source of
+ * "known": whatever is missing, unknown or expired in them stays that way, because a sibling's reading
+ * cannot be shown to describe this profile's account (readings carry no account, and a sibling's link may be
+ * out of date: it may have signed in as another account since it was last checked). A sibling's reading may
+ * only make the decision stricter: for a window where the profile's own valid actual percentage exists, a
+ * sibling's higher valid actual percentage for the same window is used instead. It never replaces, fills or
+ * lowers anything.
  */
 function groupReadings(ownReadings, currentIds, readingsById, now = new Date()) {
-  const lists = [ownReadings];
-  for (const id of currentIds) if (readingsById.has(id)) lists.push(readingsById.get(id));
-  return lists.length > 1 ? deduplicateQuotaObservations(lists, now) : ownReadings;
+  const siblings = currentIds.filter((id) => readingsById.has(id)).map((id) => readingsById.get(id));
+  if (siblings.length === 0) return ownReadings;
+  const usable = (item) => Boolean(item) && item.confidence === CONFIDENCE.ACTUAL && item.unit === 'percent' && isFresh(item, now);
+  return ownReadings.map((own) => {
+    if (!usable(own)) return own;
+    let strictest = own;
+    for (const list of siblings) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) if (item && item.field === own.field && usable(item) && item.value > strictest.value) strictest = item;
+    }
+    return strictest;
+  });
 }
 
 /**
@@ -313,7 +293,6 @@ module.exports = {
   linkedProfiles,
   resolveGroup,
   assessLaunchIdentity,
-  deduplicateQuotaObservations,
   groupReadings,
   readingsTrust,
   trustedReadings,
