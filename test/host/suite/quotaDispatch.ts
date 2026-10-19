@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { ACCOUNT_COMMANDS, accountTreeForTests } from '../../../src/accounts/accountCommands';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
 import { privateStorage } from '../../../src/storage/storageCommands';
+import { recordVerifiedIdentity, setIdentityProbe } from '../../../src/accounts/quotaGateUi';
 
 type Outcome = { ok: boolean; code?: string; message?: string; session?: { id: string; state: string; terminalOpen: boolean }; sessions?: Array<{ id: string; terminalOpen: boolean }> };
 const command = (id: string, input: object) => vscode.commands.executeCommand<Outcome>(id, input);
@@ -119,6 +120,33 @@ export async function runQuotaDispatchChecks(workspace: string, accountProfileId
     const afterClose = await start('After early close', true);
     assert.ok(afterClose.ok, 'the early-close reservation was freed, so the next launch can take the slot');
     await stop(afterClose.session!.id);
+
+    // check -> switch -> launch: the profile was verified as one account; by the time a launch is asked for,
+    // the CLI reports another one. The real start command must refuse, and an answer that cannot tell must not.
+    await policy(true);
+    const opened = await privateStorage()!.use();
+    assert.ok(opened.ok, 'storage is available');
+    const subject = (letter: string) => letter.repeat(32);
+    const identity = (letter: string, loggedIn = true) => ({ provider: 'claude', loggedIn, subject: { field: 'subject', value: loggedIn ? subject(letter) : null, confidence: loggedIn ? 'actual' : 'unknown' } });
+    assert.ok((recordVerifiedIdentity((opened as any).store, accountProfileId, identity('a'), new Date()) as { ok: boolean }).ok);
+    try {
+      setIdentityProbe(async () => ({ ok: true, identity: identity('b') }));
+      const switched = await start('After switching account', true);
+      assert.deepEqual([switched.ok, switched.code], [false, 'identity-changed'], 'a launch after the account changed is refused');
+      assert.equal((await sessions()).filter((entry) => ids.has(entry.id) && entry.terminalOpen).length, 0, 'no terminal was opened');
+      setIdentityProbe(async () => ({ ok: true, identity: identity('b', false) }));
+      assert.equal((await start('After signing out', true)).code, 'identity-changed', 'signed out is refused as well');
+      setIdentityProbe(async () => null);
+      const unknown = await start('Could not tell', true);
+      assert.ok(unknown.ok, 'an answer that cannot tell does not block the launch');
+      await stop(unknown.session!.id);
+      setIdentityProbe(async () => ({ ok: true, identity: identity('b') }));
+      const settled = await start('Same account again', true);
+      assert.ok(settled.ok, 'the change was recorded once, so the next check starts from the new state');
+      await stop(settled.session!.id);
+    } finally {
+      setIdentityProbe(undefined);
+    }
   } finally {
     ui.showWarningMessage = originalWarning;
     for (const entry of await sessions()) if (ids.has(entry.id) && entry.terminalOpen) await stop(entry.id);

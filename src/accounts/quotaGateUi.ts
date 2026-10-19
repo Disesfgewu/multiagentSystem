@@ -26,24 +26,75 @@ const { runningSlots, recoverOrphanedSlots, reserveSlot, renewSlot, releaseSlot,
   RENEW_MS: number;
 };
 const {
-  getProfileIdentity,
-  detectIdentityChange,
-  findDuplicateProfiles,
+  recordVerifiedIdentity,
+  linkedProfiles,
+  assessLaunchIdentity,
   deduplicateQuotaObservations,
-  coordinatePolicies,
-  registerProfileIdentity,
-  clearProfileIdentities
+  coordinatePolicies
 } = require('./identity-registry') as {
-  getProfileIdentity(profileId: string): any;
-  detectIdentityChange(profileId: string, currentIdentity: any): boolean;
-  findDuplicateProfiles(profileId: string, profiles: any[], identitiesMap?: any): string[];
-  deduplicateQuotaObservations(observationLists: any[][]): any[];
+  recordVerifiedIdentity(store: unknown, profileId: string, identity: unknown, now?: Date): { ok: boolean; recorded?: boolean; changed?: boolean; reason?: string };
+  linkedProfiles(store: unknown, profileId: string, existingIds: string[]): { ok: boolean; ids?: string[]; known?: boolean; reason?: string };
+  assessLaunchIdentity(store: unknown, profileId: string, outcome: unknown, now?: Date): { ok: boolean; unverified?: boolean; code?: string };
+  deduplicateQuotaObservations(observationLists: any[][], now?: Date): any[];
   coordinatePolicies(policyReads: any[]): { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
-  registerProfileIdentity(profileId: string, identity: any): void;
-  clearProfileIdentities(): void;
 };
 
-export { registerProfileIdentity, getProfileIdentity, clearProfileIdentities };
+export { recordVerifiedIdentity };
+
+/**
+ * Asks the sign-in CLI who is signed in on a profile right now. Set by the account commands (which own
+ * running the CLI); until then a launch cannot compare and relies on the saved groups alone.
+ */
+export type IdentityProbe = (profileId: string) => Promise<unknown>;
+let identityProbe: IdentityProbe | undefined;
+export function setIdentityProbe(probe: IdentityProbe | undefined): void { identityProbe = probe; }
+
+interface GroupRead { ok: boolean; ids: string[]; known: boolean }
+/** The other profiles that share this profile's verified provider account, from the shared private store. */
+function groupOf(accounts: { store: unknown; service: { list(): { ok: boolean; profiles?: Array<{ id: string }> } } }, profileId: string): GroupRead {
+  const listed = accounts.service.list();
+  const existing = listed.ok && Array.isArray(listed.profiles) ? listed.profiles.map((profile) => profile.id) : [];
+  const found = linkedProfiles(accounts.store, profileId, existing);
+  return found.ok ? { ok: true, ids: found.ids ?? [], known: found.known === true } : { ok: false, ids: [], known: false };
+}
+
+interface GroupState {
+  ok: boolean;
+  /** Why it could not be read, in the person's words. */
+  message?: string;
+  ids: string[];
+  policyRead: { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
+  observations: any[];
+}
+
+type AccountsOk = { store: unknown; service: { list(): { ok: boolean; profiles?: any[] }; get(id: string): { ok: boolean; profile?: any } } };
+
+/**
+ * Everything a decision needs about one profile and the other profiles of its real account: who they are
+ * (from the shared private store, so every window and a restarted one agree), the limits coordinated over
+ * all of them, and the usage readings with a valid actual one never replaced by a newer weaker one.
+ */
+function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): GroupState {
+  const failed = (message: string): GroupState => ({ ok: false, message, ids: [], policyRead: { ok: false }, observations: [] });
+  const group = groupOf(accounts as any, profileId);
+  if (!group.ok) return failed('Which profiles share this account could not be established safely, so no new agent was started. Use Setup Diagnostics to check Private Storage.');
+  const listed = accounts.service.list();
+  const all = listed.ok && Array.isArray(listed.profiles) ? listed.profiles : [];
+  const own = accounts.service.get(profileId);
+  const ownProfile = own.ok ? own.profile : undefined;
+  if (ownProfile) registerProfileForQuota(ownProfile);
+  const mine = loadPolicy(accounts.store, profileId);
+  const others = group.ids.map((id) => loadPolicy(accounts.store, id));
+  const policyRead = group.ids.length > 0 ? coordinatePolicies([mine, ...others]) : mine;
+  const lists = [quotaObservations(profileId, ownProfile)];
+  for (const id of group.ids) {
+    const other = all.find((candidate: any) => candidate.id === id);
+    if (other) registerProfileForQuota(other);
+    lists.push(quotaObservations(id, other));
+  }
+  const observations = group.ids.length > 0 ? deduplicateQuotaObservations(lists, now) : lists[0];
+  return { ok: true, ids: group.ids, policyRead, observations };
+}
 
 export type GateOutcome = { ok: true; release: () => Promise<void> } | { ok: false; code: string; message: string };
 
@@ -129,76 +180,44 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
   if (!accounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be checked because private storage is not ready, so no new agent was started.' };
   await flushPendingReleases();
 
-  const currentIdentity = getProfileIdentity(accountProfileId);
-  if (detectIdentityChange(accountProfileId, currentIdentity)) {
-    return {
-      ok: false,
-      code: 'identity-changed',
-      message: 'The verified sign-in for this account changed since it was checked. Check the sign-in again before starting new agents.'
-    };
+  // A profile that was verified before is asked again who is signed in right now: the check the person did
+  // earlier says nothing about what happened since. A different account (or a sign-out) stops the launch;
+  // an answer that cannot tell leaves the saved groups in force.
+  if (identityProbe && groupOf(accounts as any, accountProfileId).known) {
+    let outcome: unknown;
+    try { outcome = await identityProbe(accountProfileId); } catch { outcome = null; }
+    const assessed = assessLaunchIdentity(accounts.store, accountProfileId, outcome, new Date());
+    if (!assessed.ok) {
+      return assessed.code === 'identity-changed'
+        ? { ok: false, code: 'identity-changed', message: 'The sign-in on this account is not the one that was verified before. Check the sign-in again before starting new agents.' }
+        : { ok: false, code: 'quota-gate', message: 'Which account is signed in could not be established safely, so no new agent was started.' };
+    }
   }
 
-  const loadedProfile = accounts.service.get(accountProfileId);
-  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
-  if (profile) registerProfileForQuota(profile);
-
-  const allProfilesResult = accounts.service.list();
-  const allProfiles = allProfilesResult.ok && Array.isArray(allProfilesResult.profiles) ? allProfilesResult.profiles : [];
-  const duplicateIds = findDuplicateProfiles(accountProfileId, allProfiles);
-
-  const myPolicyRead = loadPolicy(accounts.store, accountProfileId);
-  const duplicatePolicyReads = duplicateIds.map((id: string) => loadPolicy(accounts.store, id));
-  const policyRead = duplicateIds.length > 0 ? coordinatePolicies([myPolicyRead, ...duplicatePolicyReads]) : myPolicyRead;
-
-  const myObservations = quotaObservations(accountProfileId, profile);
-  const duplicateObservations = duplicateIds.map((id: string) => {
-    const dupP = allProfiles.find((p: any) => p.id === id);
-    if (dupP) registerProfileForQuota(dupP);
-    return quotaObservations(id, dupP);
-  });
-  const observations = duplicateIds.length > 0
-    ? deduplicateQuotaObservations([myObservations, ...duplicateObservations])
-    : myObservations;
-
   const now = new Date();
+  const state = loadGroupState(accounts as any, accountProfileId, now);
+  if (!state.ok) return { ok: false, code: 'quota-gate', message: state.message ?? 'The account limits could not be read, so no new agent was started.' };
+  const { policyRead, observations, ids: duplicateIds } = state;
   if (!policyRead.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
   const commit = async (approval?: 'confirm' | 'override'): Promise<GateOutcome> => {
     // Recheck after every await/dialog, then decide and reserve synchronously from fresh inputs.
     const latestAccounts = await accountService(sessions);
     if (!latestAccounts.ok) return { ok: false, code: 'quota-gate', message: 'Account limits could not be read again, so no new agent was started.' };
-    const latestLoaded = latestAccounts.service.get(accountProfileId);
-    const latestProfile = latestLoaded.ok ? latestLoaded.profile : undefined;
-    if (latestProfile) registerProfileForQuota(latestProfile);
-
-    const latestAllProfilesResult = latestAccounts.service.list();
-    const latestAllProfiles = latestAllProfilesResult.ok && Array.isArray(latestAllProfilesResult.profiles) ? latestAllProfilesResult.profiles : [];
-    const latestDuplicateIds = findDuplicateProfiles(accountProfileId, latestAllProfiles);
-
-    const latestMyPolicy = loadPolicy(latestAccounts.store, accountProfileId);
-    if (!latestMyPolicy.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
-    const latestDupPolicies = latestDuplicateIds.map((id: string) => loadPolicy(latestAccounts.store, id));
-    const latest = latestDuplicateIds.length > 0 ? coordinatePolicies([latestMyPolicy, ...latestDupPolicies]) : latestMyPolicy;
+    const latestState = loadGroupState(latestAccounts as any, accountProfileId, new Date());
+    if (!latestState.ok) return { ok: false, code: 'quota-gate', message: latestState.message ?? 'The saved account limits could not be read, so no new agent was started.' };
+    const latest = latestState.policyRead;
     if (!latest.ok) return { ok: false, code: 'quota-gate', message: 'The saved account limits could not be read, so no new agent was started.' };
-    if (latest.stored !== policyRead.stored || JSON.stringify(latest.policy) !== JSON.stringify(policyRead.policy)) {
+    if (latest.stored !== policyRead.stored || JSON.stringify(latest.policy) !== JSON.stringify(policyRead.policy) ||
+        JSON.stringify(latestState.ids) !== JSON.stringify(duplicateIds)) {
       return { ok: false, code: 'quota-gate', message: 'Account limits changed while this launch was being checked. Try again to review the current limits.' };
     }
-
-    const latestMyObs = quotaObservations(accountProfileId, latestProfile);
-    const latestDupObs = latestDuplicateIds.map((id: string) => {
-      const dupP = latestAllProfiles.find((p: any) => p.id === id);
-      if (dupP) registerProfileForQuota(dupP);
-      return quotaObservations(id, dupP);
-    });
-    const latestObservations = latestDuplicateIds.length > 0
-      ? deduplicateQuotaObservations([latestMyObs, ...latestDupObs])
-      : latestMyObs;
 
     const reserved = reserveSlot({
       store: latestAccounts.store,
       accountKey: accountProfileId,
-      linkedAccountKeys: latestDuplicateIds,
-      expectedPolicyRead: latestMyPolicy,
-      observations: latestObservations,
+      linkedAccountKeys: latestState.ids,
+      expectedPolicyRead: latest,
+      observations: latestState.observations,
       now: new Date(),
       approval
     });
@@ -247,30 +266,13 @@ export interface CurrentGate {
 export async function currentGateState(accountProfileId: string, sessions: () => SessionUse[]): Promise<CurrentGate | null> {
   const accounts = await accountService(sessions);
   if (!accounts.ok) return null;
-  const loadedProfile = accounts.service.get(accountProfileId);
-  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
-  if (profile) registerProfileForQuota(profile);
-
-  const allProfilesResult = accounts.service.list();
-  const allProfiles = allProfilesResult.ok && Array.isArray(allProfilesResult.profiles) ? allProfilesResult.profiles : [];
-  const duplicateIds = findDuplicateProfiles(accountProfileId, allProfiles);
-
-  const myPolicyRead = loadPolicy(accounts.store, accountProfileId);
-  const duplicatePolicyReads = duplicateIds.map((id: string) => loadPolicy(accounts.store, id));
-  const policyRead = duplicateIds.length > 0 ? coordinatePolicies([myPolicyRead, ...duplicatePolicyReads]) : myPolicyRead;
-  if (!policyRead.ok || policyRead.stored !== true) return null;
-
-  const myObservations = quotaObservations(accountProfileId, profile);
-  const duplicateObservations = duplicateIds.map((id: string) => {
-    const dupP = allProfiles.find((p: any) => p.id === id);
-    if (dupP) registerProfileForQuota(dupP);
-    return quotaObservations(id, dupP);
-  });
-  const observations = duplicateIds.length > 0
-    ? deduplicateQuotaObservations([myObservations, ...duplicateObservations])
-    : myObservations;
-
   const now = new Date();
+  const state = loadGroupState(accounts as any, accountProfileId, now);
+  if (!state.ok) {
+    return { action: 'block', line: 'Right now: a new agent would be held back. Which profiles share this account could not be established safely. Use Setup Diagnostics to check Private Storage.', reason: 'Which profiles share this account could not be established safely.' };
+  }
+  const { policyRead, observations, ids: duplicateIds } = state;
+  if (!policyRead.ok || policyRead.stored !== true) return null;
   const slots = runningSlots(accounts.store, accountProfileId, now, { linkedAccountKeys: duplicateIds });
   if (!slots.ok || !Number.isInteger(slots.running)) {
     return { action: 'block', line: 'Right now: a new agent would be held back. Shared running-session limits could not be read safely. Use Setup Diagnostics to check Private Storage.', reason: 'Shared running-session limits could not be read safely.' };
@@ -285,29 +287,11 @@ export async function currentGateState(accountProfileId: string, sessions: () =>
 export async function limitLines(accountProfileId: string, sessions: () => SessionUse[]): Promise<string[]> {
   const accounts = await accountService(sessions);
   if (!accounts.ok) return ['Limits: could not be read.'];
-  const loadedProfile = accounts.service.get(accountProfileId);
-  const profile = loadedProfile.ok ? loadedProfile.profile : undefined;
-  if (profile) registerProfileForQuota(profile);
-
-  const allProfilesResult = accounts.service.list();
-  const allProfiles = allProfilesResult.ok && Array.isArray(allProfilesResult.profiles) ? allProfilesResult.profiles : [];
-  const duplicateIds = findDuplicateProfiles(accountProfileId, allProfiles);
-
-  const myPolicyRead = loadPolicy(accounts.store, accountProfileId);
-  const duplicatePolicyReads = duplicateIds.map((id: string) => loadPolicy(accounts.store, id));
-  const policyRead = duplicateIds.length > 0 ? coordinatePolicies([myPolicyRead, ...duplicatePolicyReads]) : myPolicyRead;
-
-  const myObservations = quotaObservations(accountProfileId, profile);
-  const duplicateObservations = duplicateIds.map((id: string) => {
-    const dupP = allProfiles.find((p: any) => p.id === id);
-    if (dupP) registerProfileForQuota(dupP);
-    return quotaObservations(id, dupP);
-  });
-  const observations = duplicateIds.length > 0
-    ? deduplicateQuotaObservations([myObservations, ...duplicateObservations])
-    : myObservations;
-
-  const lines = [describePolicy(policyRead), ...describeQuota(observations, new Date())];
+  const now = new Date();
+  const state = loadGroupState(accounts as any, accountProfileId, now);
+  if (!state.ok) return ['Limits: which profiles share this account could not be established safely, so new agents are held back.'];
+  const { policyRead, observations, ids: duplicateIds } = state;
+  const lines = [describePolicy(policyRead), ...describeQuota(observations, now)];
   if (duplicateIds.length > 0) {
     lines.push(`Duplicate account: shares limits and quota with ${duplicateIds.join(', ')}.`);
   }
@@ -359,9 +343,9 @@ export async function editLimits(accountProfileId: string, label: string, sessio
 export async function offerSlotRecovery(accountProfileId: string, label: string, sessions: () => SessionUse[]): Promise<number> {
   const accounts = await accountService(sessions);
   if (!accounts.ok) return 0;
-  const allProfilesResult = accounts.service.list();
-  const allProfiles = allProfilesResult.ok && Array.isArray(allProfilesResult.profiles) ? allProfilesResult.profiles : [];
-  const duplicateIds = findDuplicateProfiles(accountProfileId, allProfiles);
+  const group = groupOf(accounts as any, accountProfileId);
+  if (!group.ok) return 0;
+  const duplicateIds = group.ids;
 
   const slots = runningSlots(accounts.store, accountProfileId, new Date(), { linkedAccountKeys: duplicateIds });
   if (!slots.ok || !Number.isInteger(slots.orphaned) || (slots.orphaned as number) < 1) return 0;

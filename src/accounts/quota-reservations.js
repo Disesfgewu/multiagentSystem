@@ -2,6 +2,7 @@
 
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
+const { coordinatePolicies } = require('./identity-registry');
 const { decideDispatch, validatePolicy, DEFAULT_POLICY } = require('./quota-policy');
 
 const COLLECTION = 'quotaReservations';
@@ -189,8 +190,16 @@ function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedPolicy
   }
   const allKeys = [...new Set([accountKey, ...linked])];
   const outcome = store.transact((tx) => {
-    const policyRead = readPolicy(tx, accountKey);
-    if (!policyRead.ok) return policyRead;
+    // The policy that decides is the coordinated one over every profile of the group, read here, inside
+    // the same transaction that takes the lease. What the caller showed the person (`expectedPolicyRead`)
+    // must be that same coordinated reading, so a linked profile's limits changing meanwhile is caught.
+    const reads = [];
+    for (const key of allKeys) {
+      const read = readPolicy(tx, key);
+      if (!read.ok) return read;
+      reads.push(read);
+    }
+    const policyRead = reads.length > 1 ? coordinatePolicies(reads) : reads[0];
     if (!samePolicy(policyRead, expectedPolicyRead)) return { ok: false, reason: 'policy-changed' };
     const myRecord = activeRecord(tx, accountKey, nowMs, ctx);
     if (!myRecord.ok) return myRecord;
@@ -205,29 +214,8 @@ function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedPolicy
       otherRecords.push({ key: otherKey, record: otherRec });
     }
 
-    let effectivePolicy = policyRead.policy;
-    let constrained = policyRead.stored === true;
-    for (const otherKey of allKeys) {
-      if (otherKey === accountKey) continue;
-      const otherPolicy = readPolicy(tx, otherKey);
-      if (!otherPolicy.ok) return otherPolicy;
-      if (otherPolicy.stored === true) {
-        constrained = true;
-        effectivePolicy = {
-          ...effectivePolicy,
-          ...(otherPolicy.policy.maxConcurrent !== undefined
-            ? { maxConcurrent: effectivePolicy.maxConcurrent !== undefined ? Math.min(effectivePolicy.maxConcurrent, otherPolicy.policy.maxConcurrent) : otherPolicy.policy.maxConcurrent }
-            : {}),
-          ...(otherPolicy.policy.warnAtPercent !== undefined
-            ? { warnAtPercent: effectivePolicy.warnAtPercent !== undefined ? Math.min(effectivePolicy.warnAtPercent, otherPolicy.policy.warnAtPercent) : otherPolicy.policy.warnAtPercent }
-            : {}),
-          ...(otherPolicy.policy.blockAtPercent !== undefined
-            ? { blockAtPercent: effectivePolicy.blockAtPercent !== undefined ? Math.min(effectivePolicy.blockAtPercent, otherPolicy.policy.blockAtPercent) : otherPolicy.policy.blockAtPercent }
-            : {}),
-          unknownQuota: otherPolicy.policy.unknownQuota === 'block' || effectivePolicy.unknownQuota === 'block' ? 'block' : (effectivePolicy.unknownQuota || 'require-confirmation')
-        };
-      }
-    }
+    const constrained = policyRead.stored === true;
+    const effectivePolicy = policyRead.policy;
 
     const decision = decideDispatch({
       policy: constrained ? effectivePolicy : DEFAULT_POLICY,
