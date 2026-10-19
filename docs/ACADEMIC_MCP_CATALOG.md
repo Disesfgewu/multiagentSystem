@@ -90,6 +90,18 @@
 
 ---
 
+## 二之一、 下載層與可安裝狀態（Refs #107，核對於 2026-10-19）
+
+下載層（`src/research/download.js`、`src/research/archive.js`）只接受三個指定倉庫的 `https://github.com/<owner>/<repo>/releases/download/<tag>/<檔名>`，轉址逐跳比對主機（https、無帳密、無埠號、最多 3 次）、有大小上限、可取消、固定 SHA-256；失敗不留暫存，也不動既有安裝。目錄項只有在 `assets` 列出「此平台」的固定資產時才可安裝；沒有就維持不可安裝（`asset-unavailable`）。
+
+| 工具 | 可安裝 | 依據或缺口 |
+| :--- | :--- | :--- |
+| `github-mcp-server` v2.0.2 | macOS arm64／x64、Windows x64／arm64 | 四個資產本次實際下載並計算 SHA-256，與官方 `github-mcp-server_2.0.2_checksums.txt` 一致；壓縮檔內可執行檔為 `github-mcp-server`（Windows 為 `.exe`）。 |
+| `zhtw-mcp` | 否 | 只有會原地重建的 `latest` 標籤，沒有固定版本或 tag，雜湊會變；也找不到 macOS x64 資產。`0.1.0` 是 crate 版本，不是 release tag。 |
+| `arxiv-mcp-server` v0.8.2 | 否 | 官方 release 只有 macOS `.mcpb`（約 91 MB），沒有 Windows 資產，`.mcpb` 的執行方式未核實。目錄的 `integrity` 改為 GitHub 回報的 darwin-arm64 `.mcpb` digest（僅中繼資料，未下載）；先前的值是 commit SHA 加上來路不明的字元，不對應任何資產，已移除。 |
+
+真實 MCP 的啟動與可用性、兩平台實機安裝仍由 #135 驗收；本次沒有執行任何下載的程式。
+
 ## 三、 候選 Schema 與執行層 Allowlist 之區隔
 
 | 層級 | 角色 | 驗證項目 | 強制狀態 |

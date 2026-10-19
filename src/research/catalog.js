@@ -16,6 +16,8 @@
 //  5. Honest enforcement declarations: schema-level read-only flags are self-declared by the tool
 //     and are explicitly marked `sandboxEnforced: false` until runtime isolation is verified.
 
+const { parseReleaseAssetUrl } = require('./download');
+
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const TOOL_NAME = /^[a-z0-9_]{1,64}$/;
 const PINNED_VERSION = /^(?:v)?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -56,7 +58,12 @@ const FORBIDDEN_COMMAND_TOKENS = Object.freeze([
   'install', 'pip', 'cargo'
 ]);
 
+const ASSET_PLATFORMS = Object.freeze({ darwin: ['x64', 'arm64'], win32: ['x64', 'arm64'] });
+const ASSET_FORMATS = Object.freeze(['tar.gz', 'zip']);
+const ASSET_SHA256 = /^[a-f0-9]{64}$/;
+
 const LIMITS = Object.freeze({
+  assets: 8,
   serverId: 64,
   name: 120,
   description: 500,
@@ -133,6 +140,36 @@ function validateCommand(commandArray) {
 }
 
 /**
+ * Validates the pinned release assets of one catalog item. An item with no assets is valid but not
+ * installable. Each asset must be a GitHub release download of the item's own repository at its own
+ * pinned tag, with the SHA-256 of that exact archive and the archive path of the one executable.
+ */
+function validateAssets(rawAssets, { source, version, command }) {
+  if (rawAssets === undefined || rawAssets === null) return Object.freeze([]);
+  if (!Array.isArray(rawAssets) || rawAssets.length > LIMITS.assets) fail('assets-invalid');
+  const repoMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(source);
+  if (!repoMatch) fail('assets-invalid');
+  const seen = new Set();
+  const out = [];
+  for (const raw of rawAssets) {
+    if (!isPlain(raw)) fail('asset-invalid');
+    const arches = ASSET_PLATFORMS[raw.platform];
+    if (!arches || !arches.includes(raw.arch)) fail('asset-platform-invalid');
+    if (!ASSET_FORMATS.includes(raw.format)) fail('asset-format-invalid');
+    if (typeof raw.sha256 !== 'string' || !ASSET_SHA256.test(raw.sha256)) fail('asset-hash-invalid');
+    const parsed = parseReleaseAssetUrl(raw.url);
+    if (!parsed || parsed.repository !== repoMatch[1] || parsed.tag !== version) fail('asset-source-invalid');
+    const key = `${raw.platform}/${raw.arch}`;
+    if (seen.has(key)) fail('asset-duplicate');
+    seen.add(key);
+    const expectedName = raw.platform === 'win32' ? `${command[0]}.exe` : command[0];
+    if (typeof raw.entry !== 'string' || raw.entry !== expectedName) fail('asset-entry-invalid');
+    out.push(Object.freeze({ platform: raw.platform, arch: raw.arch, url: parsed.url, format: raw.format, sha256: raw.sha256, entry: raw.entry }));
+  }
+  return Object.freeze(out);
+}
+
+/**
  * Validates a single tool definition inside an MCP server entry.
  * All tools must be self-declared read-only; write, publish or execution tools are strictly prohibited.
  */
@@ -202,6 +239,8 @@ function validateCatalogItem(raw) {
     tools.push(validated);
   }
 
+  const assets = validateAssets(raw.assets, { source, version, command });
+
   const env = {};
   if (raw.env !== undefined && raw.env !== null) {
     if (!isPlain(raw.env)) fail('env-invalid');
@@ -224,6 +263,7 @@ function validateCatalogItem(raw) {
     source,
     license,
     command,
+    assets,
     tools: Object.freeze(tools),
     env: Object.freeze(env),
     status: 'unverified',
@@ -297,6 +337,9 @@ const CANDIDATE_RESEARCH_TOOLS = Object.freeze([
     integrity: 'sha256:a0b555fb47253e580eb095d438368c6af0018cf90fffa0dbb979f081e28d084a',
     source: 'https://github.com/sysprog21/zhtw-mcp.git',
     license: 'MIT',
+    // NOT INSTALLABLE (no `assets`): the only release is the rolling `latest` tag whose assets are
+    // rebuilt in place (this digest, of the darwin-arm64 asset, can change), there is no pinned tag, and no
+    // macOS x64 asset was found. `version` is the crate version, not a release tag.
     command: ['zhtw-mcp'],
     tools: [
       { name: 'zhtw', readOnly: true, description: 'Traditional Chinese text correction and terminology verification' }
@@ -308,9 +351,13 @@ const CANDIDATE_RESEARCH_TOOLS = Object.freeze([
     name: 'arXiv Research MCP Server',
     description: 'Literature tool for arXiv search and paper section reading',
     version: 'v0.8.2',
-    integrity: 'sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c',
+    integrity: 'sha256:17f2eda9e3a8c38fe12b9055ac07459fe031af346f465b3d3025ff551010608d',
     source: 'https://github.com/blazickjp/arxiv-mcp-server.git',
     license: 'Apache-2.0',
+    // NOT INSTALLABLE (no `assets`): the v0.8.2 release only ships macOS .mcpb bundles (no Windows asset),
+    // and how to run one is not verified. `integrity` is the GitHub-reported digest of the darwin-arm64
+    // .mcpb (metadata only, not downloaded here); it replaces an earlier value that was a commit SHA
+    // extended with unexplained characters and matched no release asset.
     command: ['arxiv-mcp-server', '--storage-path', '/tmp/arxiv'],
     tools: [
       { name: 'search_papers', readOnly: true, description: 'Search arXiv papers by query' },
@@ -331,6 +378,14 @@ const CANDIDATE_RESEARCH_TOOLS = Object.freeze([
     source: 'https://github.com/github/github-mcp-server.git',
     license: 'MIT',
     command: ['github-mcp-server', 'stdio'],
+    // Each sha256 below was computed in this review from the downloaded official v2.0.2 release asset and
+    // matches the release's own github-mcp-server_2.0.2_checksums.txt.
+    assets: [
+      { platform: 'darwin', arch: 'arm64', url: 'https://github.com/github/github-mcp-server/releases/download/v2.0.2/github-mcp-server_Darwin_arm64.tar.gz', format: 'tar.gz', sha256: '5d9b38511bffc84d2272eb6189129eb721c8900e45784d8ea7eaf25f8d3dd835', entry: 'github-mcp-server' },
+      { platform: 'darwin', arch: 'x64', url: 'https://github.com/github/github-mcp-server/releases/download/v2.0.2/github-mcp-server_Darwin_x86_64.tar.gz', format: 'tar.gz', sha256: '7ac4d549e0bf37ad9efee7be7913cae4ad50cea8d9d5be1afa9a6dbcee9d1f2c', entry: 'github-mcp-server' },
+      { platform: 'win32', arch: 'x64', url: 'https://github.com/github/github-mcp-server/releases/download/v2.0.2/github-mcp-server_Windows_x86_64.zip', format: 'zip', sha256: '4ae64087501650752f21c9d5af5378107a5116d94ee1cf37786b22b8c4bd99df', entry: 'github-mcp-server.exe' },
+      { platform: 'win32', arch: 'arm64', url: 'https://github.com/github/github-mcp-server/releases/download/v2.0.2/github-mcp-server_Windows_arm64.zip', format: 'zip', sha256: '2156aeb05e76006ea379269c786de86b00e66a99009227331432068f81ceb684', entry: 'github-mcp-server.exe' }
+    ],
     tools: [
       { name: 'get_file_contents', readOnly: true, description: 'Read file contents from repository' },
       { name: 'search_code', readOnly: true, description: 'Search code across repositories' },
