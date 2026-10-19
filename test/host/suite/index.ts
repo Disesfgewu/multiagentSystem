@@ -903,6 +903,8 @@ export async function run(): Promise<void> {
 
   const registered = await vscode.commands.getCommands(true);
   for (const id of COMMANDS) assert.ok(registered.includes(id), `${id} is registered`);
+  // Registration only: these open modal dialogs or start programs, so they are never executed headless.
+  for (const name of ['enable', 'stop', 'revoke', 'status', 'setSecret']) assert.ok(registered.includes(`multiagentSystem.research.mcp.${name}`), `mcp.${name} is registered`);
   console.log(await runGitHubChecks(registered));
 
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
