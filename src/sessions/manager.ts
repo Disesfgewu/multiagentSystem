@@ -98,7 +98,11 @@ export interface ManagerDeps<T extends TerminalHandle> {
   newToken?: () => string;
   now?: () => string;
   terminalTitle?: (name: string) => string;
-  detectShellType?: () => 'posix' | 'powershell' | 'cmd';
+  /**
+   * The quoting family of the terminal's shell, or null when it is not one this extension can quote
+   * for. A null answer refuses a launch (`unsupported-shell`) before any terminal exists.
+   */
+  detectShellType?: () => 'posix' | 'powershell' | 'cmd' | null;
   /** Called when saving fails. Receives no details: they could contain local paths. */
   onPersistError?: () => void;
   /**
@@ -396,6 +400,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
+    // Decided before a terminal exists: an unrecognized shell gets no terminal, no text and no state.
+    const shellType = launch ? this.deps.detectShellType?.() : undefined;
+    if (shellType === null) throw new SessionError('unsupported-shell');
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
     const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();
@@ -432,7 +439,6 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const shellType = this.deps.detectShellType?.();
       const commandLine = formatShellCommandLine(executable, allArgs, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
