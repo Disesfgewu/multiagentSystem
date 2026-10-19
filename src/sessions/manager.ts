@@ -363,9 +363,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
-      if (input.instructions?.plan) {
-        cleanupSessionPlan(input.instructions.plan);
-      }
+      if (input.instructions?.plan) this.cleanupPlanSafely(input.instructions.plan);
       if (identity) {
         this.activePlans.delete(identity.id);
         if (this.handles.has(identity.id)) {
@@ -455,7 +453,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.delete(binding.id);
     const plan = this.activePlans.get(binding.id);
     if (plan) {
-      cleanupSessionPlan(plan);
+      this.cleanupPlanSafely(plan, binding.id);
       this.activePlans.delete(binding.id);
     }
     try {
@@ -479,13 +477,29 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     return this.view(id);
   }
 
+  /**
+   * Removes the instruction files a launch created. Failing to remove one (a read-only folder, a file
+   * someone else holds open) must never keep a terminal open, leave a closed session recorded as
+   * running, or replace the error that was being reported: the failure is only noted on the session,
+   * without the path or the system message.
+   */
+  private cleanupPlanSafely(plan: unknown, id?: string): boolean {
+    try {
+      cleanupSessionPlan(plan);
+      return true;
+    } catch {
+      if (id) this.instructionLabels.set(id, 'Instruction files could not be removed; check the project\'s instruction folder');
+      return false;
+    }
+  }
+
   /** Closes the terminal (and with it the shell and any CLI in it). The state is recorded first; the close event that follows is ignored. */
   stop(id: string): SessionView {
     const terminal = this.liveTerminal(id);
     const binding = this.bound.get(terminal);
     const plan = this.activePlans.get(id);
     if (plan) {
-      cleanupSessionPlan(plan);
+      this.cleanupPlanSafely(plan, id);
       this.activePlans.delete(id);
     }
     try {
@@ -544,9 +558,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
-      if (shouldCleanupPlanOnError && options.instructions?.plan) {
-        cleanupSessionPlan(options.instructions.plan);
-      }
+      if (shouldCleanupPlanOnError && options.instructions?.plan) this.cleanupPlanSafely(options.instructions.plan);
       if (identity) {
         this.activePlans.delete(identity.id);
         if (this.handles.has(identity.id)) {
@@ -581,12 +593,14 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     const binding = this.bound.get(terminal) as { id: string; token: string };
     this.registry.cliExited(id, binding.token);
     const plan = this.activePlans.get(id);
+    let cleaned = true;
     if (plan) {
-      cleanupSessionPlan(plan);
+      cleaned = this.cleanupPlanSafely(plan, id);
       this.activePlans.delete(id);
     }
     const prevState = this.instructionStates.get(id);
-    if (prevState && prevState !== 'none') {
+    // A failed removal keeps its own label: the file is still there, so it must not be called cleaned up.
+    if (cleaned && prevState && prevState !== 'none') {
       this.instructionLabels.set(id, 'CLI exited (instructions file cleaned up; reopen as new session to relaunch)');
     }
     return this.view(id);
