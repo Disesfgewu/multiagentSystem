@@ -45,7 +45,7 @@ test('every command used by a menu is declared, and the overview row actions exi
   for (const menu of Object.values(contributes.menus)) for (const item of menu) assert.ok(declared.has(item.command), `${item.command} is used in a menu but not declared`);
   const overview = contributes.menus['view/item/context'].filter((item) => item.when.includes('multiagentSystem.overviewView'));
   const agentOverview = overview.filter((item) => item.when.includes('multiagentOverviewAgent'));
-  assert.deepEqual(agentOverview.map((item) => item.command).sort(), ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff', 'multiagentSystem.sessions.focus', 'multiagentSystem.sessions.reopen', 'multiagentSystem.sessions.stop']);
+  assert.deepEqual(agentOverview.map((item) => item.command).sort(), ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff', 'multiagentSystem.sessions.focus', 'multiagentSystem.sessions.rename', 'multiagentSystem.sessions.reopen', 'multiagentSystem.sessions.stop']);
   for (const item of agentOverview) assert.match(item.when, /viewItem =~ \/\^multiagentOverviewAgent/);
   for (const cmd of ['multiagentSystem.overview.openPullRequest', 'multiagentSystem.overview.openReport', 'multiagentSystem.overview.showDiff']) {
     const item = agentOverview.find((entry) => entry.command === cmd);

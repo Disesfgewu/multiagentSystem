@@ -36,6 +36,8 @@ const COMMANDS = [
   'multiagentSystem.sessions.focus',
   'multiagentSystem.sessions.stop',
   'multiagentSystem.sessions.reopen',
+  // Interactive (input box): registration only, never executed headlessly.
+  'multiagentSystem.sessions.rename',
   'multiagentSystem.worktrees.list',
   'multiagentSystem.worktrees.create',
   'multiagentSystem.worktrees.remove',

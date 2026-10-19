@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
-import { SessionManager, SessionView } from './manager';
+import { SessionManager, SessionView, cleanName } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
 import { normalizeRequestedModel, supportsModelSelection, knownModelsForProvider } from '../providers/modelSelection';
@@ -37,7 +37,8 @@ export const SESSION_COMMANDS = {
   start: 'multiagentSystem.sessions.start',
   focus: 'multiagentSystem.sessions.focus',
   stop: 'multiagentSystem.sessions.stop',
-  reopen: 'multiagentSystem.sessions.reopen'
+  reopen: 'multiagentSystem.sessions.reopen',
+  rename: 'multiagentSystem.sessions.rename'
 } as const;
 
 const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: Record<string, string> };
@@ -50,7 +51,8 @@ const MESSAGES: Record<string, string> = {
   'executable-not-found': 'This CLI could not be found. Install it from the official provider or add its executable to PATH, then retry.',
   'account-isolation-unknown': '此 provider 的帳號隔離未驗證，無法指派獨立帳號。請使用 CLI 預設登入，或先選擇已支援的 provider。',
   'invalid-account-list': 'Account profiles could not be validated. Refresh the accounts view and try again.',
-  'invalid-name': 'Enter a session name.',
+  'invalid-name': 'Enter a session name of 1–80 characters without control, line-break or direction-changing characters.',
+  'persist-failed': 'The new name could not be saved, so the session keeps its old name. Try again.',
   'session-not-found': 'That session no longer exists.',
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
@@ -652,6 +654,34 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
   }
 
+  // Always interactive: the person types the name. A caller can name the session (the overview row does),
+  // but nothing a command argument carries can supply or skip the name prompt, in any mode.
+  async function rename(value: unknown): Promise<SessionOutcome> {
+    try {
+      const input = options(value);
+      let id = typeof input.id === 'string' && input.id ? input.id : undefined;
+      if (!id) {
+        const picked = await pickSession('Choose a session to rename', () => true);
+        if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        id = picked.id;
+      }
+      const target = manager.get(id);
+      if (!target) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
+      const typed = await vscode.window.showInputBox({
+        title: 'Rename session',
+        prompt: 'The new name is shown in the overview and saved with the session. An open terminal keeps the title it has.',
+        value: target.name,
+        validateInput: (text) => (cleanName(text) ? undefined : MESSAGES['invalid-name'])
+      });
+      if (typed === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+      const session = await manager.rename(id, typed);
+      changed.fire();
+      return { ok: true, session };
+    } catch (error) {
+      return failure(error, true);
+    }
+  }
+
   async function list(value: unknown): Promise<SessionOutcome> {
     const input = options(value);
     if (input.interactive === false) return { ok: true, sessions: observations.enrich(manager.list()) };
@@ -703,6 +733,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
     // A caller-supplied id asks the person first (see act); the overview row's own Stop action does not.
     vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', requireInteractive(options(value)), isOwnUiItem(value))),
+    vscode.commands.registerCommand(SESSION_COMMANDS.rename, (value?: unknown) => rename(value)),
     vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', withoutAcknowledge(requireInteractive(options(value)))))
   );
 
