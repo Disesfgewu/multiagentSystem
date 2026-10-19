@@ -16,7 +16,7 @@ const {
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
   grantConsent(serverId: string, deps: { store: any; catalog?: any[] }): { ok: boolean; record: any };
   revokeConsent(serverId: string, deps: { store: any; root?: string }): { ok: boolean; serverId: string; status: string; cleanup: 'none' | 'done' | 'failed' };
-  prepareResearchTool(serverId: string, deps: { store: any; root: string; boundary?: string; download?: any; catalog?: any[]; assetBytes?: Uint8Array }): Promise<any>;
+  prepareResearchTool(serverId: string, deps: { store: any; root: string; boundary?: string; download?: any; catalog?: any[]; assetBytes?: Uint8Array; signal?: AbortSignal; progress?: (value: { received: number; total: number | null }) => void; fetchImpl?: any }): Promise<any>;
   isConsentActive(serverId: string, store: any): boolean;
 };
 
@@ -219,14 +219,28 @@ export function registerResearchCommands(context: vscode.ExtensionContext): vsco
     // reviewed catalog source; only the extension's own tests may supply them (Refs #192). Without a
     // verified asset the installer writes nothing and reports `asset-unavailable`.
     const testMode = isExtensionTestMode();
+    const run = (signal?: AbortSignal, progress?: (value: { received: number; total: number | null }) => void) => prepareResearchTool(serverId, {
+      store,
+      root,
+      boundary,
+      download: testMode ? arg?.download : undefined,
+      assetBytes: testMode ? arg?.assetBytes : undefined,
+      signal,
+      progress
+    });
     try {
-      const outcome = await prepareResearchTool(serverId, {
-        store,
-        root,
-        boundary,
-        download: testMode ? arg?.download : undefined,
-        assetBytes: testMode ? arg?.assetBytes : undefined
-      });
+      // Interactive preparation downloads over the network, so it shows a cancellable notification;
+      // cancelling aborts the request and leaves any existing verified install untouched.
+      const outcome = testMode
+        ? await run()
+        : await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `Preparing research tool '${serverId}'`, cancellable: true },
+          (_progress, token) => {
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+            return run(controller.signal);
+          }
+        );
       return { ok: true, outcome };
     } catch (err: any) {
       return { ok: false, code: err?.code || 'prepare-failed', message: err?.message };

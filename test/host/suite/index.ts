@@ -709,7 +709,7 @@ async function researchFlow(workspace: string): Promise<void> {
   assert.match(manifestText, /# Research MCP Tool Security Manifest: arXiv Research MCP Server/);
   assert.match(manifestText, /Repository.*blazickjp\/arxiv-mcp-server\.git/);
   assert.match(manifestText, /Version.*v0\.8\.2/);
-  assert.match(manifestText, /Integrity Digest.*sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c/);
+  assert.match(manifestText, /Integrity Digest.*sha256:17f2eda9e3a8c38fe12b9055ac07459fe031af346f465b3d3025ff551010608d/);
   assert.match(manifestText, /License.*Apache-2\.0/);
   assert.match(manifestText, /Required Permissions/);
   assert.match(manifestText, /network/);
