@@ -17,25 +17,30 @@
  */
 function findOverlaps(entries) {
   const keyOf = (file) => file.normalize('NFC').toLowerCase();
-  const groups = new Map();
+  const exactGroups = new Map(); // exact name -> worktree ids
+  const foldGroups = new Map(); // folded name -> worktree id -> the spelling that worktree lists first
   for (const entry of entries) {
     if (!entry || typeof entry.id !== 'string') continue;
     for (const file of new Set(entry.files)) {
       if (typeof file !== 'string' || file === '') continue;
+      if (!exactGroups.has(file)) exactGroups.set(file, []);
+      if (!exactGroups.get(file).includes(entry.id)) exactGroups.get(file).push(entry.id);
       const key = keyOf(file);
-      if (!groups.has(key)) groups.set(key, new Map());
-      const byWorktree = groups.get(key);
-      if (!byWorktree.has(entry.id)) byWorktree.set(entry.id, file); // one spelling per worktree: the first it lists
+      if (!foldGroups.has(key)) foldGroups.set(key, new Map());
+      if (!foldGroups.get(key).has(entry.id)) foldGroups.get(key).set(entry.id, file);
     }
   }
   const found = [];
-  for (const byWorktree of groups.values()) {
-    if (byWorktree.size < 2) continue;
-    const worktrees = [...byWorktree.keys()];
-    const names = [...byWorktree.values()];
-    found.push({ file: names[0], worktrees, names, exact: names.every((name) => name === names[0]) });
+  // A name two worktrees share exactly is a certain collision, whatever other spellings also turn up.
+  for (const [file, worktrees] of exactGroups) {
+    if (worktrees.length > 1) found.push({ file, worktrees, names: worktrees.map(() => file), exact: true });
   }
-  return found.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  // Worktrees whose spellings differ are a possible collision: every spelling is kept and none is rewritten.
+  for (const byWorktree of foldGroups.values()) {
+    const names = [...byWorktree.values()];
+    if (byWorktree.size > 1 && new Set(names).size > 1) found.push({ file: names[0], worktrees: [...byWorktree.keys()], names, exact: false });
+  }
+  return found.sort((x, y) => (x.file < y.file ? -1 : x.file > y.file ? 1 : x.exact === y.exact ? 0 : x.exact ? -1 : 1));
 }
 
 /** One summary for messages: counts and at most `limit` names of each kind, exact collisions first. */

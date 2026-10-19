@@ -52,3 +52,12 @@ test('the summary keeps certain and possible apart and says the possible ones ar
   assert.equal(/being changed in more than one worktree: [^.]*B\.ts/.test(text), false, 'a possible match is not listed as a certain one');
   assert.doesNotMatch(summarizeOverlaps([overlaps[0]]), /not confirmed/);
 });
+
+test('a certain collision stays certain when a third worktree spells the name differently, and the possible one is listed besides it', () => {
+  const found = findOverlaps([{ id: 'a', files: ['README.md'] }, { id: 'b', files: ['README.md'] }, { id: 'c', files: ['readme.md'] }]);
+  assert.deepEqual(found, [
+    { file: 'README.md', worktrees: ['a', 'b'], names: ['README.md', 'README.md'], exact: true },
+    { file: 'README.md', worktrees: ['a', 'b', 'c'], names: ['README.md', 'README.md', 'readme.md'], exact: false }
+  ]);
+  assert.deepEqual(findOverlaps([{ id: 'a', files: ['x.ts'] }, { id: 'b', files: ['x.ts'] }]), [{ file: 'x.ts', worktrees: ['a', 'b'], names: ['x.ts', 'x.ts'], exact: true }], 'with one spelling there is no separate possible item');
+});
