@@ -92,6 +92,11 @@ class SessionObservationCore {
     return { ...fixed };
   }
 
+  /** Forgets a session and everything seen for it, so a session that ended costs nothing afterwards. */
+  unregister(sessionId) {
+    return this.sessions.delete(sessionId);
+  }
+
   ingest(event) {
     if (!isPlain(event) || Object.keys(event).some(key => !EVENT_KEYS.has(key))) return result(false, 'event-invalid');
     if (event.schemaVersion !== SCHEMA_VERSION) return result(false, 'schema-unsupported');
