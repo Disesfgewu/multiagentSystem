@@ -92,15 +92,18 @@ function linkedProfiles(store, profileId, existingIds) {
   const read = readLinks(store);
   if (!read.ok) return read;
   const own = read.links.get(profileId);
-  if (!own) return { ok: true, ids: [], known: false };
+  if (!own) return { ok: true, ids: [], current: [], known: false };
   const existing = new Set(existingIds);
   const mine = new Set(subjectsOf(own));
   const ids = [];
+  const current = [];
   for (const [id, link] of read.links) {
     if (id === profileId || !existing.has(id) || link.provider !== own.provider) continue;
     if (subjectsOf(link).some((key) => mine.has(key))) ids.push(id);
+    // Only these are signed in as the same account right now: their usage readings are this account's readings.
+    if (link.subject === own.subject) current.push(id);
   }
-  return { ok: true, ids: ids.sort(), known: true };
+  return { ok: true, ids: ids.sort(), current: current.sort(), known: true };
 }
 
 /**
@@ -112,7 +115,7 @@ function resolveGroup(store, listProfiles, profileId) {
   try { listed = listProfiles(); } catch { return { ok: false, reason: 'profiles-unavailable' }; }
   if (!listed || listed.ok !== true || !Array.isArray(listed.profiles)) return { ok: false, reason: 'profiles-unavailable' };
   const found = linkedProfiles(store, profileId, listed.profiles.map((profile) => profile.id));
-  return found.ok ? { ok: true, ids: found.ids, known: found.known === true, profiles: listed.profiles } : { ok: false, reason: found.reason };
+  return found.ok ? { ok: true, ids: found.ids, current: found.current ?? [], known: found.known === true, profiles: listed.profiles } : { ok: false, reason: found.reason };
 }
 
 /**
@@ -157,6 +160,18 @@ function deduplicateQuotaObservations(observationLists, now = new Date()) {
     }
   }
   return [...byWindow.values()];
+}
+
+/**
+ * The usage readings that describe this profile's account. A profile's own readings always do. Another
+ * profile's readings join them only when it is signed in as the same account NOW (`currentIds`); a profile
+ * that was once in the group but now signs in as another account still counts toward the running limit and
+ * the limits, but what it reports about its new account says nothing about this one and is left out.
+ */
+function groupReadings(ownReadings, currentIds, readingsById, now = new Date()) {
+  const lists = [ownReadings];
+  for (const id of currentIds) if (readingsById.has(id)) lists.push(readingsById.get(id));
+  return lists.length > 1 ? deduplicateQuotaObservations(lists, now) : ownReadings;
 }
 
 /**
@@ -211,5 +226,6 @@ module.exports = {
   resolveGroup,
   assessLaunchIdentity,
   deduplicateQuotaObservations,
+  groupReadings,
   coordinatePolicies
 };

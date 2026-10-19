@@ -11,6 +11,7 @@ const {
   assessLaunchIdentity,
   readLinks,
   deduplicateQuotaObservations,
+  groupReadings,
   coordinatePolicies
 } = require('../../src/accounts/identity-registry');
 const { sandbox, COLLECTIONS } = require('../storage/helpers');
@@ -29,6 +30,7 @@ const identity = (subject, over = {}) => ({
   ...over
 });
 const loggedOut = () => ({ provider: 'claude', loggedIn: false, subject: { field: 'subject', value: null, confidence: CONFIDENCE.UNKNOWN } });
+const recordIdentity = (store, id, subject) => assert.equal(recordVerifiedIdentity(store, id, identity(subject), NOW).ok, true);
 const answer = (id) => ({ ok: true, identity: id });
 
 function open(t) {
@@ -45,11 +47,11 @@ test('profiles verified as the same actual account are linked, different account
   recordVerifiedIdentity(store, 'p3', identity(B), NOW);
   assert.deepEqual(recordVerifiedIdentity(store, 'p4', loggedOut(), NOW), { ok: true, recorded: false, changed: false });
   assert.deepEqual(recordVerifiedIdentity(store, 'p4', identity(A, { subject: { ...identity(A).subject, confidence: CONFIDENCE.ESTIMATED } }), NOW), { ok: true, recorded: false, changed: false }, 'an estimate is not a verification');
-  assert.deepEqual(linkedProfiles(store, 'p1', all), { ok: true, ids: ['p2'], known: true });
-  assert.deepEqual(linkedProfiles(store, 'p2', all), { ok: true, ids: ['p1'], known: true });
-  assert.deepEqual(linkedProfiles(store, 'p3', all), { ok: true, ids: [], known: true }, 'a different account stays alone');
-  assert.deepEqual(linkedProfiles(store, 'p4', all), { ok: true, ids: [], known: false }, 'never verified: nothing is guessed');
-  assert.deepEqual(linkedProfiles(store, 'p1', ['p1']), { ok: true, ids: [], known: true }, 'a profile that no longer exists is not a member');
+  assert.deepEqual(linkedProfiles(store, 'p1', all), { ok: true, ids: ['p2'], current: ['p2'], known: true });
+  assert.deepEqual(linkedProfiles(store, 'p2', all), { ok: true, ids: ['p1'], current: ['p1'], known: true });
+  assert.deepEqual(linkedProfiles(store, 'p3', all), { ok: true, ids: [], current: [], known: true }, 'a different account stays alone');
+  assert.deepEqual(linkedProfiles(store, 'p4', all), { ok: true, ids: [], current: [], known: false }, 'never verified: nothing is guessed');
+  assert.deepEqual(linkedProfiles(store, 'p1', ['p1']), { ok: true, ids: [], current: [], known: true }, 'a profile that no longer exists is not a member');
   const codex = recordVerifiedIdentity(store, 'p5', identity(A, { provider: 'codex' }), NOW);
   assert.equal(codex.ok, true);
   assert.deepEqual(linkedProfiles(store, 'p5', ['p1', 'p5']).ids, [], 'the same hash under another provider is another account');
@@ -60,7 +62,7 @@ test('the groups live in the shared store: another Extension Host, or a restarte
   recordVerifiedIdentity(store, 'p1', identity(A), NOW);
   recordVerifiedIdentity(store, 'p2', identity(A), NOW);
   const otherHost = another();
-  assert.deepEqual(linkedProfiles(otherHost, 'p2', ['p1', 'p2']), { ok: true, ids: ['p1'], known: true });
+  assert.deepEqual(linkedProfiles(otherHost, 'p2', ['p1', 'p2']), { ok: true, ids: ['p1'], current: ['p1'], known: true });
   assert.equal(JSON.stringify(readLinks(otherHost).links.get('p1')).includes('@'), false, 'only an opaque hash, never an address');
 });
 
@@ -87,6 +89,29 @@ test('a profile that is verified as another account keeps counting toward the gr
   recordVerifiedIdentity(store, 'p2', identity(C), NOW);
   recordVerifiedIdentity(store, 'p2', identity(A), NOW);
   assert.deepEqual(linkedProfiles(store, 'p3', all).ids, ['p2'], 'moving back and forth keeps the earlier accounts');
+});
+
+test('linked profiles and profiles that are the same account now are told apart', (t) => {
+  const { store } = open(t);
+  const all = ['p1', 'p2', 'p3'];
+  recordIdentity(store, 'p1', A);
+  recordIdentity(store, 'p2', A);
+  recordIdentity(store, 'p3', A);
+  recordVerifiedIdentity(store, 'p1', identity(B), NOW);
+  assert.deepEqual(linkedProfiles(store, 'p2', all), { ok: true, ids: ['p1', 'p3'], current: ['p3'], known: true }, 'p1 still counts toward limits but is not p2\'s account now');
+  assert.deepEqual(linkedProfiles(store, 'p1', all), { ok: true, ids: ['p2', 'p3'], current: [], known: true });
+});
+
+test('usage readings join only from profiles that are the same account now, and the freshest valid actual one wins among them', () => {
+  const field = 'quota.five_hour.used_percent';
+  const own = [reading(field, 95, 60_000, 600_000)];
+  const sameNow = [reading(field, 10, 1_000, 600_000)];
+  const history = [reading(field, 5, 500, 600_000)];
+  const byId = new Map([['same', sameNow], ['moved', history]]);
+  assert.equal(groupReadings(own, ['same'], byId, NOW)[0].value, 10);
+  assert.equal(groupReadings(own, [], byId, NOW)[0].value, 95, 'a profile that moved away contributes nothing');
+  assert.equal(groupReadings(own, ['same', 'missing'], byId, NOW)[0].value, 10, 'a profile with no readings is skipped');
+  assert.equal(groupReadings(own, [], new Map(), NOW), own, 'nothing to merge returns the profile\'s own readings');
 });
 
 test('at launch the account the CLI reports now is compared with the one that was verified', (t) => {
@@ -180,7 +205,7 @@ test('a profile listing that cannot be read is an unknown group, never an empty 
   recordVerifiedIdentity(store, 'p1', identity(A), NOW);
   recordVerifiedIdentity(store, 'p2', identity(A), NOW);
   const profiles = [{ id: 'p1' }, { id: 'p2' }];
-  assert.deepEqual(resolveGroup(store, () => ({ ok: true, profiles }), 'p1'), { ok: true, ids: ['p2'], known: true, profiles });
+  assert.deepEqual(resolveGroup(store, () => ({ ok: true, profiles }), 'p1'), { ok: true, ids: ['p2'], current: ['p2'], known: true, profiles });
   for (const broken of [() => ({ ok: false }), () => ({ ok: true }), () => ({ ok: true, profiles: 'x' }), () => null, () => { throw new Error('storage'); }]) {
     assert.deepEqual(resolveGroup(store, broken, 'p1'), { ok: false, reason: 'profiles-unavailable' });
   }

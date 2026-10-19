@@ -5,9 +5,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
-const { savePolicy, loadPolicy } = require('../../src/accounts/quota-policy');
+const { savePolicy, loadPolicy, decideDispatch } = require('../../src/accounts/quota-policy');
 const { runningSlots, reserveSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
-const { recordVerifiedIdentity, linkedProfiles, resolveGroup, coordinatePolicies } = require('../../src/accounts/identity-registry');
+const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
 const { observe, CONFIDENCE } = require('../../src/accounts/observation');
@@ -388,4 +388,49 @@ test('when the profile list cannot be read after links and leases exist, the gro
   assert.equal(runningSlots(store, p1.id, NOW, { linkedAccountKeys: [p2.id] }).running, 1, 'p1\'s lease is still there to be counted once the list is readable');
   service.list = realList;
   assert.deepEqual(resolveGroup(store, () => service.list(), p2.id).ids, [p1.id], 'back to normal');
+});
+
+const percent = (value, ageMs, confidence = 'actual') => observe('quota.window.used_percent', value, {
+  unit: 'percent', scope: 'account', source: 'synthetic', confidence, observedAt: new Date(NOW.getTime() - ageMs), validForMs: 600_000
+});
+
+// The decision the gate takes for `id`: the group from the store, the readings that describe its account, the coordinated limits.
+function gateDecision(store, service, id, readingsOf) {
+  const group = resolveGroup(store, () => service.list(), id);
+  assert.equal(group.ok, true);
+  const readings = new Map(group.current.map((other) => [other, readingsOf[other]]));
+  const observations = groupReadings(readingsOf[id], group.current, readings, NOW);
+  const policy = group.ids.length > 0 ? coordinatePolicies([loadPolicy(store, id), ...group.ids.map((other) => loadPolicy(store, other))]) : loadPolicy(store, id);
+  const decision = decideDispatch({ policy: policy.policy, observations, now: NOW, running: 0, approval: undefined });
+  return { group, decision };
+}
+
+test('a profile that moved to another account never lifts the usage block of the account it left', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, p2.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  // Account A (p2's) is at 95%, read a minute ago. p1 then signs in as account B, which is at 10%, read just now.
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
+  const readingsOf = { [p2.id]: [percent(95, 60_000)], [p1.id]: [percent(10, 1_000)] };
+  const { group, decision } = gateDecision(store, service, p2.id, readingsOf);
+  assert.deepEqual(group.ids, [p1.id], 'p1 is still counted for leases and limits');
+  assert.deepEqual(group.current, [], 'but it is not signed in as p2\'s account, so its readings are not p2\'s');
+  assert.equal(decision.allowed, false, 'p2 stays blocked by its own 95%');
+  assert.ok(decision.reasons.some((reason) => /usage|percent|block/i.test(JSON.stringify(reason))), JSON.stringify(decision.reasons));
+});
+
+test('profiles that are the same account now do share readings, and the freshest valid actual one decides', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, p2.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  const readingsOf = { [p2.id]: [percent(95, 60_000)], [p1.id]: [percent(10, 1_000)] };
+  const { group, decision } = gateDecision(store, service, p2.id, readingsOf);
+  assert.deepEqual([group.ids, group.current], [[p1.id], [p1.id]]);
+  assert.equal(decision.allowed, true, 'the same account\'s newer reading of 10% is the account\'s reading');
 });

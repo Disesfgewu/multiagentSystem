@@ -29,13 +29,13 @@ const {
   recordVerifiedIdentity,
   resolveGroup,
   assessLaunchIdentity,
-  deduplicateQuotaObservations,
+  groupReadings,
   coordinatePolicies
 } = require('./identity-registry') as {
   recordVerifiedIdentity(store: unknown, profileId: string, identity: unknown, now?: Date): { ok: boolean; recorded?: boolean; changed?: boolean; reason?: string };
-  resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; known?: boolean; profiles?: any[]; reason?: string };
+  resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; current?: string[]; known?: boolean; profiles?: any[]; reason?: string };
   assessLaunchIdentity(store: unknown, profileId: string, outcome: unknown, now?: Date): { ok: boolean; unverified?: boolean; code?: string };
-  deduplicateQuotaObservations(observationLists: any[][], now?: Date): any[];
+  groupReadings(ownReadings: any[], currentIds: string[], readingsById: Map<string, any[]>, now?: Date): any[];
   coordinatePolicies(policyReads: any[]): { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
 };
 
@@ -49,11 +49,11 @@ export type IdentityProbe = (profileId: string) => Promise<unknown>;
 let identityProbe: IdentityProbe | undefined;
 export function setIdentityProbe(probe: IdentityProbe | undefined): void { identityProbe = probe; }
 
-interface GroupRead { ok: boolean; ids: string[]; known: boolean; profiles: any[] }
+interface GroupRead { ok: boolean; ids: string[]; current: string[]; known: boolean; profiles: any[] }
 /** The other profiles that share this profile's verified provider account, from the shared private store. */
 function groupOf(accounts: { store: unknown; service: { list(): { ok: boolean; profiles?: Array<{ id: string }> } } }, profileId: string): GroupRead {
   const found = resolveGroup(accounts.store, () => accounts.service.list(), profileId);
-  return found.ok ? { ok: true, ids: found.ids ?? [], known: found.known === true, profiles: found.profiles ?? [] } : { ok: false, ids: [], known: false, profiles: [] };
+  return found.ok ? { ok: true, ids: found.ids ?? [], current: found.current ?? [], known: found.known === true, profiles: found.profiles ?? [] } : { ok: false, ids: [], current: [], known: false, profiles: [] };
 }
 
 interface GroupState {
@@ -83,13 +83,15 @@ function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): Gro
   const mine = loadPolicy(accounts.store, profileId);
   const others = group.ids.map((id) => loadPolicy(accounts.store, id));
   const policyRead = group.ids.length > 0 ? coordinatePolicies([mine, ...others]) : mine;
-  const lists = [quotaObservations(profileId, ownProfile)];
+  // Every linked profile is registered and counted for leases and limits; only those signed in as the same
+  // account right now contribute usage readings.
+  const readingsById = new Map<string, any[]>();
   for (const id of group.ids) {
     const other = all.find((candidate: any) => candidate.id === id);
     if (other) registerProfileForQuota(other);
-    lists.push(quotaObservations(id, other));
+    if (group.current.includes(id)) readingsById.set(id, quotaObservations(id, other));
   }
-  const observations = group.ids.length > 0 ? deduplicateQuotaObservations(lists, now) : lists[0];
+  const observations = groupReadings(quotaObservations(profileId, ownProfile), group.current, readingsById, now);
   return { ok: true, ids: group.ids, policyRead, observations };
 }
 
