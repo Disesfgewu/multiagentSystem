@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { safeArgs } = require('./gitSafe');
 const { execFile } = require('node:child_process');
 
 const TIMEOUT_MS = 5000;
@@ -16,16 +17,20 @@ const SHA = /^[a-f0-9]{7,64}$/;
  * text and no remote address. Anything it cannot read is unknown with a reason, never zero or clean.
  */
 
-function runGit(cwd, args) {
+function execGit(cwd, args) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
   for (const key of Object.keys(env)) {
     if (['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'].includes(key.toUpperCase())) delete env[key];
   }
   return new Promise((resolve, reject) => {
-    execFile('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args],
-      { cwd, env, encoding: 'utf8', timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, windowsHide: true },
+    execFile('git', args, { cwd, env, encoding: 'utf8', timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, windowsHide: true },
       (error, stdout) => (error ? reject(error) : resolve(stdout)));
   });
+}
+
+// Every call carries the arguments that switch off what a repository's own configuration could run.
+async function runGit(cwd, args) {
+  return execGit(cwd, [...(await safeArgs((probe) => execGit(cwd, probe))), ...args]);
 }
 
 /** Counts from `git status --porcelain=v1 -z`. */

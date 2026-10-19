@@ -13,7 +13,7 @@ import { runBroadcastChecks } from './broadcasts';
 import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
-import { overviewTreeForTests } from '../../../src/overview/overviewView';
+import { overviewTreeForTests, setGitEvidenceReaderForTests } from '../../../src/overview/overviewView';
 import { observationPath } from '../../../src/observations/runtime';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, previewText, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
@@ -219,6 +219,9 @@ async function accountFlow(workspace: string): Promise<void> {
   // Evidence the CLI's status line writes reaches the Overview by itself (no manual refresh), ages back
   // to unknown by itself, and the session's observation file is gone once the session stops.
   {
+    // This check is about timing (a record that stays fresh for a few seconds): reading Git for the workspace on every
+    // Overview refresh would only make it depend on how slow a process start is, so Git evidence is not read here.
+    setGitEvidenceReaderForTests(async () => ({ state: 'unknown', reason: 'no-folder' }));
     const sessionId = started.session!.id;
     const observationFile = observationPath(accountDir, sessionId);
     const nextOverviewChange = (timeoutMs: number): Promise<boolean> => new Promise((resolve) => {
@@ -244,6 +247,7 @@ async function accountFlow(workspace: string): Promise<void> {
     assert.equal(fs.existsSync(observationFile), true);
     await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: sessionId });
     assert.equal(fs.existsSync(observationFile), false, 'stopping the session removes its observation file');
+    setGitEvidenceReaderForTests(undefined);
   }
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
   const reopenedModel = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; requestedModel: string | null } }>('multiagentSystem.sessions.reopen', { interactive: false, id: started.session?.id, launch: false });

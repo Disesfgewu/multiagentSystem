@@ -5,6 +5,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const exec = promisify(execFile);
+const { safeArgs } = require('./gitSafe');
 
 class WorktreeError extends Error {
   constructor(code, cause) {
@@ -142,7 +143,7 @@ class WorktreeService {
     if (selected.length !== 1) throw new WorktreeError('worktree-not-found');
     const primary = worktrees[0];
     if (!primary || !/^[a-f0-9]{40,64}$/.test(primary.headSha ?? '')) throw new WorktreeError('base-invalid');
-    const safe = ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+    const safe = await safeArgs((probe) => git(selected[0].path, probe));
     const base = line(await git(selected[0].path, [...safe, 'merge-base', primary.headSha, 'HEAD']));
     if (!/^[a-f0-9]{40,64}$/.test(base)) throw new WorktreeError('base-invalid');
     const tracked = await git(selected[0].path, [...safe, 'diff', '--name-only', '-z', '--no-renames', base, '--']);
@@ -194,7 +195,8 @@ class WorktreeService {
     }
     if (selected.locked) throw new WorktreeError('worktree-locked');
     if (selected.prunable) throw new WorktreeError('worktree-unavailable');
-    const status = await git(selected.path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching']);
+    const safe = await safeArgs((probe) => git(selected.path, probe));
+    const status = await git(selected.path, [...safe, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching']);
     if (status !== '') throw new WorktreeError('worktree-has-local-files');
     // Git checks tracked/untracked changes again. Never use --force, clean or reset.
     await git(this.root, ['worktree', 'remove', '--', selected.path]);
