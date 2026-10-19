@@ -24,6 +24,8 @@ export interface ReadResult<T> {
   possiblyHidden?: boolean;
   resetAt?: string;
   retryAfterMs?: number;
+  authMode?: 'vscode-session' | 'anonymous';
+  scope?: 'primary' | 'secondary' | 'unknown';
   pagesFetched?: number;
   pageLimit?: number;
 }
@@ -259,6 +261,18 @@ const DENIED_REASONS: Record<string, string> = {
   forbidden: 'the account lacks permission'
 };
 
+/** Only adapter-derived enum values and a parsed timestamp enter the visible diagnostic. */
+export function rateLimitMessage(result: Pick<ReadResult<unknown>, 'authMode' | 'scope' | 'resetAt'>): string {
+  const identity = result.authMode === 'anonymous' ? 'anonymous GitHub access'
+    : result.authMode === 'vscode-session' ? 'the VS Code GitHub session' : 'an unknown GitHub identity';
+  const scope = result.scope === 'primary' ? 'primary' : result.scope === 'secondary' ? 'secondary' : 'unknown-type';
+  const parsed = typeof result.resetAt === 'string' ? Date.parse(result.resetAt) : Number.NaN;
+  const reset = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  const when = reset ? ` Retry after ${reset}.` : ' Retry time unknown.';
+  const signIn = result.authMode === 'anonymous' ? ' Use "Multiagent: Sign In to GitHub" to use a VS Code GitHub session.' : '';
+  return `GitHub rate limit reached using ${identity} (${scope}).${when}${signIn}`;
+}
+
 /** Maps a failed read to a code and a message. Remote text is never repeated. */
 export function describeReadFailure(result: ReadResult<unknown>, what: string): { code: string; message: string } {
   switch (result.kind) {
@@ -278,10 +292,9 @@ export function describeReadFailure(result: ReadResult<unknown>, what: string): 
       return { code: 'denied', message: `GitHub refused access to ${what}: ${reason}. Use "Multiagent: Sign In to GitHub" or check the account's permissions.` };
     }
     case 'rate_limited': {
-      const when = result.resetAt ? ` Try again after ${result.resetAt}.` : '';
       return {
         code: 'rate-limited',
-        message: `GitHub is rate limiting requests for ${what}.${when} This is temporary and will recover automatically; your sign-in is intact.`
+        message: `${what} could not be read. ${rateLimitMessage(result)}`
       };
     }
     case 'transient':

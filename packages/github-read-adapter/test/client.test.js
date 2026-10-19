@@ -75,6 +75,7 @@ test('403 with remaining=0 is a primary rate limit with reset time', async () =>
   const result = await makeClient(transport, { now: clock }).getJson('/x');
   assert.equal(result.kind, 'rate_limited');
   assert.equal(result.scope, 'primary');
+  assert.equal(result.authMode, 'vscode-session');
   assert.equal(result.resetAt, new Date(reset * 1000).toISOString());
   assert.equal(result.retryAfterMs, 90000);
 });
@@ -91,6 +92,24 @@ test('secondary rate limit (retry-after) and 429 are rate_limited, and are not r
 
   const tooMany = createFakeTransport().get('/x', json(429, { message: 'slow down' }));
   assert.equal((await makeClient(tooMany).getJson('/x')).kind, 'rate_limited');
+});
+
+test('anonymous rate limit identifies its credential mode without exposing a token', async () => {
+  const transport = createFakeTransport().get('/x', json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0' }));
+  const result = await makeClient(transport, { getToken: () => undefined }).getJson('/x');
+  assert.equal(result.kind, 'rate_limited');
+  assert.equal(result.authMode, 'anonymous');
+  assert.equal(result.scope, 'primary');
+  assert.equal(result.resetAt, undefined);
+  assert.equal(JSON.stringify(result).includes(TOKEN), false);
+});
+
+test('secondary rate limit without retry-after is classified from GitHub response text, with unknown retry time', async () => {
+  const transport = createFakeTransport().get('/x', json(403, { message: 'You have exceeded a secondary rate limit.' }, { 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': '1792000000' }));
+  const result = await makeClient(transport).getJson('/x');
+  assert.equal(result.kind, 'rate_limited');
+  assert.equal(result.scope, 'secondary');
+  assert.equal(result.resetAt, undefined, 'the primary bucket reset is not the secondary retry time');
 });
 
 test('5xx is retried with exponential backoff and then reported as transient', async () => {

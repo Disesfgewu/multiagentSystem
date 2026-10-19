@@ -266,27 +266,29 @@ function createGitHubClient(options) {
       remaining === 0 ||
       /rate limit|abuse/i.test(message);
     const fields = {};
+    const scope = retryAfterSeconds !== undefined || /secondary rate limit|abuse/i.test(message)
+      ? 'secondary' : remaining === 0 ? 'primary' : 'unknown';
     let resetAtMs;
     if (retryAfterSeconds !== undefined) resetAtMs = now() + retryAfterSeconds * 1000;
-    else if (reset !== undefined) resetAtMs = reset * 1000;
+    else if (scope === 'primary' && reset !== undefined) resetAtMs = reset * 1000;
     if (resetAtMs !== undefined) {
       const resetAt = isoOrNull(resetAtMs);
       if (resetAt !== null) fields.resetAt = resetAt;
       fields.retryAfterMs = Math.min(MAX_REPORTED_WAIT_MS, Math.max(0, resetAtMs - now()));
     }
-    fields.scope = retryAfterSeconds !== undefined ? 'secondary' : 'primary';
+    fields.scope = scope;
     return { limited, fields };
   }
 
   /** Maps a non-success HTTP response to a failure result, or undefined for 2xx. */
-  function classifyHttpFailure(response) {
+  function classifyHttpFailure(response, authMode) {
     const status = response.status;
     if (status >= 200 && status < 300) return undefined;
     const info = describe(response);
     if (status === 401) return fail('denied', { reason: 'bad_credentials', ...info });
     if (status === 403 || status === 429) {
       const rate = rateLimitFields(response);
-      if (rate.limited) return fail('rate_limited', { ...rate.fields, ...info });
+      if (rate.limited) return fail('rate_limited', { ...rate.fields, authMode, ...info });
       return fail('denied', {
         reason: response.headers['x-github-sso'] ? 'sso_required' : 'forbidden',
         ...info
@@ -483,7 +485,7 @@ function createGitHubClient(options) {
       cacheSet(key, entry);
       return successFrom(entry, 'revalidated');
     }
-    const failure = classifyHttpFailure(response);
+    const failure = classifyHttpFailure(response, credential.token ? 'vscode-session' : 'anonymous');
     if (failure) return withLastKnown(failure, entry);
 
     const parsed = parseBody(response.body);
@@ -538,7 +540,7 @@ function createGitHubClient(options) {
         cacheSet(key, entry);
         return successFrom(entry, 'revalidated');
       }
-      const failure = classifyHttpFailure(response);
+      const failure = classifyHttpFailure(response, credential.token ? 'vscode-session' : 'anonymous');
       if (failure) return withLastKnown(failure, entry, items, pages);
 
       const page = readPage(response, (body) => {
@@ -614,7 +616,7 @@ function createGitHubClient(options) {
     );
     if (outcome.failure) return outcome.failure;
     const { response } = outcome;
-    const failure = classifyHttpFailure(response);
+    const failure = classifyHttpFailure(response, credential.token ? 'vscode-session' : 'anonymous');
     if (failure) return failure;
 
     const parsed = parseBody(response.body);
@@ -628,7 +630,8 @@ function createGitHubClient(options) {
       const base = { status: response.status, ...(message ? { message } : {}) };
       if (types.includes('NOT_FOUND')) return fail('not_found', { possiblyHidden: true, ...base });
       if (types.includes('RATE_LIMITED')) {
-        return fail('rate_limited', { ...rateLimitFields({ ...response, status: 200 }).fields, ...base });
+        return fail('rate_limited', { ...rateLimitFields({ ...response, status: 200 }).fields,
+          authMode: credential.token ? 'vscode-session' : 'anonymous', ...base });
       }
       if (types.includes('FORBIDDEN') || types.includes('INSUFFICIENT_SCOPES')) {
         return fail('denied', { reason: 'forbidden', ...base });
