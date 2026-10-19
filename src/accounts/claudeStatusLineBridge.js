@@ -3,6 +3,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+
+const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
+const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
 
 /**
  * Claude Code statusLine bridge script.
@@ -110,6 +114,42 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
         fs.renameSync(tempFile, targetPath);
       }
 
+      // A managed terminal receives only an opaque, validated local session id. Keeping the
+      // destination below CLAUDE_CONFIG_DIR prevents inherited environment values from selecting
+      // an arbitrary write location. The record contains only documented status-line fields.
+      const managedSessionId = process.env[SESSION_ID_ENV];
+      const configDir = process.env.CLAUDE_CONFIG_DIR;
+      if (configDir && SESSION_ID.test(managedSessionId || '')) {
+        const observationPath = path.join(configDir, 'session-observations', `${managedSessionId}.json`);
+        const statusLine = {};
+        if (payload.model && typeof payload.model.id === 'string') {
+          statusLine.model = { id: payload.model.id };
+        }
+        if (payload.cost && typeof payload.cost.total_cost_usd === 'number') {
+          statusLine.cost = { total_cost_usd: payload.cost.total_cost_usd };
+        }
+        if (Object.keys(statusLine).length > 0) {
+          const observedAt = now.toISOString();
+          const record = {
+            schemaVersion: 1,
+            eventId: randomUUID(),
+            observedAt,
+            sequence: Date.parse(observedAt),
+            statusLine
+          };
+          const observationDir = path.dirname(observationPath);
+          // Only a real directory owned by this account folder: a symlink here would send the record
+          // wherever it points. Created private (0700); an existing one is tightened to match.
+          fs.mkdirSync(observationDir, { recursive: true, mode: 0o700 });
+          const dirInfo = fs.lstatSync(observationDir);
+          if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink()) throw new Error('observation-dir-not-a-directory');
+          if (process.platform !== 'win32') fs.chmodSync(observationDir, 0o700);
+          const tempFile = `${observationPath}.tmp.${process.pid}.${Date.now()}`;
+          fs.writeFileSync(tempFile, JSON.stringify(record), { mode: 0o600 });
+          fs.renameSync(tempFile, observationPath);
+        }
+      }
+
       // Format clean status line for Claude Code terminal output
       const parts = [];
       if (payload.model && typeof payload.model.display_name === 'string') {
@@ -149,4 +189,4 @@ if (require.main === module) {
   runBridge();
 }
 
-module.exports = { runBridge };
+module.exports = { runBridge, SESSION_ID_ENV };

@@ -73,6 +73,8 @@ export interface SessionView extends SessionIdentity {
   instructionStatusLabel?: string;
   instructionDigest?: string | null;
   instructionMethod?: string | null;
+  /** Fresh, verified provider evidence only. It is never persisted with the session record. */
+  providerObservation?: any;
 }
 
 export interface ProviderEvent {

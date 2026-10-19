@@ -112,18 +112,23 @@ class SessionObservationCore {
     if (!Number.isFinite(nowMs)) throw new TypeError('now returned an invalid time');
     if (eventMs > nowMs) return result(false, 'future-event');
     if (session.lastObservedAt !== null && eventMs < Date.parse(session.lastObservedAt)) return result(false, 'out-of-order');
-    if (!SESSION_STATES.includes(event.state)) return result(false, 'state-unknown');
+    if (event.state !== undefined && !SESSION_STATES.includes(event.state)) return result(false, 'state-unknown');
     if (event.model !== undefined && !validCode(event.model)) return result(false, 'model-invalid');
     const checkedUsage = validateUsage(event.usage);
     if (!checkedUsage.ok) return checkedUsage;
+    if (event.state === undefined && event.model === undefined && checkedUsage.values.size === 0) {
+      return result(false, 'evidence-empty');
+    }
 
-    const status = observe('session.state', event.state, {
-      source: event.source,
-      observedAt: event.observedAt,
-      scope: 'bound local session',
-      confidence: CONFIDENCE.ACTUAL,
-      validForMs: this.ttlMs
-    });
+    const status = event.state === undefined
+      ? (session.status ?? unknown('session.state', { source: event.source, observedAt: event.observedAt, reason: 'not-reported' }))
+      : observe('session.state', event.state, {
+        source: event.source,
+        observedAt: event.observedAt,
+        scope: 'bound local session',
+        confidence: CONFIDENCE.ACTUAL,
+        validForMs: this.ttlMs
+      });
     const model = event.model === undefined
       ? unknown('session.model', { source: event.source, observedAt: event.observedAt, reason: 'not-reported' })
       : observe('session.model', event.model, {
@@ -154,7 +159,7 @@ class SessionObservationCore {
     session.status = status;
     session.model = model;
     session.usage = usage;
-    session.ended = event.state === 'ended';
+    session.ended = session.ended || event.state === 'ended';
     session.seen.add(event.eventId);
     session.seenOrder.push(event.eventId);
     if (session.seenOrder.length > MAX_SEEN_EVENTS) session.seen.delete(session.seenOrder.shift());
@@ -170,7 +175,9 @@ class SessionObservationCore {
     const statusFresh = isFresh(session.status, at);
     const status = statusFresh
       ? copyObservation(session.status)
-      : unknown('session.state', { source: session.status.source, observedAt: at, reason: 'stale' });
+      : (session.status.confidence === CONFIDENCE.UNKNOWN
+        ? copyObservation(session.status)
+        : unknown('session.state', { source: session.status.source, observedAt: at, reason: 'stale' }));
     const model = !session.model || session.model.confidence === CONFIDENCE.UNKNOWN
       ? copyObservation(session.model)
       : (isFresh(session.model, at)
@@ -188,7 +195,7 @@ class SessionObservationCore {
       status,
       model,
       usage,
-      freshness: statusFresh ? 'fresh' : 'stale'
+      freshness: statusFresh || isFresh(model, at) || usage.some(value => isFresh(value, at)) ? 'fresh' : 'stale'
     };
   }
 }

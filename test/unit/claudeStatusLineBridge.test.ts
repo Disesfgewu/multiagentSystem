@@ -70,6 +70,79 @@ test('Claude status line bridge: handles payload without rate_limits (non Pro/Ma
   }
 });
 
+test('managed session output contains only documented model and cost fields in its account directory', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-observation-'));
+  try {
+    const quotaPath = path.join(tempDir, 'statusline-quota.json');
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const result = spawnSync('node', [bridgeScript, quotaPath], {
+      input: JSON.stringify({
+        session_id: 'provider-private-id',
+        transcript_path: '/private/transcript',
+        cwd: '/private/project',
+        model: { id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet' },
+        cost: { total_cost_usd: 0.125 },
+        rate_limits: {}
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir, MULTIAGENT_CLAUDE_SESSION_ID: 'managed-session-1' }
+    });
+    assert.equal(result.status, 0);
+    const file = path.join(tempDir, 'session-observations', 'managed-session-1.json');
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepEqual(Object.keys(record).sort(), ['eventId', 'observedAt', 'schemaVersion', 'sequence', 'statusLine']);
+    assert.deepEqual(record.statusLine, {
+      model: { id: 'claude-sonnet-4-5' },
+      cost: { total_cost_usd: 0.125 }
+    });
+    assert.doesNotMatch(JSON.stringify(record), /transcript|private|provider-private-id|cwd/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('untrusted session ids cannot select a path outside the account directory', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-boundary-'));
+  try {
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const result = spawnSync('node', [bridgeScript, path.join(tempDir, 'quota.json')], {
+      input: JSON.stringify({ model: { id: 'claude-sonnet-4-5' } }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir, MULTIAGENT_CLAUDE_SESSION_ID: '../escape' }
+    });
+    assert.equal(result.status, 0);
+    assert.equal(fs.existsSync(path.join(tempDir, 'session-observations')), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('the observation folder is private, and a symlinked one is never written through', { skip: process.platform === 'win32' }, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-dir-'));
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-session-elsewhere-'));
+  try {
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const run = () => spawnSync('node', [bridgeScript, path.join(tempDir, 'quota.json')], {
+      input: JSON.stringify({ model: { id: 'claude-sonnet-4-5' } }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: tempDir, MULTIAGENT_CLAUDE_SESSION_ID: 'managed-session-2' }
+    });
+    assert.equal(run().status, 0);
+    const dir = path.join(tempDir, 'session-observations');
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+    fs.chmodSync(dir, 0o755);
+    run();
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700, 'an existing folder is tightened');
+    fs.rmSync(dir, { recursive: true });
+    fs.symlinkSync(elsewhere, dir);
+    assert.equal(run().status, 0);
+    assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing is written through the link');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
 test('Claude status line bridge: fail-closed on corrupt or empty stdin', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-test-'));
   try {

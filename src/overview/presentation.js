@@ -32,12 +32,32 @@ function field(value, fallback = UNKNOWN) {
  * One line per session. `row` is a row of `buildOverview`; `session` supplies the display name and
  * the state label that the session layer already worded honestly.
  */
+// A plain money amount, never raw float noise or exponent notation. Anything that is not a sane,
+// non-negative amount is unknown rather than shown.
+function formatEstimatedCost(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1e6) return UNKNOWN;
+  // Four decimals at most, trailing zeros trimmed down to cents: 0.125 stays $0.125, 0.30000000000000004 is $0.30.
+  const [whole, fraction] = value.toFixed(4).split('.');
+  let cents = fraction;
+  while (cents.length > 2 && cents.endsWith('0')) cents = cents.slice(0, -1);
+  return `$${whole}.${cents} estimated`;
+}
+
 function presentAgent(row, session) {
   const name = shown(session?.name, 'Session');
   const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
   const provider = shown(session?.providerLabel);
   const account = row.account.state === 'known' ? shown(row.account.label) : UNKNOWN;
-  const stateText = row.sessionState.state === 'known' ? (Object.hasOwn(STATE_TEXT, row.sessionState.value) ? STATE_TEXT[row.sessionState.value] : UNKNOWN) : 'state unknown';
+  const providerObservation = session?.providerObservation;
+  const observedState = providerObservation?.status?.confidence === 'actual' ? providerObservation.status.value : null;
+  const lifecycleText = row.sessionState.state === 'known' ? (Object.hasOwn(STATE_TEXT, row.sessionState.value) ? STATE_TEXT[row.sessionState.value] : UNKNOWN) : 'state unknown';
+  const stateText = typeof observedState === 'string' ? observedState : lifecycleText;
+  const providerStateText = typeof observedState === 'string' ? observedState : 'unknown';
+  const actualModel = providerObservation?.model?.confidence === 'actual' ? shown(providerObservation.model.value) : UNKNOWN;
+  const observedCost = Array.isArray(providerObservation?.usage)
+    ? providerObservation.usage.find((entry) => entry?.field === 'usage.cost_usd' && entry.confidence === 'estimated')
+    : null;
+  const costText = observedCost ? formatEstimatedCost(observedCost.value) : UNKNOWN;
   const identity = row.account.state === 'known' ? (row.account.verified ? 'identity verified by the CLI' : 'identity unknown') : 'account unknown';
   const issue = row.issue && row.issue.state === 'known' ? `#${row.issue.number}` : UNKNOWN;
   const pr = row.pullRequest.state === 'open' ? `#${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}` : row.pullRequest.state === 'none' ? 'no open pull request' : UNKNOWN;
@@ -54,9 +74,11 @@ function presentAgent(row, session) {
       `Role: ${role}`,
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
-      'Actual model: unknown (no provider model observation is connected)',
+      `Actual model: ${actualModel}`,
+      `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
-      `State: ${stateText}`,
+      `Provider state: ${providerStateText}`,
+      `Terminal lifecycle: ${shown(session?.lifecycleState, lifecycleText)}`,
       `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
       `Issue: ${issue}`,
       `Pull request: ${pr}`,

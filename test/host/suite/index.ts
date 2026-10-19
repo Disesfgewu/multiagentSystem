@@ -14,6 +14,7 @@ import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } fro
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
 import { overviewTreeForTests } from '../../../src/overview/overviewView';
+import { observationPath } from '../../../src/observations/runtime';
 import { ROLE_COMMANDS, roleTreeForTests, saveRoleRecord, previewUri, previewText, PREVIEW_SCHEME } from '../../../src/roles/roleCommands';
 import { privateStorage } from '../../../src/storage/storageCommands';
 import { BroadcastStore } from '../../../src/broadcast/store';
@@ -214,6 +215,36 @@ async function accountFlow(workspace: string): Promise<void> {
   const modelAgent = orderedOverview.find((entry) => entry.label === 'Account Bound Session');
   assert.match(String(modelAgent?.tooltip), /Requested model: sonnet \(not confirmed\)/);
   assert.match(String(modelAgent?.tooltip), /Actual model: unknown/);
+
+  // Evidence the CLI's status line writes reaches the Overview by itself (no manual refresh), ages back
+  // to unknown by itself, and the session's observation file is gone once the session stops.
+  {
+    const sessionId = started.session!.id;
+    const observationFile = observationPath(accountDir, sessionId);
+    const nextOverviewChange = (timeoutMs: number): Promise<boolean> => new Promise((resolve) => {
+      const tree = overviewTreeForTests();
+      const timer = setTimeout(() => { subscription?.dispose(); resolve(false); }, timeoutMs);
+      const subscription = tree.onDidChangeTreeData?.(() => { clearTimeout(timer); subscription?.dispose(); resolve(true); });
+    });
+    const agentTooltip = async (): Promise<string> => String(((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Account Bound Session')?.tooltip);
+    const writeRecord = (ageMs: number): void => {
+      const observedAt = new Date(Date.now() - ageMs).toISOString();
+      fs.mkdirSync(path.dirname(observationFile), { recursive: true });
+      fs.writeFileSync(observationFile, JSON.stringify({ schemaVersion: 1, eventId: `host-${observedAt}`, observedAt, sequence: Date.now() % 1_000_000, statusLine: { model: { id: 'claude-sonnet-4-5' }, cost: { total_cost_usd: 0.25 } } }));
+    };
+    // Fresh for about six more seconds: the write is picked up, shown, and then ages out on its own.
+    const arrived = nextOverviewChange(10_000);
+    writeRecord(24_000);
+    assert.equal(await arrived, true, 'the Overview refreshed itself when the observation file appeared');
+    assert.match(await agentTooltip(), /Actual model: claude-sonnet-4-5/);
+    assert.match(await agentTooltip(), /Session cost: .*0\.25/);
+    const agedOut = nextOverviewChange(20_000);
+    assert.equal(await agedOut, true, 'the Overview refreshed itself when the evidence aged out');
+    assert.match(await agentTooltip(), /Actual model: unknown/);
+    assert.equal(fs.existsSync(observationFile), true);
+    await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: sessionId });
+    assert.equal(fs.existsSync(observationFile), false, 'stopping the session removes its observation file');
+  }
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session?.id });
   const reopenedModel = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; requestedModel: string | null } }>('multiagentSystem.sessions.reopen', { interactive: false, id: started.session?.id, launch: false });
   assert.equal(reopenedModel.ok, true);
