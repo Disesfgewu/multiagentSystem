@@ -172,7 +172,7 @@ function checkFolder({ provider, label, configDir, profiles = [], context }) {
         const real = (value) => canonicalize(value, p, (target) => fs.realpathSync.native(target), (target) => fs.statSync(target).isDirectory(), (target) => fs.lstatSync(target));
         const dir = real(configDir);
         const root = real(p.join(home, PARENT_NAME));
-        if (isSameOrInside(p, (context && context.platform) || process.platform, dir, root) && isSameOrInside(p, (context && context.platform) || process.platform, root, dir)) problems.push('config-dir-is-recommended-root');
+        if (isSameOrInside(p, (context && context.platform) || process.platform, dir, root, { conservative: true }) && isSameOrInside(p, (context && context.platform) || process.platform, root, dir, { conservative: true })) problems.push('config-dir-is-recommended-root');
       } catch { /* a path that cannot be resolved was already reported by the checks above */ }
     }
   }

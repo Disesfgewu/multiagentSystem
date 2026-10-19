@@ -32,6 +32,17 @@ const subscriptionStatus = {
   subscriptionType: 'max'
 };
 
+test('a CLI that reports a config folder differing only in case is not verified on macOS: it may be another folder of a case-sensitive volume', () => {
+  const wrongHome = claudeIdentityFromAuthStatus(
+    { ...subscriptionStatus, configDirectory: '/home/user/accounts/A' },
+    { profile, observedAt, context }
+  );
+  assert.deepEqual(wrongHome.anomalies, ['config-dir-mismatch']);
+  assert.equal(wrongHome.configDirMatches, false);
+  const exact = claudeIdentityFromAuthStatus(subscriptionStatus, { profile, observedAt, context });
+  assert.deepEqual(exact.anomalies, []);
+});
+
 test('observe turns a missing value into an explicit unknown with a reason', () => {
   const result = observe('quota', undefined, { source: 's', observedAt, reason: 'window-absent' });
   assert.equal(result.confidence, CONFIDENCE.UNKNOWN);
