@@ -78,6 +78,11 @@
     "onCommand:multiagentSystem.research.revokeConsent",
     "onCommand:multiagentSystem.research.inspectTool",
     "onCommand:multiagentSystem.research.prepareTool",
+    "onCommand:multiagentSystem.research.mcp.enable",
+    "onCommand:multiagentSystem.research.mcp.stop",
+    "onCommand:multiagentSystem.research.mcp.revoke",
+    "onCommand:multiagentSystem.research.mcp.status",
+    "onCommand:multiagentSystem.research.mcp.setSecret",
     "onCommand:multiagentSystem.skills.install",
     "onCommand:multiagentSystem.skills.remove"
   ],
@@ -292,6 +297,11 @@
       { "command": "multiagentSystem.research.revokeConsent", "title": "Multiagent: Revoke Research MCP Tool Consent", "icon": "$(discard)" },
       { "command": "multiagentSystem.research.inspectTool", "title": "Multiagent: Inspect Research MCP Tool Security Manifest", "icon": "$(info)" },
       { "command": "multiagentSystem.research.prepareTool", "title": "Multiagent: Prepare Consented Research MCP Tool" },
+      { "command": "multiagentSystem.research.mcp.enable", "title": "Multiagent: Enable (Start) Research MCP Server" },
+      { "command": "multiagentSystem.research.mcp.stop", "title": "Multiagent: Stop Research MCP Server" },
+      { "command": "multiagentSystem.research.mcp.revoke", "title": "Multiagent: Revoke Research MCP Server" },
+      { "command": "multiagentSystem.research.mcp.status", "title": "Multiagent: Show Research MCP Server Status" },
+      { "command": "multiagentSystem.research.mcp.setSecret", "title": "Multiagent: Set Research MCP Server Secret" },
       { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace" },
       { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
     ],

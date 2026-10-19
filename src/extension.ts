@@ -12,6 +12,7 @@ import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './ag
 import { openTerminalGroup as openFourTerminalGroup } from './terminals/terminalGroup';
 import { registerSetup } from './setup/setupView';
 import { registerResearchCommands } from './research/researchCommands';
+import { registerMcpCommands } from './research/mcpCommands';
 import { setExtensionTestMode } from './shared/testMode';
 import { registerSkillCommands } from './skills/skillCommands';
 
@@ -76,6 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerStorageCommands(context);
   registerSetup(context);
   registerResearchCommands(context);
+  registerMcpCommands(context);
   registerSkillCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
