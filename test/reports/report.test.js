@@ -106,14 +106,23 @@ test('the structured file list is empty whenever the plain-text diff itself is u
   assert.deepEqual(buildPr({ files: { kind: 'empty' } }).files, []);
 });
 
-test('the structured file list never exceeds the 12 files actually rendered, and text is cleaned the same way', () => {
+test('all changed files get an in-extension diff entry while the inline preview stays bounded', () => {
   const many = ok(Array.from({ length: 20 }, (_, i) => ({ filename: `file-${i}.ts`, status: 'modified', patch: `+line-${i}` })));
   const built = buildPr({ files: many });
-  assert.equal(built.files.length, 12);
+  assert.equal(built.files.length, 20);
   assert.equal(built.files[0].filename, 'file-0.ts');
+  assert.equal(built.files[19].filename, 'file-19.ts');
+  assert.match(render(built), /- file-19\.ts \(modified; \+unknown\/-unknown\)/);
   const evil = ok([{ filename: `a${cp(0x202e)}b`, status: 'modified', patch: '+x' }]);
   const dirty = buildPr({ files: evil });
   assert.equal(dirty.files[0].filename.includes(cp(0x202e)), false);
+  const sharedPrefix = 'a'.repeat(240);
+  const collided = buildPr({ files: ok([
+    { filename: `${sharedPrefix}first`, status: 'modified', patch: '+first' },
+    { filename: `${sharedPrefix}second`, status: 'modified', patch: '+second' }
+  ]) });
+  assert.notEqual(collided.files[0].filename, collided.files[1].filename, 'two truncated filenames must not open the same patch');
+  assert.equal(collided.files[1].patch, '+second');
 });
 
 test('CI that belongs to another head, or could not be read, is unknown', () => {
@@ -162,6 +171,10 @@ test('formal reviews are listed with the head they were on', () => {
   assert.match(text, /- other · APPROVED · on an OLDER head/);
   assert.match(text, /- third · APPROVED · head unknown/);
   assert.match(prReport({ reviews: { kind: 'denied' } }), /Reviews: unknown \(denied\)/);
+  const manyReviews = ok(Array.from({ length: 12 }, (_, i) => ({ reviewer: `reviewer-${i}`, state: 'COMMENTED', commitId: HEAD, body: `review ${i}` })));
+  const full = prReport({ reviews: manyReviews });
+  assert.match(full, /reviewer-0 · COMMENTED/);
+  assert.match(full, /reviewer-11 · COMMENTED/);
 });
 
 test('text from GitHub is shown as plain text: control and bidirectional characters removed, long fields cut', () => {
@@ -177,12 +190,23 @@ test('text from GitHub is shown as plain text: control and bidirectional charact
   assert.equal(line(5), '');
 });
 
-test('only the latest comments are shown and the count of the earlier ones is stated', () => {
+test('all fetched comments are shown in reading order, including comments before the latest eight', () => {
   const many = ok(Array.from({ length: 20 }, (_, i) => comment(`comment number ${i}`)));
   const text = prReport({ comments: many });
-  assert.match(text, /\(12 earlier comments are not shown\)/);
-  assert.equal(text.includes('comment number 11'), false);
+  assert.ok(text.includes('comment number 0'));
+  assert.ok(text.includes('comment number 11'));
   assert.ok(text.includes('comment number 19'));
+  assert.ok(text.indexOf('comment number 0') < text.indexOf('comment number 19'));
+});
+
+test('PR report includes inline review discussion with file, line, reply and head evidence', () => {
+  const text = prReport({ reviewComments: ok([
+    { author: 'reviewer', path: 'src/a.ts', line: 42, commitId: HEAD, body: 'Please fix this.', createdAt: '2026-10-16T01:00:00Z' },
+    { author: 'worker', path: 'src/a.ts', line: 42, commitId: OLD, inReplyToId: 7, body: 'Done.' }
+  ]) });
+  assert.match(text, /INLINE REVIEW DISCUSSION[\s\S]*reviewer · src\/a\.ts:42 · on the latest head/);
+  assert.match(text, /worker · src\/a\.ts:42 · on an OLDER head · reply to #7/);
+  assert.match(prReport({ reviewComments: { kind: 'partial', data: [] } }), /Inline review comments: unknown \(partial\)/);
 });
 
 test('a draft or merged pull request says so; missing fields are unknown, not blank', () => {

@@ -18,6 +18,7 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
     getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
     getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'not_approved', reason: 'no_approval' }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{ name: 'unit tests', state: 'passing', completedAt: '2026-10-16T01:00:00Z' }, { name: 'host smoke', state: 'failing', completedAt: '2026-10-16T01:05:00Z' }], statuses: [] } }, unresolvedThreads: 0 }),
     getReviews: async () => ({ kind: 'ok', data: [] }),
+    getReviewComments: async () => ({ kind: 'ok', data: [] }),
     ...over
   };
 }
@@ -70,6 +71,9 @@ export async function runReportChecks(): Promise<string> {
     const issueText = vscode.window.activeTextEditor?.document.getText() ?? '';
     assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, REPORT_SCHEME);
     for (const part of ['Issue #12: Read reports in the editor', 'REQUIREMENT AND SCOPE', 'The user reads a report without a number.', 'RELATED PULL REQUESTS', '- #7 Add reports', 'A private note can be saved locally', 'NOT VERIFIED']) assert.ok(issueText.includes(part), part);
+    assert.match(issueText, /OPEN DISCUSSION \(click to jump\)/);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiscussion), { ok: true });
+    assert.equal(vscode.window.activeTextEditor?.document.lineAt(vscode.window.activeTextEditor.selection.active.line).text, 'DISCUSSION AND PM COMMENTS');
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: false, code: 'no-pr-report-open' });
 
     // reading through the list: next and previous wrap around; each is a different report
@@ -88,6 +92,17 @@ export async function runReportChecks(): Promise<string> {
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
     const prText = vscode.window.activeTextEditor?.document.getText() ?? '';
     for (const part of ['Pull request #7: Add reports', `Latest head: ${HEAD}`, 'Source: fork / external contributor', 'Head repository: external/reports', 'Author: external-worker', 'Refers to: Issue #12', 'CI for this head: passing', 'src/report.ts', '+new', 'verdict "Pass" applies to the current head', 'It cannot approve, request changes or merge']) assert.ok(prText.includes(part), part);
+    assert.match(prText, /OPEN CODE CHANGES \(click to jump\)[\s\S]*OPEN DISCUSSION \(click to jump\)/);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiscussion), { ok: true });
+    assert.equal(vscode.window.activeTextEditor?.document.lineAt(vscode.window.activeTextEditor.selection.active.line).text, 'PR CONVERSATION');
+    const navigationLinks = await vscode.commands.executeCommand<vscode.DocumentLink[]>('vscode.executeLinkProvider', vscode.window.activeTextEditor?.document.uri);
+    assert.ok(navigationLinks?.some((link) => link.target?.toString().startsWith(`command:${REPORT_COMMANDS.showDiscussion}`)), 'discussion link is clickable in the report');
+    assert.ok(navigationLinks?.some((link) => link.target?.toString().startsWith(`command:${REPORT_COMMANDS.showDiff}`)), 'code changes link is clickable in the report');
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      getReviewComments: async () => ({ kind: 'ok', data: [{ author: 'reviewer', path: 'src/report.ts', line: 7, commitId: HEAD, body: 'Please address this line.' }] })
+    }) });
+    assert.match(await reportText('pullRequest', 7), /INLINE REVIEW DISCUSSION[\s\S]*src\/report\.ts:7 · on the latest head[\s\S]*Please address this line/);
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: true });
     const diffEditor = vscode.window.activeTextEditor;
     assert.match(diffEditor?.document.lineAt(diffEditor.selection.active.line).text ?? '', /CHANGED FILES AND DIFF/, 'the title action locates the in-editor diff preview');
