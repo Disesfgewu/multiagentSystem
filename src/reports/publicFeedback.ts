@@ -393,7 +393,7 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
   if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-merged' };
   const allowBypass = testMode && input?.interactive === false;
   if (authority === 'pm' && !allowBypass) {
-    if (!await hooks.confirm(`Merge ${target.repository} PR #${target.number} (head ${target.version}) after verifying current-head PM approval, passing CI, resolved threads, supported branch rules, and publication scan?`, 'Merge pull request')) return { ok: false, code: 'cancelled' };
+    if (!await hooks.confirm(`Merge ${target.repository} PR #${target.number} (head ${target.version}) after verifying current-head PM approval, passing CI, resolved threads, supported branch rules, and publication scan? The merge commit title and body come from the pull request, with attribution trailer lines (Co-authored-by, Signed-off-by and similar) removed.`, 'Merge pull request')) return { ok: false, code: 'cancelled' };
   }
   if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };
   const auth = await hooks.session(false); if (!auth) return { ok: false, code: 'github-sign-in-required' };
