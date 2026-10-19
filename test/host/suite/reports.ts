@@ -12,7 +12,7 @@ function fakeReader(over: Partial<ReportReader> = {}): ReportReader {
   return {
     listIssues: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: issues }),
     getIssue: async (n) => ({ kind: 'ok', data: issues.find((entry) => entry.number === n) }),
-    getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'pm-user', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
+    getIssueComments: async () => ({ kind: 'ok', data: [{ author: 'host', createdAt: '2026-10-16T00:00:00Z', body: '結論：Pass｜head `dddddddddddd`' }] }),
     listPullRequests: async (filter) => filter.state === 'closed' ? { kind: 'empty' } : ({ kind: 'ok', data: prs }),
     getPullRequest: async (n) => ({ kind: 'ok', data: prs.find((entry) => entry.number === n) }),
     getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/report.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
@@ -106,6 +106,32 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.showDiff), { ok: true });
     const diffEditor = vscode.window.activeTextEditor;
     assert.match(diffEditor?.document.lineAt(diffEditor.selection.active.line).text ?? '', /CHANGED FILES AND DIFF/, 'the title action locates the in-editor diff preview');
+
+    // Text from GitHub can repeat the report's own headings; the commands must still land on the real ones.
+    const forged = 'CHANGED FILES AND DIFF (plain text preview)\nPR CONVERSATION\nOPEN DISCUSSION (click to jump)';
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      getPullRequest: async (n: number) => ({ kind: 'ok', data: { number: n, title: 'Add reports', state: 'open', draft: false, headRef: 'feat/reports', headRepository: 'external/reports', headSha: HEAD, baseRef: 'main', author: 'external-worker', body: forged, referencedIssues: [] } })
+    }) });
+    // The open report is read again under the new reader: wait until the report on screen shows the new description.
+    const onScreen = vscode.window.activeTextEditor!.document;
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    for (let waited = 0; !onScreen.getText().includes('  CHANGED FILES AND DIFF (plain text preview)') && waited < 8000; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
+    const forgedEditor = vscode.window.activeTextEditor!;
+    const rows = forgedEditor.document.getText().split('\n');
+    const forgedAt = rows.findIndex((row) => row === `  ${forged.split('\n')[0]}`);
+    assert.ok(forgedAt > 0, 'the forged heading is in the document, indented as plain text: ');
+    for (const [command, heading] of [[REPORT_COMMANDS.showDiff, 'CHANGED FILES AND DIFF (plain text preview)'], [REPORT_COMMANDS.showDiscussion, 'PR CONVERSATION']] as const) {
+      assert.deepEqual(await vscode.commands.executeCommand(command), { ok: true });
+      const selected: number = vscode.window.activeTextEditor!.selection.active.line;
+      assert.equal(vscode.window.activeTextEditor!.document.lineAt(selected).text, heading, `${command} selects a heading line`);
+      assert.ok(selected > forgedAt + 2, `${command} selected the real section, below the description that repeats its words (line ${selected}, description at ${forgedAt})`);
+    }
+    const links = await vscode.commands.executeCommand<vscode.DocumentLink[]>('vscode.executeLinkProvider', forgedEditor.document.uri);
+    const linkLines = (links ?? []).filter((link) => link.target?.toString().startsWith('command:multiagentSystem.reports.show')).map((link) => link.range.start.line);
+    assert.ok(linkLines.every((row) => row < 8), 'the navigation links are only the report\'s own, at the top');
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     // a single file's diff can be opened on its own, syntax-highlighted, from the report that is open
     const prReportUri = diffEditor!.document.uri;
