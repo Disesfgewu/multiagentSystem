@@ -172,7 +172,8 @@ async function accountFlow(workspace: string): Promise<void> {
   const overviewAccount = ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
   assert.ok(overviewAccount, 'the overview lists each account even when no agent uses it');
   assert.match(String(overviewAccount.description ?? ''), /Usage: unknown.*Limits: none set/);
-  assert.match(String(overviewAccount.tooltip ?? ''), /No verified usage source/);
+  assert.match(String(overviewAccount.description ?? ''), /Usage: unknown \(usage bridge not enabled\)\./, 'the overview row says why usage is unknown');
+  assert.match(String(overviewAccount.tooltip ?? ''), /Why: The Claude status line bridge is not enabled/);
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
@@ -319,7 +320,7 @@ async function accountFlow(workspace: string): Promise<void> {
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   const limitText = vscode.window.activeTextEditor?.document.getText() ?? '';
   assert.match(limitText, /Limits: warn at 70% used; pause new agents at 90%; at most 1 running at once; if usage is unknown, do not start new agents\./);
-  assert.match(limitText, /Usage: unknown\. No verified usage source is connected/);
+  assert.match(limitText, /Usage: unknown \(usage bridge not enabled\)\./);
   assert.doesNotMatch(limitText, /\d+% used, verified/, 'no usage percentage is invented');
   const cleared = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, clear: true });
   assert.equal(cleared.ok, true);
