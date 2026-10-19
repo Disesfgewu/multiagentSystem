@@ -50,13 +50,14 @@ function parseRecord(value) {
   return { ok: true, leases };
 }
 
-// Whether the process that took a lease is still running. EPERM means it exists but belongs to someone else.
+// Whether the process that took a lease is still running. Only a confirmed absence (ESRCH) says no:
+// EPERM means it exists, and any other error cannot tell, so the answer stays "running".
 function processExists(pid) {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error && error.code === 'EPERM';
+    return !(error && error.code === 'ESRCH');
   }
 }
 
@@ -71,19 +72,24 @@ function ownerContext(options = {}) {
 
 const ownerFields = (ctx) => (HOST.test(ctx.host) ? { ownerPid: ctx.pid, ownerHost: ctx.host } : {});
 
+/** Whether the Extension Host that took a lease is confirmed gone from this computer. */
+function ownerGone(lease, ctx) {
+  if (lease.ownerPid === undefined || lease.ownerHost !== ctx.host) return false;
+  try { return ctx.isAlive(lease.ownerPid) === false; } catch { return false; }
+}
+
 /**
  * Whether a lease still holds a slot. A lease's time only says when its owner last renewed it; it
  * cannot say whether the agent it stands for has stopped. A machine that slept, or an Extension Host
- * that was blocked for longer than the lease, resumes with its agents still running. So when the owner
- * is a process on this computer, the process decides: still running counts (even past the expiry, as
- * "owner unknown, assume busy"), gone does not (the window closed or crashed, so its agents are no
- * longer tracked by anyone). Only when the owner cannot be judged at all (an old record without an
- * owner, or one taken on another computer) does the expiry time decide.
+ * that was blocked for longer than the lease, resumes with its agents still running, and a window that
+ * closed or crashed leaves agents running in terminals nobody tracks any more. So a lease taken on
+ * this computer is never dropped because of time or because its owner vanished: only a recorded end
+ * (releaseSlot) or an explicit, confirmed recovery (recoverOrphanedSlots) frees it, and an orphaned
+ * lease keeps blocking new launches until then. Only a lease that cannot be judged here (an old record
+ * without an owner, or one taken on another computer) is decided by its expiry time.
  */
 function leaseHoldsSlot(lease, nowMs, ctx) {
-  if (lease.ownerPid !== undefined && lease.ownerHost === ctx.host) {
-    try { return ctx.isAlive(lease.ownerPid) === true; } catch { return true; }
-  }
+  if (lease.ownerPid !== undefined && lease.ownerHost === ctx.host) return true;
   return Date.parse(lease.expiresAt) > nowMs;
 }
 
@@ -124,7 +130,29 @@ function runningSlots(store, accountKey, now = new Date(), options = {}) {
     const record = activeRecord(tx, accountKey, nowMs, ctx);
     if (!record.ok) return record;
     if (record.changed) writeRecord(tx, accountKey, record.leases);
-    return { ok: true, running: record.leases.length };
+    return { ok: true, running: record.leases.length, orphaned: record.leases.filter((lease) => ownerGone(lease, ctx)).length };
+  });
+  return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
+}
+
+/**
+ * Removes the leases of an account whose owner process is confirmed gone from this computer, and only
+ * those. The caller must have asked the person first: the agents those windows started may still be
+ * running, and this stops counting them. Leases that cannot be judged here are never touched.
+ */
+function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {}) {
+  const ctx = ownerContext(options);
+  const nowMs = timeOf(now);
+  if (!store || typeof store.transact !== 'function' || !checkedAccount(accountKey) || !Number.isFinite(nowMs)) {
+    return { ok: false, reason: 'reservation-input-invalid' };
+  }
+  const outcome = store.transact((tx) => {
+    const record = activeRecord(tx, accountKey, nowMs, ctx);
+    if (!record.ok) return record;
+    const kept = record.leases.filter((lease) => !ownerGone(lease, ctx));
+    const recovered = record.leases.length - kept.length;
+    if (recovered > 0 || record.changed) writeRecord(tx, accountKey, kept);
+    return { ok: true, recovered };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
 }
@@ -222,6 +250,7 @@ module.exports = {
   LEASE_MS,
   RENEW_MS,
   runningSlots,
+  recoverOrphanedSlots,
   reserveSlot,
   renewSlot,
   releaseSlot

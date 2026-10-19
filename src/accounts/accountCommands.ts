@@ -5,7 +5,7 @@ import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
-import { editLimits, clearLimits, limitLines, currentGateState } from './quotaGateUi';
+import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState } from './quotaGateUi';
 import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
 import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
 
@@ -484,6 +484,11 @@ async function limits(value: unknown): Promise<unknown> {
     const cleared = await clearLimits(loaded.profile.id, () => sessions?.list() ?? []);
     currentTree?.refresh();
     return { ok: cleared };
+  }
+  // Only a person at the keyboard may free slots of vanished windows; the headless test form never does.
+  if (options.interactive !== false) {
+    const freed = await offerSlotRecovery(loaded.profile.id, loaded.profile.label, () => sessions?.list() ?? []);
+    if (freed > 0) void vscode.window.showInformationMessage(`Freed ${freed} running-agent slot${freed === 1 ? '' : 's'} for “${loaded.profile.label}”.`);
   }
   const outcome = await editLimits(loaded.profile.id, loaded.profile.label, () => sessions?.list() ?? [], options.interactive === false ? { warn: options.warn, block: options.block, max: options.max, unknownQuota: options.unknownQuota } : undefined);
   if (outcome.ok) {

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { PrivateStore } = require('../../src/storage/private-store');
 const { observe } = require('../../src/accounts/observation');
 const { savePolicy, loadPolicy } = require('../../src/accounts/quota-policy');
-const { runningSlots, reserveSlot, renewSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
+const { runningSlots, recoverOrphanedSlots, reserveSlot, renewSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
 const { sandbox, COLLECTIONS } = require('../storage/helpers');
 
 const COLLECTION_NAMES = [...COLLECTIONS, 'quotaReservations'];
@@ -13,6 +13,7 @@ const ACCOUNT = 'acct-shared';
 const NOW = new Date('2026-10-18T12:00:00.000Z');
 const FIRST = ['11111111', '1111', '4111', '8111', '111111111111'].join('-');
 const SECOND = ['22222222', '2222', '4222', '8222', '222222222222'].join('-');
+const THIRD_ID = ['33333333', '3333', '4333', '8333', '333333333333'].join('-');
 const readingAt = (at = NOW) => observe('quota.window.used_percent', 10, {
   unit: 'percent', scope: 'account', source: 'synthetic',
   observedAt: new Date(at.getTime() - 1_000), validForMs: 60_000
@@ -34,7 +35,7 @@ test('two independent store instances cannot both take the last shared slot', (t
   assert.deepEqual([first.ok, first.decision.allowed], [true, true]);
   assert.deepEqual([second.ok, second.decision.allowed], [true, false]);
   assert.equal(second.decision.reasons[0].code, 'concurrency-limit');
-  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, NOW), { ok: true, running: 1 });
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, NOW), { ok: true, running: 1, orphaned: 0 });
 });
 
 test('release is idempotent and immediately frees the slot for another window', (t) => {
@@ -57,13 +58,30 @@ const policyFor = (t, extra = {}) => {
 };
 const take = (store, expected, leaseId, extra = {}) => reserveSlot({ store, accountKey: ACCOUNT, expectedPolicyRead: expected, observations: [readingAt(extra.now ?? NOW)], leaseId, ...extra });
 
-test('a lease whose owner process is gone is reclaimed at once, expired or not: that window\'s agents are no longer tracked by anyone', (t) => {
+test('a lease whose owner process is gone keeps its slot: that window\'s agents may still be running, so nothing is released by time or by the owner vanishing', (t) => {
   const { firstWindow, secondWindow, expected } = policyFor(t);
   const first = take(firstWindow, expected, FIRST, { now: NOW, leaseMs: 60_000, ownerPid: 4242, ownerHost: 'host-a', isOwnerAlive: () => true });
   assert.equal(first.decision.allowed, true);
-  assert.equal(runningSlots(secondWindow, ACCOUNT, new Date(NOW.getTime() + 1_000), { ownerHost: 'host-a', isOwnerAlive: () => true }).running, 1);
-  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, new Date(NOW.getTime() + 1_000), { ownerHost: 'host-a', isOwnerAlive: () => false }), { ok: true, running: 0 }, 'the window closed or crashed');
-  assert.deepEqual(renewSlot(firstWindow, first.decision.reservation, new Date(NOW.getTime() + 2_000), 60_000, { ownerHost: 'host-a', ...GONE }), { ok: true, renewed: false }, 'a reclaimed lease is not revived by default');
+  const gone = { ownerHost: 'host-a', isOwnerAlive: () => false };
+  const later = new Date(NOW.getTime() + 60 * 60_000);
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, new Date(NOW.getTime() + 1_000), gone), { ok: true, running: 1, orphaned: 1 }, 'counted, and reported as orphaned');
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, later, gone), { ok: true, running: 1, orphaned: 1 }, 'an hour later too');
+  const blocked = take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', isOwnerAlive: (pid) => pid !== 4242 });
+  assert.deepEqual([blocked.decision.allowed, blocked.decision.reasons[0].code], [false, 'concurrency-limit']);
+});
+
+test('an orphaned slot is freed only by a confirmed recovery, and only for owners confirmed gone', (t) => {
+  const { firstWindow, secondWindow, expected } = policyFor(t, { maxConcurrent: 2 });
+  take(firstWindow, expected, FIRST, { now: NOW, ownerPid: 4242, ownerHost: 'host-a', ...ALIVE });
+  take(firstWindow, expected, SECOND, { now: NOW, ownerPid: 5252, ownerHost: 'host-a', ...ALIVE });
+  const only4242Gone = { ownerHost: 'host-a', isOwnerAlive: (pid) => pid !== 4242 };
+  assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, NOW, { ownerHost: 'host-a', ...ALIVE }), { ok: true, recovered: 0 }, 'nothing is orphaned while owners run');
+  assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, NOW, { ownerHost: 'host-a', isOwnerAlive: () => { throw new Error('cannot tell'); } }), { ok: true, recovered: 0 }, 'an uncertain check recovers nothing');
+  assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, NOW, only4242Gone), { ok: true, recovered: 1 });
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, NOW, { ownerHost: 'host-a', ...ALIVE }), { ok: true, running: 1, orphaned: 0 }, 'the live owner\'s slot is untouched');
+  const foreign = { id: THIRD_ID, expiresAt: new Date(NOW.getTime() + 60_000).toISOString(), ownerPid: 4242, ownerHost: 'another-computer' };
+  assert.equal(firstWindow.put('quotaReservations', `slots-${ACCOUNT}`, { schemaVersion: 1, leases: [foreign] }).ok, true);
+  assert.deepEqual(recoverOrphanedSlots(secondWindow, ACCOUNT, NOW, { ownerHost: 'host-a', isOwnerAlive: () => false }), { ok: true, recovered: 0 }, 'another computer\'s lease cannot be judged here');
 });
 
 test('a window that was suspended or blocked past its lease still holds its slot while its process is running, so a second window cannot exceed the limit', (t) => {
@@ -72,7 +90,7 @@ test('a window that was suspended or blocked past its lease still holds its slot
   assert.equal(first.decision.allowed, true);
   // The machine sleeps for an hour: the lease is long expired, but its owner process is still there.
   const later = new Date(NOW.getTime() + 60 * 60_000);
-  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, later, { ownerHost: 'host-a', ...ALIVE }), { ok: true, running: 1 });
+  assert.deepEqual(runningSlots(secondWindow, ACCOUNT, later, { ownerHost: 'host-a', ...ALIVE }), { ok: true, running: 1, orphaned: 0 });
   const second = take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', ...ALIVE });
   assert.deepEqual([second.ok, second.decision.allowed, second.decision.reasons[0].code], [true, false, 'concurrency-limit'], 'the limit holds');
   // When the first window wakes up its heartbeat revives the very same lease.
@@ -80,14 +98,16 @@ test('a window that was suspended or blocked past its lease still holds its slot
   assert.equal(runningSlots(secondWindow, ACCOUNT, later, { ownerHost: 'host-a', ...ALIVE }).running, 1);
 });
 
-test('only once the first owner is really gone can the second window take the slot, and a genuinely ended agent frees it for good', (t) => {
+test('a second window gets the slot only after the first is released or a confirmed recovery', (t) => {
   const { firstWindow, secondWindow, expected } = policyFor(t);
   take(firstWindow, expected, FIRST, { now: NOW, leaseMs: 2_000, ownerPid: 4242, ownerHost: 'host-a', ...ALIVE });
   const later = new Date(NOW.getTime() + 60 * 60_000);
   assert.equal(take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', ...ALIVE }).decision.allowed, false);
-  const afterExit = take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', isOwnerAlive: (pid) => pid !== 4242 });
-  assert.equal(afterExit.decision.allowed, true, 'the first process is gone');
-  assert.equal(runningSlots(firstWindow, ACCOUNT, later, { ownerHost: 'host-a', isOwnerAlive: (pid) => pid !== 4242 }).running, 1);
+  const gone = { ownerHost: 'host-a', isOwnerAlive: (pid) => pid !== 4242 };
+  assert.equal(take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', isOwnerAlive: gone.isOwnerAlive }).decision.allowed, false, 'the first process is gone, but that alone frees nothing');
+  assert.equal(recoverOrphanedSlots(secondWindow, ACCOUNT, later, gone).recovered, 1, 'confirmed recovery');
+  assert.equal(take(secondWindow, expected, SECOND, { now: later, ownerPid: 5252, ownerHost: 'host-a', isOwnerAlive: gone.isOwnerAlive }).decision.allowed, true);
+  assert.equal(runningSlots(firstWindow, ACCOUNT, later, gone).running, 1);
 });
 
 test('a lease lost from the record while its owner is running can be re-registered, so a running agent is counted again instead of hidden', (t) => {
@@ -119,15 +139,21 @@ test('when the owner cannot be judged (an older record without an owner, another
   assert.equal(running([local], later, throwing), 1, 'a failed liveness check counts the slot (assume busy)');
 });
 
-test('the default liveness check uses the operating system: this process is running, a finished child process is not', (t) => {
-  const { spawnSync } = require('node:child_process');
+test('the default liveness check uses the operating system, and a finished owner never releases a slot that a still-running agent process depends on', (t) => {
+  const { spawn, spawnSync } = require('node:child_process');
   const os = require('node:os');
   const finished = spawnSync(process.execPath, ['-e', '0']);
   assert.equal(finished.status, 0);
+  // The "agent": a separate process that keeps running after its owner (the window) exited.
+  const agent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+  t.after(() => agent.kill());
   const [store] = stores(t);
   const lease = (id, pid) => ({ id, expiresAt: new Date(NOW.getTime() - 60_000).toISOString(), ownerPid: pid, ownerHost: os.hostname() });
   assert.equal(store.put('quotaReservations', `slots-${ACCOUNT}`, { schemaVersion: 1, leases: [lease(FIRST, process.pid), lease(SECOND, finished.pid)] }).ok, true);
-  assert.deepEqual(runningSlots(store, ACCOUNT, NOW), { ok: true, running: 1 }, 'only the live process\'s lease still holds a slot');
+  assert.deepEqual(runningSlots(store, ACCOUNT, NOW), { ok: true, running: 2, orphaned: 1 }, 'both still count; the vanished owner is only reported');
+  assert.equal(process.kill(agent.pid, 0), true, 'the agent process is still running');
+  assert.deepEqual(recoverOrphanedSlots(store, ACCOUNT, NOW), { ok: true, recovered: 1 }, 'only the confirmed-gone owner is recovered');
+  assert.deepEqual(runningSlots(store, ACCOUNT, NOW), { ok: true, running: 1, orphaned: 0 });
 });
 
 test('owner fields are validated: a half-written or malformed owner makes the whole record invalid and nothing is overwritten', (t) => {

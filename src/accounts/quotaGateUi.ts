@@ -17,8 +17,9 @@ const { gateLaunch, describePolicy, describeQuota, describeCurrentState, policyF
   policyFromInput(input: Record<string, unknown>): { ok: boolean; policy?: Record<string, unknown>; problems: string[] };
   wordsFor(reason: { code: string }): string;
 };
-const { runningSlots, reserveSlot, renewSlot, releaseSlot, RENEW_MS } = require('./quota-reservations') as {
-  runningSlots(store: unknown, accountKey: string, now?: Date): { ok: boolean; running?: number; reason?: string };
+const { runningSlots, recoverOrphanedSlots, reserveSlot, renewSlot, releaseSlot, RENEW_MS } = require('./quota-reservations') as {
+  runningSlots(store: unknown, accountKey: string, now?: Date): { ok: boolean; running?: number; orphaned?: number; reason?: string };
+  recoverOrphanedSlots(store: unknown, accountKey: string, now?: Date): { ok: boolean; recovered?: number; reason?: string };
   reserveSlot(input: Record<string, unknown>): { ok: boolean; reason?: string; decision?: { allowed: boolean; reasons: Array<{ code: string }>; reservation?: { accountKey: string; id: string } } };
   renewSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date, leaseMs?: number, options?: { reacquire?: boolean }): { ok: boolean; renewed?: boolean; reacquired?: boolean };
   releaseSlot(store: unknown, reservation: { accountKey: string; id: string }, now?: Date): { ok: boolean; released?: boolean };
@@ -34,9 +35,9 @@ function reservationFailure(reason?: string): GateOutcome {
   return { ok: false, code: 'quota-gate', message };
 }
 
-// Releases that could not be written. While this window's process is running, a lease keeps counting
-// even past its expiry (an owner that is still there is assumed busy), so a release that never lands
-// would hold the slot until the window closes: it is retried until it does.
+// Releases that could not be written. A lease taken on this computer keeps counting until it is
+// released or recovered, so a release that never lands
+// would hold the slot: it is retried until it does.
 const pendingReleases = new Map<string, { accountKey: string; id: string }>();
 let pendingTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -242,6 +243,27 @@ export async function editLimits(accountProfileId: string, label: string, sessio
     return { ok: false, reason: saved.reason };
   }
   return { ok: true };
+}
+
+/**
+ * Slots held by windows that are gone keep blocking new agents: their agents may still be running, so
+ * nothing frees them by itself. This tells the person how many there are and, only after an explicit
+ * confirmation, stops counting them. Returns the number freed (0 when none or declined).
+ */
+export async function offerSlotRecovery(accountProfileId: string, label: string, sessions: () => SessionUse[]): Promise<number> {
+  const accounts = await accountService(sessions);
+  if (!accounts.ok) return 0;
+  const slots = runningSlots(accounts.store, accountProfileId, new Date());
+  if (!slots.ok || !Number.isInteger(slots.orphaned) || (slots.orphaned as number) < 1) return 0;
+  const count = slots.orphaned as number;
+  const answer = await vscode.window.showWarningMessage(
+    `“${label}”: ${count} running-agent slot${count === 1 ? ' is' : 's are'} held by a VS Code window that no longer exists.`,
+    { modal: true, detail: 'The agents that window started may still be running in terminals nobody tracks any more. Free these slots only if you have checked that they have stopped, otherwise the account may exceed its running-agent limit.' },
+    'Free These Slots'
+  );
+  if (answer !== 'Free These Slots') return 0;
+  const result = recoverOrphanedSlots(accounts.store, accountProfileId, new Date());
+  return result.ok && Number.isInteger(result.recovered) ? (result.recovered as number) : 0;
 }
 
 /** Removes the saved limits (the account is then never held back). */
