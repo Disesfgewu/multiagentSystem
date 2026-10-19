@@ -38,6 +38,7 @@ export const REPORT_COMMANDS = {
   back: 'multiagentSystem.reports.backToOverview',
   backToList: 'multiagentSystem.reports.backToList',
   showDiff: 'multiagentSystem.reports.showDiff',
+  showDiscussion: 'multiagentSystem.reports.showDiscussion',
   openFileDiff: 'multiagentSystem.reports.openFileDiff',
   refresh: 'multiagentSystem.reports.refresh',
   feedback: 'multiagentSystem.reports.feedback',
@@ -60,6 +61,7 @@ export interface ReportReader {
   getPullRequestFiles(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
   getPullRequestSnapshot(number: number): Promise<any>;
   getReviews(number: number): Promise<Result>;
+  getReviewComments(number: number): Promise<Result>;
 }
 export interface ReportDeps {
   repository(): Promise<string | null>;
@@ -265,7 +267,10 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       const version = createHash('sha256').update(`${issue.data.title}\0${issue.data.body ?? ''}`).digest('hex');
       return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, version, files: [] } };
     }
-    const [pullRequest, snapshot, reviews, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number), reader.getIssueComments(number)]);
+    const [pullRequest, snapshot, reviews, comments, reviewComments] = await Promise.all([
+      reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number),
+      reader.getIssueComments(number), reader.getReviewComments(number)
+    ]);
     if (pullRequest.kind !== 'ok' || !pullRequest.data) return { text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
     // The files endpoint is keyed by PR number and has no head SHA. Read the head before and
     // after the files, so a concurrent push cannot attach a new patch to the old report head.
@@ -282,7 +287,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
     const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
-    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, files, filesHeadVerified });
+    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified });
     return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
   } catch {
     return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
@@ -344,19 +349,31 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
   provideDocumentLinks(document: vscode.TextDocument): vscode.DocumentLink[] {
     if (document.uri.scheme !== REPORT_SCHEME) return [];
     const target = parse(document.uri);
-    if (!target || target.kind !== 'pullRequest') return [];
+    if (!target) return [];
+    const navigation: vscode.DocumentLink[] = [];
+    const nav = [
+      ['OPEN DISCUSSION (click to jump)', REPORT_COMMANDS.showDiscussion],
+      ...(target.kind === 'pullRequest' ? [['OPEN CODE CHANGES (click to jump)', REPORT_COMMANDS.showDiff]] : [])
+    ];
+    for (let i = 0; i < Math.min(document.lineCount, 10); i += 1) {
+      const text = document.lineAt(i).text;
+      for (const [label, command] of nav) {
+        if (text === label) navigation.push(new vscode.DocumentLink(new vscode.Range(i, 0, i, label.length), vscode.Uri.parse(`command:${command}`)));
+      }
+    }
+    if (target.kind !== 'pullRequest') return navigation;
     const evidence = this.content.evidenceFor(document.uri);
-    if (!evidence || evidence.files.length === 0) return [];
+    if (!evidence || evidence.files.length === 0) return navigation;
     const lines: string[] = [];
     for (let i = 0; i < document.lineCount; i += 1) lines.push(document.lineAt(i).text);
-    return fileBulletLines(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename }) => {
+    return [...navigation, ...fileBulletLines(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename }) => {
       const text = lines[lineNumber];
       const start = text.indexOf(filename);
       const range = new vscode.Range(lineNumber, start, lineNumber, start + filename.length);
       return new vscode.DocumentLink(range, vscode.Uri.parse(
         `command:${REPORT_COMMANDS.openFileDiff}?${encodeURIComponent(JSON.stringify({ reportUri: document.uri.toString(), filename }))}`
       ));
-    });
+    })];
   }
 }
 
@@ -450,6 +467,18 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const offset = editor.document.getText().indexOf('CHANGED FILES AND DIFF (plain text preview)');
       if (offset < 0) return { ok: false, code: 'diff-unavailable' };
       const position = editor.document.positionAt(offset);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.AtTop);
+      return { ok: true };
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.showDiscussion, async () => {
+      const editor = vscode.window.activeTextEditor;
+      const target = activeTarget();
+      if (!editor || !target) return { ok: false, code: 'no-report-open' };
+      const heading = target.kind === 'issue' ? 'DISCUSSION AND PM COMMENTS' : 'PR CONVERSATION';
+      const offset = editor.document.getText().indexOf(`\n${heading}\n`);
+      if (offset < 0) return { ok: false, code: 'discussion-unavailable' };
+      const position = editor.document.positionAt(offset + 1);
       editor.selection = new vscode.Selection(position, position);
       editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.AtTop);
       return { ok: true };

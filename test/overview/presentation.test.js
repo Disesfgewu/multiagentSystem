@@ -309,6 +309,13 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
   for (const bad of [-1, Number.NaN, Infinity, 1e21, 1e7]) assert.match(costFor(bad), /unknown/i);
 });
 
+test('an unobservable CLI session says why its state, model and cost are unknown', () => {
+  const view = presentAgent(row(), { name: 'n', providerObservation: { providerSession: 'unavailable' } });
+  assert.match(view.tooltip.find((line) => line.startsWith('Provider session:')), /no verified event source for a native terminal/);
+  assert.match(view.tooltip.find((line) => line.startsWith('Actual model:')), /unknown/i);
+  assert.match(view.tooltip.find((line) => line.startsWith('Session cost:')), /unknown/i);
+});
+
 test('the tooltip says whether the evidence is matched to the CLI session, unconfirmed, or switched off', () => {
   const tooltipFor = (providerSession) => presentAgent(row(), { name: 'n', providerObservation: { providerSession } }).tooltip.find((line) => line.startsWith('Provider session:'));
   assert.match(tooltipFor('bound'), /id is consistent; terminal routing is not verified/);
