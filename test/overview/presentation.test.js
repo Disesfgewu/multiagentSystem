@@ -311,7 +311,8 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
 
 test('the tooltip says whether the evidence is matched to the CLI session, unconfirmed, or switched off', () => {
   const tooltipFor = (providerSession) => presentAgent(row(), { name: 'n', providerObservation: { providerSession } }).tooltip.find((line) => line.startsWith('Provider session:'));
-  assert.match(tooltipFor('bound'), /matched to the CLI's own session id/);
+  assert.match(tooltipFor('bound'), /id is consistent; terminal routing is not verified/);
+  assert.doesNotMatch(tooltipFor('bound'), /verified identity|matched/);
   assert.match(tooltipFor('unbound'), /not confirmed/);
   assert.match(tooltipFor('mismatch'), /turned off/);
   assert.match(tooltipFor('surprise'), /unknown/i);

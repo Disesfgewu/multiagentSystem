@@ -44,7 +44,7 @@ function formatEstimatedCost(value) {
 }
 
 const PROVIDER_SESSION_TEXT = Object.freeze({
-  bound: 'matched to the CLI\'s own session id',
+  bound: 'the observation file\'s id is consistent; terminal routing is not verified',
   unbound: 'not confirmed (evidence is routed by the managed terminal only)',
   mismatch: 'the CLI session changed, so its evidence is turned off for this session'
 });

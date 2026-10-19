@@ -274,7 +274,11 @@ function providerSessionFixture(t) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const record = { schemaVersion: 1, eventId: `event-${sequence}`, observedAt: NOW, sequence, statusLine: { model: { id: model } } };
     if (providerSessionId !== undefined) record.providerSessionId = providerSessionId;
-    fs.writeFileSync(file, JSON.stringify(record));
+    // Like the real bridge: write a temporary file, then replace the record by rename, so each record is a
+    // new file (an in-place rewrite of an equally long record can leave the change marker unchanged on Windows).
+    const temporary = `${file}.tmp.${sequence}`;
+    fs.writeFileSync(temporary, JSON.stringify(record));
+    fs.renameSync(temporary, file);
   };
   return { runtime, start, write };
 }
