@@ -28,3 +28,14 @@ test('the summary counts, names at most five files and never says "none" about f
   assert.equal(summarizeOverlaps(many), '7 files are being changed in more than one worktree: f0, f1, f2, f3, f4 and 2 more.');
   assert.equal(summarizeOverlaps([many[0]]), '1 file is being changed in more than one worktree: f0.');
 });
+
+test('on case-insensitive, Unicode-normalizing file systems the same file under another spelling is the same file', () => {
+  const nfc = 'café.txt';
+  const nfd = 'café.txt';
+  const entries = [{ id: 'a', files: ['README.md', nfc, 'src/Util.ts'] }, { id: 'b', files: ['readme.md', nfd, 'src/util.ts', 'other.ts'] }];
+  const folded = findOverlaps(entries, { foldNames: true });
+  assert.deepEqual(folded.map((item) => item.worktrees), [['a', 'b'], ['a', 'b'], ['a', 'b']]);
+  assert.deepEqual(folded.map((item) => item.file), ['README.md', nfc, 'src/Util.ts'].sort(), 'the first spelling is shown');
+  assert.deepEqual(findOverlaps(entries, { foldNames: false }), [], 'where names are exact, they are different files');
+  assert.deepEqual(findOverlaps([{ id: 'a', files: ['A.txt', 'a.txt'] }], { foldNames: true }), [], 'one worktree never overlaps itself');
+});
