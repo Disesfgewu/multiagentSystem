@@ -1,6 +1,10 @@
 # multiagentSystem
 
-目前的 0.0.3 版本是待審查的 Beta 候選；安裝、雜湊核對、已知限制與回復方式見 [Beta 0.0.3 候選說明](docs/BETA_0.0.3.md)。
+## 下載 Beta 0.0.3
+
+[下載 VSIX 安裝檔](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta/multiagentsystem.vsix) · [查看 GitHub Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) · [安裝與已知限制](docs/BETA_0.0.3.md)
+
+下載後在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取 `multiagentsystem.vsix` 並重新載入視窗。這是供試用的 prerelease；真實 CLI、帳號與 macOS／Windows 實機流程仍待 Beta 後驗收。檔案的 SHA-256 是 `afd5509c9152a6881d95d9901832a366a80a365c1884105b108ffce583e764df`。
 
 以支援 macOS 與 Windows 的 VS Code 擴充套件管理同一個 GitHub 專案中的多個 CLI coding agents。每個 agent 使用可直接操作的真實終端機；使用者可在同一畫面查看工作、程式碼、角色、帳戶及可取得的用量資訊。
 
