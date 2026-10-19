@@ -12,6 +12,11 @@ const STATUS_KEYS = new Set(['model', 'cost']);
 // A record holds an id, a time and two short fields: a few hundred bytes. Anything larger is not one.
 const MAX_RECORD_BYTES = 8 * 1024;
 const POLL_MS = 2000;
+// A live session rewrites its file on every status line refresh, so a file untouched for a day belongs
+// to a session that is long gone (a crash or a closed window never ran its cleanup).
+const STALE_MS = 24 * 60 * 60 * 1000;
+const MAX_SWEEP = 200;
+const RECORD_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}\.json$/;
 
 const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -58,6 +63,24 @@ function readRecord(file) {
 }
 
 /** A cheap change marker that never follows a link: it changes when the file is replaced or rewritten. */
+/** Removes record files nobody has written to for STALE_MS. Plain files with a record name only. */
+function sweepStale(dir, nowMs, keep = new Set()) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names.slice(0, MAX_SWEEP)) {
+    if (!RECORD_FILE.test(name) || keep.has(name)) continue;
+    const file = path.join(dir, name);
+    try {
+      const info = fs.lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() || nowMs - info.mtimeMs < STALE_MS) continue;
+      fs.rmSync(file, { force: true });
+      removed += 1;
+    } catch { /* Best effort: a file that cannot be judged stays. */ }
+  }
+  return removed;
+}
+
 function fileSignature(file) {
   try {
     const stat = fs.lstatSync(file);
@@ -138,6 +161,7 @@ class SessionObservationRuntime {
     }
     const file = observationPath(env.CLAUDE_CONFIG_DIR, sessionId);
     try { fs.rmSync(file, { force: true }); } catch { /* An unreadable old file stays unknown. */ }
+    sweepStale(path.dirname(file), this.nowMs(), new Set([...this.bindings.values()].map((binding) => path.basename(binding.file))));
     this.core.register({ sessionId, provider, accountProfileId });
     this.bindings.set(sessionId, {
       file,
@@ -175,4 +199,4 @@ class SessionObservationRuntime {
   }
 }
 
-module.exports = { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord };
+module.exports = { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS };

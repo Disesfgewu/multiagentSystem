@@ -297,3 +297,14 @@ test('presentAccount formats blocked, confirming, warning, and normal accounts w
   assert.equal(hostile.description.includes('\r'), false);
 });
 
+
+test('estimated session cost is shown as a plain amount, and an insane value is unknown', () => {
+  const costFor = (value) => {
+    const session = { name: 'n', providerObservation: { usage: [{ field: 'usage.cost_usd', confidence: 'estimated', value }] } };
+    return presentAgent(row(), session).tooltip.find((line) => line.startsWith('Session cost:'));
+  };
+  assert.equal(costFor(0.125), 'Session cost: $0.125 estimated');
+  assert.equal(costFor(0.1 + 0.2), 'Session cost: $0.30 estimated');
+  assert.equal(costFor(3), 'Session cost: $3.00 estimated');
+  for (const bad of [-1, Number.NaN, Infinity, 1e21, 1e7]) assert.match(costFor(bad), /unknown/i);
+});

@@ -32,6 +32,17 @@ function field(value, fallback = UNKNOWN) {
  * One line per session. `row` is a row of `buildOverview`; `session` supplies the display name and
  * the state label that the session layer already worded honestly.
  */
+// A plain money amount, never raw float noise or exponent notation. Anything that is not a sane,
+// non-negative amount is unknown rather than shown.
+function formatEstimatedCost(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1e6) return UNKNOWN;
+  // Four decimals at most, trailing zeros trimmed down to cents: 0.125 stays $0.125, 0.30000000000000004 is $0.30.
+  const [whole, fraction] = value.toFixed(4).split('.');
+  let cents = fraction;
+  while (cents.length > 2 && cents.endsWith('0')) cents = cents.slice(0, -1);
+  return `$${whole}.${cents} estimated`;
+}
+
 function presentAgent(row, session) {
   const name = shown(session?.name, 'Session');
   const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
@@ -46,7 +57,7 @@ function presentAgent(row, session) {
   const observedCost = Array.isArray(providerObservation?.usage)
     ? providerObservation.usage.find((entry) => entry?.field === 'usage.cost_usd' && entry.confidence === 'estimated')
     : null;
-  const costText = observedCost && typeof observedCost.value === 'number' ? `$${observedCost.value} estimated` : UNKNOWN;
+  const costText = observedCost ? formatEstimatedCost(observedCost.value) : UNKNOWN;
   const identity = row.account.state === 'known' ? (row.account.verified ? 'identity verified by the CLI' : 'identity unknown') : 'account unknown';
   const issue = row.issue && row.issue.state === 'known' ? `#${row.issue.number}` : UNKNOWN;
   const pr = row.pullRequest.state === 'open' ? `#${row.pullRequest.number}${row.pullRequest.draft ? ' (draft)' : ''}` : row.pullRequest.state === 'none' ? 'no open pull request' : UNKNOWN;

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord } = require('../../src/observations/runtime');
+const { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS } = require('../../src/observations/runtime');
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
@@ -197,4 +197,38 @@ test('the observation file is read only if it is a small, plain, singly-linked r
   assert.ok(Date.now() - started < 2000);
   assert.equal(readRecord(path.join(root, 'missing.json')), null);
   assert.equal(readRecord(root), null, 'a directory is not a record');
+});
+
+test('starting a session sweeps record files left by sessions that never cleaned up, and only those', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-sweep-'));
+  try {
+    const dir = path.dirname(observationPath(root, 'x'));
+    fs.mkdirSync(dir, { recursive: true });
+    const write = (name, ageMs) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, '{}');
+      const at = new Date(Date.now() - ageMs);
+      fs.utimesSync(file, at, at);
+      return file;
+    };
+    const stale = write('old-session.json', STALE_MS + 60_000);
+    const fresh = write('other-window.json', 60_000);
+    const foreign = write('notes.txt', STALE_MS * 5);
+    const odd = write('..hidden.json', STALE_MS * 5);
+    const linkTarget = path.join(root, 'target.json');
+    fs.writeFileSync(linkTarget, '{}');
+    const link = path.join(dir, 'linked.json');
+    fs.symlinkSync(linkTarget, link);
+    const old = new Date(Date.now() - STALE_MS * 5);
+    fs.lutimesSync(link, old, old);
+    const runtime = new SessionObservationRuntime();
+    runtime.prepare({ sessionId: 'session-new', provider: 'claude', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
+    assert.equal(fs.existsSync(stale), false, 'a day-old record is gone');
+    for (const kept of [fresh, foreign, odd, linkTarget]) assert.equal(fs.existsSync(kept), true, kept);
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true, 'a link is never followed or removed by the sweep');
+    assert.equal(sweepStale(path.join(root, 'missing'), Date.now()), 0, 'a missing folder is fine');
+    runtime.dispose();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
