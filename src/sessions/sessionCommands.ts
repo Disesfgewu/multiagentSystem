@@ -19,6 +19,8 @@ const { SessionObservationRuntime } = require('../observations/runtime') as {
     prepare(input: { sessionId: string; provider: string; accountProfileId: string; env?: Record<string, string | null> }): { env?: Record<string, string | null>; active: boolean };
     enrich(sessions: SessionView[]): SessionView[];
     release(sessionId: string): void;
+    onDidChange(listener: (sessionId: string) => void): { dispose(): void };
+    dispose(): void;
   };
 };
 const { selectRoleProfiles } = require('../roles/account-choices') as {
@@ -139,6 +141,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   const reservations = new Map<string, () => void>();
   const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
   const observations = new SessionObservationRuntime();
+  // New or aged-out provider evidence refreshes the same views a session change does (the Overview reads
+  // the evidence when it renders). The runtime has no timer unless a session is bound.
+  context.subscriptions.push(observations.onDidChange(() => changed.fire()), { dispose: () => observations.dispose() });
   const manager = new SessionManager<vscode.Terminal>({
     store: new PrivateSessionSnapshot({
       workspaceKey: () => sessionWorkspaceKey((vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.toString()), vscode.workspace.workspaceFile?.toString()),
