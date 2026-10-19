@@ -22,6 +22,7 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const { validateCatalogItem, CANDIDATE_RESEARCH_TOOLS } = require('./catalog');
 const { PROHIBITED_AGENT_TOOLS, isConsentActive, getConsentRecord } = require('./installer');
+const { wrapUntrustedToolResult } = require('./finding');
 const { guardOutboundQuery } = require('./query-guard');
 
 const ALLOWLIST_COLLECTION = 'mcpAllowlist';
@@ -106,6 +107,30 @@ function checkGrant(role, serverId, tools, catalog) {
   return { ok: true, tools: out };
 }
 
+/**
+ * Ends a server and everything it started. Ending only the direct child leaves whatever the server spawned
+ * running with nobody tracking it, so: on POSIX the server runs in its own process group (see `detached` at
+ * spawn) and the whole group gets the signal; on Windows `taskkill /T /F` ends the tree. Without a group (or with
+ * a pid that cannot be one) it falls back to the child alone. Injectable so both platforms are testable anywhere.
+ */
+function createKillTree({ platform = process.platform, spawnProcess = childProcess.spawn, killProcess = process.kill.bind(process) } = {}) {
+  return function killTree({ child, detached, force }) {
+    const pid = child && child.pid;
+    const alone = () => { try { child.kill(force ? 'SIGKILL' : 'SIGTERM'); } catch { /* reported through the result */ } };
+    if (!Number.isSafeInteger(pid) || pid <= 1) return alone();
+    if (platform === 'win32') {
+      try {
+        const killer = spawnProcess('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, shell: false, stdio: 'ignore' });
+        if (killer && typeof killer.on === 'function') killer.on('error', alone);
+      } catch { alone(); }
+      return undefined;
+    }
+    if (detached !== true) return alone();
+    try { killProcess(-pid, force ? 'SIGKILL' : 'SIGTERM'); } catch { alone(); }
+    return undefined;
+  };
+}
+
 function createMcpLifecycle(deps = {}) {
   const {
     store,
@@ -118,6 +143,8 @@ function createMcpLifecycle(deps = {}) {
     guard = guardOutboundQuery,
     scanOptions = () => ({}),
     baseEnv = process.env,
+    platform = process.platform,
+    killTree = createKillTree({ platform }),
     startTimeoutMs = 5000,
     callTimeoutMs = 15000,
     stopTimeoutMs = 2000
@@ -196,12 +223,16 @@ function createMcpLifecycle(deps = {}) {
     });
   }
 
+  // Ends the server and its whole tree. The group is swept once more after the server itself has exited, because
+  // anything it started may outlive it; `force` is immediate where a graceful stop does not exist (Windows).
+  function sweep(state) { killTree({ child: state.child, detached: state.detached, force: true }); }
+
   function kill(state) {
     return new Promise((resolve) => {
-      if (state.exited) return resolve(true);
-      const timer = setTimeout(() => resolve(state.exited), stopTimeoutMs);
-      state.child.once('exit', () => { clearTimeout(timer); resolve(true); });
-      try { state.child.kill(); } catch { /* reported through the result */ }
+      if (state.exited) { sweep(state); return resolve(true); }
+      const timer = setTimeout(() => { sweep(state); resolve(state.exited); }, stopTimeoutMs);
+      state.child.once('exit', () => { clearTimeout(timer); sweep(state); resolve(true); });
+      killTree({ child: state.child, detached: state.detached, force: platform === 'win32' });
     });
   }
 
@@ -244,11 +275,11 @@ function createMcpLifecycle(deps = {}) {
 
     let child;
     try {
-      child = spawn(executable, tool.command.slice(1), { env, shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      child = spawn(executable, tool.command.slice(1), { env, shell: false, detached: platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     } catch { failures.set(serverId, 'spawn-failed'); return no('spawn-failed'); }
     if (!child || !child.stdin || !child.stdout) { failures.set(serverId, 'spawn-failed'); return no('spawn-failed'); }
 
-    const state = { child, pending: new Map(), nextId: 1, buffer: '', exited: false };
+    const state = { child, detached: platform !== 'win32', pending: new Map(), nextId: 1, buffer: '', exited: false };
     running.set(serverId, state);
     stopped.delete(serverId);
     failures.delete(serverId);
@@ -258,6 +289,7 @@ function createMcpLifecycle(deps = {}) {
     child.on('error', () => { failures.set(serverId, 'spawn-failed'); failAll(state, 'process-error'); });
     child.on('exit', () => {
       state.exited = true;
+      sweep(state); // whatever the server started goes with it
       failAll(state, 'process-exited');
       if (running.get(serverId) === state) { running.delete(serverId); if (!stopped.has(serverId) && !failures.has(serverId)) failures.set(serverId, 'process-exited'); }
     });
@@ -387,11 +419,20 @@ function createMcpLifecycle(deps = {}) {
       if (reply.transportError) return no(`transport-${reply.transportError}`);
       if (reply.error) return no('server-error');
       if (!isPlain(reply.result)) return no('bad-response');
+      // The reply is outside data. It reaches a role only inside the untrusted block, after the prompt-injection
+      // check and the size limit; the raw result is never returned.
+      let wrapped;
+      try {
+        wrapped = wrapUntrustedToolResult({ result: reply.result, serverId, toolName: tool, retrievedAt: now().toISOString() });
+      } catch (error) {
+        return no('result-refused', { findingCode: error && typeof error.code === 'string' ? error.code : 'tool-result-invalid' });
+      }
       return {
         ok: true,
         untrusted: true,
         source: { serverId, tool, receivedAt: now().toISOString() },
-        content: reply.result
+        truncated: wrapped.truncated,
+        payload: wrapped.payload
       };
     } catch { return no('internal-error'); }
   }
@@ -449,6 +490,7 @@ function statusText(s) {
 
 module.exports = {
   createMcpLifecycle,
+  createKillTree,
   scanWorkspaceMcpConfig,
   normalizeAllowlist,
   checkGrant,
