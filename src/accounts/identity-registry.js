@@ -221,21 +221,29 @@ function assessLaunchIdentity(store, profileId, outcome, now = new Date()) {
 /**
  * Deduplicates quota observations across profiles that share the same real account. For each window a
  * still-valid actual reading always wins over anything else (a newer estimate or an unknown one never
- * hides it); among equals the most recent wins. Percentages are never summed.
+ * hides it). Among valid actual percentages the HIGHEST wins: two profiles of one account should agree, so
+ * a lower, newer figure may belong to a profile whose link is out of date (it signed in as another account
+ * since it was last checked), and trusting it could lift a limit. A reset makes the old, higher figure
+ * linger until it expires, which only holds a launch back a little longer. Other values: the newest wins.
+ * Percentages are never summed.
  */
 function deduplicateQuotaObservations(observationLists, now = new Date()) {
   const byWindow = new Map();
   const usable = (item) => item.confidence === CONFIDENCE.ACTUAL && isFresh(item, now);
   const time = (item) => { const t = Date.parse(item.observedAt); return Number.isFinite(t) ? t : -Infinity; };
+  const better = (item, existing) => {
+    const itemRank = usable(item) ? 1 : 0;
+    const existingRank = usable(existing) ? 1 : 0;
+    if (itemRank !== existingRank) return itemRank > existingRank;
+    if (itemRank === 1 && item.unit === 'percent' && existing.unit === 'percent' && item.value !== existing.value) return item.value > existing.value;
+    return time(item) > time(existing);
+  };
   for (const list of observationLists) {
     if (!Array.isArray(list)) continue;
     for (const item of list) {
       if (!item || typeof item.field !== 'string') continue;
       const existing = byWindow.get(item.field);
-      if (!existing) { byWindow.set(item.field, item); continue; }
-      const itemRank = usable(item) ? 1 : 0;
-      const existingRank = usable(existing) ? 1 : 0;
-      if (itemRank > existingRank || (itemRank === existingRank && time(item) > time(existing))) byWindow.set(item.field, item);
+      if (!existing || better(item, existing)) byWindow.set(item.field, item);
     }
   }
   return [...byWindow.values()];

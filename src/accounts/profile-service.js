@@ -325,6 +325,16 @@ class AccountProfileService {
     const outcome = this.store.transact((tx) => {
       const current = tx.get(COLLECTION, id);
       if (current === null) return { rejected: fail('profile-not-found') };
+      // Another window may still have an agent running on this profile: its running-session lease is in the
+      // shared store, and removing the profile would stop it counting toward the account's limits.
+      if (Array.isArray(this.store.names) && this.store.names.includes('quotaReservations')) {
+        const slots = tx.get('quotaReservations', `slots-${id}`);
+        if (slots !== null && slots !== undefined && (!Array.isArray(slots.leases) || slots.leases.length > 0)) {
+          return { rejected: fail('profile-in-use', { live: Array.isArray(slots.leases) ? slots.leases.length : 1, historical: usage.historical }) };
+        }
+        // Nothing runs on it: its saved account link goes with it.
+        tx.delete('quotaReservations', `identity-${id}`);
+      }
       tx.delete(COLLECTION, id);
       return { removed: current };
     });

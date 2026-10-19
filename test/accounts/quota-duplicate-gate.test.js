@@ -424,7 +424,7 @@ test('a profile that moved to another account never lifts the usage block of the
   assert.ok(decision.reasons.some((reason) => /usage|percent|block/i.test(JSON.stringify(reason))), JSON.stringify(decision.reasons));
 });
 
-test('profiles that are the same account now do share readings, and the freshest valid actual one decides', (t) => {
+test('profiles that are the same account now do share readings, and the highest valid actual percentage decides', (t) => {
   const { store, service } = setupEnvironment(t);
   const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
   const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
@@ -434,7 +434,9 @@ test('profiles that are the same account now do share readings, and the freshest
   const readingsOf = { [p2.id]: [percent(95, 60_000)], [p1.id]: [percent(10, 1_000)] };
   const { group, decision } = gateDecision(store, service, p2.id, readingsOf);
   assert.deepEqual([group.ids, group.current], [[p1.id], [p1.id]]);
-  assert.equal(decision.allowed, true, 'the same account\'s newer reading of 10% is the account\'s reading');
+  assert.equal(decision.allowed, false, 'the sibling\'s newer, lower figure may belong to a link that is out of date: the higher figure holds');
+  const expiredHigh = { [p2.id]: [percent(95, 700_000)], [p1.id]: [percent(10, 1_000)] };
+  assert.equal(gateDecision(store, service, p2.id, expiredHigh).decision.allowed, true, 'once the higher reading has expired only the valid one counts');
 });
 
 test('B to A: readings left from before a profile took on this account never lift the block, and nor do its own old ones', (t) => {
@@ -456,8 +458,8 @@ test('B to A: readings left from before a profile took on this account never lif
   const own = gateDecision(store, service, p1.id, readingsOf);
   assert.equal(own.decision.allowed, false, 'its own old reading does not count as a reading of the new account');
   // A reading written after the change is trusted again.
-  const fresh = { ...readingsOf, [p1.id]: [percent(20, 1_000)] };
-  assert.equal(gateDecision(store, service, p1.id, fresh).decision.allowed, true, 'a reading after the change is its account\'s reading');
+  const fresh = { [p2.id]: [percent(95, 700_000)], [p1.id]: [percent(20, 1_000)] };
+  assert.equal(gateDecision(store, service, p1.id, fresh).decision.allowed, true, 'a reading after the change is its account\'s reading (the sibling\'s old one has expired)');
 });
 
 test('a session that was already running when the profile changed account: its readings stay untrusted while it runs and after it ends, until a later reading follows', (t) => {
@@ -511,4 +513,38 @@ test('a profile that never changed account keeps all its readings, old or new', 
   assert.equal(trustedReadings([percent(10, 3_600_000)], readingsTrust(store, p1.id)).length, 1);
   assert.deepEqual(trustedReadings([percent(10, 1)], { ok: false, trusted: false, since: null }), [], 'unreadable trust uses nothing');
   assert.deepEqual(readingsTrust(store, 'never-verified'), { ok: true, trusted: true, since: null }, 'a profile without a link has no change to account for');
+});
+
+test('a profile with a running lease cannot be removed, so its siblings keep counting it; once nothing runs, removal also drops its account link', async (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, p1.id, { maxConcurrent: 1, unknownQuota: 'block' }).ok, true);
+  const taken = reserve(store, p1.id, [p2.id], LEASE_A);
+  assert.equal(taken.decision.allowed, true);
+  // Another window's agent runs on p1: this window's own session list does not show it.
+  const refused = await service.remove(p1.id);
+  assert.deepEqual([refused.ok, refused.code ?? refused.reason], [false, 'profile-in-use']);
+  assert.deepEqual(linkedProfiles(store, p2.id, [p1.id, p2.id]).ids, [p1.id], 'p2 still counts p1');
+  assert.equal(runningSlots(store, p2.id, NOW, { linkedAccountKeys: [p1.id] }).running, 1);
+  assert.equal(reserve(store, p2.id, [p1.id], LEASE_B).decision.allowed, false, 'and is still held back by it');
+  assert.equal(releaseSlot(store, taken.decision.reservation, NOW).ok, true);
+  const removed = await service.remove(p1.id);
+  assert.equal(removed.ok, true);
+  assert.equal(store.get('quotaReservations', `identity-${p1.id}`).found, false, 'its account link went with it');
+  assert.deepEqual(linkedProfiles(store, p2.id, [p2.id]).ids, []);
+});
+
+test('a sibling\'s newer, lower reading never lifts a limit, even when its link is out of date', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const s = service.create({ provider: 'claude', label: 'S', configDir: path.join(store.dir, 'cfgS') }).profile;
+  const p = service.create({ provider: 'claude', label: 'P', configDir: path.join(store.dir, 'cfgP') }).profile;
+  recordIdentity(store, s.id, verifiedIdentity(s.id, 'alice@example.com'));
+  recordIdentity(store, p.id, verifiedIdentity(p.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, s.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  // P still says it is account A, but in the CLI it has since signed in as B: its folder now reports B's 10%.
+  const { decision } = gateDecision(store, service, s.id, { [s.id]: [percent(95, 60_000)], [p.id]: [percent(10, 5_000)] });
+  assert.equal(decision.allowed, false);
 });

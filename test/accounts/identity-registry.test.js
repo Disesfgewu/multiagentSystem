@@ -102,16 +102,19 @@ test('linked profiles and profiles that are the same account now are told apart'
   assert.deepEqual(linkedProfiles(store, 'p1', all), { ok: true, ids: ['p2', 'p3'], current: [], known: true });
 });
 
-test('usage readings join only from profiles that are the same account now, and the freshest valid actual one wins among them', () => {
+test('usage readings join only from profiles that are the same account now, and the highest valid actual percentage wins among them', () => {
   const field = 'quota.five_hour.used_percent';
   const own = [reading(field, 95, 60_000, 600_000)];
   const sameNow = [reading(field, 10, 1_000, 600_000)];
   const history = [reading(field, 5, 500, 600_000)];
   const byId = new Map([['same', sameNow], ['moved', history]]);
-  assert.equal(groupReadings(own, ['same'], byId, NOW)[0].value, 10);
+  assert.equal(groupReadings(own, ['same'], byId, NOW)[0].value, 95, 'a lower, newer figure never hides the higher one: it may come from a stale link');
+  assert.equal(groupReadings(sameNow, ['same-too'], new Map([['same-too', own]]), NOW)[0].value, 95, 'whichever side holds it');
   assert.equal(groupReadings(own, [], byId, NOW)[0].value, 95, 'a profile that moved away contributes nothing');
-  assert.equal(groupReadings(own, ['same', 'missing'], byId, NOW)[0].value, 10, 'a profile with no readings is skipped');
+  assert.equal(groupReadings(own, ['same', 'missing'], byId, NOW)[0].value, 95, 'a profile with no readings is skipped');
   assert.equal(groupReadings(own, [], new Map(), NOW), own, 'nothing to merge returns the profile\'s own readings');
+  const expired = [reading(field, 99, 700_000, 600_000)];
+  assert.equal(groupReadings(sameNow, ['old'], new Map([['old', expired]]), NOW)[0].value, 10, 'an expired reading is not used at all');
 });
 
 test('at launch the account the CLI reports now is compared with the one that was verified', (t) => {
@@ -149,7 +152,7 @@ const reading = (field, value, ageMs, validForMs, confidence = 'actual') => obse
   observedAt: new Date(NOW.getTime() - ageMs), validForMs
 });
 
-test('deduplicated usage keeps the freshest reading per window and never sums', () => {
+test('deduplicated usage keeps the highest valid actual percentage per window and never sums', () => {
   const field = 'quota.five_hour.used_percent';
   const merged = deduplicateQuotaObservations([[reading(field, 60, 100_000, 600_000)], [reading(field, 75, 10_000, 600_000), reading('quota.seven_day.used_percent', 40, 10_000, 600_000)]], NOW);
   assert.equal(merged.find((o) => o.field === field).value, 75);
