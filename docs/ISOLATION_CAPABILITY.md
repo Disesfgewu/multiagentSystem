@@ -27,3 +27,17 @@
 ## 尚未驗證
 
 這份介面只有合成資料的單元測試。沒有任何平台模組、沒有真機證據、沒有真 CLI；`broker` 不能阻止 agent 自己執行 `git`／`gh`／HTTP 這件事（見 `docs/WRITE_BROKER.md`）也沒有因此改變。
+
+## macOS 平台模組（Refs #25）
+
+`src/isolation/macos.js` 是 macOS 的 `probe` 實作，驗證 harness 就是 `createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`（測試見 `test/isolation/macos.test.js`）。
+
+**機制**：Seatbelt，透過 `/usr/bin/sandbox-exec`。Apple 把這個指令標為 deprecated；它是系統提供的「在設定檔下執行一個程序」的方式，不是長期承諾。設定檔由 `seatbeltProfile` 產生：預設全允許，但**一律拒絕網路**（只放行指定的本機埠）、拒絕讀取指定路徑、拒絕寫入指定路徑。路徑與埠不合格（相對路徑、含引號／括號／反斜線／控制字元／雙向字元、不是整數埠）直接丟錯，不會產生比呼叫端要求更開放的設定檔。
+
+**怎麼判定**：每個通道在**本機**用合成憑證與本機假端點真的試一次，看觀察到的事實，不看結束碼——假端點是否收到連線、合成秘密是否出現在輸出、commit 是否真的多了一筆。每個嘗試各跑兩次：隔離內，以及隔離外的對照組；對照組沒成功（例如沒裝 `gh`、沒有 Python）該通道就是 `unknown`，絕不是 `blocked`。終端互動以 Python `pty` 提供真的 pseudo-terminal，輸入一行、檢查回應、送 Ctrl-C 看程式是否結束。
+
+**已知邊界（沒有試、也不宣稱）**
+- Seatbelt 只能依位址與埠過濾網路，不能依主機名稱。「允許 CLI 連自己的供應商、擋 GitHub」需要本機過濾代理，這裡**沒有**做；本模組只證明「只放行一個本機埠、其餘全拒」。真 CLI 是否肯走代理、登入是否仍可用，要實機驗證（#135）。
+- 沒有測系統鑰匙圈（`osxkeychain` helper）、真的 GitHub 憑證、真的遠端、SSH、真的 CLI。`credential-helper` 通道只證明「檔案型 helper 讀不到被拒絕的目錄」。
+- 環境憑證由 `scrubEnvironment` 移除（`GH_*`／`GITHUB_*` 含 TOKEN／KEY／SECRET／PASSWORD／CREDENTIAL 的變數、`GIT_ASKPASS`、`SSH_ASKPASS`、`SSH_AUTH_SOCK`、注入的 git config）；這不是 Seatbelt 的功能，而是啟動端的責任，尚未接進實際的 terminal 啟動流程。
+- 這個模組還沒有接到任何命令或 terminal 啟動：現在使用者看不到任何變化。
