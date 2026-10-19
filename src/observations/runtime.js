@@ -2,7 +2,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { SessionObservationCore, DEFAULT_TTL_MS } = require('./session');
+const { SessionObservationCore, DEFAULT_TTL_MS, USAGE_FIELDS } = require('./session');
+const { unknown } = require('../accounts/observation');
 const { createClaudeSessionEvidenceAdapter } = require('./claude');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
@@ -113,6 +114,8 @@ class SessionObservationRuntime {
   constructor(options = {}) {
     this.core = options.core ?? new SessionObservationCore(options);
     this.bindings = new Map();
+    // Managed sessions of a provider with no verifiable event source: shown as unknown, with the reason.
+    this.unobservable = new Map();
     this.ttlMs = Number.isFinite(options.ttlMs) && options.ttlMs > 0 ? options.ttlMs : DEFAULT_TTL_MS;
     this.pollMs = Number.isFinite(options.pollMs) && options.pollMs > 0 ? options.pollMs : POLL_MS;
     this.nowMs = typeof options.nowMs === 'function' ? options.nowMs : Date.now;
@@ -141,6 +144,18 @@ class SessionObservationRuntime {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  /**
+   * A Codex session started in a native terminal has no event source this extension can verify: the
+   * app-server notifications the Codex adapter understands come from a separate server process that is
+   * not the terminal's. Starting one and presenting its numbers as the terminal's would be misattribution,
+   * and terminal text and login files are off limits. So the session is registered as "unavailable":
+   * every value reads unknown, with the reason, and the screen says so instead of staying blank.
+   */
+  #prepareUnobservable({ sessionId, provider, accountProfileId, env }) {
+    this.unobservable.set(sessionId, { provider, accountProfileId });
+    return { env, active: false };
   }
 
   /**
@@ -196,6 +211,7 @@ class SessionObservationRuntime {
   }
 
   prepare({ sessionId, provider, accountProfileId, env }) {
+    if (provider === 'codex') return this.#prepareUnobservable({ sessionId, provider, accountProfileId, env });
     if (provider !== 'claude' || !env || typeof env.CLAUDE_CONFIG_DIR !== 'string' || accountProfileId === 'unassigned') {
       return { env, active: false };
     }
@@ -217,6 +233,20 @@ class SessionObservationRuntime {
   }
 
   snapshot(sessionId, at = new Date().toISOString()) {
+    const unobservable = this.unobservable.get(sessionId);
+    if (unobservable) {
+      const reason = 'no-verified-event-source';
+      const source = 'not-observed';
+      return {
+        sessionId,
+        ...unobservable,
+        status: unknown('session.state', { source, observedAt: at, reason }),
+        model: unknown('session.model', { source, observedAt: at, reason }),
+        usage: USAGE_FIELDS.map((field) => unknown(field, { source, observedAt: at, reason })),
+        freshness: 'unknown',
+        providerSession: 'unavailable'
+      };
+    }
     const binding = this.bindings.get(sessionId);
     if (!binding) return null;
     const record = readRecord(binding.file);
@@ -236,6 +266,7 @@ class SessionObservationRuntime {
   }
 
   release(sessionId) {
+    this.unobservable.delete(sessionId);
     const binding = this.bindings.get(sessionId);
     this.bindings.delete(sessionId);
     if (binding) {
