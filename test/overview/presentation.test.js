@@ -339,3 +339,15 @@ test('an agent row states local Git evidence as facts, flags uncommitted work, a
   assert.ok(unreadable.tooltip.some((line) => line.startsWith('Git: unknown (Git could not read')));
   assert.equal(presentAgent(row(), { name: 'n' }).tooltip.some((line) => line.startsWith('Git')), false, 'no Git line when nothing was asked');
 });
+
+test('presentAccount shows the specific unknown-usage reason in one short phrase and never a percentage', () => {
+  const { describeQuota } = require('../../src/accounts/quota-gate');
+  const now = new Date('2026-10-18T10:00:00.000Z');
+  for (const [code, phrase] of [['no-source-agy', 'no verified usage source for agy'], ['bridge-not-enabled', 'usage bridge not enabled'], ['timestamp-future', 'reading time is in the future']]) {
+    const usage = describeQuota([], now, code);
+    const row = presentAccount({ id: 'p', label: 'A', provider: 'Claude', policy: 'Limits: none set.', usage });
+    assert.match(row.description, new RegExp(`Usage: unknown \\(${phrase}\\)\\.`));
+    assert.equal(/%/.test(row.description), false);
+    assert.ok(row.tooltip.some((line) => line.startsWith('Why: ')), 'details carry the full reason');
+  }
+});
