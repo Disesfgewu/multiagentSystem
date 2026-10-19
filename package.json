@@ -16,6 +16,7 @@
     "onCommand:multiagentSystem.worktrees.list",
     "onCommand:multiagentSystem.worktrees.create",
     "onCommand:multiagentSystem.worktrees.remove",
+    "onCommand:multiagentSystem.worktrees.overlaps",
     "onCommand:multiagentSystem.github.browse",
     "onCommand:multiagentSystem.github.openIssue",
     "onCommand:multiagentSystem.github.openPullRequest",
@@ -200,6 +201,10 @@
       {
         "command": "multiagentSystem.worktrees.remove",
         "title": "Multiagent: Release Worktree"
+      },
+      {
+        "command": "multiagentSystem.worktrees.overlaps",
+        "title": "Multiagent: Find Files Changed in More Than One Worktree"
       },
       {
         "command": "multiagentSystem.github.browse",
