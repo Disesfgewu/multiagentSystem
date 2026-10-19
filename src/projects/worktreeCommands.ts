@@ -13,7 +13,8 @@ import { requireInteractive } from '../shared/testMode';
 export const WORKTREE_COMMANDS = {
   list: 'multiagentSystem.worktrees.list',
   create: 'multiagentSystem.worktrees.create',
-  remove: 'multiagentSystem.worktrees.remove'
+  remove: 'multiagentSystem.worktrees.remove',
+  overlaps: 'multiagentSystem.worktrees.overlaps'
 } as const;
 
 const OPEN_LABEL = 'Open in New Window';
@@ -66,6 +67,12 @@ const vscodeUi: WorktreeUi = {
   async offerOpen() {
     return (await vscode.window.showInformationMessage('Worktree created.', OPEN_LABEL)) === OPEN_LABEL;
   },
+  async pickOverlap(items, placeholder) {
+    return vscode.window.showQuickPick(items, { placeHolder: placeholder, matchOnDescription: true, matchOnDetail: false });
+  },
+  async openFile(file) {
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file));
+  },
   async openFolder(folder) {
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(folder), { forceNewWindow: true });
   },
@@ -90,6 +97,8 @@ export function registerWorktreeCommands(context: vscode.ExtensionContext): void
     // so remove's `confirmed: true` (honoured only when non-interactive) cannot skip the dialog, and a
     // caller-supplied `target` for create is confirmed and must stay inside the allowed roots (Refs #192).
     vscode.commands.registerCommand(WORKTREE_COMMANDS.create, (value?: unknown) => controller.create(requireInteractive(options(value)))),
+    // overlaps only reads Git and asks nothing that changes a file; `interactive: false` returns the data.
+    vscode.commands.registerCommand(WORKTREE_COMMANDS.overlaps, (value?: unknown) => controller.overlaps(options(value))),
     vscode.commands.registerCommand(WORKTREE_COMMANDS.remove, (value?: unknown) => controller.remove(requireInteractive(options(value))))
   );
 }

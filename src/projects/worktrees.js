@@ -30,6 +30,7 @@ async function git(cwd, args) {
 }
 
 const line = value => value.replace(/\r?\n$/, '');
+const MAX_CHANGED_FILES = 5000;
 
 function githubRepository(remote) {
   if (typeof remote !== 'string') return null;
@@ -122,6 +123,33 @@ class WorktreeService {
 
   async list() {
     return parseWorktrees(await git(this.root, ['worktree', 'list', '--porcelain', '-z']));
+  }
+
+  /**
+   * The files this worktree changes compared to where it branched from the primary worktree's checkout:
+   * committed work, staged and unstaged edits of tracked files, and untracked files that are not ignored.
+   * Read-only and non-interfering (no index lock, no configured file monitor). Repository-relative names
+   * only. `truncated` means the list was cut at the limit, so the caller must not read it as complete.
+   */
+  async changedFiles(target, { limit = MAX_CHANGED_FILES } = {}) {
+    const destination = await canonicalFuturePath(target);
+    const worktrees = await this.list();
+    const selected = [];
+    for (const item of worktrees) {
+      const existing = await canonicalFuturePath(item.path);
+      if (contains(existing, destination) && contains(destination, existing)) selected.push(item);
+    }
+    if (selected.length !== 1) throw new WorktreeError('worktree-not-found');
+    const primary = worktrees[0];
+    if (!primary || !/^[a-f0-9]{40,64}$/.test(primary.headSha ?? '')) throw new WorktreeError('base-invalid');
+    const safe = ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+    const base = line(await git(selected[0].path, [...safe, 'merge-base', primary.headSha, 'HEAD']));
+    if (!/^[a-f0-9]{40,64}$/.test(base)) throw new WorktreeError('base-invalid');
+    const tracked = await git(selected[0].path, [...safe, 'diff', '--name-only', '-z', '--no-renames', base, '--']);
+    const untracked = await git(selected[0].path, [...safe, 'ls-files', '--others', '--exclude-standard', '-z']);
+    const files = new Set([...tracked.split('\0'), ...untracked.split('\0')].filter(Boolean));
+    const list = [...files].sort();
+    return { files: list.slice(0, limit), truncated: list.length > limit };
   }
 
   async create({ branch, target, base = 'HEAD' }) {

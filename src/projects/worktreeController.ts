@@ -1,6 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+const { findOverlaps, summarizeOverlaps } = require('./overlap') as {
+  findOverlaps(entries: Array<{ id: string; files: Iterable<string> }>): Array<{ file: string; worktrees: string[] }>;
+  summarizeOverlaps(overlaps: Array<{ file: string; worktrees: string[] }>, limit?: number): string;
+};
+
 // Command logic for the worktree commands. It deliberately does not import `vscode`:
 // the editor-specific prompts are injected through `WorktreeUi`, and the Git work is done
 // by the existing `WorktreeService` (src/projects/worktrees.js), which is injected through
@@ -21,6 +26,7 @@ export interface WorktreeProject {
   list(): Promise<WorktreeInfo[]>;
   create(options: { branch: string; target: string; base?: string }): Promise<WorktreeInfo | undefined>;
   remove(target: string): Promise<{ removed: boolean; branch: string | null }>;
+  changedFiles(target: string): Promise<{ files: string[]; truncated: boolean }>;
 }
 
 export interface WorktreeEntry extends WorktreeInfo {
@@ -46,10 +52,15 @@ export interface WorktreeUi {
   /** Asked when a caller, not the input box, chose the folder for a new worktree. */
   confirmCreate(branch: string, target: string): Promise<boolean>;
   offerOpen(entry: WorktreeEntry): Promise<boolean>;
+  /** Shows overlapping files; resolves to the one the person chose to open, if any. */
+  pickOverlap(items: Array<{ label: string; description: string; detail: string; overlap: OverlapItem }>, placeholder: string): Promise<{ overlap: OverlapItem } | undefined>;
+  openFile(file: string): Promise<void>;
   openFolder(folder: string): Promise<void>;
   info(message: string): void;
   error(message: string): void;
 }
+
+export interface OverlapItem { file: string; worktrees: string[]; folders: string[] }
 
 export interface WorktreeDeps {
   ui: WorktreeUi;
@@ -72,6 +83,11 @@ export interface WorktreeCommandOptions {
   path?: string;
   confirmed?: boolean;
 }
+
+export type OverlapResult =
+  | { ok: true; checked: number; overlaps: OverlapItem[]; unread: string[]; summary: string }
+  | CommandFailure
+  | CommandCancelled;
 
 export type CommandFailure = { ok: false; code: string; message: string };
 export type CommandCancelled = { ok: false; code: 'cancelled'; message: string };
@@ -294,6 +310,77 @@ export class WorktreeController {
     else if (picked.entry.prunable) this.deps.ui.error(MESSAGES['worktree-unavailable']);
     else await this.deps.ui.openFolder(picked.entry.path);
     return { ok: true, worktrees: entries };
+  }
+
+  /**
+   * Finds files that are being changed in more than one worktree of the project, so two agents are not
+   * left to collide silently. Only reads Git (see WorktreeService.changedFiles). A worktree whose changes
+   * cannot be read (missing, locked-out, an unreadable base, or a list cut at the limit) is reported as
+   * unread, never treated as having no changes.
+   */
+  async overlaps(options: WorktreeCommandOptions = {}): Promise<OverlapResult> {
+    const interactive = options.interactive !== false;
+    const resolved = await this.resolveProject(options, interactive);
+    if (!('project' in resolved)) return resolved;
+    const { project } = resolved;
+    let entries: WorktreeEntry[];
+    try {
+      entries = describeEntries(await project.list(), project.root);
+    } catch (error) {
+      const failure = describeFailure(error);
+      return this.fail(failure.code, failure.message, interactive);
+    }
+    // A worktree is identified by its folder, never by what it is called: two detached worktrees at the same
+    // commit, or two folders on the same branch name, are two worktrees. Names are for display only.
+    const identity = (entry: WorktreeEntry): string => realPathOf(entry.path) ?? path.resolve(entry.path);
+    const baseLabel = (entry: WorktreeEntry): string => entry.branch ?? (entry.headSha ? `(detached ${entry.headSha.slice(0, 7)})` : '(no branch)');
+    const candidates = entries.filter((entry) => !entry.primary && !entry.bare);
+    const duplicates = new Set(candidates.map(baseLabel).filter((name, index, all) => all.indexOf(name) !== index));
+    const label = (entry: WorktreeEntry): string => (duplicates.has(baseLabel(entry)) ? `${baseLabel(entry)} in ${path.basename(entry.path)}` : baseLabel(entry));
+    const read: Array<{ id: string; label: string; files: string[]; folder: string }> = [];
+    const unread: string[] = [];
+    for (const entry of candidates) {
+      // A folder that is missing is a worktree whose changes are unknown, not one without changes.
+      if (entry.prunable) { unread.push(label(entry)); continue; }
+      try {
+        const changed = await project.changedFiles(entry.path);
+        if (changed.truncated) unread.push(label(entry));
+        else read.push({ id: identity(entry), label: label(entry), files: changed.files, folder: entry.path });
+      } catch {
+        unread.push(label(entry));
+      }
+    }
+    const byId = new Map(read.map((item) => [item.id, item]));
+    const overlaps: OverlapItem[] = findOverlaps(read).map((item) => ({
+      file: item.file,
+      worktrees: item.worktrees.map((id) => (byId.get(id) as { label: string }).label),
+      folders: item.worktrees.map((id) => (byId.get(id) as { folder: string }).folder)
+    }));
+    const base = summarizeOverlaps(overlaps);
+    const summary = unread.length > 0 ? `${base} Could not read the changes of ${unread.length} worktree${unread.length === 1 ? '' : 's'} (${unread.join(', ')}), so their overlaps are unknown.` : base;
+    const result: OverlapResult = { ok: true, checked: read.length, overlaps, unread, summary };
+    if (!interactive) return result;
+    if (candidates.length < 2) {
+      this.deps.ui.info('Overlap needs at least two worktrees besides the primary one.');
+      return result;
+    }
+    if (overlaps.length === 0) {
+      this.deps.ui.info(summary);
+      return result;
+    }
+    const picked = await this.deps.ui.pickOverlap(
+      overlaps.map((item) => ({ label: item.file, description: item.worktrees.join(' · '), detail: summary, overlap: item })),
+      'Files changed in more than one worktree: choose one to open it'
+    );
+    if (picked) {
+      const folder = picked.overlap.folders[0];
+      // Opened only if the file really lies inside its worktree: compared by real path, so a link in the
+      // worktree that points elsewhere (or a junction) is never followed out of it.
+      const real = realPathOf(path.resolve(folder, picked.overlap.file));
+      const realFolder = realPathOf(folder);
+      if (real && realFolder && real.startsWith(realFolder + path.sep)) await this.deps.ui.openFile(real);
+    }
+    return result;
   }
 
   async create(options: WorktreeCommandOptions = {}): Promise<CreateResult> {
