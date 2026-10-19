@@ -176,3 +176,39 @@ test('unsupported platforms and invalid sources download nothing, and PATH is pr
   const userWindows = path.win32.join(drive, 'user');
   assert.deepEqual(prependPath(managedWindows, { Path: userWindows }, 'win32'), { Path: `${managedWindows}${path.delimiter}${userWindows}` });
 });
+
+test('prepare() handles cancellation via signal cleanly: staging files are removed, ready install is preserved, and retry succeeds', async (t) => {
+  const root = world(t);
+  const controller = new AbortController();
+  let downloadStarted = false;
+  const manager = new ManagedGh({
+    root,
+    release: release(),
+    download: async (_url, _max, _progress, signal) => {
+      downloadStarted = true;
+      assert.ok(signal);
+      controller.abort();
+      if (signal?.aborted) throw new Error('download-cancelled');
+      return archive;
+    },
+    newId: () => 'cancelled-attempt'
+  });
+
+  const cancelled = await manager.prepare(undefined, controller.signal);
+  assert.equal(downloadStarted, true);
+  assert.deepEqual(cancelled, { state: 'missing', reason: 'download-cancelled' });
+  assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
+  assert.equal(fs.existsSync(path.join(root, 'staging-gh-2-102-0-darwin-arm64-cancelled-attempt')), false, 'staging directory was removed on cancellation');
+
+  // Retry after cancellation recovers cleanly
+  const retryManager = new ManagedGh({ root, release: release(), download: async () => archive, newId: () => 'retry-attempt' });
+  const recovered = await retryManager.prepare();
+  assert.equal(recovered.state, 'ready');
+
+  // When already ready, calling prepare with an aborted signal preserves the ready installation
+  const abortedAlready = new AbortController();
+  abortedAlready.abort();
+  const preserved = await retryManager.prepare(undefined, abortedAlready.signal);
+  assert.equal(preserved.state, 'ready', 'existing ready install is preserved when signal is aborted');
+});
+

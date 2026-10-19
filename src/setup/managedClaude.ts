@@ -33,7 +33,7 @@ export type ClaudeStatus =
   | { state: 'missing' | 'corrupt' | 'unsupported'; reason: string };
 
 export interface DownloadProgress { received: number; total: number | null }
-export type Downloader = (url: string, maxBytes: number, progress?: (value: DownloadProgress) => void) => Promise<Uint8Array>;
+export type Downloader = (url: string, maxBytes: number, progress?: (value: DownloadProgress) => void, signal?: AbortSignal) => Promise<Uint8Array>;
 
 export interface ClaudeManagerDeps {
   root: string;
@@ -95,11 +95,14 @@ function extractBinary(archive: Uint8Array, release: ClaudeRelease): Uint8Array 
   return archive;
 }
 
-export const downloadHttps: Downloader = async (url, maxBytes, progress) => {
+export const downloadHttps: Downloader = async (url, maxBytes, progress, signal) => {
+  if (signal?.aborted) throw new Error('download-cancelled');
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:' || parsed.hostname !== 'downloads.claude.ai') throw new Error('source-refused');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5 * 60_000);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     const response = await fetchWithAllowedRedirects(url, { allowedHosts: CLAUDE_HOSTS, init: { signal: controller.signal, headers: { accept: 'application/octet-stream' } } });
     if (!response.ok || !response.body) throw new Error('download-failed');
@@ -109,6 +112,10 @@ export const downloadHttps: Downloader = async (url, maxBytes, progress) => {
     let received = 0;
     const reader = response.body.getReader();
     for (;;) {
+      if (signal?.aborted) {
+        await reader.cancel();
+        throw new Error('download-cancelled');
+      }
       const next = await reader.read();
       if (next.done) break;
       received += next.value.byteLength;
@@ -120,7 +127,15 @@ export const downloadHttps: Downloader = async (url, maxBytes, progress) => {
     let offset = 0;
     for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
     return out;
-  } finally { clearTimeout(timer); }
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.message === 'download-cancelled')) {
+      throw new Error('download-cancelled');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
 };
 
 export class ManagedClaude {
@@ -205,10 +220,16 @@ export class ManagedClaude {
     return { state: 'ready', version: value.version, verifiedAt: value.verifiedAt, binDir, executable, source: value.source };
   }
 
-  async prepare(progress?: (value: DownloadProgress) => void): Promise<ClaudeStatus> {
+  async prepare(
+    optionsOrProgress?: ((value: DownloadProgress) => void) | { progress?: (value: DownloadProgress) => void; signal?: AbortSignal },
+    maybeSignal?: AbortSignal
+  ): Promise<ClaudeStatus> {
+    const progress = typeof optionsOrProgress === 'function' ? optionsOrProgress : optionsOrProgress?.progress;
+    const signal = typeof optionsOrProgress === 'object' && optionsOrProgress?.signal ? optionsOrProgress.signal : maybeSignal;
     if (!validRelease(this.release)) return { state: 'unsupported', reason: 'platform-or-source-unverified' };
     const current = await this.status();
     if (current.state === 'ready') return current;
+    if (signal?.aborted) return { state: 'missing', reason: 'download-cancelled' };
     try {
       if (!await this.ensureRoot()) return { state: 'corrupt', reason: 'managed-folder-replaced' };
     } catch { return { state: 'missing', reason: 'managed-folder-unavailable' }; }
@@ -223,7 +244,8 @@ export class ManagedClaude {
     if (!inside(this.root, staging) || !inside(this.root, install)) return { state: 'corrupt', reason: 'managed-path-invalid' };
 
     try {
-      const archive = await this.download(this.release.url, MAX_ARCHIVE_BYTES, progress);
+      const archive = await this.download(this.release.url, MAX_ARCHIVE_BYTES, progress, signal);
+      if (signal?.aborted) throw new Error('download-cancelled');
       if (!(archive instanceof Uint8Array) || archive.byteLength < 1 || archive.byteLength > MAX_ARCHIVE_BYTES) throw new Error('download-invalid');
       if (hash(archive) !== this.release.sha256) throw new Error('integrity-mismatch');
       const binary = extractBinary(archive, this.release);
@@ -240,6 +262,7 @@ export class ManagedClaude {
 
       try { await fs.promises.mkdir(installsDir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
       if (!await directoryNoLink(installsDir)) throw new Error('installs-dir-replaced');
+      if (signal?.aborted) throw new Error('download-cancelled');
       await fs.promises.rename(staging, install);
       await fs.promises.writeFile(pointerTemp, JSON.stringify(pointer), { mode: 0o600, flag: 'wx' });
       await fs.promises.rename(pointerTemp, this.pointerPath());
@@ -250,10 +273,12 @@ export class ManagedClaude {
         try { await fs.promises.rm(staging, { recursive: true, force: true }); } catch { /* best effort */ }
         try { await fs.promises.rm(pointerTemp, { force: true }); } catch { /* best effort */ }
       }
-      const reason = error instanceof Error && error.message === 'integrity-mismatch' ? 'archive-integrity-failed'
+      const isCancelled = signal?.aborted || (error instanceof Error && error.message === 'download-cancelled');
+      const reason = isCancelled ? 'download-cancelled'
+        : error instanceof Error && error.message === 'integrity-mismatch' ? 'archive-integrity-failed'
         : error instanceof Error && ['binary-size-invalid', 'archive-invalid'].includes(error.message) ? 'archive-invalid'
-          : error instanceof Error && error.message === 'installs-dir-replaced' ? 'managed-folder-replaced'
-            : 'download-or-install-failed';
+        : error instanceof Error && error.message === 'installs-dir-replaced' ? 'managed-folder-replaced'
+        : 'download-or-install-failed';
       const after = await this.status();
       return after.state === 'ready' ? after : { state: 'missing', reason };
     }

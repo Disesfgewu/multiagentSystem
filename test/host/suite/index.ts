@@ -382,6 +382,26 @@ async function setupFlow(): Promise<void> {
   assert.match(String(before.find((item) => String(item.label).includes('GitHub CLI'))?.description), /Needs setup/);
   assert.match(String(before.find((item) => String(item.label) === 'Codex CLI')?.description), /Needs setup/);
   assert.match(String(before.find((item) => String(item.label) === 'Claude Code')?.description), /Needs setup/);
+  // Cancellation test: an aborted download fails closed with download-cancelled and leaves no invalid state
+  let cancelCalled = false;
+  setSetupDepsForTests({
+    platform, arch, release, download: async () => { downloads += 1; return archive; }, codexRelease,
+    codexDownload: async () => { codexDownloads += 1; return codexAsset; }, claudeRelease,
+    claudeDownload: async (_url, _max, _progress, signal) => {
+      cancelCalled = true;
+      assert.ok(signal);
+      throw new Error('download-cancelled');
+    }
+  });
+  const cancelResult = await vscode.commands.executeCommand<{ state: string; reason?: string }>(SETUP_COMMANDS.retryClaude);
+  assert.equal(cancelCalled, true);
+  assert.deepEqual([cancelResult.state, cancelResult.reason], ['missing', 'download-cancelled']);
+  // Restore working claudeDownload so normal setup proceeds and succeeds
+  setSetupDepsForTests({
+    platform, arch, release, download: async () => { downloads += 1; return archive; }, codexRelease,
+    codexDownload: async () => { codexDownloads += 1; return codexAsset; }, claudeRelease,
+    claudeDownload: async () => { claudeDownloads += 1; return claudeBytes; }
+  });
   const result = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryGh);
   assert.deepEqual([result.state, result.version], ['ready', '2.102.0']);
   const codexResult = await vscode.commands.executeCommand<{ state: string; version?: string }>(SETUP_COMMANDS.retryCodex);

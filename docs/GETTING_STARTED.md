@@ -13,7 +13,7 @@
 
 | 畫面或情境 | 可採取的動作 |
 | --- | --- |
-| `gh`／Codex／Claude Code 顯示 Needs setup，或下載中斷、離線、雜湊驗證失敗 | 連線恢復後在 Tools Setup 使用該列 Retry。失敗的資產不加入新 terminal 的 PATH。進度提示目前不可取消；可關閉視窗並於下次啟用後重試。 |
+| `gh`／Codex／Claude Code 顯示 Needs setup，或下載中斷、離線、雜湊驗證失敗 | 連線恢復後在 Tools Setup 使用該列 Retry。失敗的資產不加入新 terminal 的 PATH。下載進度提示可直接點選取消；取消會清理未完成的暫存檔並保留既有已驗證安裝，可隨時重試。 |
 | Git 或某個 CLI 顯示 Found on PATH／Not prepared | 這只表示是否找到命令。參照工具來源矩陣確認該平台的受管支援；沒有受管來源時須自行從供應商官方管道安裝。 |
 | 顯示 private storage unavailable、migration 或 lock 問題 | 先看遮罩診斷。**Migrate Private Storage Schema** 會建立備份並遷移資料；**Recover Stale Private Storage Lock** 只在確認其他 VS Code 視窗沒有寫入時使用。**Clear Private Storage Data** 會清除擴充套件的私人紀錄與可識別備份，需明確確認；不要將它當作一般重試。 |
 | CLI 能啟動，但身份、登入或額度顯示未知 | 用供應商正式登入流程核對；目前沒有來源的欄位仍維持未知。不要把「找到程式」當成「已登入」或零額度。 |
