@@ -26,6 +26,7 @@ const CHANNELS = Object.freeze({
 });
 
 const PLATFORMS = Object.freeze(['darwin', 'win32']);
+const ENFORCED_REASON = 'attempt-blocked-with-control';
 const DEFAULT_VALID_MS = 24 * 60 * 60 * 1000;
 const GOOD = Object.freeze({ bypass: 'blocked', interaction: 'works' });
 const BAD = Object.freeze({ bypass: 'open', interaction: 'broken' });
@@ -51,7 +52,7 @@ function assessIsolation({ platform, probes = {}, now = new Date(), validForMs =
     const observed = Date.parse(probe.observedAt);
     if (!Number.isFinite(observed) || !Number.isFinite(nowMs) || observed > nowMs) return result('unknown', 'evidence-time-invalid');
     if (nowMs - observed >= valid) return result('unknown', 'evidence-stale');
-    if (probe.outcome === GOOD[spec.kind]) return result('enforced', 'attempt-blocked-with-control');
+    if (probe.outcome === GOOD[spec.kind]) return result('enforced', ENFORCED_REASON);
     if (probe.outcome === BAD[spec.kind]) return result('open', 'attempt-succeeded');
     return result('unknown', 'outcome-unrecognized');
   });
@@ -61,6 +62,32 @@ function assessIsolation({ platform, probes = {}, now = new Date(), validForMs =
     if (spec.required && entry.state !== 'enforced') reasons.push(`${entry.channel}:${entry.state === 'open' ? 'open' : entry.reason}`);
   }
   return { platform: supported ? platform : 'unsupported', supported, mode: reasons.length === 0 ? 'enforced' : 'advisory', channels, reasons };
+}
+
+/**
+ * Whether an assessment really is fully enforced, worked out again from its channels alone: `mode`, `supported`
+ * and `reasons` are never believed, because an assessment can be edited or made by hand. Every channel must appear
+ * exactly once, nothing else may appear, each must say it was blocked or working with a control, and the platform
+ * must be one this module supports.
+ * @returns {{ ok: boolean, reasons: string[] }}
+ */
+function verifyEnforced(assessment) {
+  if (!isPlain(assessment) || !PLATFORMS.includes(assessment.platform) || !Array.isArray(assessment.channels)) return { ok: false, reasons: ['assessment-invalid'] };
+  const reasons = [];
+  const seen = new Map();
+  for (const entry of assessment.channels) {
+    if (!isPlain(entry) || typeof entry.channel !== 'string' || !Object.hasOwn(CHANNELS, entry.channel)) { reasons.push('channel-unknown'); continue; }
+    seen.set(entry.channel, (seen.get(entry.channel) ?? 0) + 1);
+    if (seen.get(entry.channel) > 1) reasons.push(`${entry.channel}:duplicated`);
+  }
+  for (const channel of Object.keys(CHANNELS)) {
+    const entries = assessment.channels.filter((entry) => isPlain(entry) && entry.channel === channel);
+    if (entries.length === 0) { reasons.push(`${channel}:missing`); continue; }
+    if (entries.length > 1) continue;
+    const [entry] = entries;
+    if (entry.state !== 'enforced' || entry.reason !== ENFORCED_REASON) reasons.push(`${channel}:${entry.state === 'open' ? 'open' : 'not-enforced'}`);
+  }
+  return { ok: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
 /**
@@ -75,18 +102,18 @@ function decideLaunch({ assessment, requested } = {}) {
   if (requested === 'advisory') {
     return { allowed: true, mode: 'advisory', reasons: [], notice: 'Advice mode: GitHub writes are checked and advised, but nothing here prevents an agent from bypassing the checks.' };
   }
-  if (assessment.mode === 'enforced' && assessment.supported === true) {
+  const verified = verifyEnforced(assessment);
+  if (verified.ok) {
     return { allowed: true, mode: 'enforced', reasons: [], notice: 'Every required bypass was tried on this machine and blocked.' };
   }
-  const reasons = assessment.reasons.length > 0 ? assessment.reasons : ['not-enforced'];
-  return { allowed: false, mode: 'none', reasons, notice: 'Enforced mode was requested but is not available here, so nothing was started. Start in advice mode, or fix the listed items.' };
+  return { allowed: false, mode: 'none', reasons: verified.reasons, notice: 'Enforced mode was requested but is not available here, so nothing was started. Start in advice mode, or fix the listed items.' };
 }
 
 /** Plain lines for the screen: what was proven, what is open, what is not known. Never says "blocked" without evidence. */
 function describeAssessment(assessment) {
   if (!assessment || !Array.isArray(assessment.channels)) return ['Isolation: unknown.'];
   const where = assessment.platform === 'darwin' ? 'macOS' : assessment.platform === 'win32' ? 'Windows' : 'this platform';
-  const lines = [assessment.mode === 'enforced'
+  const lines = [verifyEnforced(assessment).ok
     ? `Isolation on ${where}: every required bypass was tried and blocked, and the CLI stayed usable.`
     : `Isolation on ${where}: not enforced. Advice mode only; nothing prevents an agent from bypassing the checks.`];
   for (const entry of assessment.channels) {
@@ -129,4 +156,4 @@ async function collectProbes(platformModule, { signal, timeoutMs = TIMEOUT_MS, n
   return { platform: platformModule.platform, probes };
 }
 
-module.exports = { CHANNELS, PLATFORMS, DEFAULT_VALID_MS, assessIsolation, decideLaunch, describeAssessment, collectProbes };
+module.exports = { CHANNELS, PLATFORMS, DEFAULT_VALID_MS, assessIsolation, verifyEnforced, decideLaunch, describeAssessment, collectProbes };

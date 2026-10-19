@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { CHANNELS, assessIsolation, decideLaunch, describeAssessment, collectProbes } = require('../../src/isolation/capabilities');
+const { CHANNELS, assessIsolation, verifyEnforced, decideLaunch, describeAssessment, collectProbes } = require('../../src/isolation/capabilities');
 
 const NOW = new Date('2026-10-19T12:00:00.000Z');
 const at = (msAgo) => new Date(NOW.getTime() - msAgo).toISOString();
@@ -78,7 +78,7 @@ test('enforced mode is refused unless fully enforced, with the reasons, and is n
   const partial = assess({ ...allGood(), 'direct-http': undefined, 'gh-cli': good('gh-cli', { outcome: 'open' }) });
   const refused = decideLaunch({ assessment: partial, requested: 'enforced' });
   assert.deepEqual([refused.allowed, refused.mode], [false, 'none']);
-  assert.deepEqual(refused.reasons, ['gh-cli:open', 'direct-http:not-probed']);
+  assert.deepEqual(refused.reasons, ['gh-cli:open', 'direct-http:not-enforced']);
   assert.match(refused.notice, /nothing was started/);
   const advice = decideLaunch({ assessment: partial, requested: 'advisory' });
   assert.deepEqual([advice.allowed, advice.mode], [true, 'advisory']);
@@ -144,4 +144,52 @@ test('aborting stops asking further channels, and a probe cannot outlive its tim
   await collectProbes({ platform: 'darwin', probe: (channel, { signal }) => { timedOutSignal = signal; return new Promise(() => {}); } }, { timeoutMs: 10 });
   assert.ok(Date.now() - started < 5_000, 'a hanging probe does not hang the collector');
   assert.equal(timedOutSignal.aborted, true, 'the probe is told to stop');
+});
+
+const enforcedFor = (assessment, requested = 'enforced') => decideLaunch({ assessment, requested });
+const forgeries = () => {
+  const real = assess(allGood());
+  const unknownAll = assess({});
+  const cloned = () => JSON.parse(JSON.stringify(real));
+  const withChannels = (change) => { const copy = cloned(); copy.channels = change(copy.channels); return copy; };
+  return {
+    'mode flipped on an all-unknown assessment': { ...unknownAll, mode: 'enforced', reasons: [] },
+    'empty channels with enforced mode': { mode: 'enforced', supported: true, platform: 'darwin', channels: [], reasons: [] },
+    'a channel missing': withChannels((channels) => channels.slice(1)),
+    'a channel duplicated': withChannels((channels) => [...channels, channels[0]]),
+    'an unknown extra channel': withChannels((channels) => [...channels, { channel: 'something-else', state: 'enforced', reason: 'attempt-blocked-with-control' }]),
+    'a state edited to enforced with another reason': withChannels((channels) => channels.map((entry) => entry.channel === 'direct-http' ? { ...assess({}).channels[4], state: 'enforced' } : entry)),
+    'a state edited to enforced with no reason': withChannels((channels) => channels.map((entry) => entry.channel === 'gh-cli' ? { channel: 'gh-cli', state: 'enforced' } : entry)),
+    'an open channel with the enforced reason': withChannels((channels) => channels.map((entry) => entry.channel === 'git-push' ? { ...entry, state: 'open' } : entry)),
+    'a channel entry that is not an object': withChannels((channels) => channels.map((entry, index) => (index === 0 ? 'enforced' : entry))),
+    'the platform edited to unsupported': { ...cloned(), platform: 'linux' },
+    'the platform missing': (() => { const copy = cloned(); delete copy.platform; return copy; })(),
+    'channels that is not a list': { ...cloned(), channels: { 'git-commit': { state: 'enforced' } } },
+    'an array in place of the assessment': []
+  };
+};
+
+test('enforcement is decided from the channels alone: no edited, hand-made or half-made assessment is ever enforced', () => {
+  assert.equal(verifyEnforced(assess(allGood())).ok, true);
+  for (const [name, forged] of Object.entries(forgeries())) {
+    const decision = enforcedFor(forged);
+    assert.deepEqual([decision.allowed, decision.mode], [false, 'none'], name);
+    assert.ok(decision.reasons.length > 0, name);
+    assert.equal(verifyEnforced(forged).ok, false, name);
+    assert.doesNotMatch(describeAssessment(forged)[0], /every required bypass was tried and blocked/, `${name}: the screen does not claim it either`);
+  }
+  const flipped = forgeries()['mode flipped on an all-unknown assessment'];
+  assert.ok(enforcedFor(flipped).reasons.includes('git-commit:not-enforced'), 'the reasons come from the channels, not from the edited field');
+  assert.ok(enforcedFor(forgeries()['a channel missing']).reasons.includes('git-commit:missing'));
+  assert.ok(enforcedFor(forgeries()['a channel duplicated']).reasons.includes('git-commit:duplicated'));
+  assert.ok(enforcedFor(forgeries()['an unknown extra channel']).reasons.includes('channel-unknown'));
+  assert.deepEqual(enforcedFor(forgeries()['the platform edited to unsupported']).reasons, ['assessment-invalid']);
+  assert.deepEqual(enforcedFor(forgeries()['an open channel with the enforced reason']).reasons, ['git-push:open']);
+});
+
+test('advice mode needs no proof and is not affected by forged fields, and a real enforced assessment survives a round trip through JSON', () => {
+  for (const forged of Object.values(forgeries()).filter((value) => Array.isArray(value.channels))) assert.equal(enforcedFor(forged, 'advisory').allowed, true);
+  const round = JSON.parse(JSON.stringify(assess(allGood())));
+  assert.equal(enforcedFor(round).allowed, true, 'a stored copy of a genuine assessment still passes');
+  assert.match(describeAssessment(round)[0], /every required bypass was tried and blocked/);
 });
