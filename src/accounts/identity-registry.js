@@ -84,7 +84,9 @@ function recordVerifiedIdentity(store, profileId, identity, now = new Date()) {
     let since = found === null ? null : (found.since ?? null);
     let switchLeases = found === null ? [] : (found.switchLeases ?? []);
     const held = heldLeaseIds(tx, profileId);
-    if (changed) {
+    // The first time a profile is verified is also a change: whatever its folder holds was written while the
+    // extension did not know which account it was signed in as, so only what follows can be trusted.
+    if (changed || found === null) {
       since = at;
       // A lease record that cannot be read, or too many running sessions to list, means none of them can be vouched for: readings stay untrusted.
       if (held === null || held.length > MAX_SWITCH_LEASES) return { ok: false, reason: 'identity-record-invalid' };
@@ -139,11 +141,9 @@ function linkedProfiles(store, profileId, existingIds) {
  * not be read is an unknown group, never an empty one: `ok: false`, and the caller starts nothing.
  */
 function resolveGroup(store, listProfiles, profileId) {
-  let listed;
-  try { listed = listProfiles(); } catch { return { ok: false, reason: 'profiles-unavailable' }; }
-  if (!listed || listed.ok !== true || !Array.isArray(listed.profiles)) return { ok: false, reason: 'profiles-unavailable' };
-  const found = linkedProfiles(store, profileId, listed.profiles.map((profile) => profile.id));
-  return found.ok ? { ok: true, ids: found.ids, current: found.current ?? [], known: found.known === true, profiles: listed.profiles } : { ok: false, reason: found.reason };
+  const snapshot = groupSnapshot(store, listProfiles, profileId);
+  if (!snapshot.ok) return { ok: false, reason: snapshot.reason };
+  return { ok: true, ids: snapshot.ids, current: snapshot.current, known: snapshot.known, profiles: snapshot.profiles, fingerprint: snapshot.fingerprint };
 }
 
 /**
@@ -161,6 +161,22 @@ function settleSwitchLeases(tx, profileId, removedIds, now) {
   if (remaining.length === link.switchLeases.length) return;
   const at = new Date(now).toISOString();
   tx.put(COLLECTION, linkId(profileId), { ...link, switchLeases: remaining, since: remaining.length === 0 ? at : link.since });
+}
+
+/**
+ * A lease that was removed (recovered) and is registered again by its still-running session belongs to a session
+ * that started before the barrier as far as anyone can tell: it is put back among the leases whose readings are not
+ * trusted until they end. Returns false when it cannot be recorded, and the caller then refuses.
+ */
+function rearmSwitchLease(tx, profileId, leaseId) {
+  const link = tx.get(COLLECTION, linkId(profileId));
+  if (link === null || link === undefined) return true;
+  if (!validLink(link)) return false;
+  const leases = link.switchLeases ?? [];
+  if (leases.includes(leaseId)) return true;
+  if (leases.length >= MAX_SWITCH_LEASES) return false;
+  tx.put(COLLECTION, linkId(profileId), { ...link, switchLeases: [...leases, leaseId] });
+  return true;
 }
 
 /**
@@ -195,6 +211,68 @@ function trustedReadings(readings, trust) {
     const at = item && (item.observedAt instanceof Date ? item.observedAt.getTime() : Date.parse(item.observedAt));
     return Number.isFinite(at) && at > trust.since;
   });
+}
+
+/**
+ * One consistent picture of a profile's group and of which profiles' readings are trusted, from whatever the
+ * caller can read: `links` (profile id -> link), `held(id)` (the lease ids a profile holds, or null when its record
+ * cannot be read) and `exists(id)` (whether the profile still exists). Used twice: by the gate before it decides,
+ * and by reserveSlot inside the transaction that takes the lease; the lease is refused when the two differ, so
+ * another window changing the group or a barrier in between cannot slip past.
+ */
+function snapshotGroup({ links, held, exists }, profileId) {
+  const own = links.get(profileId);
+  if (!own) return { known: false, ids: [], current: [], fingerprint: 'unknown' };
+  const mine = new Set(subjectsOf(own));
+  const ids = [];
+  const current = [];
+  for (const [id, link] of links) {
+    if (id === profileId || !exists(id) || link.provider !== own.provider) continue;
+    if (subjectsOf(link).some((key) => mine.has(key))) ids.push(id);
+    if (link.subject === own.subject) current.push(id);
+  }
+  ids.sort();
+  current.sort();
+  const trustOf = (id) => {
+    const link = links.get(id);
+    if (!link.since) return `${id}@-@trusted`;
+    const leases = held(id);
+    if (leases === null) return `${id}@${link.since}@unreadable`;
+    return `${id}@${link.since}@${(link.switchLeases ?? []).some((lease) => leases.includes(lease)) ? 'running' : 'settled'}`;
+  };
+  const fingerprint = JSON.stringify([ids, current, [profileId, ...current].map(trustOf)]);
+  return { known: true, ids, current, fingerprint };
+}
+
+/** snapshotGroup over the store, outside a transaction (what the gate sees before it decides). */
+function groupSnapshot(store, listProfiles, profileId) {
+  const read = readLinks(store);
+  if (!read.ok) return read;
+  let listed;
+  try { listed = listProfiles(); } catch { return { ok: false, reason: 'profiles-unavailable' }; }
+  if (!listed || listed.ok !== true || !Array.isArray(listed.profiles)) return { ok: false, reason: 'profiles-unavailable' };
+  const existing = new Set(listed.profiles.map((profile) => profile.id));
+  const held = (id) => {
+    const slots = store.get(COLLECTION, SLOTS(id));
+    if (!slots || slots.ok !== true) return null;
+    if (!slots.found) return [];
+    return Array.isArray(slots.value && slots.value.leases) ? slots.value.leases.map((lease) => lease && lease.id) : null;
+  };
+  return { ok: true, profiles: listed.profiles, ...snapshotGroup({ links: read.links, held, exists: (id) => existing.has(id) }, profileId) };
+}
+
+/** snapshotGroup inside a transaction (what is true at the moment the lease is decided). */
+function groupSnapshotInTransaction(tx, store, profileId) {
+  const links = new Map();
+  for (const item of tx.list(COLLECTION)) {
+    if (!item.id.startsWith(PREFIX)) continue;
+    if (!validLink(item.value)) return { ok: false, reason: 'identity-record-invalid' };
+    links.set(item.id.slice(PREFIX.length), item.value);
+  }
+  const checksProfiles = Array.isArray(store.names) && store.names.includes('profiles');
+  const held = (id) => heldLeaseIds(tx, id);
+  const exists = (id) => !checksProfiles || tx.get('profiles', id) !== null;
+  return { ok: true, ...snapshotGroup({ links, held, exists }, profileId) };
 }
 
 /**
@@ -297,5 +375,8 @@ module.exports = {
   readingsTrust,
   trustedReadings,
   settleSwitchLeases,
+  rearmSwitchLease,
+  groupSnapshot,
+  groupSnapshotInTransaction,
   coordinatePolicies
 };

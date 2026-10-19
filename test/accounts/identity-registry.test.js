@@ -193,7 +193,9 @@ test('a profile listing that cannot be read is an unknown group, never an empty 
   recordVerifiedIdentity(store, 'p1', identity(A), NOW);
   recordVerifiedIdentity(store, 'p2', identity(A), NOW);
   const profiles = [{ id: 'p1' }, { id: 'p2' }];
-  assert.deepEqual(resolveGroup(store, () => ({ ok: true, profiles }), 'p1'), { ok: true, ids: ['p2'], current: ['p2'], known: true, profiles });
+  const resolved = resolveGroup(store, () => ({ ok: true, profiles }), 'p1');
+  assert.deepEqual([resolved.ok, resolved.ids, resolved.current, resolved.known, resolved.profiles], [true, ['p2'], ['p2'], true, profiles]);
+  assert.equal(typeof resolved.fingerprint, 'string');
   for (const broken of [() => ({ ok: false }), () => ({ ok: true }), () => ({ ok: true, profiles: 'x' }), () => null, () => { throw new Error('storage'); }]) {
     assert.deepEqual(resolveGroup(store, broken, 'p1'), { ok: false, reason: 'profiles-unavailable' });
   }

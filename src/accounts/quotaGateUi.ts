@@ -35,7 +35,7 @@ const {
   coordinatePolicies
 } = require('./identity-registry') as {
   recordVerifiedIdentity(store: unknown, profileId: string, identity: unknown, now?: Date): { ok: boolean; recorded?: boolean; changed?: boolean; reason?: string };
-  resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; current?: string[]; known?: boolean; profiles?: any[]; reason?: string };
+  resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; current?: string[]; known?: boolean; profiles?: any[]; fingerprint?: string; reason?: string };
   assessLaunchIdentity(store: unknown, profileId: string, outcome: unknown, now?: Date): { ok: boolean; unverified?: boolean; code?: string };
   readingsTrust(store: unknown, profileId: string): { ok: boolean; trusted: boolean; since: number | null };
   trustedReadings(readings: any[], trust: { ok: boolean; trusted: boolean; since: number | null }): any[];
@@ -53,11 +53,11 @@ export type IdentityProbe = (profileId: string) => Promise<unknown>;
 let identityProbe: IdentityProbe | undefined;
 export function setIdentityProbe(probe: IdentityProbe | undefined): void { identityProbe = probe; }
 
-interface GroupRead { ok: boolean; ids: string[]; current: string[]; known: boolean; profiles: any[] }
+interface GroupRead { ok: boolean; ids: string[]; current: string[]; known: boolean; profiles: any[]; fingerprint: string }
 /** The other profiles that share this profile's verified provider account, from the shared private store. */
 function groupOf(accounts: { store: unknown; service: { list(): { ok: boolean; profiles?: Array<{ id: string }> } } }, profileId: string): GroupRead {
   const found = resolveGroup(accounts.store, () => accounts.service.list(), profileId);
-  return found.ok ? { ok: true, ids: found.ids ?? [], current: found.current ?? [], known: found.known === true, profiles: found.profiles ?? [] } : { ok: false, ids: [], current: [], known: false, profiles: [] };
+  return found.ok ? { ok: true, ids: found.ids ?? [], current: found.current ?? [], known: found.known === true, profiles: found.profiles ?? [], fingerprint: found.fingerprint ?? '' } : { ok: false, ids: [], current: [], known: false, profiles: [], fingerprint: '' };
 }
 
 interface GroupState {
@@ -65,6 +65,8 @@ interface GroupState {
   /** Why it could not be read, in the person's words. */
   message?: string;
   ids: string[];
+  /** What the group and the trust of its profiles' readings looked like when this was read; the reservation checks it again. */
+  fingerprint: string;
   policyRead: { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
   observations: any[];
 }
@@ -77,7 +79,7 @@ type AccountsOk = { store: unknown; service: { list(): { ok: boolean; profiles?:
  * all of them, and the usage readings with a valid actual one never replaced by a newer weaker one.
  */
 function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): GroupState {
-  const failed = (message: string): GroupState => ({ ok: false, message, ids: [], policyRead: { ok: false }, observations: [] });
+  const failed = (message: string): GroupState => ({ ok: false, message, ids: [], fingerprint: '', policyRead: { ok: false }, observations: [] });
   const group = groupOf(accounts as any, profileId);
   if (!group.ok) return failed('Which profiles share this account could not be established safely, so no new agent was started. Use Setup Diagnostics to check Private Storage.');
   const all = group.profiles;
@@ -98,7 +100,7 @@ function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): Gro
   // Readings carry no account: after a profile changed account, only readings that can be shown to follow the change are used.
   const ownReadings = trustedReadings(quotaObservations(profileId, ownProfile), readingsTrust(accounts.store, profileId));
   const observations = groupReadings(ownReadings, group.current, readingsById, now);
-  return { ok: true, ids: group.ids, policyRead, observations };
+  return { ok: true, ids: group.ids, fingerprint: group.fingerprint, policyRead, observations };
 }
 
 export type GateOutcome = { ok: true; release: () => Promise<void> } | { ok: false; code: string; message: string };
@@ -106,7 +108,9 @@ export type GateOutcome = { ok: true; release: () => Promise<void> } | { ok: fal
 function reservationFailure(reason?: string): GateOutcome {
   const message = reason === 'policy-changed'
     ? 'Account limits changed while this launch was being checked. Try again to review the current limits.'
-    : 'Shared running-session limits could not be read safely, so no new agent was started.';
+    : reason === 'group-changed'
+      ? 'Which profiles share this account changed while this launch was being checked, so no new agent was started. Try again.'
+      : 'Shared running-session limits could not be read safely, so no new agent was started.';
   return { ok: false, code: 'quota-gate', message };
 }
 
@@ -221,6 +225,7 @@ export async function gateAccountLaunch(accountProfileId: string, interactive: b
       store: latestAccounts.store,
       accountKey: accountProfileId,
       linkedAccountKeys: latestState.ids,
+      expectedGroupFingerprint: latestState.fingerprint,
       expectedPolicyRead: latest,
       observations: latestState.observations,
       now: new Date(),

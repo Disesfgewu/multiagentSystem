@@ -2,7 +2,7 @@
 
 const os = require('node:os');
 const { randomUUID } = require('node:crypto');
-const { coordinatePolicies, settleSwitchLeases } = require('./identity-registry');
+const { coordinatePolicies, settleSwitchLeases, rearmSwitchLease, groupSnapshotInTransaction } = require('./identity-registry');
 const { decideDispatch, validatePolicy, DEFAULT_POLICY } = require('./quota-policy');
 
 const COLLECTION = 'quotaReservations';
@@ -181,7 +181,7 @@ function recoverOrphanedSlots(store, accountKey, now = new Date(), options = {})
  * Rechecks the policy and takes a lease in the same PrivateStore transaction. Two Extension Hosts
  * therefore cannot both take the last slot. A malformed record is an error, never an empty list.
  */
-function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedPolicyRead, observations = [], now = new Date(), approval, leaseMs = LEASE_MS, leaseId = randomUUID(), ownerPid, ownerHost, isOwnerAlive } = {}) {
+function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedGroupFingerprint, expectedPolicyRead, observations = [], now = new Date(), approval, leaseMs = LEASE_MS, leaseId = randomUUID(), ownerPid, ownerHost, isOwnerAlive } = {}) {
   const nowMs = timeOf(now);
   const ctx = ownerContext({ ownerPid, ownerHost, isOwnerAlive });
   const linked = Array.isArray(linkedAccountKeys) ? linkedAccountKeys : [];
@@ -194,6 +194,13 @@ function reserveSlot({ store, accountKey, linkedAccountKeys = [], expectedPolicy
     // The policy that decides is the coordinated one over every profile of the group, read here, inside
     // the same transaction that takes the lease. What the caller showed the person (`expectedPolicyRead`)
     // must be that same coordinated reading, so a linked profile's limits changing meanwhile is caught.
+    // The group and the trust of each profile's readings are read again here, at the moment the lease is decided.
+    // If another window changed either since the caller looked, the launch is refused instead of decided on a stale picture.
+    if (expectedGroupFingerprint !== undefined) {
+      const snapshot = groupSnapshotInTransaction(tx, store, accountKey);
+      if (!snapshot.ok) return { ok: false, reason: snapshot.reason };
+      if (snapshot.fingerprint !== expectedGroupFingerprint || JSON.stringify(snapshot.ids) !== JSON.stringify([...linked].sort())) return { ok: false, reason: 'group-changed' };
+    }
     const reads = [];
     for (const key of allKeys) {
       const read = readPolicy(tx, key);
@@ -262,6 +269,8 @@ function renewSlot(store, reservation, now = new Date(), leaseMs = LEASE_MS, opt
       // again, even above the limit; that blocks new launches instead of hiding a running one.
       if (options.reacquire === true) {
         if (record.leases.length >= MAX_LEASES) return { ok: false, reason: 'reservation-capacity' };
+        // Its session may predate the profile's last change of account: its readings stay untrusted until it ends.
+        if (!rearmSwitchLease(tx, reservation.accountKey, reservation.id)) return { ok: false, reason: 'reservation-capacity' };
         writeRecord(tx, reservation.accountKey, [...record.leases, { id: reservation.id, expiresAt, ...ownerFields(ctx) }]);
         return { ok: true, renewed: true, reacquired: true };
       }
