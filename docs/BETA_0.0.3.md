@@ -4,11 +4,11 @@
 
 ## 取得與核對
 
-1. 從 [GitHub Beta Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta/release-candidate.json)。
-2. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`，且 `sourceCommit` 是 `e346ca92fad04dec7ce0cd0edc5552440474cd9d`。
-3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同：`afd5509c9152a6881d95d9901832a366a80a365c1884105b108ffce583e764df`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
+1. 從 [GitHub Beta 2 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.2/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.2/release-candidate.json)。
+2. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`、`release` 是 `v0.0.3-beta.2`，且 `sourceCommit` 是 `1de11212702903f7a9893c66b55fdfb616d3230f`。
+3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同：`123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
 
-此專案沒有設定 publisher，也沒有自動上架 Marketplace。Beta Release 的來源 commit 與目前 `main` 的文件更新可能不同；以上雜湊對應 Release 中的檔案。
+此專案沒有設定 publisher，也沒有自動上架 Marketplace。Beta 2 Release 的來源 commit 與目前 `main` 的文件更新可能不同；以上雜湊對應 Release 中的檔案。[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 保留供回溯，未包含報告頁的完整留言與檔案入口。
 
 ## 安裝與升級
 
@@ -33,6 +33,6 @@
 
 ## 發行核對結果
 
-- Release tag `v0.0.3-beta` 指向上述來源 commit，並標為 prerelease。
-- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Session observation、Account isolation 五個 GitHub Actions workflow 全部成功；封裝檢查通過，含 173 個檔案。
-- `release-candidate.json` 的來源 commit、版本、檔名、大小（621423 bytes）與 SHA-256 已比對；Release 說明列出未驗證事項。
+- Release tag `v0.0.3-beta.2` 指向上述來源 commit，並標為 prerelease。
+- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Session observation 四個 GitHub Actions workflow 全部成功；封裝檢查通過，含 173 個檔案。
+- `release-candidate.json` 的來源 commit、版本、檔名、大小（625068 bytes）與 SHA-256 已比對；Release 說明列出未驗證事項。
