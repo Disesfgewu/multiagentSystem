@@ -11,6 +11,9 @@ const PROVIDER = /^[a-z][a-z0-9-]{0,40}$/;
 // of recent history. When it is full, a new account is refused (see recordVerifiedIdentity) rather than
 // forgetting the oldest one, which could still have a running agent under a shared limit.
 const MAX_PREVIOUS = 16;
+const LEASE_ID = /^[A-Za-z0-9-]{8,64}$/;
+const MAX_SWITCH_LEASES = 64;
+const SLOTS = (profileId) => `slots-${profileId}`;
 
 // Which real provider account each profile was last verified as, kept in the PrivateStore so that every
 // Extension Host (another window, or the same one after a restart) sees the same groups. It holds the
@@ -25,7 +28,18 @@ function validLink(value) {
     typeof value.provider === 'string' && PROVIDER.test(value.provider) &&
     typeof value.subject === 'string' && SUBJECT.test(value.subject) &&
     Array.isArray(value.previous) && value.previous.length <= MAX_PREVIOUS && value.previous.every((key) => typeof key === 'string' && SUBJECT.test(key)) &&
-    typeof value.verifiedAt === 'string' && Number.isFinite(Date.parse(value.verifiedAt));
+    typeof value.verifiedAt === 'string' && Number.isFinite(Date.parse(value.verifiedAt)) &&
+    (value.since === undefined || value.since === null || (typeof value.since === 'string' && Number.isFinite(Date.parse(value.since)))) &&
+    (value.switchLeases === undefined || (Array.isArray(value.switchLeases) && value.switchLeases.length <= MAX_SWITCH_LEASES && value.switchLeases.every((id) => typeof id === 'string' && LEASE_ID.test(id))));
+}
+
+/** The ids of the leases a profile holds right now, or null when its record cannot be read. */
+function heldLeaseIds(tx, profileId) {
+  const record = tx.get(COLLECTION, SLOTS(profileId));
+  if (record === null || record === undefined) return [];
+  if (typeof record !== 'object' || !Array.isArray(record.leases)) return null;
+  const ids = record.leases.map((lease) => (lease && typeof lease.id === 'string' ? lease.id : null));
+  return ids.some((id) => id === null || !LEASE_ID.test(id)) ? null : ids;
 }
 
 /** The verified subject of an identity read, or null when it is not an actual, logged-in one. */
@@ -64,7 +78,21 @@ function recordVerifiedIdentity(store, profileId, identity, now = new Date()) {
         if (previous.length > MAX_PREVIOUS) return { ok: false, reason: 'identity-history-full' };
       }
     }
-    tx.put(COLLECTION, linkId(profileId), { schemaVersion: 1, provider: verified.provider, subject: verified.subject, previous, verifiedAt: at });
+    // Usage readings are files per profile folder and carry no account. After a profile took on another
+    // account, a reading written before that moment, or by a session that was already running at that
+    // moment, cannot be shown to describe the new account (see readingsTrust).
+    let since = found === null ? null : (found.since ?? null);
+    let switchLeases = found === null ? [] : (found.switchLeases ?? []);
+    const held = heldLeaseIds(tx, profileId);
+    if (changed) {
+      since = at;
+      // A lease record that cannot be read, or too many running sessions to list, means none of them can be vouched for: readings stay untrusted.
+      if (held === null || held.length > MAX_SWITCH_LEASES) return { ok: false, reason: 'identity-record-invalid' };
+      switchLeases = held;
+    } else if (held !== null) {
+      switchLeases = switchLeases.filter((id) => held.includes(id));
+    }
+    tx.put(COLLECTION, linkId(profileId), { schemaVersion: 1, provider: verified.provider, subject: verified.subject, previous, verifiedAt: at, since, switchLeases });
     return { ok: true, recorded: true, changed };
   });
   return outcome.ok ? outcome.value : { ok: false, reason: outcome.reason || 'store-unavailable' };
@@ -119,6 +147,39 @@ function resolveGroup(store, listProfiles, profileId) {
 }
 
 /**
+ * Whether a profile's usage readings can be taken as describing the account it is signed in as now.
+ * A profile that never changed account is trusted as before. After a change, only readings written after
+ * the change count, and none do while a session that was already running at the change is still running
+ * (it may keep reporting its old account into the same file). Anything unreadable is untrusted.
+ * @returns {{ ok: boolean, trusted: boolean, since: number | null }}
+ */
+function readingsTrust(store, profileId) {
+  const untrusted = { ok: false, trusted: false, since: null };
+  if (!store || typeof store.get !== 'function' || typeof profileId !== 'string' || !PROFILE_ID.test(profileId)) return untrusted;
+  const link = store.get(COLLECTION, linkId(profileId));
+  if (!link || link.ok !== true) return untrusted;
+  if (!link.found) return { ok: true, trusted: true, since: null };
+  if (!validLink(link.value)) return untrusted;
+  if (!link.value.since) return { ok: true, trusted: true, since: null };
+  const slots = store.get(COLLECTION, SLOTS(profileId));
+  if (!slots || slots.ok !== true) return untrusted;
+  const held = slots.found ? (Array.isArray(slots.value && slots.value.leases) ? slots.value.leases.map((lease) => lease && lease.id) : null) : [];
+  if (held === null) return untrusted;
+  const stillRunning = (link.value.switchLeases ?? []).some((id) => held.includes(id));
+  return { ok: true, trusted: !stillRunning, since: Date.parse(link.value.since) };
+}
+
+/** The readings that may be used under a trust verdict: none when untrusted, otherwise only those written after the change. */
+function trustedReadings(readings, trust) {
+  if (!trust || trust.ok !== true || trust.trusted !== true) return [];
+  if (trust.since === null) return readings;
+  return readings.filter((item) => {
+    const at = item && (item.observedAt instanceof Date ? item.observedAt.getTime() : Date.parse(item.observedAt));
+    return Number.isFinite(at) && at > trust.since;
+  });
+}
+
+/**
  * Compares what the CLI says right now with what the profile was verified as. A different actual account,
  * or a CLI that says it is signed out, stops the launch (the link is updated, so the next check and the
  * limits start from the new state). A check that could not tell (no answer, not verifiable) neither
@@ -163,7 +224,8 @@ function deduplicateQuotaObservations(observationLists, now = new Date()) {
 }
 
 /**
- * The usage readings that describe this profile's account. A profile's own readings always do. Another
+ * The usage readings that describe this profile's account. A profile's own readings do once they were
+ * filtered by trustedReadings. Another
  * profile's readings join them only when it is signed in as the same account NOW (`currentIds`); a profile
  * that was once in the group but now signs in as another account still counts toward the running limit and
  * the limits, but what it reports about its new account says nothing about this one and is left out.
@@ -227,5 +289,7 @@ module.exports = {
   assessLaunchIdentity,
   deduplicateQuotaObservations,
   groupReadings,
+  readingsTrust,
+  trustedReadings,
   coordinatePolicies
 };

@@ -30,11 +30,15 @@ const {
   resolveGroup,
   assessLaunchIdentity,
   groupReadings,
+  readingsTrust,
+  trustedReadings,
   coordinatePolicies
 } = require('./identity-registry') as {
   recordVerifiedIdentity(store: unknown, profileId: string, identity: unknown, now?: Date): { ok: boolean; recorded?: boolean; changed?: boolean; reason?: string };
   resolveGroup(store: unknown, listProfiles: () => { ok: boolean; profiles?: any[] }, profileId: string): { ok: boolean; ids?: string[]; current?: string[]; known?: boolean; profiles?: any[]; reason?: string };
   assessLaunchIdentity(store: unknown, profileId: string, outcome: unknown, now?: Date): { ok: boolean; unverified?: boolean; code?: string };
+  readingsTrust(store: unknown, profileId: string): { ok: boolean; trusted: boolean; since: number | null };
+  trustedReadings(readings: any[], trust: { ok: boolean; trusted: boolean; since: number | null }): any[];
   groupReadings(ownReadings: any[], currentIds: string[], readingsById: Map<string, any[]>, now?: Date): any[];
   coordinatePolicies(policyReads: any[]): { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
 };
@@ -89,9 +93,11 @@ function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): Gro
   for (const id of group.ids) {
     const other = all.find((candidate: any) => candidate.id === id);
     if (other) registerProfileForQuota(other);
-    if (group.current.includes(id)) readingsById.set(id, quotaObservations(id, other));
+    if (group.current.includes(id)) readingsById.set(id, trustedReadings(quotaObservations(id, other), readingsTrust(accounts.store, id)));
   }
-  const observations = groupReadings(quotaObservations(profileId, ownProfile), group.current, readingsById, now);
+  // Readings carry no account: after a profile changed account, only readings that can be shown to follow the change are used.
+  const ownReadings = trustedReadings(quotaObservations(profileId, ownProfile), readingsTrust(accounts.store, profileId));
+  const observations = groupReadings(ownReadings, group.current, readingsById, now);
   return { ok: true, ids: group.ids, policyRead, observations };
 }
 

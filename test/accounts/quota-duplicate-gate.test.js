@@ -7,7 +7,7 @@ const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
 const { savePolicy, loadPolicy, decideDispatch } = require('../../src/accounts/quota-policy');
 const { runningSlots, reserveSlot, releaseSlot } = require('../../src/accounts/quota-reservations');
-const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
+const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, readingsTrust, trustedReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
 const { observe, CONFIDENCE } = require('../../src/accounts/observation');
@@ -20,6 +20,7 @@ const duplicatesOf = (store, id, profiles) => {
 };
 // What the gate shows and the reservation rechecks: the limits coordinated over the whole group.
 const coordRead = (store, id, ids) => (ids.length > 0 ? coordinatePolicies([loadPolicy(store, id), ...ids.map((other) => loadPolicy(store, other))]) : loadPolicy(store, id));
+const recordIdentityAt = (store, id, identity, at) => assert.equal(recordVerifiedIdentity(store, id, identity, at).ok, true);
 const recordIdentity = (store, id, identity) => assert.equal(recordVerifiedIdentity(store, id, identity, NOW).ok, true);
 
 const COLLECTION_NAMES = [...COLLECTIONS, 'quotaReservations'];
@@ -398,8 +399,9 @@ const percent = (value, ageMs, confidence = 'actual') => observe('quota.window.u
 function gateDecision(store, service, id, readingsOf) {
   const group = resolveGroup(store, () => service.list(), id);
   assert.equal(group.ok, true);
-  const readings = new Map(group.current.map((other) => [other, readingsOf[other]]));
-  const observations = groupReadings(readingsOf[id], group.current, readings, NOW);
+  // Exactly what the gate does: each profile's readings are filtered by that profile's own trust first.
+  const readings = new Map(group.current.map((other) => [other, trustedReadings(readingsOf[other], readingsTrust(store, other))]));
+  const observations = groupReadings(trustedReadings(readingsOf[id], readingsTrust(store, id)), group.current, readings, NOW);
   const policy = group.ids.length > 0 ? coordinatePolicies([loadPolicy(store, id), ...group.ids.map((other) => loadPolicy(store, other))]) : loadPolicy(store, id);
   const decision = decideDispatch({ policy: policy.policy, observations, now: NOW, running: 0, approval: undefined });
   return { group, decision };
@@ -433,4 +435,54 @@ test('profiles that are the same account now do share readings, and the freshest
   const { group, decision } = gateDecision(store, service, p2.id, readingsOf);
   assert.deepEqual([group.ids, group.current], [[p1.id], [p1.id]]);
   assert.equal(decision.allowed, true, 'the same account\'s newer reading of 10% is the account\'s reading');
+});
+
+test('B to A: readings left from before a profile took on this account never lift the block, and nor do its own old ones', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  assert.equal(savePolicy(store, p2.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  // p2's account A is at 95%; p1's file still holds account B's 10%, written a second ago.
+  const readingsOf = { [p2.id]: [percent(95, 60_000)], [p1.id]: [percent(10, 40_000)] };
+  // p1 is verified as A thirty seconds ago, after that reading was written. No new reading was written since.
+  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 30_000));
+  const { group, decision } = gateDecision(store, service, p2.id, readingsOf);
+  assert.deepEqual(group.current, [p1.id], 'p1 is the same account now');
+  assert.equal(decision.allowed, false, 'the old 10% is not A\'s, so A\'s 95% still blocks');
+  // p1's own gate has no reading it can trust yet: unknown, which this policy holds back.
+  const own = gateDecision(store, service, p1.id, readingsOf);
+  assert.equal(own.decision.allowed, false, 'its own old reading does not count as a reading of the new account');
+  // A reading written after the change is trusted again.
+  const fresh = { ...readingsOf, [p1.id]: [percent(20, 1_000)] };
+  assert.equal(gateDecision(store, service, p1.id, fresh).decision.allowed, true, 'a reading after the change is its account\'s reading');
+});
+
+test('a session that was already running when the profile changed account keeps its readings untrusted until it ends', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'bob@example.com'));
+  assert.equal(savePolicy(store, p1.id, { blockAtPercent: 90, unknownQuota: 'block' }).ok, true);
+  const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: [], expectedPolicyRead: loadPolicy(store, p1.id), observations: [percent(10, 1_000)], now: NOW, leaseId: LEASE_A });
+  assert.equal(taken.decision.allowed, true);
+  recordIdentityAt(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'), new Date(NOW.getTime() - 30_000));
+  const later = { [p1.id]: [percent(20, 1_000)] };
+  assert.deepEqual(readingsTrust(store, p1.id).trusted, false, 'the old session is still running and may still be reporting B');
+  assert.equal(gateDecision(store, service, p1.id, later).decision.allowed, false, 'so even a newer reading is not used');
+  assert.equal(releaseSlot(store, taken.decision.reservation, NOW).ok, true);
+  assert.deepEqual(readingsTrust(store, p1.id).trusted, true);
+  assert.equal(gateDecision(store, service, p1.id, later).decision.allowed, true, 'once it ended, readings after the change are trusted');
+});
+
+test('a profile that never changed account keeps all its readings, old or new', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  assert.deepEqual(readingsTrust(store, p1.id), { ok: true, trusted: true, since: null });
+  assert.equal(trustedReadings([percent(10, 3_600_000)], readingsTrust(store, p1.id)).length, 1);
+  assert.deepEqual(trustedReadings([percent(10, 1)], { ok: false, trusted: false, since: null }), [], 'unreadable trust uses nothing');
+  assert.deepEqual(readingsTrust(store, 'never-verified'), { ok: true, trusted: true, since: null }, 'a profile without a link has no change to account for');
 });
