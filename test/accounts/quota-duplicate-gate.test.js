@@ -7,7 +7,7 @@ const { PrivateStore } = require('../../src/storage/private-store');
 const { AccountProfileService } = require('../../src/accounts/profile-service');
 const { savePolicy, loadPolicy, decideDispatch } = require('../../src/accounts/quota-policy');
 const { runningSlots, reserveSlot, releaseSlot, renewSlot, recoverOrphanedSlots } = require('../../src/accounts/quota-reservations');
-const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, readingsTrust, trustedReadings, coordinatePolicies } = require('../../src/accounts/identity-registry');
+const { recordVerifiedIdentity, linkedProfiles, resolveGroup, groupReadings, readingsTrust, trustedReadings, groupSnapshotInTransaction, coordinatePolicies } = require('../../src/accounts/identity-registry');
 const { describeAccounts } = require('../../src/accounts/profile-view');
 const { presentAccount } = require('../../src/overview/presentation');
 const { observe, CONFIDENCE } = require('../../src/accounts/observation');
@@ -631,4 +631,39 @@ test('the leftover link of a profile that no longer exists does not make every l
   assert.deepEqual(group.ids, []);
   const taken = reserveSlot({ store, accountKey: p1.id, linkedAccountKeys: group.ids, expectedGroupFingerprint: group.fingerprint, expectedPolicyRead: loadPolicy(store, p1.id), observations: [], now: NOW, leaseId: LEASE_A });
   assert.deepEqual([taken.ok, taken.decision.allowed], [true, true]);
+});
+
+test('a lease that cannot be put back among the untrusted ones is refused with its own reason, not a capacity message', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  const link = store.get('quotaReservations', `identity-${p1.id}`).value;
+  const ids = Array.from({ length: 64 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`);
+  assert.equal(store.put('quotaReservations', `identity-${p1.id}`, { ...link, switchLeases: ids }).ok, true);
+  const result = renewSlot(store, { accountKey: p1.id, id: LEASE_A }, NOW, 60_000, { reacquire: true });
+  assert.deepEqual([result.ok, result.reason], [false, 'switch-lease-capacity']);
+  assert.equal(runningSlots(store, p1.id, NOW).running, 0, 'nothing was registered');
+  assert.equal(store.put('quotaReservations', `identity-${p1.id}`, { schemaVersion: 1, provider: 'claude', subject: 'broken' }).ok, true);
+  assert.deepEqual([renewSlot(store, { accountKey: p1.id, id: LEASE_A }, NOW, 60_000, { reacquire: true }).reason], ['identity-record-invalid']);
+});
+
+test('a lease id that is not valid makes the held list unreadable the same way inside and outside the transaction', (t) => {
+  const { store, service } = setupEnvironment(t);
+  const p1 = service.create({ provider: 'claude', label: 'One', configDir: path.join(store.dir, 'cfg1') }).profile;
+  const p2 = service.create({ provider: 'claude', label: 'Two', configDir: path.join(store.dir, 'cfg2') }).profile;
+  recordIdentity(store, p1.id, verifiedIdentity(p1.id, 'alice@example.com'));
+  recordIdentity(store, p2.id, verifiedIdentity(p2.id, 'alice@example.com'));
+  const fingerprints = () => {
+    const outside = resolveGroup(store, () => service.list(), p1.id).fingerprint;
+    const inside = store.transact((tx) => groupSnapshotInTransaction(tx, store, p1.id).fingerprint).value;
+    return { outside, inside };
+  };
+  const clean = fingerprints();
+  assert.equal(clean.outside, clean.inside, 'a readable store gives the same picture inside and outside');
+  assert.doesNotMatch(clean.outside, /unreadable/);
+  assert.equal(store.put('quotaReservations', `slots-${p2.id}`, { schemaVersion: 1, leases: [{ id: 'not a valid id', expiresAt: NOW.toISOString() }] }).ok, true);
+  const broken = fingerprints();
+  assert.match(broken.outside, /unreadable/, 'outside: p2\'s held leases cannot be read');
+  assert.equal(broken.outside, broken.inside, 'and inside the transaction it is read the same way, not more leniently');
+  assert.equal(readingsTrust(store, p2.id).ok, false, 'its readings are not trusted while its lease record is unreadable');
 });

@@ -270,7 +270,8 @@ function renewSlot(store, reservation, now = new Date(), leaseMs = LEASE_MS, opt
       if (options.reacquire === true) {
         if (record.leases.length >= MAX_LEASES) return { ok: false, reason: 'reservation-capacity' };
         // Its session may predate the profile's last change of account: its readings stay untrusted until it ends.
-        if (!rearmSwitchLease(tx, reservation.accountKey, reservation.id)) return { ok: false, reason: 'reservation-capacity' };
+        const rearmed = rearmSwitchLease(tx, reservation.accountKey, reservation.id);
+        if (!rearmed.ok) return rearmed;
         writeRecord(tx, reservation.accountKey, [...record.leases, { id: reservation.id, expiresAt, ...ownerFields(ctx) }]);
         return { ok: true, renewed: true, reacquired: true };
       }
