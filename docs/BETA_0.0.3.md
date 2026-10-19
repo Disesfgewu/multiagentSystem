@@ -4,11 +4,19 @@
 
 ## 取得與核對
 
-1. 從 [GitHub Beta 2 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.2/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.2/release-candidate.json)。
-2. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`、`release` 是 `v0.0.3-beta.2`，且 `sourceCommit` 是 `1de11212702903f7a9893c66b55fdfb616d3230f`。
-3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同：`123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
+1. 從 [GitHub Beta 3 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.3/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.3/release-candidate.json)。
+2. 核對 JSON 的 `version` 是 `0.0.3`、`prerelease` 是 `true`、`release` 是 `v0.0.3-beta.3`，且 `sourceCommit` 是 `0464c930be5b1eda8ffac1ae62c6d0997af1f592`。
+3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完整相同：`af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
 
-此專案沒有設定 publisher，也沒有自動上架 Marketplace。Beta 2 Release 的來源 commit 與目前 `main` 的文件更新可能不同；以上雜湊對應 Release 中的檔案。[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 保留供回溯，未包含報告頁的完整留言與檔案入口。
+此專案沒有設定 publisher，也沒有自動上架 Marketplace。Beta 3 Release 的來源 commit 與目前 `main` 的文件更新可能不同；以上雜湊對應 Release 中的檔案。較舊的 [Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)（SHA-256 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`）與[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 保留供回溯；第一版未包含報告頁的完整留言與檔案入口。
+
+## 此版更新（相對 Beta 2）
+
+- Agent 總覽每列顯示該 worktree 的未提交變更，以及相對上游領先／落後幾個 commit；讀不到時顯示未知。
+- 多個 worktree 改到同一檔案時提醒：路徑完全相同標為「確定」，只差大小寫或 Unicode 寫法標為「可能」；變更檔案以整合分支為基準。
+- 同一真實帳號的多個 profile 共用額度與並行上限；本帳號讀數缺席、過期或未知時一律擋下。
+- 安全：讀取他人 repo 的唯讀 Git 呼叫不再執行 repo 設定的內容篩選器；GitHub 上的文字不能偽造報告標題、跳轉連結、檔案項目或「Pass」判定；觀測橋接暫存檔改用不可預測名稱且只能新建。
+- 修正：指示檔無法移除時不再讓 terminal 關不掉、session 狀態錯誤或錯誤訊息洩漏路徑。
 
 ## 安裝與升級
 
@@ -33,6 +41,6 @@
 
 ## 發行核對結果
 
-- Release tag `v0.0.3-beta.2` 指向上述來源 commit，並標為 prerelease。
-- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Session observation 四個 GitHub Actions workflow 全部成功；封裝檢查通過，含 173 個檔案。
-- `release-candidate.json` 的來源 commit、版本、檔名、大小（625068 bytes）與 SHA-256 已比對；Release 說明列出未驗證事項。
+- Release tag `v0.0.3-beta.3` 指向上述來源 commit，並標為 prerelease。
+- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Git worktrees 四個 GitHub Actions workflow 全部成功；封裝檢查通過，含 177 個檔案。
+- `release-candidate.json` 的來源 commit、版本、檔名、大小（642376 bytes）與 SHA-256 已比對；Release 說明列出未驗證事項。

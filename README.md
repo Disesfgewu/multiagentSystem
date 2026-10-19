@@ -2,9 +2,9 @@
 
 ## 下載 Beta 0.0.3
 
-[下載 VSIX 安裝檔（Beta 2）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.2/multiagentsystem.vsix) · [查看 GitHub Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2) · [安裝與已知限制](docs/BETA_0.0.3.md)
+[下載 VSIX 安裝檔（Beta 3）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.3/multiagentsystem.vsix) · [查看 GitHub Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3) · [安裝與已知限制](docs/BETA_0.0.3.md)
 
-下載後在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取 `multiagentsystem.vsix` 並重新載入視窗。這是供試用的 prerelease；真實 CLI、帳號與 macOS／Windows 實機流程仍待 Beta 後驗收。Beta 2 檔案的 SHA-256 是 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`，包含 Issues／PRs 報告的完整留言與變更檔案入口。
+下載後在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取 `multiagentsystem.vsix` 並重新載入視窗。這是供試用的 prerelease；真實 CLI、帳號與 macOS／Windows 實機流程仍待 Beta 後驗收。Beta 3 檔案的 SHA-256 是 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`（642376 bytes），新增 Agent 總覽的 Git 證據、多個 worktree 改到同一檔案時的提醒，以及同一帳號多個 profile 共用額度與並行上限。需要回復時，較舊的 [Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2) 與[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 仍保留。
 
 以支援 macOS 與 Windows 的 VS Code 擴充套件管理同一個 GitHub 專案中的多個 CLI coding agents。每個 agent 使用可直接操作的真實終端機；使用者可在同一畫面查看工作、程式碼、角色、帳戶及可取得的用量資訊。
 
