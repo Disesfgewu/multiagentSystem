@@ -671,3 +671,26 @@ test('choosing an overlap opens the file from the worktree it was listed under, 
   await h.controller.overlaps({});
   assert.deepEqual(h.ui.openedFiles, [], 'a link out of the worktree is not opened');
 });
+
+test('names that differ only in case are reported as a possible collision with each worktree\'s own spelling, and the person is told it is not confirmed', async (t) => {
+  const { root, a } = await twoWorktrees(t as any, { a: { 'Guide.md': 'a\n', 'shared.txt': 'a\n' }, b: { 'guide.md': 'b\n', 'shared.txt': 'b\n' } });
+  const h = harness(root);
+  const plain = await h.controller.overlaps({ interactive: false });
+  assert.equal(plain.ok, true);
+  if (!plain.ok) return;
+  const byName = Object.fromEntries(plain.overlaps.map((item) => [item.file, item]));
+  assert.deepEqual([byName['shared.txt'].exact, byName['shared.txt'].names], [true, ['shared.txt', 'shared.txt']]);
+  assert.deepEqual([byName['Guide.md'].exact, byName['Guide.md'].names, byName['Guide.md'].worktrees], [false, ['Guide.md', 'guide.md'], ['feat/a', 'feat/b']]);
+  assert.match(plain.summary, /1 file is being changed in more than one worktree: shared\.txt\./);
+  assert.match(plain.summary, /1 name differs only in letter case or Unicode form between worktrees and may be the same file on a case-insensitive or normalizing file system \(not confirmed\): Guide\.md\./);
+  assert.equal(/more than one worktree: [^.]*Guide/.test(plain.summary), false, 'never listed as certain');
+  // The picker marks it as possible and shows both spellings; opening uses the first worktree's own spelling from that worktree.
+  h.ui.overlapChoice = (items) => items.findIndex((item) => item.label.startsWith('Guide.md'));
+  await h.controller.overlaps({});
+  const shown = h.ui.shownOverlaps.find((item) => item.label.startsWith('Guide.md'));
+  assert.equal(shown?.label, 'Guide.md (possible)');
+  assert.equal(shown?.description, 'feat/a: Guide.md · feat/b: guide.md');
+  assert.equal(h.ui.openedFiles.length, 1);
+  assert.equal(path.basename(h.ui.openedFiles[0]), 'Guide.md', 'its own spelling, not the other worktree\'s');
+  assert.equal(path.relative(fsSync.realpathSync.native(a), h.ui.openedFiles[0]), 'Guide.md', 'from the worktree that spells it that way');
+});

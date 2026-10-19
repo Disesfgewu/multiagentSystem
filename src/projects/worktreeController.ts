@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const { findOverlaps, summarizeOverlaps } = require('./overlap') as {
-  findOverlaps(entries: Array<{ id: string; files: Iterable<string> }>): Array<{ file: string; worktrees: string[] }>;
-  summarizeOverlaps(overlaps: Array<{ file: string; worktrees: string[] }>, limit?: number): string;
+  findOverlaps(entries: Array<{ id: string; files: Iterable<string> }>): Array<{ file: string; worktrees: string[]; names: string[]; exact: boolean }>;
+  summarizeOverlaps(overlaps: Array<{ file: string; worktrees: string[]; exact: boolean }>, limit?: number): string;
 };
 
 // Command logic for the worktree commands. It deliberately does not import `vscode`:
@@ -60,7 +60,8 @@ export interface WorktreeUi {
   error(message: string): void;
 }
 
-export interface OverlapItem { file: string; worktrees: string[]; folders: string[] }
+/** `names[i]` is how worktree `worktrees[i]` spells the file; `exact: false` means the names only differ in case or Unicode form, so it is a possible collision, not a certain one. */
+export interface OverlapItem { file: string; worktrees: string[]; folders: string[]; names: string[]; exact: boolean }
 
 export interface WorktreeDeps {
   ui: WorktreeUi;
@@ -354,7 +355,9 @@ export class WorktreeController {
     const overlaps: OverlapItem[] = findOverlaps(read).map((item) => ({
       file: item.file,
       worktrees: item.worktrees.map((id) => (byId.get(id) as { label: string }).label),
-      folders: item.worktrees.map((id) => (byId.get(id) as { folder: string }).folder)
+      folders: item.worktrees.map((id) => (byId.get(id) as { folder: string }).folder),
+      names: item.names,
+      exact: item.exact
     }));
     const base = summarizeOverlaps(overlaps);
     const summary = unread.length > 0 ? `${base} Could not read the changes of ${unread.length} worktree${unread.length === 1 ? '' : 's'} (${unread.join(', ')}), so their overlaps are unknown.` : base;
@@ -369,14 +372,20 @@ export class WorktreeController {
       return result;
     }
     const picked = await this.deps.ui.pickOverlap(
-      overlaps.map((item) => ({ label: item.file, description: item.worktrees.join(' · '), detail: summary, overlap: item })),
+      overlaps.map((item) => ({
+        label: item.exact ? item.file : `${item.file} (possible)`,
+        description: item.exact ? item.worktrees.join(' · ') : item.worktrees.map((name, index) => `${name}: ${item.names[index]}`).join(' · '),
+        detail: summary,
+        overlap: item
+      })),
       'Files changed in more than one worktree: choose one to open it'
     );
     if (picked) {
       const folder = picked.overlap.folders[0];
       // Opened only if the file really lies inside its worktree: compared by real path, so a link in the
       // worktree that points elsewhere (or a junction) is never followed out of it.
-      const real = realPathOf(path.resolve(folder, picked.overlap.file));
+      // Each worktree's own spelling is opened from that worktree, never another worktree's spelling from this one.
+      const real = realPathOf(path.resolve(folder, picked.overlap.names[0]));
       const realFolder = realPathOf(folder);
       if (real && realFolder && real.startsWith(realFolder + path.sep)) await this.deps.ui.openFile(real);
     }
