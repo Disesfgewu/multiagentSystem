@@ -260,3 +260,251 @@ test('a linked session-observations folder is never listed, swept or deleted fro
     fs.rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test('runtime binds a sanitized Codex notification record in CODEX_HOME and derives working and waiting states while usage stays unknown', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-working-'));
+  try {
+    const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 1000 });
+    const prepared = runtime.prepare({
+      sessionId: 'codex-1', provider: 'codex', accountProfileId: 'account-1',
+      env: { CODEX_HOME: root }
+    });
+    assert.equal(prepared.active, true);
+    assert.equal(prepared.env.MULTIAGENT_CODEX_SESSION_ID, 'codex-1');
+
+    const file = observationPath(root, 'codex-1');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    // Active with empty activeFlags -> working
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, eventId: 'event-1', observedAt: NOW, sequence: 1,
+      threadId: 'thr_1',
+      notification: {
+        method: 'thread/status/changed',
+        params: { threadId: 'thr_1', status: { type: 'active', activeFlags: [] } }
+      }
+    }));
+    const [workingSession] = runtime.enrich([{ id: 'codex-1', accountProfileId: 'account-1' }], NOW);
+    assert.equal(workingSession.providerObservation.status.value, 'working');
+    assert.equal(workingSession.providerObservation.status.confidence, 'actual');
+    assert.equal(workingSession.providerObservation.status.source, 'codex-app-server-v2');
+    assert.equal(workingSession.providerObservation.providerSession, 'bound');
+    assert.equal(workingSession.providerObservation.model.confidence, 'unknown');
+    assert.equal(workingSession.providerObservation.usage.every(u => u.confidence === 'unknown'), true);
+
+    // Active with waitingOnApproval -> waiting
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, eventId: 'event-2', observedAt: NOW, sequence: 2,
+      threadId: 'thr_1',
+      notification: {
+        method: 'thread/status/changed',
+        params: { threadId: 'thr_1', status: { type: 'active', activeFlags: ['waitingOnApproval'] } }
+      }
+    }));
+    const waitingSnapshot = runtime.snapshot('codex-1', NOW);
+    assert.equal(waitingSnapshot.status.value, 'waiting');
+    assert.equal(waitingSnapshot.status.confidence, 'actual');
+
+    // Active with waitingOnUserInput -> waiting
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, eventId: 'event-3', observedAt: NOW, sequence: 3,
+      threadId: 'thr_1',
+      notification: {
+        method: 'thread/status/changed',
+        params: { threadId: 'thr_1', status: { type: 'active', activeFlags: ['waitingOnUserInput'] } }
+      }
+    }));
+    assert.equal(runtime.snapshot('codex-1', NOW).status.value, 'waiting');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime ingests direct Codex app-server notification, updates state, and notifies listeners', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-direct-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 1000 });
+  t.after(() => runtime.dispose());
+
+  runtime.prepare({
+    sessionId: 'codex-s1', provider: 'codex', accountProfileId: 'account-1',
+    env: { CODEX_HOME: root }
+  });
+
+  const events = [];
+  t.after(runtime.onDidChange((id) => events.push(id)).dispose);
+
+  const res = runtime.ingestCodexNotification('codex-s1', {
+    method: 'thread/status/changed',
+    params: { threadId: 'thr_alpha', status: { type: 'active', activeFlags: [] } }
+  });
+  assert.equal(res.ok, true);
+  assert.equal(events.length, 1);
+  assert.equal(events[0], 'codex-s1');
+
+  const snapshot = runtime.snapshot('codex-s1', NOW);
+  assert.equal(snapshot.status.value, 'working');
+  assert.equal(snapshot.status.confidence, 'actual');
+  assert.equal(snapshot.providerSession, 'bound');
+});
+
+test('Codex thread binding mismatch retracts session evidence and makes state unknown', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-mismatch-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 1000 });
+  t.after(() => runtime.dispose());
+
+  runtime.prepare({
+    sessionId: 'codex-s1', provider: 'codex', accountProfileId: 'account-1',
+    env: { CODEX_HOME: root }, threadId: 'thr_fixed'
+  });
+
+  const resWrong = runtime.ingestCodexNotification('codex-s1', {
+    method: 'thread/status/changed',
+    params: { threadId: 'thr_different', status: { type: 'active', activeFlags: [] } }
+  });
+  assert.equal(resWrong.ok, false);
+  assert.equal(resWrong.reason, 'thread-binding-mismatch');
+
+  const snapshot = runtime.snapshot('codex-s1', NOW);
+  assert.equal(snapshot.status.confidence, 'unknown');
+  assert.equal(snapshot.status.reason, 'thread-binding-mismatch');
+  assert.equal(snapshot.providerSession, 'mismatch');
+
+  // Even if the original thread is sent afterwards, it is refused and remains retracted
+  const resOriginal = runtime.ingestCodexNotification('codex-s1', {
+    method: 'thread/status/changed',
+    params: { threadId: 'thr_fixed', status: { type: 'active', activeFlags: [] } }
+  });
+  assert.equal(resOriginal.ok, false);
+  assert.equal(runtime.snapshot('codex-s1', NOW).status.confidence, 'unknown');
+});
+
+test('Codex non-observable status types (idle, systemError) fail closed without changing state to working or completed', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-idle-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 1000 });
+  t.after(() => runtime.dispose());
+
+  runtime.prepare({
+    sessionId: 'codex-s1', provider: 'codex', accountProfileId: 'account-1',
+    env: { CODEX_HOME: root }, threadId: 'thr_1'
+  });
+
+  // idle status type
+  const idleRes = runtime.ingestCodexNotification('codex-s1', {
+    method: 'thread/status/changed',
+    params: { threadId: 'thr_1', status: { type: 'idle' } }
+  });
+  assert.equal(idleRes.ok, false);
+  assert.equal(idleRes.reason, 'codex-state-unknown');
+  assert.equal(runtime.snapshot('codex-s1', NOW).status.confidence, 'unknown');
+
+  // systemError status type
+  const errRes = runtime.ingestCodexNotification('codex-s1', {
+    method: 'thread/status/changed',
+    params: { threadId: 'thr_1', status: { type: 'systemError' } }
+  });
+  assert.equal(errRes.ok, false);
+  assert.equal(errRes.reason, 'codex-state-unknown');
+  assert.equal(runtime.snapshot('codex-s1', NOW).status.confidence, 'unknown');
+});
+
+test('Codex observation ages out to stale after ttlMs and poll notifies once', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-expire-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let clock = Date.parse(NOW);
+  const runtime = new SessionObservationRuntime({ ttlMs: 10_000, nowMs: () => clock, now: () => new Date(clock).toISOString() });
+  t.after(() => runtime.dispose());
+
+  runtime.prepare({
+    sessionId: 'codex-s1', provider: 'codex', accountProfileId: 'account-1',
+    env: { CODEX_HOME: root }, threadId: 'thr_1'
+  });
+
+  const file = observationPath(root, 'codex-s1');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schemaVersion: 1, eventId: 'event-1', observedAt: new Date(clock).toISOString(), sequence: 1,
+    threadId: 'thr_1',
+    notification: {
+      method: 'thread/status/changed',
+      params: { threadId: 'thr_1', status: { type: 'active', activeFlags: [] } }
+    }
+  }));
+
+  const events = [];
+  t.after(runtime.onDidChange((id) => events.push(id)).dispose);
+  runtime.poll();
+  assert.equal(events.length, 1);
+  assert.equal(runtime.snapshot('codex-s1', new Date(clock).toISOString()).status.value, 'working');
+
+  // Advance clock within TTL
+  clock += 9_000;
+  runtime.poll();
+  assert.equal(events.length, 1);
+
+  // Advance clock beyond TTL
+  clock += 2_000;
+  runtime.poll();
+  assert.equal(events.length, 2, 'expired poll notification fired');
+  const aged = runtime.snapshot('codex-s1', new Date(clock).toISOString());
+  assert.equal(aged.status.confidence, 'unknown');
+  assert.equal(aged.status.reason, 'stale');
+});
+
+test('Codex unassigned account profile or session without thread/notification stays unbound and unknown', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-runtime-unbound-'));
+  try {
+    const runtime = new SessionObservationRuntime({ now: () => NOW });
+    // unassigned account
+    const unassigned = runtime.prepare({
+      sessionId: 'codex-u', provider: 'codex', accountProfileId: 'unassigned', env: { CODEX_HOME: root }
+    });
+    assert.equal(unassigned.active, false);
+    assert.equal(runtime.snapshot('codex-u'), null);
+
+    // assigned account but no thread/notification yet
+    const assigned = runtime.prepare({
+      sessionId: 'codex-a', provider: 'codex', accountProfileId: 'acct-1', env: { CODEX_HOME: root }
+    });
+    assert.equal(assigned.active, true);
+    const snap = runtime.snapshot('codex-a', NOW);
+    assert.equal(snap.providerSession, 'unbound');
+    assert.equal(snap.status.confidence, 'unknown');
+    assert.equal(snap.status.reason, 'not-observed');
+    assert.equal(snap.model.confidence, 'unknown');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('two Codex sessions with different accounts and threads remain strictly isolated', (t) => {
+  const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-isolated-a-'));
+  const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-isolated-b-'));
+  t.after(() => {
+    fs.rmSync(rootA, { recursive: true, force: true });
+    fs.rmSync(rootB, { recursive: true, force: true });
+  });
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 10_000 });
+  t.after(() => runtime.dispose());
+
+  runtime.prepare({ sessionId: 'codex-1', provider: 'codex', accountProfileId: 'account-1', env: { CODEX_HOME: rootA }, threadId: 'thr_1' });
+  runtime.prepare({ sessionId: 'codex-2', provider: 'codex', accountProfileId: 'account-2', env: { CODEX_HOME: rootB }, threadId: 'thr_2' });
+
+  runtime.ingestCodexNotification('codex-1', {
+    method: 'thread/status/changed', params: { threadId: 'thr_1', status: { type: 'active', activeFlags: [] } }
+  });
+  runtime.ingestCodexNotification('codex-2', {
+    method: 'thread/status/changed', params: { threadId: 'thr_2', status: { type: 'active', activeFlags: ['waitingOnApproval'] } }
+  });
+
+  const snap1 = runtime.snapshot('codex-1', NOW);
+  const snap2 = runtime.snapshot('codex-2', NOW);
+
+  assert.equal(snap1.status.value, 'working');
+  assert.equal(snap1.accountProfileId, 'account-1');
+  assert.equal(snap2.status.value, 'waiting');
+  assert.equal(snap2.accountProfileId, 'account-2');
+});
+

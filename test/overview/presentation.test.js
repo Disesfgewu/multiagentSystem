@@ -308,3 +308,57 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
   assert.equal(costFor(3), 'Session cost: $3.00 estimated');
   for (const bad of [-1, Number.NaN, Infinity, 1e21, 1e7]) assert.match(costFor(bad), /unknown/i);
 });
+
+test('Codex session presentation renders working and waiting states in description and honest tooltip lines', () => {
+  const codexWorking = {
+    status: { confidence: 'actual', value: 'working' },
+    model: { confidence: 'unknown', value: null },
+    providerSession: 'bound',
+    usage: []
+  };
+  const workingView = presentAgent(row({ state: 'cli-observed' }), {
+    name: 'Codex Agent', providerLabel: 'Codex CLI', providerObservation: codexWorking
+  });
+  assert.match(workingView.description, /· Codex CLI · Main · working/);
+  const workingTooltip = workingView.tooltip.join('\n');
+  assert.match(workingTooltip, /Provider state: working/);
+  assert.match(workingTooltip, /Actual model: unknown/);
+  assert.match(workingTooltip, /Session cost: unknown/);
+  assert.match(workingTooltip, /Provider session: matched to the CLI's own session id/);
+
+  const codexWaiting = {
+    status: { confidence: 'actual', value: 'waiting' },
+    providerSession: 'bound',
+    usage: []
+  };
+  const waitingView = presentAgent(row({ state: 'cli-observed' }), {
+    name: 'Codex Agent', providerLabel: 'Codex CLI', providerObservation: codexWaiting
+  });
+  assert.match(waitingView.description, /· Codex CLI · Main · waiting/);
+  assert.match(waitingView.tooltip.join('\n'), /Provider state: waiting/);
+
+  // Unknown state falls back to lifecycle description
+  const codexUnknown = {
+    status: { confidence: 'unknown', value: null },
+    providerSession: 'unbound',
+    usage: []
+  };
+  const unknownView = presentAgent(row({ state: 'terminal-open' }), {
+    name: 'Codex Agent', providerLabel: 'Codex CLI', providerObservation: codexUnknown
+  });
+  assert.match(unknownView.description, /· Codex CLI · Main · terminal open, CLI not started/);
+  assert.match(unknownView.tooltip.join('\n'), /Provider state: unknown/);
+  assert.match(unknownView.tooltip.join('\n'), /Provider session: not confirmed/);
+
+  // Mismatch provider session
+  const codexMismatch = {
+    status: { confidence: 'unknown', value: null },
+    providerSession: 'mismatch',
+    usage: []
+  };
+  const mismatchView = presentAgent(row({ state: 'terminal-open' }), {
+    name: 'Codex Agent', providerLabel: 'Codex CLI', providerObservation: codexMismatch
+  });
+  assert.match(mismatchView.tooltip.join('\n'), /Provider session: the CLI session changed, so its evidence is turned off for this session/);
+});
+

@@ -3,12 +3,18 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { SessionObservationCore, DEFAULT_TTL_MS } = require('./session');
-const { createClaudeSessionEvidenceAdapter } = require('./claude');
+const { createSessionEvidenceAdapter } = require('./factory');
+const { CODEX_APP_SERVER_SCHEMA_VERSION } = require('./codex');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
+const CODEX_SESSION_ID_ENV = 'MULTIAGENT_CODEX_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
-const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine']);
+const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine', 'providerSessionId', 'notification', 'threadId']);
+const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 const STATUS_KEYS = new Set(['model', 'cost']);
+const NOTIFICATION_KEYS = new Set(['method', 'params']);
+const PARAM_KEYS = new Set(['threadId', 'status']);
+const STATUS_METHOD = 'thread/status/changed';
 // A record holds an id, a time and two short fields: a few hundred bytes. Anything larger is not one.
 const MAX_RECORD_BYTES = 8 * 1024;
 const POLL_MS = 2000;
@@ -52,8 +58,29 @@ function readRecord(file) {
     const parsed = JSON.parse(buffer.subarray(0, read).toString('utf8'));
     if (!isPlain(parsed) || Object.keys(parsed).some(key => !RECORD_KEYS.has(key)) || parsed.schemaVersion !== 1 ||
         typeof parsed.eventId !== 'string' || typeof parsed.observedAt !== 'string' ||
-        !Number.isSafeInteger(parsed.sequence) || !isPlain(parsed.statusLine) ||
-        Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key))) return null;
+        !Number.isSafeInteger(parsed.sequence)) return null;
+
+    const hasStatusLine = parsed.statusLine !== undefined;
+    const hasNotification = parsed.notification !== undefined;
+    if ((hasStatusLine && hasNotification) || (!hasStatusLine && !hasNotification)) return null;
+
+    if (hasStatusLine) {
+      if (!isPlain(parsed.statusLine) || Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key))) return null;
+      if (parsed.threadId !== undefined) return null;
+      if (parsed.providerSessionId !== undefined && !(typeof parsed.providerSessionId === 'string' && PROVIDER_SESSION_ID.test(parsed.providerSessionId))) return null;
+    }
+
+    if (hasNotification) {
+      if (!isPlain(parsed.notification) || Object.keys(parsed.notification).some(key => !NOTIFICATION_KEYS.has(key)) ||
+          parsed.notification.method !== STATUS_METHOD || !isPlain(parsed.notification.params) ||
+          Object.keys(parsed.notification.params).some(key => !PARAM_KEYS.has(key))) return null;
+      const { params } = parsed.notification;
+      if (typeof params.threadId !== 'string' || !PROVIDER_SESSION_ID.test(params.threadId) ||
+          !isPlain(params.status)) return null;
+      if (parsed.threadId !== undefined && (typeof parsed.threadId !== 'string' || !PROVIDER_SESSION_ID.test(parsed.threadId) || parsed.threadId !== params.threadId)) return null;
+      if (parsed.providerSessionId !== undefined && (typeof parsed.providerSessionId !== 'string' || !PROVIDER_SESSION_ID.test(parsed.providerSessionId) || parsed.providerSessionId !== params.threadId)) return null;
+    }
+
     return parsed;
   } catch {
     return null;
@@ -114,6 +141,7 @@ class SessionObservationRuntime {
     this.ttlMs = Number.isFinite(options.ttlMs) && options.ttlMs > 0 ? options.ttlMs : DEFAULT_TTL_MS;
     this.pollMs = Number.isFinite(options.pollMs) && options.pollMs > 0 ? options.pollMs : POLL_MS;
     this.nowMs = typeof options.nowMs === 'function' ? options.nowMs : Date.now;
+    this.now = typeof options.now === 'function' ? options.now : () => new Date().toISOString();
     this.listeners = new Set();
     this.timer = null;
   }
@@ -141,6 +169,49 @@ class SessionObservationRuntime {
     }
   }
 
+  /**
+   * Ties a record to the managed session by the provider's own session id (or thread id for Codex).
+   * The first record that carries one fixes the mapping. After that, a record with another id (the
+   * same terminal now runs a different session, or two instances write to one file) or without one
+   * withdraws all evidence for this managed session for good: values may never be attributed to the wrong session.
+   * Records that never carried an id stay "unbound": routed by the managed terminal's environment only.
+   */
+  #judgeProvider(sessionId, binding, record) {
+    if (binding.providerSession === 'mismatch') return;
+    if (binding.provider === 'claude') {
+      const id = record.providerSessionId;
+      if (binding.providerSessionId === null) {
+        if (id !== undefined) { binding.providerSessionId = id; binding.providerSession = 'bound'; }
+        return;
+      }
+      if (id !== binding.providerSessionId) {
+        binding.providerSession = 'mismatch';
+        this.core.retract(sessionId, id === undefined ? 'provider-session-missing' : 'provider-session-changed');
+      }
+    } else if (binding.provider === 'codex') {
+      const incomingThreadId = record.threadId ?? record.notification?.params?.threadId;
+      if (binding.threadId === null) {
+        if (incomingThreadId !== undefined) {
+          binding.threadId = incomingThreadId;
+          binding.providerSessionId = incomingThreadId;
+          binding.providerSession = 'bound';
+          binding.adapter = createSessionEvidenceAdapter('codex', {
+            core: this.core,
+            sessionId,
+            accountProfileId: binding.accountProfileId,
+            threadId: incomingThreadId,
+            schemaVersion: CODEX_APP_SERVER_SCHEMA_VERSION
+          });
+        }
+        return;
+      }
+      if (incomingThreadId !== binding.threadId) {
+        binding.providerSession = 'mismatch';
+        this.core.retract(sessionId, incomingThreadId === undefined ? 'thread-binding-missing' : 'thread-binding-mismatch');
+      }
+    }
+  }
+
   #notify(sessionId) {
     for (const listener of [...this.listeners]) {
       try { listener(sessionId); } catch { /* one listener's failure never stops another */ }
@@ -155,6 +226,7 @@ class SessionObservationRuntime {
       if (signature !== binding.signature) {
         binding.signature = signature;
         const record = signature === 'absent' ? null : readRecord(binding.file);
+        if (record) this.#judgeProvider(sessionId, binding, record);
         const observed = record ? Date.parse(record.observedAt) : Number.NaN;
         binding.expiresAtMs = Number.isFinite(observed) ? observed + this.ttlMs : null;
         binding.expiryNotified = false;
@@ -172,23 +244,106 @@ class SessionObservationRuntime {
     this.#syncTimer();
   }
 
-  prepare({ sessionId, provider, accountProfileId, env }) {
-    if (provider !== 'claude' || !env || typeof env.CLAUDE_CONFIG_DIR !== 'string' || accountProfileId === 'unassigned') {
+  prepare({ sessionId, provider, accountProfileId, env, threadId }) {
+    if ((provider !== 'claude' && provider !== 'codex') || !env || accountProfileId === 'unassigned') {
       return { env, active: false };
     }
-    const file = observationPath(env.CLAUDE_CONFIG_DIR, sessionId);
+    const configDir = provider === 'claude' ? env.CLAUDE_CONFIG_DIR : env.CODEX_HOME;
+    if (typeof configDir !== 'string') {
+      return { env, active: false };
+    }
+    const envVar = provider === 'claude' ? SESSION_ID_ENV : CODEX_SESSION_ID_ENV;
+    const file = observationPath(configDir, sessionId);
     removeRecord(file);
     sweepStale(path.dirname(file), this.nowMs(), new Set([...this.bindings.values()].map((binding) => path.basename(binding.file))));
     this.core.register({ sessionId, provider, accountProfileId });
+
+    let adapter = null;
+    let boundThreadId = null;
+    let providerSession = 'unbound';
+    let providerSessionId = null;
+
+    if (provider === 'claude') {
+      adapter = createSessionEvidenceAdapter('claude', { core: this.core, sessionId, accountProfileId });
+    } else if (provider === 'codex') {
+      if (typeof threadId === 'string' && PROVIDER_SESSION_ID.test(threadId)) {
+        boundThreadId = threadId;
+        providerSessionId = threadId;
+        providerSession = 'bound';
+        adapter = createSessionEvidenceAdapter('codex', {
+          core: this.core,
+          sessionId,
+          accountProfileId,
+          threadId,
+          schemaVersion: CODEX_APP_SERVER_SCHEMA_VERSION
+        });
+      }
+    }
+
     this.bindings.set(sessionId, {
+      provider,
+      accountProfileId,
       file,
-      adapter: createClaudeSessionEvidenceAdapter({ core: this.core, sessionId, accountProfileId }),
+      adapter,
       signature: fileSignature(file),
+      providerSessionId,
+      providerSession,
+      threadId: boundThreadId,
       expiresAtMs: null,
       expiryNotified: false
     });
     this.#syncTimer();
-    return { env: { ...env, [SESSION_ID_ENV]: sessionId }, active: true };
+    return { env: { ...env, [envVar]: sessionId }, active: true };
+  }
+
+  ingestCodexNotification(sessionId, notification, meta = {}) {
+    const binding = this.bindings.get(sessionId);
+    if (!binding || binding.provider !== 'codex') {
+      return { ok: false, reason: 'session-unknown' };
+    }
+    if (!notification || typeof notification !== 'object' || notification.method !== STATUS_METHOD ||
+        !notification.params || typeof notification.params !== 'object' || typeof notification.params.threadId !== 'string') {
+      return { ok: false, reason: 'codex-evidence-invalid' };
+    }
+    const incomingThreadId = notification.params.threadId;
+    if (!PROVIDER_SESSION_ID.test(incomingThreadId)) {
+      return { ok: false, reason: 'codex-evidence-invalid' };
+    }
+    if (binding.threadId === null) {
+      binding.threadId = incomingThreadId;
+      binding.providerSessionId = incomingThreadId;
+      binding.providerSession = 'bound';
+      binding.adapter = createSessionEvidenceAdapter('codex', {
+        core: this.core,
+        sessionId,
+        accountProfileId: binding.accountProfileId,
+        threadId: incomingThreadId,
+        schemaVersion: CODEX_APP_SERVER_SCHEMA_VERSION
+      });
+    } else if (incomingThreadId !== binding.threadId) {
+      binding.providerSession = 'mismatch';
+      this.core.retract(sessionId, 'thread-binding-mismatch');
+      this.#notify(sessionId);
+      return { ok: false, reason: 'thread-binding-mismatch' };
+    }
+    const observedAt = meta.observedAt ?? (typeof this.now === 'function' ? this.now() : new Date().toISOString());
+    binding.lastSeq = (binding.lastSeq ?? 0) + 1;
+    const sequence = meta.sequence ?? binding.lastSeq;
+    const eventId = meta.eventId ?? `codex-event-${Date.parse(observedAt)}-${sequence}`;
+
+    const acceptResult = binding.adapter.accept({
+      eventId,
+      observedAt,
+      sequence,
+      notification
+    });
+    if (acceptResult.ok) {
+      const observedMs = Date.parse(observedAt);
+      binding.expiresAtMs = Number.isFinite(observedMs) ? observedMs + this.ttlMs : null;
+      binding.expiryNotified = false;
+      this.#notify(sessionId);
+    }
+    return acceptResult;
   }
 
   snapshot(sessionId, at = new Date().toISOString()) {
@@ -196,10 +351,19 @@ class SessionObservationRuntime {
     if (!binding) return null;
     const record = readRecord(binding.file);
     if (record) {
-      const { eventId, observedAt, sequence, statusLine } = record;
-      binding.adapter.accept({ eventId, observedAt, sequence, statusLine });
+      this.#judgeProvider(sessionId, binding, record);
+      if (binding.providerSession !== 'mismatch' && binding.adapter) {
+        if (binding.provider === 'claude' && record.statusLine) {
+          const { eventId, observedAt, sequence, statusLine } = record;
+          binding.adapter.accept({ eventId, observedAt, sequence, statusLine });
+        } else if (binding.provider === 'codex' && record.notification) {
+          const { eventId, observedAt, sequence, notification } = record;
+          binding.adapter.accept({ eventId, observedAt, sequence, notification });
+        }
+      }
     }
-    return this.core.snapshot(sessionId, at);
+    const snapshot = this.core.snapshot(sessionId, at);
+    return snapshot ? { ...snapshot, providerSession: binding.providerSession } : snapshot;
   }
 
   enrich(sessions, at = new Date().toISOString()) {
@@ -216,4 +380,4 @@ class SessionObservationRuntime {
   }
 }
 
-module.exports = { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS };
+module.exports = { SessionObservationRuntime, SESSION_ID_ENV, CODEX_SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS };

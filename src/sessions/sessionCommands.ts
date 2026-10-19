@@ -16,7 +16,7 @@ import { prepareInstructionSnapshot, isSnapshotStale, cleanupSessionPlan } from 
 const { executableAvailable } = require('../providers/executable') as { executableAvailable(name: string): boolean };
 const { SessionObservationRuntime } = require('../observations/runtime') as {
   SessionObservationRuntime: new () => {
-    prepare(input: { sessionId: string; provider: string; accountProfileId: string; env?: Record<string, string | null> }): { env?: Record<string, string | null>; active: boolean };
+    prepare(input: { sessionId: string; provider: string; accountProfileId: string; env?: Record<string, string | null>; threadId?: string }): { env?: Record<string, string | null>; active: boolean };
     enrich(sessions: SessionView[]): SessionView[];
     release(sessionId: string): void;
     onDidChange(listener: (sessionId: string) => void): { dispose(): void };

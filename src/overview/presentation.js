@@ -43,6 +43,12 @@ function formatEstimatedCost(value) {
   return `$${whole}.${cents} estimated`;
 }
 
+const PROVIDER_SESSION_TEXT = Object.freeze({
+  bound: 'matched to the CLI\'s own session id',
+  unbound: 'not confirmed (evidence is routed by the managed terminal only)',
+  mismatch: 'the CLI session changed, so its evidence is turned off for this session'
+});
+
 function presentAgent(row, session) {
   const name = shown(session?.name, 'Session');
   const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
@@ -75,6 +81,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
+      ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
       `Provider state: ${providerStateText}`,

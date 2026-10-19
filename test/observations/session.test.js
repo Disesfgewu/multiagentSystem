@@ -160,3 +160,22 @@ test('event objects are copied into observations and never retained by reference
   assert.equal(value.status.value, 'working');
   assert.equal(byField(value)['usage.output_tokens'].value, 3);
 });
+
+test('retract withdraws everything for a session, refuses later evidence, and reads as unknown with the reason', () => {
+  const NOW = '2026-01-01T00:00:00.000Z';
+  const core = new SessionObservationCore({ now: () => NOW, ttlMs: 60_000 });
+  core.register({ sessionId: 's1', provider: 'codex', accountProfileId: 'a1' });
+  const event = (sequence) => ({
+    schemaVersion: 1, eventId: `e${sequence}`, sessionId: 's1', provider: 'codex',
+    accountProfileId: 'a1', source: 'codex-app-server-v2', observedAt: NOW,
+    sequence, state: 'working', usage: []
+  });
+  assert.equal(core.ingest(event(1)).ok, true);
+  assert.equal(core.retract('s1', 'thread-binding-mismatch').ok, true);
+  const snapshot = core.snapshot('s1', NOW);
+  assert.deepEqual([snapshot.status.confidence, snapshot.model.confidence, snapshot.status.reason], ['unknown', 'unknown', 'thread-binding-mismatch']);
+  assert.deepEqual(core.ingest(event(2)), { ok: false, reason: 'thread-binding-mismatch' });
+  assert.equal(core.retract('nobody', 'thread-binding-mismatch').ok, false);
+  assert.throws(() => core.retract('s1', 'Not A Code'), TypeError);
+});
+
