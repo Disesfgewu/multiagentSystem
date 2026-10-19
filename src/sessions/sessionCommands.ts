@@ -132,8 +132,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   // One quota-dispatch reservation per account-bound session, including those with no limits, released
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
   // either has no account assigned, is still awaiting handoff, or was already released.
-  const reservations = new Map<string, () => void>();
-  const releaseReservation = (id: string): void => { reservations.get(id)?.(); reservations.delete(id); };
+  const reservations = new Map<string, () => Promise<void>>();
+  const releaseReservation = async (id: string): Promise<void> => {
+    const release = reservations.get(id);
+    reservations.delete(id);
+    await release?.();
+  };
   const manager = new SessionManager<vscode.Terminal>({
     store: new PrivateSessionSnapshot({
       workspaceKey: () => sessionWorkspaceKey((vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.toString()), vscode.workspace.workspaceFile?.toString()),
@@ -225,7 +229,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const interactive = input.interactive !== false;
     // Set once a quota-gate reservation is taken; released on every exit path below except the one
     // success path, which instead hands it off to this new session's own lifetime.
-    let release: (() => void) | undefined;
+    let release: (() => Promise<void>) | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -304,7 +308,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
         }
         // No role group means nothing to protect, so the agent still starts, but live administrator
@@ -329,7 +333,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           codexHome
         });
         if (!prep.ok) {
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
         }
         if (interactive && prep.digest) {
@@ -341,7 +345,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           );
           if (!answer) {
             cleanupSessionPlan(prep.plan);
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return { ok: false, code: 'cancelled', message: 'Cancelled.' };
           }
           if (answer === 'View Instructions') {
@@ -355,7 +359,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (proceed !== 'Start Agent') {
               cleanupSessionPlan(prep.plan);
-              if (release) { release(); release = undefined; }
+              if (release) { await release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
           }
@@ -363,7 +367,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: cwd });
         if (staleCheck.stale) {
           cleanupSessionPlan(prep.plan);
-          if (release) { release(); release = undefined; }
+          if (release) { await release(); release = undefined; }
           const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please start again.`;
           if (interactive) void vscode.window.showErrorMessage(msg);
           return { ok: false, code: 'stale-instructions', message: msg };
@@ -390,7 +394,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     } finally {
       // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
       // finished and the reservation could be handed off. A successful handoff clears release.
-      release?.();
+      await release?.();
     }
   }
 
@@ -416,7 +420,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const input = options(value);
     const interactive = input.interactive !== false;
     // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
-    let release: (() => void) | undefined;
+    let release: (() => Promise<void>) | undefined;
     try {
       let id = input.id;
       // A caller that names the session skips the picker, so outside the extension's own tests the
@@ -464,7 +468,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
       } else if (action === 'stop') {
         session = manager.stop(id);
-        releaseReservation(id);
+        await releaseReservation(id);
       } else {
         let prior = manager.get(id) ?? undefined;
         if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
@@ -481,7 +485,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
-            releaseReservation(id);
+            await releaseReservation(id);
             changed.fire();
           } else {
             throw Object.assign(new Error('session-still-open'), { code: 'session-still-open' });
@@ -538,7 +542,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(`Private storage is unavailable (${reason}). Cannot prepare effective instructions.`), { code: 'storage-unavailable' }), interactive);
           }
           if (interactive) void vscode.window.showWarningMessage(NOTICES_UNREADABLE_WARNING);
@@ -561,7 +565,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             codexHome
           });
           if (!prep.ok) {
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
           }
           if (interactive && prep.digest) {
@@ -573,7 +577,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (!answer) {
               cleanupSessionPlan(prep.plan);
-              if (release) { release(); release = undefined; }
+              if (release) { await release(); release = undefined; }
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
             if (answer === 'View Instructions') {
@@ -587,7 +591,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
               );
               if (proceed !== 'Reopen Session') {
                 cleanupSessionPlan(prep.plan);
-                if (release) { release(); release = undefined; }
+                if (release) { await release(); release = undefined; }
                 return { ok: false, code: 'cancelled', message: 'Cancelled.' };
               }
             }
@@ -595,7 +599,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: prior.worktree });
           if (staleCheck.stale) {
             cleanupSessionPlan(prep.plan);
-            if (release) { release(); release = undefined; }
+            if (release) { await release(); release = undefined; }
             const msg = `Instructions changed or expired during review (${staleCheck.reason}). Please reopen again.`;
             if (interactive) void vscode.window.showErrorMessage(msg);
             return { ok: false, code: 'stale-instructions', message: msg };
@@ -611,7 +615,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     } catch (error) {
       return failure(error, interactive);
     } finally {
-      release?.();
+      await release?.();
     }
   }
 
@@ -651,7 +655,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
       const closedId = manager.handleTerminalClosed(terminal);
-      if (closedId) releaseReservation(closedId);
+      if (closedId) void releaseReservation(closedId);
       changed.fire();
     }),
     // list with `interactive: false` only returns the in-memory session list and opens no picker.
