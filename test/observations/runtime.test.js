@@ -387,3 +387,59 @@ test('a malformed provider session id makes the record unreadable instead of bei
   }
   assert.equal(runtime.snapshot('session-a', NOW).model.confidence, 'unknown');
 });
+
+test('a released session leaves nothing behind in the core, and an id can be prepared again', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-release-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 60_000 });
+  t.after(() => runtime.dispose());
+  const env = { CLAUDE_CONFIG_DIR: root };
+  for (let index = 0; index < 200; index += 1) {
+    runtime.prepare({ sessionId: `session-${index}`, provider: 'claude', accountProfileId: 'account-a', env });
+    runtime.release(`session-${index}`);
+  }
+  assert.equal(runtime.bindings.size, 0);
+  assert.equal(runtime.core.sessions.size, 0, 'two hundred ended sessions keep no state');
+  runtime.prepare({ sessionId: 'again', provider: 'claude', accountProfileId: 'account-a', env });
+  const file = observationPath(root, 'again');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, RECORD);
+  assert.equal(runtime.snapshot('again', NOW).model.confidence, 'actual');
+  runtime.release('again');
+  assert.doesNotThrow(() => runtime.prepare({ sessionId: 'again', provider: 'claude', accountProfileId: 'account-a', env }), 'the same id can be prepared after it was released');
+  assert.equal(runtime.snapshot('again', NOW).model.confidence, 'unknown', 'and starts without what the earlier run saw');
+});
+
+test('temporary files a stopped bridge left behind are swept once stale, and fresh ones are left alone', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-temp-'));
+  try {
+    const dir = path.dirname(observationPath(root, 'x'));
+    fs.mkdirSync(dir, { recursive: true });
+    const make = (name, ageMs) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, '{"partial":');
+      const at = new Date(Date.now() - ageMs);
+      fs.utimesSync(file, at, at);
+      return file;
+    };
+    const stale = make('old-session.json.tmp.0d3f9a52-7a3c-4a58-9d0e-1c2b3a4d5e6f', STALE_MS + 60_000);
+    const fresh = make('live-session.json.tmp.1d3f9a52-7a3c-4a58-9d0e-1c2b3a4d5e6f', 5_000);
+    const other = make('notes.tmp.something', STALE_MS * 5);
+    const traversal = make('..hidden.json.tmp.x', STALE_MS * 5);
+    assert.equal(sweepStale(dir, Date.now()), 1);
+    assert.equal(fs.existsSync(stale), false);
+    for (const kept of [fresh, other, traversal]) assert.equal(fs.existsSync(kept), true, kept);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the bridge writes its temporary files exclusively under unpredictable names', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/claudeStatusLineBridge.js'), 'utf8');
+  const temporaries = source.match(/const tempFile = `[^`]*`/g) ?? [];
+  assert.equal(temporaries.length, 2);
+  for (const declaration of temporaries) assert.match(declaration, /\.tmp\.\$\{randomUUID\(\)\}/, declaration);
+  const writes = source.match(/fs\.writeFileSync\(tempFile,[^\n]*\)/g) ?? [];
+  assert.equal(writes.length, 2);
+  for (const write of writes) assert.match(write, /flag: 'wx'/, write);
+});

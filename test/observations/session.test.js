@@ -174,3 +174,13 @@ test('retract withdraws everything for a session, refuses later evidence, and re
   assert.equal(core.retract('nobody', 'provider-session-changed').ok, false);
   assert.throws(() => core.retract('s1', 'Not A Code'), TypeError);
 });
+
+test('unregister forgets a session completely', () => {
+  const NOW = '2026-01-01T00:00:00.000Z';
+  const core = new SessionObservationCore({ now: () => NOW, ttlMs: 60_000 });
+  core.register({ sessionId: 's1', provider: 'claude', accountProfileId: 'a1' });
+  assert.equal(core.unregister('s1'), true);
+  assert.equal(core.unregister('s1'), false);
+  assert.equal(core.snapshot('s1', NOW), null);
+  assert.doesNotThrow(() => core.register({ sessionId: 's1', provider: 'claude', accountProfileId: 'a1' }));
+});

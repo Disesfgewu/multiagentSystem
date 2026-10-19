@@ -111,8 +111,9 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        const tempFile = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
-        fs.writeFileSync(tempFile, JSON.stringify(record, null, 2), { mode: 0o600 });
+        const tempFile = `${targetPath}.tmp.${randomUUID()}`;
+        // 'wx': never write through a link or over a file someone else put at that name.
+        fs.writeFileSync(tempFile, JSON.stringify(record, null, 2), { mode: 0o600, flag: 'wx' });
         fs.renameSync(tempFile, targetPath);
       }
 
@@ -150,8 +151,8 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
           const dirInfo = fs.lstatSync(observationDir);
           if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink()) throw new Error('observation-dir-not-a-directory');
           if (process.platform !== 'win32') fs.chmodSync(observationDir, 0o700);
-          const tempFile = `${observationPath}.tmp.${process.pid}.${Date.now()}`;
-          fs.writeFileSync(tempFile, JSON.stringify(record), { mode: 0o600 });
+          const tempFile = `${observationPath}.tmp.${randomUUID()}`;
+          fs.writeFileSync(tempFile, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
           fs.renameSync(tempFile, observationPath);
         }
       }
