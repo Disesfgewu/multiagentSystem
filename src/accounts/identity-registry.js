@@ -34,12 +34,15 @@ function validLink(value) {
 }
 
 /** The ids of the leases a profile holds right now, or null when its record cannot be read. */
-function heldLeaseIds(tx, profileId) {
-  const record = tx.get(COLLECTION, SLOTS(profileId));
+function leaseIdsOf(record) {
   if (record === null || record === undefined) return [];
   if (typeof record !== 'object' || !Array.isArray(record.leases)) return null;
   const ids = record.leases.map((lease) => (lease && typeof lease.id === 'string' ? lease.id : null));
   return ids.some((id) => id === null || !LEASE_ID.test(id)) ? null : ids;
+}
+
+function heldLeaseIds(tx, profileId) {
+  return leaseIdsOf(tx.get(COLLECTION, SLOTS(profileId)));
 }
 
 /** The verified subject of an identity read, or null when it is not an actual, logged-in one. */
@@ -166,17 +169,17 @@ function settleSwitchLeases(tx, profileId, removedIds, now) {
 /**
  * A lease that was removed (recovered) and is registered again by its still-running session belongs to a session
  * that started before the barrier as far as anyone can tell: it is put back among the leases whose readings are not
- * trusted until they end. Returns false when it cannot be recorded, and the caller then refuses.
+ * trusted until they end. Returns `{ ok: false, reason }` when it cannot be recorded, and the caller then refuses.
  */
 function rearmSwitchLease(tx, profileId, leaseId) {
   const link = tx.get(COLLECTION, linkId(profileId));
-  if (link === null || link === undefined) return true;
-  if (!validLink(link)) return false;
+  if (link === null || link === undefined) return { ok: true };
+  if (!validLink(link)) return { ok: false, reason: 'identity-record-invalid' };
   const leases = link.switchLeases ?? [];
-  if (leases.includes(leaseId)) return true;
-  if (leases.length >= MAX_SWITCH_LEASES) return false;
+  if (leases.includes(leaseId)) return { ok: true };
+  if (leases.length >= MAX_SWITCH_LEASES) return { ok: false, reason: 'switch-lease-capacity' };
   tx.put(COLLECTION, linkId(profileId), { ...link, switchLeases: [...leases, leaseId] });
-  return true;
+  return { ok: true };
 }
 
 /**
@@ -197,7 +200,7 @@ function readingsTrust(store, profileId) {
   if (!link.value.since) return { ok: true, trusted: true, since: null };
   const slots = store.get(COLLECTION, SLOTS(profileId));
   if (!slots || slots.ok !== true) return untrusted;
-  const held = slots.found ? (Array.isArray(slots.value && slots.value.leases) ? slots.value.leases.map((lease) => lease && lease.id) : null) : [];
+  const held = leaseIdsOf(slots.found ? slots.value : null);
   if (held === null) return untrusted;
   const stillRunning = (link.value.switchLeases ?? []).some((id) => held.includes(id));
   return { ok: true, trusted: !stillRunning, since: Date.parse(link.value.since) };
@@ -255,8 +258,7 @@ function groupSnapshot(store, listProfiles, profileId) {
   const held = (id) => {
     const slots = store.get(COLLECTION, SLOTS(id));
     if (!slots || slots.ok !== true) return null;
-    if (!slots.found) return [];
-    return Array.isArray(slots.value && slots.value.leases) ? slots.value.leases.map((lease) => lease && lease.id) : null;
+    return leaseIdsOf(slots.found ? slots.value : null);
   };
   return { ok: true, profiles: listed.profiles, ...snapshotGroup({ links: read.links, held, exists: (id) => existing.has(id) }, profileId) };
 }
