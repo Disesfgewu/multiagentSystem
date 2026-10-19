@@ -7,7 +7,7 @@
 3. 選 **Multiagent: Open Masked Setup and Storage Diagnostics**。唯讀報告會區分工具準備失敗、來源不支援、私人儲存狀態與 provider 的未知能力，並給下一個動作。遮罩報告不是備份；若要分享報告，仍應先人工檢查內容。
 4. 在 **Accounts and Sessions** 建立帳號設定，在 **Role Groups and Rules** 建立身份組。只有 CLI 程式存在不代表其服務身分、額度或規則注入已核實；若診斷顯示未知，先使用正式登入入口並在自己的環境核對。
 5. 從命令選單執行 **Multiagent: Open Four Native Terminals**。擴充套件在目前專案開四個原生 shell（PM、Worker 1–3），以 2×2 排列；可拖動終端分頁重新排列。此動作只開 shell，不會自動啟動或登入四個 CLI。選擇身份組和帳號後，可使用對應啟動命令在原生 terminal 開始 session。若已有部分同名 terminal，先關閉舊組再建立新的四格。
-6. 要查看 Issue／PR，使用 **Issues Report**／**PRs Report**。PR 合併權限預設為 `human`；**Multiagent: Configure Pull Request Merge Authority** 可在已開啟的 GitHub 專案中選擇 `human` 或 `pm`，並要求確認。`pm` 只允許已設定的 PM 發布者在最新 head、review、CI、對話、分支規則與發布掃描等 gate 通過後明確觸發合併；設定不會使 CI 通過後自動合併，也不會改變 GitHub 站外權限。
+6. 要查看 Issue／PR，使用 **Issues Report**／**PRs Report**，點選清單項目後在編輯器讀取報告。報告開頭的 **OPEN DISCUSSION** 可跳到留言與 review；PR 另有 **OPEN CODE CHANGES**，可點選每個檔名在套件內讀取 GitHub 回傳的 patch 全文。GitHub 未提供 patch 或讀取不完整時會明示未知。PR 合併權限預設為 `human`；**Multiagent: Configure Pull Request Merge Authority** 可在已開啟的 GitHub 專案中選擇 `human` 或 `pm`，並要求確認。`pm` 只允許已設定的 PM 發布者在最新 head、review、CI、對話、分支規則與發布掃描等 gate 通過後明確觸發合併；設定不會使 CI 通過後自動合併，也不會改變 GitHub 站外權限。
 
 ## 出錯時
 

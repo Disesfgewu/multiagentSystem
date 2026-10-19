@@ -80,7 +80,8 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
         getPullRequest: async () => ({ kind: 'ok', data: { number: 5, title: 'Host PR', state: 'open', draft: false, headRef: 'feat/host', headSha: sha, headRepository: 'host/repo', body: 'Refs #13', referencedIssues: [{ number: 13 }] } }),
         getPullRequestFiles: async () => ({ kind: 'ok', data: [{ filename: 'src/overview.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] }),
         getPullRequestSnapshot: async () => ({ status: 'complete', headSha: sha, checksSummary: { state: 'passing', requiredState: 'passing', headSha: sha } }),
-        getReviews: async () => ({ kind: 'ok', data: [] })
+        getReviews: async () => ({ kind: 'ok', data: [] }),
+        getReviewComments: async () => ({ kind: 'ok', data: [] })
       };
       setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReportReader });
 

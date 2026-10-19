@@ -61,13 +61,11 @@ const APPLIES = Object.freeze({
   'head-not-stated': 'does not say which head it covers'
 });
 
-function commentLines(comments, currentHead, { max = 8, limit = 1200 } = {}) {
+function commentLines(comments, currentHead, { limit = 100000 } = {}) {
   const items = dataOf(comments);
   if (items === null) return [];
   const lines = [];
-  const shown = items.slice(-max);
-  if (items.length > shown.length) lines.push(`(${items.length - shown.length} earlier comments are not shown)`);
-  for (const item of shown) {
+  for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const conclusion = currentHead ? parseConclusion(item.body, currentHead) : null;
     lines.push(`- ${line(item.author ?? 'unknown', 60)}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}${conclusion ? ` · verdict "${conclusion.verdict}" ${APPLIES[conclusion.applies]}` : ''}`);
@@ -163,7 +161,7 @@ function pmReportLines(comments, repository, version) {
  *   `comments` and `pullRequests` are adapter results; `pullRequests` is the list of open pull requests
  */
 function buildIssueReport({ repository, issue, comments, pullRequests }) {
-  const lines = [...header('Issue', repository, issue)];
+  const lines = [...header('Issue', repository, issue), '', 'OPEN DISCUSSION (click to jump)'];
   lines.push(`Labels: ${(Array.isArray(issue.labels) ? issue.labels : []).map((name) => line(name, 60)).join(', ') || '(none)'}`);
   lines.push(`Assigned to: ${(Array.isArray(issue.assignees) ? issue.assignees : []).map((name) => line(name, 60)).join(', ') || '(nobody)'}`);
   lines.push('', 'REQUIREMENT AND SCOPE', block(issue.body, 20000));
@@ -187,12 +185,12 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
 }
 
 /**
- * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, files?: object, filesHeadVerified?: boolean }} input
+ * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, reviewComments?: object, files?: object, filesHeadVerified?: boolean }} input
  */
-function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, files, filesHeadVerified }) {
+function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, reviewComments, files, filesHeadVerified }) {
   const pr = pullRequest;
   const head = typeof pr.headSha === 'string' ? pr.headSha : null;
-  const lines = [...header('Pull request', repository, pr)];
+  const lines = [...header('Pull request', repository, pr), '', 'OPEN CODE CHANGES (click to jump)', 'OPEN DISCUSSION (click to jump)'];
   const headRepository = line(pr.headRepository, 120);
   const source = !headRepository ? 'unknown (head repository was not read)'
     : headRepository.toLowerCase() === String(repository).toLowerCase() ? 'this repository branch' : 'fork / external contributor';
@@ -216,16 +214,18 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   else if (fileNote) lines.push(fileNote);
   else if (fileItems.length === 0) lines.push('No changed files were reported.');
   else {
-    const shown = fileItems.slice(0, 12);
-    lines.push(`Showing ${shown.length} of ${fileItems.length} changed files. Patch text is limited; omitted content must be reviewed separately.`);
-    for (const file of shown) {
-      const name = line(file && file.filename, 240) || '(filename unavailable)';
+    lines.push(`${fileItems.length} changed files. Click any filename to open all patch text returned by GitHub; inline preview is shown for the first 12 files.`);
+    const displayNames = new Set();
+    for (const [index, file] of fileItems.entries()) {
+      const baseName = line(file && file.filename, 240) || '(filename unavailable)';
+      const name = displayNames.has(baseName) ? `${baseName} [file ${index + 1}]` : baseName;
+      displayNames.add(baseName);
       const status = line(file && file.status, 30) || 'unknown';
       const additions = Number.isSafeInteger(file && file.additions) ? file.additions : 'unknown';
       const deletions = Number.isSafeInteger(file && file.deletions) ? file.deletions : 'unknown';
       lines.push(`- ${name} (${status}; +${additions}/-${deletions})`);
       const patch = file && typeof file.patch === 'string' ? file.patch : null;
-      lines.push(patch !== null ? block(patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
+      if (index < 12) lines.push(patch !== null ? block(patch, 4000) : '  Patch unavailable (binary file or GitHub omitted it).');
       shownFiles.push({ filename: name, status, patch });
     }
   }
@@ -249,20 +249,35 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
     lines.push(`Unresolved review threads: ${Number.isSafeInteger(snapshot.unresolvedThreads) ? snapshot.unresolvedThreads : 'unknown'}`);
   }
   lines.push(...checkDetail(snapshot, head));
-  lines.push('', 'REVIEWS ON GITHUB');
+  lines.push('', 'PR CONVERSATION', '', 'REVIEWS ON GITHUB');
   const reviewNote = readNote('Reviews', reviews);
   const reviewItems = dataOf(reviews);
   if (reviewNote) lines.push(reviewNote);
   else if (reviewItems.length === 0) lines.push('No formal reviews.');
-  else for (const review of reviewItems.slice(-8)) {
+  else for (const review of reviewItems) {
     const sameHead = head && typeof review.commitId === 'string' ? (review.commitId.toLowerCase() === head.toLowerCase() ? 'on the latest head' : 'on an OLDER head') : 'head unknown';
-    lines.push(`- ${line(review.reviewer ?? review.author ?? 'unknown', 60)} · ${line(review.state, 30)} · ${sameHead}${review.body ? `\n  ${block(review.body, 600).split('\n').join('\n  ')}` : ''}`);
+    lines.push(`- ${line(review.reviewer ?? review.author ?? 'unknown', 60)} · ${line(review.state, 30)} · ${sameHead}${review.body ? `\n  ${block(review.body, 100000).split('\n').join('\n  ')}` : ''}`);
   }
   lines.push('', 'PM AND REVIEWER COMMENTS');
   const commentNote = readNote('Comments', comments);
   if (commentNote) lines.push(commentNote);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
   else lines.push(...commentLines(comments, head));
+  lines.push('', 'INLINE REVIEW DISCUSSION');
+  const inlineNote = readNote('Inline review comments', reviewComments);
+  const inlineItems = dataOf(reviewComments);
+  if (inlineNote) lines.push(inlineNote);
+  else if (inlineItems.length === 0) lines.push('No inline review comments.');
+  else for (const item of inlineItems) {
+    if (!item || typeof item !== 'object') continue;
+    const commit = typeof item.commitId === 'string' && head
+      ? item.commitId.toLowerCase() === head.toLowerCase() ? 'on the latest head' : 'on an OLDER head'
+      : 'head unknown';
+    const location = `${line(item.path ?? 'file unknown', 240)}:${Number.isSafeInteger(item.line) ? item.line : 'line unknown'}`;
+    const reply = Number.isSafeInteger(item.inReplyToId) ? ` · reply to #${item.inReplyToId}` : '';
+    lines.push(`- ${line(item.author ?? 'unknown', 60)} · ${location} · ${commit}${reply}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}`);
+    lines.push(`  ${block(item.body, 100000).split('\n').join('\n  ')}`);
+  }
   lines.push('', 'DECISIONS', 'A private note can be saved locally. It cannot approve, request changes or merge; nothing is sent to GitHub.');
   lines.push('', 'NOT VERIFIED', ...WHAT_IS_NOT_VERIFIED.map((text) => `- ${text}`));
   return { title: `Pull request #${pr.number}`, lines, files: shownFiles };
