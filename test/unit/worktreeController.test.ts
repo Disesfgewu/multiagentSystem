@@ -3,11 +3,13 @@ import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as fsSync from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   WorktreeController,
   WorktreeDeps,
+  WorktreeInfo,
   WorktreePickItem,
   WorktreeProject,
   WorktreeUi,
@@ -93,6 +95,17 @@ class FakeUi implements WorktreeUi {
   openFolder = async (folder: string): Promise<void> => {
     this.opened.push(folder);
   };
+  overlapChoice: ((items: Array<{ label: string }>) => number | undefined) = () => undefined;
+  shownOverlaps: Array<{ label: string; description: string; detail: string }> = [];
+  openedFiles: string[] = [];
+  pickOverlap = async (items: Array<{ label: string; description: string; detail: string; overlap: any }>): Promise<{ overlap: any } | undefined> => {
+    this.shownOverlaps = items;
+    const index = this.overlapChoice(items);
+    return index === undefined ? undefined : items[index];
+  };
+  openFile = async (file: string): Promise<void> => {
+    this.openedFiles.push(file);
+  };
   info = (message: string): void => {
     this.infos.push(message);
   };
@@ -125,7 +138,8 @@ function harness(root: string): Harness {
         remove: (target) => {
           removeCalls.push(target);
           return service.remove(target);
-        }
+        },
+        changedFiles: (target) => service.changedFiles(target)
       };
     }
   };
@@ -486,4 +500,174 @@ test('a workspace folder inside a worktree still identifies that worktree as thi
   assert.ok(entries.ok);
   assert.deepEqual(entries.worktrees.map((w) => [w.branch, w.current]), [['main', false], ['feature/sub', true]]);
   assert.equal((await fs.stat(target)).isDirectory(), true);
+});
+
+async function twoWorktrees(t: { after(fn: () => Promise<void>): void }, edits: { a: Record<string, string>; b: Record<string, string>; commitB?: boolean }) {
+  const { temporary, root } = await repository(t as any);
+  await fs.writeFile(path.join(root, 'shared.txt'), 'base\n');
+  await fs.writeFile(path.join(root, 'only-a.txt'), 'base\n');
+  await git(root, 'add', '-A');
+  await git(root, 'commit', '-m', 'base files');
+  const service = (await WorktreeService.open(root)) as any;
+  const a = path.join(temporary, 'wt-a');
+  const b = path.join(temporary, 'wt-b');
+  await service.create({ branch: 'feat/a', target: a });
+  await service.create({ branch: 'feat/b', target: b });
+  for (const [dir, files] of [[a, edits.a], [b, edits.b]] as Array<[string, Record<string, string>]>) {
+    for (const [name, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+      await fs.writeFile(path.join(dir, name), content);
+    }
+  }
+  if (edits.commitB) {
+    await git(b, 'add', '-A');
+    await git(b, 'commit', '-m', 'b work');
+  }
+  return { root, a, b, temporary };
+}
+
+test('files changed in two worktrees are reported, whether committed, edited or new, and the others are not', async (t) => {
+  const { root } = await twoWorktrees(t as any, {
+    a: { 'shared.txt': 'a edit\n', 'only-a.txt': 'a edit\n', 'new/both.txt': 'a\n' },
+    b: { 'shared.txt': 'b edit\n', 'new/both.txt': 'b\n', 'only-b.txt': 'b\n' },
+    commitB: false
+  });
+  const h = harness(root);
+  const result = await h.controller.overlaps({ interactive: false });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.overlaps.map((item) => [item.file, item.worktrees]), [['new/both.txt', ['feat/a', 'feat/b']], ['shared.txt', ['feat/a', 'feat/b']]]);
+  assert.deepEqual([result.checked, result.unread], [2, []]);
+  assert.match(result.summary, /^2 files are being changed in more than one worktree: new\/both\.txt, shared\.txt\.$/);
+});
+
+test('committed work counts as much as uncommitted work, and a clean pair has no overlap', async (t) => {
+  const { root } = await twoWorktrees(t as any, { a: { 'shared.txt': 'a\n' }, b: { 'shared.txt': 'b\n' }, commitB: true });
+  const h = harness(root);
+  const both = await h.controller.overlaps({ interactive: false });
+  assert.deepEqual(both.ok && both.overlaps.map((item) => item.file), ['shared.txt']);
+  const { root: other } = await twoWorktrees(t as any, { a: { 'only-a.txt': 'a\n' }, b: { 'only-b.txt': 'b\n' } });
+  const none = await harness(other).controller.overlaps({ interactive: false });
+  assert.deepEqual(none.ok && [none.overlaps, none.summary], [[], 'No file is being changed in more than one worktree.']);
+});
+
+test('a worktree that cannot be read is unknown, not empty: its overlaps are never claimed absent', async (t) => {
+  const { root, b } = await twoWorktrees(t as any, { a: { 'shared.txt': 'a\n' }, b: { 'shared.txt': 'b\n' } });
+  await fs.rm(path.join(b, '.git'), { force: true });
+  const result = await harness(root).controller.overlaps({ interactive: false });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.unread, ['feat/b']);
+  assert.deepEqual(result.overlaps, []);
+  assert.match(result.summary, /Could not read the changes of 1 worktree \(feat\/b\), so their overlaps are unknown\./);
+});
+
+test('a list cut at the limit is unknown, because a partial list could hide an overlap', async (t) => {
+  const { root } = await twoWorktrees(t as any, { a: { 'shared.txt': 'a\n' }, b: { 'shared.txt': 'b\n' } });
+  const h = harness(root);
+  const result = await h.controller.overlaps({ interactive: false });
+  assert.equal(result.ok && result.unread.length, 0);
+  const service = (await WorktreeService.open(root)) as any;
+  const tiny = await service.changedFiles(path.join(path.dirname(root), 'wt-a'), { limit: 0 });
+  assert.deepEqual([tiny.files, tiny.truncated], [[], true]);
+});
+
+test('the person is shown the overlapping files and the chosen one is opened from its worktree', async (t) => {
+  const { root, a } = await twoWorktrees(t as any, { a: { 'shared.txt': 'a\n' }, b: { 'shared.txt': 'b\n' } });
+  const h = harness(root);
+  h.ui.overlapChoice = () => 0;
+  const result = await h.controller.overlaps({});
+  assert.equal(result.ok, true);
+  assert.deepEqual(h.ui.shownOverlaps.map((item) => [item.label, item.description]), [['shared.txt', 'feat/a · feat/b']]);
+  assert.deepEqual(h.ui.openedFiles.map((file) => path.relative(fsSync.realpathSync.native(a), fsSync.realpathSync.native(file))), ['shared.txt']);
+  h.ui.openedFiles = [];
+  h.ui.overlapChoice = () => undefined;
+  await h.controller.overlaps({});
+  assert.deepEqual(h.ui.openedFiles, [], 'nothing opens without a choice');
+});
+
+test('with fewer than two other worktrees the person is told there is nothing to compare, and an untrusted workspace is refused', async (t) => {
+  const { temporary, root } = await repository(t as any);
+  const h = harness(root);
+  await h.controller.overlaps({});
+  assert.match(h.ui.infos.join('\n'), /needs at least two worktrees besides the primary/);
+  h.ui.trusted = false;
+  const refused = await h.controller.overlaps({ interactive: false });
+  assert.deepEqual([refused.ok, (refused as any).code], [false, 'workspace-untrusted']);
+  void temporary;
+});
+
+test('a changed-file list cut at the limit makes that worktree unknown in the report, never "no overlap"', async () => {
+  const ui = new FakeUi();
+  ui.folders = ['/synthetic/repo'];
+  const entry = (p: string, branch: string): WorktreeInfo => ({ path: p, headSha: 'a'.repeat(40), branch, detached: false, bare: false, locked: false, prunable: false });
+  const project = {
+    root: '/synthetic/repo',
+    list: async () => [entry('/synthetic/repo', 'main'), entry('/synthetic/wt-a', 'feat/a'), entry('/synthetic/wt-b', 'feat/b')],
+    create: async () => undefined,
+    remove: async () => ({ removed: true, branch: null }),
+    changedFiles: async (target: string) => ({ files: ['shared.txt'], truncated: target.endsWith('wt-a') })
+  } as WorktreeProject;
+  const controller = new WorktreeController({ ui, openProject: async () => project });
+  const result = await controller.overlaps({ interactive: false });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.unread, ['feat/a']);
+  assert.deepEqual(result.overlaps, [], 'one readable worktree has nothing to overlap with, and that is said as unknown, not as clear');
+  assert.match(result.summary, /Could not read the changes of 1 worktree \(feat\/a\)/);
+});
+
+test('two detached worktrees at the same commit are two worktrees: their shared file is reported, with names that tell them apart', async (t) => {
+  const { temporary, root } = await repository(t as any);
+  await fs.writeFile(path.join(root, 'same.ts'), 'base\n');
+  await git(root, 'add', '-A');
+  await git(root, 'commit', '-m', 'base');
+  const first = path.join(temporary, 'detached-one');
+  const second = path.join(temporary, 'detached-two');
+  await git(root, 'worktree', 'add', '--detach', first);
+  await git(root, 'worktree', 'add', '--detach', second);
+  await fs.writeFile(path.join(first, 'same.ts'), 'first agent\n');
+  await fs.writeFile(path.join(second, 'same.ts'), 'second agent\n');
+  const h = harness(root);
+  const result = await h.controller.overlaps({ interactive: false });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual([result.checked, result.unread, result.overlaps.length], [2, [], 1], 'the shared file is not lost to a shared display name');
+  const [overlap] = result.overlaps;
+  assert.equal(overlap.file, 'same.ts');
+  assert.equal(new Set(overlap.worktrees).size, 2, `two distinct names: ${overlap.worktrees.join(' | ')}`);
+  assert.deepEqual(overlap.worktrees.map((name) => /^\(detached [a-f0-9]{7}\) in detached-(one|two)$/.test(name)), [true, true]);
+  assert.deepEqual(new Set(overlap.folders.map((folder) => fsSync.realpathSync.native(folder))), new Set([first, second].map((folder) => fsSync.realpathSync.native(folder))));
+});
+
+test('choosing an overlap opens the file from the worktree it was listed under, and only if it really lies inside that worktree', { skip: process.platform === 'win32' }, async (t) => {
+  const { temporary, root } = await repository(t as any);
+  await fs.writeFile(path.join(root, 'same.ts'), 'base\n');
+  await fs.writeFile(path.join(root, 'link.ts'), 'base\n');
+  await git(root, 'add', '-A');
+  await git(root, 'commit', '-m', 'base');
+  const first = path.join(temporary, 'detached-one');
+  const second = path.join(temporary, 'detached-two');
+  await git(root, 'worktree', 'add', '--detach', first);
+  await git(root, 'worktree', 'add', '--detach', second);
+  await fs.writeFile(path.join(first, 'same.ts'), 'first agent\n');
+  await fs.writeFile(path.join(second, 'same.ts'), 'second agent\n');
+  const h = harness(root);
+  h.ui.overlapChoice = () => 0;
+  await h.controller.overlaps({});
+  assert.equal(h.ui.openedFiles.length, 1);
+  const opened = fsSync.realpathSync.native(h.ui.openedFiles[0]);
+  const folders = h.ui.shownOverlaps.length ? [first, second].map((folder) => fsSync.realpathSync.native(folder)) : [];
+  assert.ok(folders.some((folder) => opened === path.join(folder, 'same.ts')), 'it is the file of one of the listed worktrees');
+  // A tracked file that is replaced by a link to something outside the worktree is never followed out of it.
+  const outside = path.join(temporary, 'outside-secret.txt');
+  await fs.writeFile(outside, 'private\n');
+  for (const dir of [first, second]) {
+    await fs.rm(path.join(dir, 'link.ts'));
+    await fs.symlink(outside, path.join(dir, 'link.ts'));
+  }
+  h.ui.openedFiles = [];
+  h.ui.overlapChoice = (items) => items.findIndex((item) => item.label === 'link.ts');
+  await h.controller.overlaps({});
+  assert.deepEqual(h.ui.openedFiles, [], 'a link out of the worktree is not opened');
 });

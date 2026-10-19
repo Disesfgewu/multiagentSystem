@@ -840,6 +840,26 @@ async function worktreeFlow(workspace: string, target: string): Promise<void> {
   assert.ok(entries.find((entry) => entry.primary && entry.current && sameDirectory(entry.path, workspace)), 'primary worktree is this window');
   assert.ok(entries.find((entry) => !entry.primary && !entry.current && entry.branch === 'feature/host-smoke'));
 
+  // Two agents editing the same file in two worktrees: the registered command reports it from real Git.
+  const second = path.join(path.dirname(target), 'host-overlap-second');
+  const secondCreated = await command('multiagentSystem.worktrees.create', { branch: 'feature/host-overlap-b', target: second });
+  assert.equal(secondCreated.ok, true, secondCreated.message);
+  const noOverlap = await command('multiagentSystem.worktrees.overlaps', {}) as unknown as { ok: boolean; overlaps: unknown[]; checked: number };
+  assert.deepEqual([noOverlap.ok, noOverlap.overlaps.length, noOverlap.checked], [true, 0, 2], 'two clean worktrees overlap nowhere');
+  fs.writeFileSync(path.join(target, 'overlap.txt'), 'from the first agent');
+  fs.writeFileSync(path.join(second, 'overlap.txt'), 'from the second agent');
+  fs.writeFileSync(path.join(second, 'only-second.txt'), 'x');
+  const overlap = await command('multiagentSystem.worktrees.overlaps', {}) as unknown as { ok: boolean; overlaps: Array<{ file: string; worktrees: string[] }>; unread: string[]; summary: string };
+  assert.equal(overlap.ok, true);
+  assert.deepEqual(overlap.overlaps.map((item) => [item.file, item.worktrees]), [['overlap.txt', ['feature/host-smoke', 'feature/host-overlap-b']]]);
+  assert.deepEqual(overlap.unread, []);
+  fs.rmSync(path.join(target, 'overlap.txt'));
+  fs.rmSync(path.join(second, 'overlap.txt'));
+  fs.rmSync(path.join(second, 'only-second.txt'));
+  const secondReleased = await command('multiagentSystem.worktrees.remove', { path: second, confirmed: true });
+  assert.equal(secondReleased.ok, true, secondReleased.message);
+  assert.equal(((await command('multiagentSystem.worktrees.list', {})).worktrees ?? []).length, 2, 'only the first extra worktree remains');
+
   // Local files make the release refuse, whatever the caller says.
   const keep = path.join(target, 'local-note.txt');
   fs.writeFileSync(keep, 'keep me');
