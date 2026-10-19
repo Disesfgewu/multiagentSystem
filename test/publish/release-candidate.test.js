@@ -38,3 +38,18 @@ test('candidate refuses ambiguous commits, paths and packages that fail VSIX ver
   assert.throws(() => createCandidate({ ...input, archiveName: '../candidate.vsix' }), /base name/);
   assert.throws(() => createCandidate({ ...input, lock: { packages: {} } }), /dependency license\/version/);
 });
+
+test('candidate records an explicit release tag only when it names the verified package version', () => {
+  const archive = Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([name, value]) => [name, Buffer.from(value)]))));
+  const input = { archive, archiveName: 'multiagentsystem.vsix', lock, sourceCommit: 'a'.repeat(40) };
+  assert.equal(createCandidate(input).release, 'v0.0.3-beta');
+  assert.equal(createCandidate({ ...input, release: '' }).release, 'v0.0.3-beta');
+  assert.equal(createCandidate({ ...input, release: 'v0.0.3-beta.3' }).release, 'v0.0.3-beta.3');
+  assert.equal(createCandidate({ ...input, release: 'v0.0.3' }).release, 'v0.0.3');
+  for (const mismatched of ['v0.0.4-beta.3', 'v0.0.30-beta', 'v1.0.3-beta.1']) {
+    assert.throws(() => createCandidate({ ...input, release: mismatched }), /does not match package version 0\.0\.3/, mismatched);
+  }
+  for (const malformed of ['0.0.3-beta.3', 'v0.0.3-beta.', 'v0.0.3-rc.1', 'v0.0.3-beta.3\n', ' v0.0.3-beta', 'v0.0.3-beta.3/../x', 3]) {
+    assert.throws(() => createCandidate({ ...input, release: malformed }), /release must look like/, String(malformed));
+  }
+});
