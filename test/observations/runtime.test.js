@@ -260,3 +260,27 @@ test('a linked session-observations folder is never listed, swept or deleted fro
     fs.rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test('a Codex terminal session is registered as having no verified event source: everything unknown, with the reason, and no files or servers involved', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-observation-codex-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = new SessionObservationRuntime({ now: () => NOW, ttlMs: 60_000 });
+  t.after(() => runtime.dispose());
+  const env = { CODEX_HOME: root };
+  const prepared = runtime.prepare({ sessionId: 'codex-a', provider: 'codex', accountProfileId: 'account-a', env });
+  assert.deepEqual(prepared, { env, active: false }, 'the launch environment is not touched');
+  assert.deepEqual(fs.readdirSync(root), [], 'nothing is written into the account folder');
+  const snapshot = runtime.snapshot('codex-a', NOW);
+  assert.deepEqual([snapshot.providerSession, snapshot.provider, snapshot.accountProfileId], ['unavailable', 'codex', 'account-a']);
+  assert.deepEqual([snapshot.status.confidence, snapshot.status.reason, snapshot.model.confidence, snapshot.model.reason], ['unknown', 'no-verified-event-source', 'unknown', 'no-verified-event-source']);
+  assert.ok(snapshot.usage.every((entry) => entry.confidence === 'unknown' && entry.reason === 'no-verified-event-source'));
+  assert.equal(runtime.core.ingest({ schemaVersion: 1, eventId: 'e', sessionId: 'codex-a', provider: 'codex', accountProfileId: 'account-a', source: 'codex-app-server-v2', observedAt: NOW, sequence: 1, state: 'working' }).ok, false, 'a notification from some other server has no session to land on');
+  assert.equal(runtime.snapshot('codex-a', NOW).status.confidence, 'unknown');
+  const [enriched] = runtime.enrich([{ id: 'codex-a' }, { id: 'codex-b' }], NOW);
+  assert.equal(enriched.providerObservation.providerSession, 'unavailable');
+  assert.equal(runtime.snapshot('codex-b', NOW), null, 'a session that was never prepared stays absent');
+  runtime.release('codex-a');
+  assert.equal(runtime.snapshot('codex-a', NOW), null, 'released');
+  assert.equal(runtime.prepare({ sessionId: 'agy-a', provider: 'agy', accountProfileId: 'account-a', env }).active, false);
+  assert.equal(runtime.snapshot('agy-a', NOW), null, 'only the Codex slice is registered here');
+});

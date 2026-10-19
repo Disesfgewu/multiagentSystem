@@ -75,6 +75,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
+      ...(providerObservation?.providerSession === 'unavailable' ? ['Observation: this CLI has no verified event source for a native terminal, so its state, model and usage stay unknown'] : []),
       `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
       `Provider state: ${providerStateText}`,

@@ -308,3 +308,10 @@ test('estimated session cost is shown as a plain amount, and an insane value is 
   assert.equal(costFor(3), 'Session cost: $3.00 estimated');
   for (const bad of [-1, Number.NaN, Infinity, 1e21, 1e7]) assert.match(costFor(bad), /unknown/i);
 });
+
+test('an unobservable CLI session says why its state, model and cost are unknown', () => {
+  const view = presentAgent(row(), { name: 'n', providerObservation: { providerSession: 'unavailable' } });
+  assert.ok(view.tooltip.some((line) => /no verified event source for a native terminal/.test(line)));
+  assert.match(view.tooltip.find((line) => line.startsWith('Actual model:')), /unknown/i);
+  assert.match(view.tooltip.find((line) => line.startsWith('Session cost:')), /unknown/i);
+});
