@@ -147,7 +147,8 @@ function createMcpLifecycle(deps = {}) {
     killTree = createKillTree({ platform }),
     startTimeoutMs = 5000,
     callTimeoutMs = 15000,
-    stopTimeoutMs = 2000
+    stopTimeoutMs = 2000,
+    storageDir
   } = deps;
 
   const running = new Map(); // serverId -> { child, pending, nextId, buffer, exited }
@@ -273,9 +274,20 @@ function createMcpLifecycle(deps = {}) {
     if (persisted(serverId).revoked === true && saved.revoked !== true) return no('revoked');
     if (running.has(serverId)) return no('already-running');
 
+    // `{storage}` becomes the tool's own private folder. Without one nothing starts: never a shared default like /tmp.
+    let args = tool.command.slice(1);
+    if (args.includes('{storage}')) {
+      let dir = null;
+      try { dir = typeof storageDir === 'function' ? await storageDir(serverId) : null; } catch { dir = null; }
+      if (typeof dir !== 'string' || !path.isAbsolute(dir) || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(dir)) return no('storage-unavailable');
+      args = args.map((arg) => (arg === '{storage}' ? dir : arg));
+      if (!trusted()) return no('workspace-untrusted');
+      if (persisted(serverId).revoked === true && saved.revoked !== true) return no('revoked');
+      if (running.has(serverId)) return no('already-running');
+    }
     let child;
     try {
-      child = spawn(executable, tool.command.slice(1), { env, shell: false, detached: platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      child = spawn(executable, args, { env, shell: false, detached: platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     } catch { failures.set(serverId, 'spawn-failed'); return no('spawn-failed'); }
     if (!child || !child.stdin || !child.stdout) { failures.set(serverId, 'spawn-failed'); return no('spawn-failed'); }
 

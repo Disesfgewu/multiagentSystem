@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
@@ -60,6 +61,12 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     readSecret: async (serverId: string, key: string) => {
       const ref = currentVault.refFor(`mcp.${serverId}.${key}`);
       return currentVault.read(ref);
+    },
+    storageDir: async (serverId: string) => {
+      // The tool's own folder inside the extension's private storage, created private; never a shared location.
+      const dir = path.join(currentStore.dir, 'research-tools', serverId);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
     },
     resolveExecutable: async (serverId: string) => {
       const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);

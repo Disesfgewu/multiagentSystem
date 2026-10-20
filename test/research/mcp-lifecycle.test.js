@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 
+const { validateCatalogItem, CANDIDATE_RESEARCH_TOOLS } = require('../../src/research/catalog');
 const { grantConsent, revokeConsent } = require('../../src/research/installer');
 const {
   createMcpLifecycle, createKillTree, scanWorkspaceMcpConfig, normalizeAllowlist, statusText, ENFORCEMENT
@@ -602,4 +603,31 @@ it('removing consent stops an enabled server from being started again, and a mis
   const refused = await lc.enable('synthetic-papers', { confirmed: true, tools: TOOLS });
   assert.equal(refused.ok, false);
   assert.equal(spawned.length, 1, 'only the first start ever spawned anything');
+});
+
+const STORAGE_CATALOG = [{ ...CATALOG[0], serverId: 'storage-papers', command: ['synthetic-server', '--storage-path', '{storage}'] }];
+
+it('the {storage} argument becomes the tool\'s own private folder; without one, or with an unusable one, nothing starts', async (t) => {
+  const { make, store, spawned, dir } = setup(t);
+  grantConsent('storage-papers', { store, catalog: STORAGE_CATALOG });
+  const own = path.join(dir, 'tool-folder');
+  const ask = (lc) => lc.enable('storage-papers', { confirmed: true, tools: TOOLS });
+  for (const storageDir of [undefined, async () => null, async () => '', async () => 'relative/dir', async () => `${own}‮`, async () => { throw new Error('boom'); }, async () => 5]) {
+    assert.equal((await ask(make({ catalog: STORAGE_CATALOG, ...(storageDir ? { storageDir } : {}) }))).code, 'storage-unavailable');
+  }
+  assert.equal(spawned.length, 0, 'no process was started for any of them');
+  const lc = make({ catalog: STORAGE_CATALOG, storageDir: async (serverId) => { assert.equal(serverId, 'storage-papers'); return own; } });
+  assert.equal((await ask(lc)).ok, true);
+  assert.deepEqual(spawned[0].args, ['--storage-path', own]);
+  assert.equal(JSON.stringify(spawned[0].args).includes('{storage}'), false);
+});
+
+it('the catalog allows the {storage} placeholder only as a whole argument; other braces are refused, and nothing in the catalog names /tmp', () => {
+  const entry = (command) => ({ ...CATALOG[0], serverId: 'brace-test', command });
+  assert.equal(validateCatalogItem(entry(['synthetic-server', '--storage-path', '{storage}'])).command[2], '{storage}');
+  for (const command of [['synthetic-server', '{storage}/x'], ['synthetic-server', '--p={storage}'], ['synthetic-server', '{other}'], ['synthetic-server', '${HOME}'], ['synthetic-server', '{']]) {
+    assert.throws(() => validateCatalogItem(entry(command)), /command-invalid/, JSON.stringify(command));
+  }
+  for (const tool of CANDIDATE_RESEARCH_TOOLS) assert.equal(tool.command.some((part) => part.startsWith('/tmp')), false, tool.serverId);
+  assert.deepEqual(CANDIDATE_RESEARCH_TOOLS.find((tool) => tool.serverId === 'arxiv-mcp-server').command, ['arxiv-mcp-server', '--storage-path', '{storage}']);
 });
