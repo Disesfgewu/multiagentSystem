@@ -1,0 +1,51 @@
+name: Research tools
+
+on:
+  pull_request:
+    paths:
+      - src/research/**
+      - src/broker/**
+      - src/publish-policy.js
+      - test/research/**
+      - test/broker/**
+      - test/publish-policy.test.js
+      - .github/workflows/research.yml
+  push:
+    branches: [main]
+    paths:
+      - src/research/**
+      - src/broker/**
+      - src/publish-policy.js
+      - test/research/**
+      - test/broker/**
+      - test/publish-policy.test.js
+      - .github/workflows/research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    name: research (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        # 20 is the oldest runtime we target (VS Code's extension host); 24 is current.
+        node: ['20', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      # The archive reader needs the one runtime dependency.
+      - run: npm ci --ignore-scripts
+      # Node 20 cannot expand globs itself, so the shell does it (bash on Windows too). Explicit file paths otherwise.
+      - run: node --test test/research/*.test.js
+        shell: bash
+      - run: node --test test/broker/*.test.js test/publish-policy.test.js
+        shell: bash

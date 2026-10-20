@@ -848,3 +848,49 @@ test('closeIssue after a restart with an unknown outcome: closed with the same r
   assert.deepEqual(await stillOpen.broker.request(ask(notApplied)), { ok: true, number: 5 });
   assert.equal(stillOpen.calls.length, 1, 'confirmed still open: sent once');
 });
+
+// The researcher role reads and reports; it never writes to GitHub. The broker knows two callers, the PM and a worker.
+const researcherRequests = {
+  createIssue: { title: 't', body: 'b' },
+  editIssue: { number: 3, title: 't' },
+  closeIssue: { number: 3, reason: 'completed' },
+  claimIssue: { number: 3 },
+  createPr: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' },
+  commit: { headSha: HEAD },
+  push: { branch: 'feat/x', headSha: HEAD },
+  comment: { target: 'issue', number: 3, body: 'hi' },
+  reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD },
+  mergePr: { number: 7 },
+  deleteBranch: { number: 7, expectedHeadSha: HEAD }
+};
+
+test('a researcher can write nothing to GitHub: every operation is refused before the transport, whatever identity it claims', async () => {
+  assert.deepEqual(Object.keys(researcherRequests).sort(), Object.keys(OPERATIONS).sort(), 'this test covers every operation the broker has');
+  for (const [operation, fields] of Object.entries(researcherRequests)) {
+    for (const actor of [{ actorId: '30', role: 'researcher' }, { actorId: '10', role: 'researcher' }, { actorId: '20', role: 'Researcher' }, { actorId: '20', role: 'worker ' }, { actorId: '20', role: 'researcher', extra: 'pm' }]) {
+      const { broker, calls } = setup({ actor });
+      const result = await broker.request({ operation, requestId: id(), ...fields });
+      assert.equal(result.ok, false, `${operation} as ${actor.role}`);
+      assert.ok(['identity-unverified', 'role-forbidden'].includes(result.reason), `${operation}: ${result.reason}`);
+      assert.equal(calls.length, 0, `${operation} reached the transport`);
+    }
+    // The role cannot be claimed in the request either: the identity comes from the trusted source only.
+    const { broker, calls } = setup({ actor: { actorId: '30', role: 'researcher' } });
+    const claimed = await broker.request({ operation, requestId: id(), ...fields, role: 'pm', actorId: '10' });
+    assert.equal(claimed.ok, false);
+    assert.equal(calls.length, 0);
+    // And no operation lists the researcher among the roles that may ask.
+    assert.equal(OPERATIONS[operation].roles.includes('researcher'), false, `${operation} must not allow the researcher`);
+    assert.ok(OPERATIONS[operation].roles.every((role) => role === 'pm' || role === 'worker'), `${operation}: ${OPERATIONS[operation].roles}`);
+  }
+});
+
+test('the publish policy has no operation for the researcher either', () => {
+  const { evaluatePublishRequest } = require('../../src/publish-policy');
+  for (const operation of ['createIssue', 'editIssue', 'closeIssue', 'claimIssue', 'createPr', 'reviewPr', 'mergePr', 'deleteBranch']) {
+    for (const actorId of ['30', '10', '20']) {
+      const verdict = evaluatePublishRequest({ operation, role: 'researcher', actorId }, { pmActorId: '10' });
+      assert.equal(verdict.allowed, false, `${operation} as researcher ${actorId}`);
+    }
+  }
+});
