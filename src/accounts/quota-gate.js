@@ -89,22 +89,92 @@ function describePolicy(policyRead) {
   return `Limits: ${parts.join('; ')}.`;
 }
 
-/** What is known about this account's usage. Without a verified reading it says so and why. */
-function describeQuota(observations, now) {
-  const windows = summarizeQuota(observations, now);
-  if (windows.length === 0) return ['Usage: unknown. No verified usage source is connected for this account, so no percentage is shown.'];
-  return windows.map((w) => {
-    const used = w.usedPercent === null ? 'unknown' : `${w.usedPercent}% used`;
-    const observedMs = Date.parse(w.observedAt);
-    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
-    const futureTime = Number.isFinite(observedMs) && Number.isFinite(nowMs) && observedMs > nowMs;
-    const invalidTime = !Number.isFinite(observedMs) || !Number.isFinite(nowMs);
-    const trust = futureTime ? 'timestamp is in the future (not used to block)' : invalidTime ? 'invalid read time (not used to block)' : w.usedPercent === null ? 'invalid or missing reading (not used to block)' : w.gateEligible ? 'verified and current' : w.fresh && w.confidence === 'estimated' ? 'estimate (not used to block)' : w.fresh ? 'source unverified (not used to block)' : 'out of date (not used to block)';
-    const reset = w.resetsAt ? `, resets ${safeDetail(w.resetsAt, 40)}` : '';
-    return `Usage (${safe(w.window)}): ${used}, ${trust}${reset}. Read ${safeDetail(w.observedAt, 40) || 'at an unknown time'} from ${safeDetail(w.source, 60) || 'an unknown source'}.`;
-  });
+// Why an account has no usable usage number. A code is one specific, checkable situation; `short` is the
+// phrase for a list row, `detail` the sentence for the account details. Where the cause is inferred rather
+// than observed, the words say "likely". Unknown codes are ignored (the generic sentence stays).
+const UNKNOWN_REASONS = Object.freeze({
+  'no-source-agy': { short: 'no verified usage source for agy', detail: 'agy has no verified usage source, so its usage stays unknown and is never estimated.' },
+  'no-source-codex': { short: 'no verified usage source for Codex yet', detail: 'This extension has no verified Codex usage source connected yet, so its usage stays unknown and is never estimated.' },
+  'no-source-provider': { short: 'no verified usage source for this provider', detail: 'This provider has no verified usage source, so its usage stays unknown and is never estimated.' },
+  'bridge-not-enabled': { short: 'usage bridge not enabled', detail: 'The Claude status line bridge is not enabled for this account, so nothing reports its usage. Use Configure Claude Status Line Bridge to turn it on; readings then arrive only from a running session.' },
+  'bridge-other-statusline': { short: 'usage bridge not active', detail: 'A different status line command is set for this account, so the usage bridge is not active and nothing reports its usage. Use Configure Claude Status Line Bridge to review it.' },
+  'bridge-state-unknown': { short: 'bridge state unknown', detail: 'The Claude settings for this account could not be read, so it is not known whether the usage bridge is enabled.' },
+  'bridge-no-data': { short: 'bridge on, no reading yet', detail: 'The usage bridge is enabled but has not written a reading. Readings arrive only while a Claude session is running, so likely no session has run since it was enabled.' },
+  'reading-expired': { short: 'last reading is out of date', detail: 'The last reading is out of date, so it is not used to block and is listed below for reference only. A running Claude session refreshes it.' },
+  'file-unreadable': { short: 'usage file unreadable or unsafe', detail: 'The usage file for this account could not be read safely (missing permissions, a link, an unexpected shape or too large), so it was ignored.' },
+  'timestamp-future': { short: 'reading time is in the future', detail: 'The usage file claims it was written in the future, so it is not trusted and no percentage is shown.' },
+  'timestamp-invalid': { short: 'reading has no valid time', detail: 'The usage file has no valid read time, so it is not trusted and no percentage is shown.' },
+  'rate-limits-absent': { short: 'no rate limits reported', detail: 'The session reported no rate limits. Likely this account type does not report them (subscription accounts only), or no reply had completed yet.' },
+  'window-reset-passed': { short: 'window reset since the reading', detail: 'The usage window in the last reading has since reset, so that reading no longer describes the account.' }
+});
+
+const SECOND = 1000; const MINUTE = 60 * SECOND; const HOUR = 60 * MINUTE; const DAY = 24 * HOUR;
+const MAX_SPAN = 366 * DAY;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+function toMs(value) {
+  if (!(typeof value === 'string' && ISO_TIME.test(value))) return NaN;
+  return Date.parse(value);
 }
 
+function nowMs(now) {
+  const ms = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : NaN;
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+/**
+ * "resets in 2h 10m" for a reset time (ISO-8601 string) after `now`. A value that is not a valid time, is
+ * not after `now`, or is more than a year away shows "reset time unknown": it is never shown as a number.
+ */
+function formatResetTime(value, now) {
+  const at = toMs(value); const base = nowMs(now);
+  const span = at - base;
+  if (!Number.isFinite(span) || span <= 0 || span > MAX_SPAN) return 'reset time unknown';
+  if (span < MINUTE) return 'resets in under 1m';
+  if (span < HOUR) return `resets in ${Math.floor(span / MINUTE)}m`;
+  if (span < DAY) {
+    const m = Math.floor((span % HOUR) / MINUTE);
+    return `resets in ${Math.floor(span / HOUR)}h${m > 0 ? ` ${m}m` : ''}`;
+  }
+  const h = Math.floor((span % DAY) / HOUR);
+  return `resets in ${Math.floor(span / DAY)}d${h > 0 ? ` ${h}h` : ''}`;
+}
+
+/** "read 3 min ago" for the time a reading was taken. Invalid or future times show "read time unknown". */
+function formatReadTime(value, now) {
+  const at = toMs(value); const base = nowMs(now);
+  const age = base - at;
+  if (!Number.isFinite(age) || age < 0) return 'read time unknown';
+  if (age > MAX_SPAN) return 'read over a year ago';
+  if (age < MINUTE) return 'read just now';
+  if (age < HOUR) return `read ${Math.floor(age / MINUTE)} min ago`;
+  if (age < DAY) return `read ${Math.floor(age / HOUR)} h ago`;
+  return `read ${Math.floor(age / DAY)} d ago`;
+}
+
+/** What is known about this account's usage. Without a verified reading it says so and why. */
+function describeQuota(observations, now, unknownReason) {
+  const windows = summarizeQuota(observations, now);
+  const reason = typeof unknownReason === 'string' && Object.hasOwn(UNKNOWN_REASONS, unknownReason) ? UNKNOWN_REASONS[unknownReason] : null;
+  // The reason is only shown when no window has a current number: it never sits beside a current percentage.
+  // An out-of-date number may still be listed below it, labelled as not used.
+  const unknownLines = reason && windows.every((w) => !w.fresh)
+    ? [`Usage: unknown (${reason.short}).`, `Why: ${reason.detail}`]
+    : [];
+  if (windows.length === 0) return unknownLines.length > 0 ? unknownLines : ['Usage: unknown. No verified usage source is connected for this account, so no percentage is shown.'];
+  return [...unknownLines, ...windows.map((w) => {
+    const used = w.usedPercent === null ? 'unknown' : `${w.usedPercent}% used`;
+    const observedMs = Date.parse(w.observedAt);
+    const nowValue = nowMs(now);
+    const futureTime = Number.isFinite(observedMs) && Number.isFinite(nowValue) && observedMs > nowValue;
+    const invalidTime = !Number.isFinite(observedMs) || !Number.isFinite(nowValue);
+    const trust = futureTime ? 'timestamp is in the future (not used to block)' : invalidTime ? 'invalid read time (not used to block)' : w.usedPercent === null ? 'invalid or missing reading (not used to block)' : w.gateEligible ? 'verified and current' : w.fresh && w.confidence === 'estimated' ? 'estimate (not used to block)' : w.fresh ? 'source unverified (not used to block)' : 'out of date (not used to block)';
+    const reset = w.resetsAt ? `, ${formatResetTime(w.resetsAt, now)}` : '';
+    return `Usage (${safe(w.window)}): ${used}, ${trust}${reset}. ${capital(formatReadTime(w.observedAt, now))} from ${safeDetail(w.source, 60) || 'an unknown source'}.`;
+  })];
+}
+
+const capital = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const safeDetail = (value, max) => typeof value === 'string' ? Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, max).join('') : '';
 
 /**
@@ -145,4 +215,4 @@ function policyFromInput({ warn, block, max, unknownQuota }) {
   return { ok: false, problems: checked.problems.map((code) => words[code] ?? 'The limits are not valid.') };
 }
 
-module.exports = { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };
+module.exports = { gateLaunch, commitDispatch, describePolicy, describeQuota, formatResetTime, formatReadTime, UNKNOWN_REASONS, describeCurrentState, policyFromInput, wordsFor, LIMITS_NOTE, REASON_WORDS };

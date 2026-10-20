@@ -36,6 +36,8 @@ const COMMANDS = [
   'multiagentSystem.sessions.focus',
   'multiagentSystem.sessions.stop',
   'multiagentSystem.sessions.reopen',
+  // Interactive (input box): registration only, never executed headlessly.
+  'multiagentSystem.sessions.rename',
   'multiagentSystem.worktrees.list',
   'multiagentSystem.worktrees.create',
   'multiagentSystem.worktrees.remove',
@@ -172,7 +174,8 @@ async function accountFlow(workspace: string): Promise<void> {
   const overviewAccount = ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Host Work Account');
   assert.ok(overviewAccount, 'the overview lists each account even when no agent uses it');
   assert.match(String(overviewAccount.description ?? ''), /Usage: unknown.*Limits: none set/);
-  assert.match(String(overviewAccount.tooltip ?? ''), /No verified usage source/);
+  assert.match(String(overviewAccount.description ?? ''), /Usage: unknown \(usage bridge not enabled\)\./, 'the overview row says why usage is unknown');
+  assert.match(String(overviewAccount.tooltip ?? ''), /Why: The Claude status line bridge is not enabled/);
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Service identity: unknown/);
   assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Account isolation: unverified/);
@@ -319,7 +322,7 @@ async function accountFlow(workspace: string): Promise<void> {
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   const limitText = vscode.window.activeTextEditor?.document.getText() ?? '';
   assert.match(limitText, /Limits: warn at 70% used; pause new agents at 90%; at most 1 running at once; if usage is unknown, do not start new agents\./);
-  assert.match(limitText, /Usage: unknown\. No verified usage source is connected/);
+  assert.match(limitText, /Usage: unknown \(usage bridge not enabled\)\./);
   assert.doesNotMatch(limitText, /\d+% used, verified/, 'no usage percentage is invented');
   const cleared = await vscode.commands.executeCommand<{ ok: boolean }>(ACCOUNT_COMMANDS.limits, { id: created.profile.id, interactive: false, clear: true });
   assert.equal(cleared.ok, true);
@@ -903,6 +906,8 @@ export async function run(): Promise<void> {
 
   const registered = await vscode.commands.getCommands(true);
   for (const id of COMMANDS) assert.ok(registered.includes(id), `${id} is registered`);
+  // Registration only: these open modal dialogs or start programs, so they are never executed headless.
+  for (const name of ['enable', 'stop', 'revoke', 'status', 'setSecret']) assert.ok(registered.includes(`multiagentSystem.research.mcp.${name}`), `mcp.${name} is registered`);
   console.log(await runGitHubChecks(registered));
 
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
@@ -986,8 +991,19 @@ export async function run(): Promise<void> {
     } finally {
       (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
     }
+    // The editor removes a closed terminal from its list a moment after the close. So that a slow removal cannot be
+    // mistaken for a duplicate, wait (bounded) until every terminal of the group is one of the ones that were open
+    // before and still running. A terminal that was really created stays in the list and the wait ends without it
+    // going away, so the assertions below still fail on it. Nothing in this wait is a retry of the command.
+    const describe = (list: vscode.Terminal[]): string => JSON.stringify(list.map((terminal) => ({ name: terminal.name, known: openBefore.includes(terminal), exited: terminal.exitStatus === undefined ? null : (terminal.exitStatus.code ?? 'unknown') })));
+    try {
+      await waitFor(() => { const current = groupTerminals(); return current.length === EXPECTED_TITLES.length && current.every((terminal) => openBefore.includes(terminal) && terminal.exitStatus === undefined) ? current : undefined; }, 5000);
+    } catch {
+      // The assertions below report the failure; the log says what was there, to tell a real duplicate from timing.
+    }
     const openAfter = groupTerminals();
-    assert.equal(openAfter.length, EXPECTED_TITLES.length, 'rerunning opens no extra terminal of the group');
+    console.log(`host smoke: group terminals before rerun ${describe(openBefore)}; after ${describe(openAfter)}`);
+    assert.equal(openAfter.length, EXPECTED_TITLES.length, `rerunning opens no extra terminal of the group: ${describe(openAfter)}`);
     assert.ok(openAfter.every((terminal) => openBefore.includes(terminal)) && openBefore.every((terminal) => openAfter.includes(terminal)), 'rerunning focuses the very same terminals: none created, none replaced');
     assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');

@@ -72,7 +72,13 @@ async function main(): Promise<void> {
       ]
     });
   } finally {
-    fs.rmSync(sandbox, { recursive: true, force: true });
+    // On Windows the editor can still hold a file in the folder for a moment after it exits. The folder is only
+    // temporary, so a failed cleanup is logged and never turns a passed run into a failed one.
+    try {
+      fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    } catch (error) {
+      console.warn(`temporary folder could not be removed (${(error as NodeJS.ErrnoException).code ?? 'unknown'}); left for the runner to clean up`);
+    }
   }
 }
 

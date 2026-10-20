@@ -33,6 +33,28 @@ test('a requested model is launched, kept on reopen and stored as a request rath
   assert.equal(restored.manager.get(reopened.id)?.state, 'unknown');
 });
 
+test('an unrecognized shell refuses start and reopen: no terminal, no text, no running session', async () => {
+  let shell: 'posix' | null = 'posix';
+  const r = rig({ detectShellType: () => shell });
+  await r.manager.initialize();
+  const first = await start(r, {});
+  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude', newline: true }]);
+  r.manager.stop(first.id);
+  const terminalsBefore = r.terminals.length;
+  const sessionsBefore = r.manager.list().length;
+  shell = null;
+  await rejectsWithCode(start(r, { name: 'Unknown shell' }), 'unsupported-shell');
+  await rejectsWithCode(r.manager.reopen(first.id), 'unsupported-shell');
+  assert.equal(r.terminals.length, terminalsBefore, 'no terminal is created for a shell that cannot be quoted for');
+  assert.ok(r.terminals.every((terminal) => terminal.sent.length <= 1), 'nothing was typed');
+  assert.equal(r.manager.list().length, sessionsBefore, 'no session record was created');
+  assert.equal(r.manager.list().some((session) => session.state === 'launch-requested'), false);
+  // A shell-only terminal types nothing, so it needs no quoting and is still allowed.
+  const shellOnly = await start(r, { launch: false, name: 'Shell only' });
+  assert.equal(shellOnly.state, 'terminal-open');
+  assert.deepEqual(r.terminals[r.terminals.length - 1].sent, []);
+});
+
 test('invalid or unsupported model requests never create terminals, including shell-only starts', async () => {
   for (const requestedModel of ['bad;echo', '--dangerously-bypass-approvals-and-sandbox', 'bad\ncommand']) {
     const r = rig();
@@ -395,6 +417,58 @@ test('a failing store never breaks a session and reports without details', async
   assert.equal(session.state, 'launch-requested');
   assert.equal(r.persistErrors, 1);
   assert.equal(r.manager.list().length, 1);
+});
+
+test('rename changes a live session and a restored one, trims, and survives a snapshot round trip', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const live = await start(r, { name: 'Before' });
+  const view = await r.manager.rename(live.id, '  After  ');
+  assert.equal(view.name, 'After');
+  assert.equal(r.manager.get(live.id)?.name, 'After');
+  assert.equal(view.state, live.state, 'a rename changes no state');
+  assert.equal(r.manager.get(live.id)?.terminalOpen, true);
+  assert.equal(r.terminals[0].sent.length, 1, 'a rename types nothing into the terminal');
+  assert.equal(r.store.saved?.find((record) => record.id === live.id)?.name, 'After');
+  const restored = rig({}, r.store);
+  await restored.manager.initialize();
+  assert.equal(restored.manager.get(live.id)?.name, 'After', 'the name survives a snapshot round trip');
+  assert.equal(restored.manager.get(live.id)?.state, 'unknown');
+  const again = await restored.manager.rename(live.id, 'Restored name');
+  assert.equal(again.name, 'Restored name');
+  assert.equal(again.state, 'unknown', 'renaming a restored session never makes it look active');
+  assert.equal(restored.terminals.length, 0);
+  const third = rig({}, restored.store);
+  await third.manager.initialize();
+  assert.equal(third.manager.get(live.id)?.name, 'Restored name');
+});
+
+test('rename refuses bad names and unknown ids and changes nothing', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const session = await start(r, { name: 'Keep me' });
+  const saves = r.store.saves;
+  const bad = ['', '   ', 'x'.repeat(81), 'a\nb', 'a\u0000b', 'a' + String.fromCodePoint(0x202e) + 'b', 'a' + String.fromCodePoint(0x2028) + 'b', undefined, null, 5, {}];
+  for (const name of bad) await rejectsWithCode(r.manager.rename(session.id, name), 'invalid-name');
+  await r.manager.rename(session.id, 'x'.repeat(80));
+  await r.manager.rename(session.id, 'Keep me');
+  await r.manager.rename(session.id, 'Keep me');
+  await rejectsWithCode(r.manager.rename('no-such-session', 'Name'), 'session-not-found');
+  await rejectsWithCode(r.manager.rename(undefined as unknown as string, 'Name'), 'session-not-found');
+  assert.equal(r.manager.get(session.id)?.name, 'Keep me');
+  assert.equal(r.store.saves, saves + 2, 'only the two valid changes were saved; refused renames save nothing');
+});
+
+test('a rename that cannot be saved is reported and keeps the old name', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const session = await start(r, { name: 'Old name' });
+  r.store.failing = true;
+  await rejectsWithCode(r.manager.rename(session.id, 'New name'), 'persist-failed');
+  assert.equal(r.manager.get(session.id)?.name, 'Old name', 'the old name is not lost');
+  r.store.failing = false;
+  await r.manager.rename(session.id, 'New name');
+  assert.equal(r.store.saved?.find((record) => record.id === session.id)?.name, 'New name');
 });
 
 test('without a store sessions live only in memory and start empty', async () => {

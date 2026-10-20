@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const { claudeQuotaFromStatusLine } = require('./observation') as {
+const { claudeQuotaFromStatusLine, isFresh } = require('./observation') as {
+  isFresh(observation: unknown, now: Date): boolean;
   claudeQuotaFromStatusLine(payload: unknown, options: { profileId: string; observedAt: Date | string }): {
     profileId: string;
     observations: unknown[];
@@ -398,43 +399,87 @@ export function disableStatusLineBridge(configDir: string, bridgeScriptPath?: st
   }
 }
 
-/**
- * Reads raw quota JSON payload written by the bridge script.
- */
-export function readClaudeQuotaFile(configDir: string): { observedAt?: string; rate_limits?: unknown; model?: string } | null {
+const MAX_QUOTA_FILE_BYTES = 1024 * 1024;
+
+/** Why a quota file could not be used. `absent` means there is no file at all. */
+type QuotaFileRead =
+  | { kind: 'ok'; data: { observedAt?: string; rate_limits?: unknown; model?: string } }
+  | { kind: 'absent' }
+  | { kind: 'unreadable' };
+
+function readQuotaFileChecked(configDir: string): QuotaFileRead {
+  const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
+  let stat: fs.Stats;
   try {
-    const quotaPath = path.join(configDir, STATUSLINE_QUOTA_FILE_NAME);
-    if (!fs.existsSync(quotaPath)) return null;
+    stat = fs.lstatSync(quotaPath);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'absent' } : { kind: 'unreadable' };
+  }
+  // A link, a directory or an oversized file is never trusted as the bridge's output.
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_QUOTA_FILE_BYTES) return { kind: 'unreadable' };
+  try {
     const content = fs.readFileSync(quotaPath, 'utf8');
-    if (!content.trim()) return null;
+    if (!content.trim()) return { kind: 'unreadable' };
     const parsed = JSON.parse(content);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'unreadable' };
+    return { kind: 'ok', data: parsed };
   } catch {
-    return null;
+    return { kind: 'unreadable' };
   }
 }
 
 /**
+ * Reads raw quota JSON payload written by the bridge script.
+ */
+export function readClaudeQuotaFile(configDir: string): { observedAt?: string; rate_limits?: unknown; model?: string } | null {
+  const read = readQuotaFileChecked(configDir);
+  return read.kind === 'ok' ? read.data : null;
+}
+
+/**
+ * Why no usable usage number exists for a Claude profile. Each code is one specific, checkable
+ * situation; inference is only ever worded as "likely" by the text for that code (quota-gate.js).
+ */
+export type QuotaUnknownCode =
+  | 'bridge-not-enabled' | 'bridge-other-statusline' | 'bridge-state-unknown' | 'bridge-no-data' | 'file-unreadable'
+  | 'timestamp-invalid' | 'timestamp-future' | 'rate-limits-absent' | 'window-reset-passed' | 'reading-expired';
+
+function claudeQuotaReading(profileId: string, configDir: string, now: Date): { observations: unknown[]; reason: QuotaUnknownCode | null } {
+  const read = readQuotaFileChecked(configDir);
+  if (read.kind === 'absent') {
+    const inspected = inspectStatusLineConfig(configDir);
+    if (inspected.status === 'active') return { observations: [], reason: 'bridge-no-data' };
+    if (inspected.status === 'unreadable') return { observations: [], reason: 'bridge-state-unknown' };
+    if (inspected.status === 'custom') return { observations: [], reason: 'bridge-other-statusline' };
+    return { observations: [], reason: 'bridge-not-enabled' };
+  }
+  if (read.kind === 'unreadable') return { observations: [], reason: 'file-unreadable' };
+  const fileData = read.data;
+
+  // A missing or malformed timestamp cannot turn an old file into a fresh reading.
+  if (typeof fileData.observedAt !== 'string') return { observations: [], reason: 'timestamp-invalid' };
+  const observedAt = new Date(fileData.observedAt);
+  if (!Number.isFinite(observedAt.getTime())) return { observations: [], reason: 'timestamp-invalid' };
+  if (observedAt.getTime() > now.getTime()) return { observations: [], reason: 'timestamp-future' };
+
+  const observations = claudeQuotaFromStatusLine({ rate_limits: fileData.rate_limits }, { profileId, observedAt }).observations as Array<{ field?: string; value?: unknown; reason?: unknown }>;
+  const percents = observations.filter((entry) => typeof entry.field === 'string' && entry.field.endsWith('.used_percent'));
+  if (percents.some((entry) => typeof entry.value === 'number' && isFresh(entry, now))) return { observations, reason: null };
+  const rateLimits = fileData.rate_limits;
+  if (!rateLimits || typeof rateLimits !== 'object') return { observations, reason: 'rate-limits-absent' };
+  if (percents.some((entry) => typeof entry.value === 'number')) return { observations, reason: 'reading-expired' };
+  if (percents.some((entry) => entry.reason === 'window-reset-passed')) return { observations, reason: 'window-reset-passed' };
+  return { observations, reason: null };
+}
+
+/**
  * Reads quota observations for a Claude account profile.
- * - If no file exists: returns [] (observations unknown).
+ * - If no file exists, or it cannot be trusted: returns [] (observations unknown).
  * - If rate_limits is null (non Pro/Max or no session response): returns observations with value null and honest reason.
  * - If valid rate_limits: returns observations with actual percent and reset time.
  */
 export function readClaudeQuotaObservations(profileId: string, configDir: string, now: Date = new Date()): unknown[] {
-  const fileData = readClaudeQuotaFile(configDir);
-  if (!fileData) return [];
-
-  // A missing or malformed timestamp cannot turn an old file into a fresh reading.
-  if (typeof fileData.observedAt !== 'string') return [];
-  const observedAt = new Date(fileData.observedAt);
-  if (!Number.isFinite(observedAt.getTime()) || observedAt.getTime() > now.getTime()) return [];
-
-  const result = claudeQuotaFromStatusLine({ rate_limits: fileData.rate_limits }, {
-    profileId,
-    observedAt
-  });
-  return result.observations;
+  return claudeQuotaReading(profileId, configDir, now).observations;
 }
 
 const profileInfoCache = new Map<string, { provider: string; configDir: string }>();
@@ -454,6 +499,20 @@ export function quotaObservations(accountProfileId: string, profile?: { provider
     return [];
   }
   return readClaudeQuotaObservations(accountProfileId, target.configDir, now);
+}
+
+/**
+ * The specific reason an account has no usable usage number, as a code the wording table in
+ * quota-gate.js understands, or null when a current reading exists or the reason is not one we can
+ * state (callers then keep the generic "unknown"). Never returns a number and never guesses.
+ */
+export function quotaUnknownReason(accountProfileId: string, profile?: { provider: string; configDir: string }, now: Date = new Date()): string | null {
+  const target = profile ?? profileInfoCache.get(accountProfileId);
+  if (!target) return null;
+  if (target.provider === 'agy') return 'no-source-agy';
+  if (target.provider === 'codex') return 'no-source-codex';
+  if (target.provider !== 'claude') return 'no-source-provider';
+  return claudeQuotaReading(accountProfileId, target.configDir, now).reason;
 }
 
 export interface StatusLineUi {

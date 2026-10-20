@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
-import { SessionManager, SessionView } from './manager';
+import { SessionManager, SessionView, cleanName } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
 import { normalizeRequestedModel, supportsModelSelection, knownModelsForProvider } from '../providers/modelSelection';
@@ -27,6 +27,7 @@ const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
 import { gateAccountLaunch } from '../accounts/quotaGateUi';
+import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
@@ -37,7 +38,8 @@ export const SESSION_COMMANDS = {
   start: 'multiagentSystem.sessions.start',
   focus: 'multiagentSystem.sessions.focus',
   stop: 'multiagentSystem.sessions.stop',
-  reopen: 'multiagentSystem.sessions.reopen'
+  reopen: 'multiagentSystem.sessions.reopen',
+  rename: 'multiagentSystem.sessions.rename'
 } as const;
 
 const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: Record<string, string> };
@@ -50,7 +52,8 @@ const MESSAGES: Record<string, string> = {
   'executable-not-found': 'This CLI could not be found. Install it from the official provider or add its executable to PATH, then retry.',
   'account-isolation-unknown': '此 provider 的帳號隔離未驗證，無法指派獨立帳號。請使用 CLI 預設登入，或先選擇已支援的 provider。',
   'invalid-account-list': 'Account profiles could not be validated. Refresh the accounts view and try again.',
-  'invalid-name': 'Enter a session name.',
+  'invalid-name': 'Enter a session name of 1–80 characters without control, line-break or direction-changing characters.',
+  'persist-failed': 'The new name could not be saved, so the session keeps its old name. Try again.',
   'session-not-found': 'That session no longer exists.',
   'terminal-not-open': 'The session has no open terminal in this window.',
   'session-still-open': 'The session still has an open terminal. Stop it first, or focus it.',
@@ -101,9 +104,14 @@ async function resolveProject(cwd: string): Promise<{ repoId: string }> {
   }
 }
 
+function unsupportedShellMessage(shell: string | undefined): string {
+  const found = shellFileName(shell);
+  return `${found ? `The terminal shell "${found}"` : 'The terminal shell (it could not be identified)'} is not one this extension can type a command into safely, so nothing was started. Set the VS Code default terminal profile to bash, zsh, sh, PowerShell or Command Prompt, then retry.`;
+}
+
 function failure(error: unknown, interactive: boolean): SessionOutcome {
   const code = typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : 'unexpected-error';
-  const message = code === 'quota-gate' ? errorMessage(error) : MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
+  const message = code === 'unsupported-shell' ? unsupportedShellMessage(vscode.env.shell) : code === 'quota-gate' ? errorMessage(error) : MESSAGES[code] ?? `Unexpected error: ${errorMessage(error)}`;
   if (interactive) void vscode.window.showErrorMessage(message);
   return { ok: false, code, message };
 }
@@ -170,16 +178,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
     },
     terminalTitle,
-    detectShellType: () => {
-      const shell = (vscode.env.shell ?? '').toLowerCase();
-      if (shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe') || shell.endsWith('pwsh')) {
-        return 'powershell';
-      }
-      if (shell.endsWith('cmd.exe') || shell.endsWith('cmd')) {
-        return 'cmd';
-      }
-      return process.platform === 'win32' ? 'powershell' : 'posix';
-    },
+    detectShellType: () => detectShellType(vscode.env.shell, process.platform),
     onPersistError: () => void vscode.window.showWarningMessage('Session records could not be saved. Existing saved records were left untouched. These sessions remain in this window only; reload the workspace before trying to save again.'),
     onPersistenceBlocked: () =>
       void vscode.window.showWarningMessage('Saved sessions could not be read, so sessions are not being saved in this window. The saved data was left untouched.')
@@ -652,6 +651,34 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
   }
 
+  // Always interactive: the person types the name. A caller can name the session (the overview row does),
+  // but nothing a command argument carries can supply or skip the name prompt, in any mode.
+  async function rename(value: unknown): Promise<SessionOutcome> {
+    try {
+      const input = options(value);
+      let id = typeof input.id === 'string' && input.id ? input.id : undefined;
+      if (!id) {
+        const picked = await pickSession('Choose a session to rename', () => true);
+        if (!picked) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        id = picked.id;
+      }
+      const target = manager.get(id);
+      if (!target) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
+      const typed = await vscode.window.showInputBox({
+        title: 'Rename session',
+        prompt: 'The new name is shown in the overview and saved with the session. An open terminal keeps the title it has.',
+        value: target.name,
+        validateInput: (text) => (cleanName(text) ? undefined : MESSAGES['invalid-name'])
+      });
+      if (typed === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+      const session = await manager.rename(id, typed);
+      changed.fire();
+      return { ok: true, session };
+    } catch (error) {
+      return failure(error, true);
+    }
+  }
+
   async function list(value: unknown): Promise<SessionOutcome> {
     const input = options(value);
     if (input.interactive === false) return { ok: true, sessions: observations.enrich(manager.list()) };
@@ -703,6 +730,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.focus, (value?: unknown) => act('focus', value)),
     // A caller-supplied id asks the person first (see act); the overview row's own Stop action does not.
     vscode.commands.registerCommand(SESSION_COMMANDS.stop, (value?: unknown) => act('stop', requireInteractive(options(value)), isOwnUiItem(value))),
+    vscode.commands.registerCommand(SESSION_COMMANDS.rename, (value?: unknown) => rename(value)),
     vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', withoutAcknowledge(requireInteractive(options(value)))))
   );
 

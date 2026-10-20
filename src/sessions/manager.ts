@@ -98,7 +98,11 @@ export interface ManagerDeps<T extends TerminalHandle> {
   newToken?: () => string;
   now?: () => string;
   terminalTitle?: (name: string) => string;
-  detectShellType?: () => 'posix' | 'powershell' | 'cmd';
+  /**
+   * The quoting family of the terminal's shell, or null when it is not one this extension can quote
+   * for. A null answer refuses a launch (`unsupported-shell`) before any terminal exists.
+   */
+  detectShellType?: () => 'posix' | 'powershell' | 'cmd' | null;
   /** Called when saving fails. Receives no details: they could contain local paths. */
   onPersistError?: () => void;
   /**
@@ -299,11 +303,16 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   }
 
   private async persist(): Promise<void> {
+    if ((await this.save()) === 'failed') this.deps.onPersistError?.();
+  }
+
+  /** 'saved', 'skipped' (no store, or saving is switched off) or 'failed'. Never throws. */
+  private async save(): Promise<'saved' | 'skipped' | 'failed'> {
     const store = this.deps.store;
-    if (!store) return;
+    if (!store) return 'skipped';
     if (!this.loaded) {
       this.notifyBlocked();
-      return;
+      return 'skipped';
     }
     const records = this.registry.snapshot().map((identity) => ({
       ...identity,
@@ -314,9 +323,35 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }));
     try {
       await store.save(records);
+      return 'saved';
     } catch {
-      this.deps.onPersistError?.();
+      return 'failed';
     }
+  }
+
+  /**
+   * Renames a session's record (live or restored) with the same rule as start and restore. The
+   * terminal handle has no rename, so an open terminal keeps the title it was created with. If the
+   * new name cannot be saved, the old name is kept and `persist-failed` is thrown.
+   */
+  async rename(id: string, name: unknown): Promise<SessionView> {
+    await this.ready();
+    if (typeof id !== 'string' || !this.registry.get(id)) throw new SessionError('session-not-found');
+    const clean = cleanName(name);
+    if (!clean) throw new SessionError('invalid-name');
+    const previous = this.names.get(id);
+    if (previous === clean) return this.view(id);
+    this.names.set(id, clean);
+    const result = await this.save();
+    if (result === 'failed') {
+      // Put the old name back, unless a later change already replaced the one set here.
+      if (this.names.get(id) === clean) {
+        if (previous === undefined) this.names.delete(id);
+        else this.names.set(id, previous);
+      }
+      throw new SessionError('persist-failed');
+    }
+    return this.view(id);
   }
 
   /**
@@ -396,6 +431,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
+    // Decided before a terminal exists: an unrecognized shell gets no terminal, no text and no state.
+    const shellType = launch ? this.deps.detectShellType?.() : undefined;
+    if (shellType === null) throw new SessionError('unsupported-shell');
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
     const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();
@@ -432,7 +470,6 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const shellType = this.deps.detectShellType?.();
       const commandLine = formatShellCommandLine(executable, allArgs, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);

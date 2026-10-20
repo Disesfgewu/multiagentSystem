@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { observe } = require('../../src/accounts/observation');
-const { gateLaunch, commitDispatch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
+const { gateLaunch, commitDispatch, describePolicy, describeQuota, formatResetTime, formatReadTime, describeCurrentState, policyFromInput, wordsFor, REASON_WORDS, LIMITS_NOTE } = require('../../src/accounts/quota-gate');
 const { QuotaDispatcher } = require('../../src/accounts/quota-policy');
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
@@ -107,7 +107,7 @@ test('usage is unknown when no verified source exists, and a reading is shown wi
   assert.equal(/%/.test(describeQuota([], NOW)[0]), false, 'no percentage is invented');
   const lines = describeQuota([reading('five_hour', 40), observe('quota.five_hour.resets_at', '2026-10-16T17:00:00.000Z', { source: 'synthetic', observedAt: new Date(NOW.getTime() - 60_000), validForMs: 600_000 }), reading('seven_day', 20, { confidence: 'estimated' }), reading('old', 10, { observedAt: new Date(NOW.getTime() - 3_600_000) })], NOW);
   assert.equal(lines.length, 3);
-  assert.match(lines[0], /^Usage \(five_hour\): 40% used, verified and current, resets 2026-10-16T17:00:00.000Z\. Read .* from synthetic\./);
+  assert.match(lines[0], /^Usage \(five_hour\): 40% used, verified and current, resets in 5h\. Read 1 min ago from synthetic\./);
   assert.match(lines.find((line) => line.includes('seven_day')), /estimate \(not used to block\)/);
   assert.match(lines.find((line) => line.includes('(old)')), /out of date \(not used to block\)/);
   assert.equal(describeQuota([reading('x', null)], NOW)[0].includes('unknown'), true);
@@ -213,4 +213,35 @@ test('different real accounts never share a slot', () => {
   const b = commitDispatch({ policyRead, observations: [reading('w', 10)], now: NOW, dispatcher, accountKey: 'acct-b' });
   assert.equal(a.ok, true);
   assert.equal(b.ok, true);
+});
+
+test('formatResetTime and formatReadTime: units, boundaries, and values that must never become a number', () => {
+  const at = (ms) => new Date(NOW.getTime() + ms).toISOString();
+  const M = 60_000; const H = 60 * M; const D = 24 * H;
+  const reset = [
+    [30_000, 'resets in under 1m'], [M, 'resets in 1m'], [59 * M + 59_000, 'resets in 59m'], [H, 'resets in 1h'],
+    [2 * H + 10 * M, 'resets in 2h 10m'], [23 * H + 59 * M, 'resets in 23h 59m'], [D, 'resets in 1d'], [3 * D + 4 * H, 'resets in 3d 4h'], [365 * D, 'resets in 365d']
+  ];
+  for (const [ms, text] of reset) assert.equal(formatResetTime(at(ms), NOW), text, text);
+  for (const bad of [at(0), at(-1), at(-D), at(367 * D), '9999-12-31T00:00:00.000Z', 'soon', '', '5', '2026-10-16', 1760000000, null, undefined, {}, [], NaN, '2026-13-45T00:00:00Z', 'resets 2026-10-16T17:00:00.000Z'])
+    assert.equal(formatResetTime(bad, NOW), 'reset time unknown', String(bad));
+  assert.equal(formatResetTime(at(H), undefined), 'reset time unknown');
+  assert.equal(formatResetTime(at(H), new Date(NaN)), 'reset time unknown');
+  assert.equal(formatResetTime(at(H), NOW.getTime()), 'resets in 1h');
+  const read = [[0, 'read just now'], [59_000, 'read just now'], [M, 'read 1 min ago'], [3 * M, 'read 3 min ago'], [59 * M, 'read 59 min ago'], [H, 'read 1 h ago'], [23 * H, 'read 23 h ago'], [D, 'read 1 d ago'], [30 * D, 'read 30 d ago'], [366 * D, 'read 366 d ago'], [367 * D, 'read over a year ago']];
+  for (const [ago, text] of read) assert.equal(formatReadTime(at(-ago), NOW), text, text);
+  for (const bad of [at(1), at(D), '9999-12-31T00:00:00.000Z', 'x', '', '3', null, undefined, 12, {}, '2026-13-45T00:00:00Z'])
+    assert.equal(formatReadTime(bad, NOW), 'read time unknown', String(bad));
+  assert.equal(formatReadTime(at(-M), new Date('nope')), 'read time unknown');
+});
+
+test('describeQuota shows an invalid or past reset as unknown, never the raw stored string', () => {
+  const read = new Date(NOW.getTime() - 60_000);
+  const lines = (resetValue) => describeQuota([reading('five_hour', 40), observe('quota.five_hour.resets_at', resetValue, { source: 'synthetic', observedAt: read, validForMs: 600_000 })], NOW)[0];
+  assert.match(lines('2026-10-16T14:10:00.000Z'), /, resets in 2h 10m\. Read 1 min ago from synthetic\./);
+  for (const bad of ['2026-10-16T11:00:00.000Z', 'garbage', '9999-01-01T00:00:00Z']) {
+    const line = lines(bad);
+    assert.match(line, /, reset time unknown\./);
+    assert.equal(line.includes(bad), false);
+  }
 });

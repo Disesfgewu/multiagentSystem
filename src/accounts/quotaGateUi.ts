@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { accountService, SessionUse } from './accountRuntime';
-import { quotaObservations, registerProfileForQuota } from './claudeStatusLine';
+import { quotaObservations, quotaUnknownReason, registerProfileForQuota } from './claudeStatusLine';
 import { privateStorage } from '../storage/storageCommands';
 
 export { quotaObservations, registerProfileForQuota };
@@ -12,7 +12,7 @@ const { loadPolicy, savePolicy } = require('./quota-policy') as {
 const { gateLaunch, describePolicy, describeQuota, describeCurrentState, policyFromInput, wordsFor } = require('./quota-gate') as {
   gateLaunch(input: Record<string, unknown>): { action: 'allow' | 'warn' | 'confirm' | 'block'; allowed: boolean; overridable: boolean; lines: string[]; note: string | null; reasons: Array<{ code: string }> };
   describePolicy(read: unknown): string;
-  describeQuota(observations: unknown[], now: Date): string[];
+  describeQuota(observations: unknown[], now: Date, unknownReason?: string | null): string[];
   describeCurrentState(decision: { action: string; lines: string[] }): string;
   policyFromInput(input: Record<string, unknown>): { ok: boolean; policy?: Record<string, unknown>; problems: string[] };
   wordsFor(reason: { code: string }): string;
@@ -69,6 +69,8 @@ interface GroupState {
   fingerprint: string;
   policyRead: { ok: boolean; stored?: boolean; policy?: Record<string, unknown> };
   observations: any[];
+  /** Why this profile itself has no usable usage number, when that can be stated. */
+  unknownReason?: string | null;
 }
 
 type AccountsOk = { store: unknown; service: { list(): { ok: boolean; profiles?: any[] }; get(id: string): { ok: boolean; profile?: any } } };
@@ -100,7 +102,7 @@ function loadGroupState(accounts: AccountsOk, profileId: string, now: Date): Gro
   // Readings carry no account: after a profile changed account, only readings that can be shown to follow the change are used.
   const ownReadings = trustedReadings(quotaObservations(profileId, ownProfile), readingsTrust(accounts.store, profileId));
   const observations = groupReadings(ownReadings, group.current, readingsById, now);
-  return { ok: true, ids: group.ids, fingerprint: group.fingerprint, policyRead, observations };
+  return { ok: true, ids: group.ids, fingerprint: group.fingerprint, policyRead, observations, unknownReason: quotaUnknownReason(profileId, ownProfile, now) };
 }
 
 export type GateOutcome = { ok: true; release: () => Promise<void> } | { ok: false; code: string; message: string };
@@ -301,7 +303,7 @@ export async function limitLines(accountProfileId: string, sessions: () => Sessi
   const state = loadGroupState(accounts as any, accountProfileId, now);
   if (!state.ok) return ['Limits: which profiles share this account could not be established safely, so new agents are held back.'];
   const { policyRead, observations, ids: duplicateIds } = state;
-  const lines = [describePolicy(policyRead), ...describeQuota(observations, now)];
+  const lines = [describePolicy(policyRead), ...describeQuota(observations, now, state.unknownReason)];
   if (duplicateIds.length > 0) {
     lines.push(`Duplicate account: shares limits and quota with ${duplicateIds.join(', ')}.`);
   }
