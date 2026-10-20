@@ -30,7 +30,7 @@
 
 ## macOS 平台模組（Refs #25）
 
-`src/isolation/macos.js` 是 macOS 的 `probe` 實作，驗證 harness 就是 `createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`（測試見 `test/isolation/macos.test.js`）。
+`src/isolation/macos.js` 提供 macOS 的積木（Seatbelt 設定檔產生器、環境憑證清除）；實際去試每條旁路的驗證 harness 是**測試程式碼** `test/isolation/macos-harness.js`（`createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`，測試見 `test/isolation/macos.test.js`）。harness 不隨擴充套件發佈：它的合成憑證與信箱正是發佈掃描必須擋下的形狀，所以不放進 `src/`。因此目前**擴充套件執行時無法自行跑這個驗證**；要在執行時使用，需要另外決定怎麼產生探測夾具。
 
 **機制**：Seatbelt，透過 `/usr/bin/sandbox-exec`。Apple 把這個指令標為 deprecated；它是系統提供的「在設定檔下執行一個程序」的方式，不是長期承諾。設定檔由 `seatbeltProfile` 產生：預設全允許，但**一律拒絕網路**（只放行指定的本機埠）、拒絕讀取指定路徑、拒絕寫入指定路徑。路徑與埠不合格（相對路徑、含引號／括號／反斜線／控制字元／雙向字元、不是整數埠）直接丟錯，不會產生比呼叫端要求更開放的設定檔。
 

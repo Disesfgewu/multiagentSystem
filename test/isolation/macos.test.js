@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { createMacosModule, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { createMacosModule } = require('./macos-harness');
 const { CHANNELS, collectProbes, assessIsolation, decideLaunch } = require('../../src/isolation/capabilities');
 
 const real = process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC);
