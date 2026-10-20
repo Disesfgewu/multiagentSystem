@@ -3,6 +3,7 @@
 const roles = Object.freeze({
   createIssue: 'pm',
   editIssue: 'pm',
+  closeIssue: 'pm',
   claimIssue: 'worker',
   createPr: 'worker',
   reviewPr: 'pm',

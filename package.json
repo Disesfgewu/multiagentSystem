@@ -34,6 +34,7 @@
     "onCommand:multiagentSystem.reports.publicFeedback",
     "onCommand:multiagentSystem.reports.reviewPullRequest",
     "onCommand:multiagentSystem.reports.mergePullRequest",
+    "onCommand:multiagentSystem.reports.closeIssue",
     "onCommand:multiagentSystem.reports.configurePublisher",
     "onCommand:multiagentSystem.reports.configureMergeAuthority",
     "onCommand:multiagentSystem.reports.backToList",
@@ -260,6 +261,7 @@
       { "command": "multiagentSystem.reports.publicFeedback", "title": "Multiagent: Publish Feedback for Open Report", "icon": "$(comment-discussion)" },
       { "command": "multiagentSystem.reports.reviewPullRequest", "title": "Multiagent: Submit Formal Pull Request Review", "icon": "$(check)" },
       { "command": "multiagentSystem.reports.mergePullRequest", "title": "Multiagent: Merge Pull Request from Report", "icon": "$(git-merge)" },
+      { "command": "multiagentSystem.reports.closeIssue", "title": "Multiagent: Close Issue from Report", "icon": "$(issue-closed)" },
       { "command": "multiagentSystem.reports.configurePublisher", "title": "Multiagent: Configure Public Feedback Publisher" },
       { "command": "multiagentSystem.reports.configureMergeAuthority", "title": "Multiagent: Configure Pull Request Merge Authority" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
@@ -318,7 +320,8 @@
         { "command": "multiagentSystem.reports.feedback", "when": "resourceScheme == multiagent-report", "group": "navigation@3" },
         { "command": "multiagentSystem.reports.publicFeedback", "when": "resourceScheme == multiagent-report", "group": "navigation@4" },
         { "command": "multiagentSystem.reports.reviewPullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@5" },
-        { "command": "multiagentSystem.reports.mergePullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@6" }
+        { "command": "multiagentSystem.reports.mergePullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@6" },
+        { "command": "multiagentSystem.reports.closeIssue", "when": "resourceScheme == multiagent-report && resourcePath =~ /issue-/", "group": "navigation@5" }
       ],
       "view/title": [
         { "command": "multiagentSystem.reports.refresh", "when": "view == multiagentSystem.issuesReportView || view == multiagentSystem.prsReportView", "group": "navigation" },

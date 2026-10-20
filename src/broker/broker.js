@@ -36,6 +36,7 @@ const storeRecordId = (key) => `broker-req-${crypto.createHash('sha256').update(
 const OPERATIONS = Object.freeze({
   createIssue: { roles: ['pm'], fields: { title: text, body: text } },
   editIssue: { roles: ['pm'], fields: { number: positive }, optional: { title: text, body: text } },
+  closeIssue: { roles: ['pm'], fields: { number: positive, reason: (v) => v === 'completed' || v === 'not_planned' } },
   claimIssue: { roles: ['worker'], fields: { number: positive } },
   createPr: { roles: ['worker'], fields: { title: text, body: text, headBranch: (v) => typeof v === 'string' && BRANCH.test(v), headSha: (v) => typeof v === 'string' && SHA.test(v), baseBranch: (v) => typeof v === 'string' && BRANCH.test(v) } },
   commit: { roles: ['worker'], fields: { headSha: (v) => typeof v === 'string' && SHA.test(v) } },
@@ -53,6 +54,7 @@ const OPERATIONS = Object.freeze({
 const EXPECTED_PERMISSIONS = Object.freeze({
   createIssue: 'issues:write',
   editIssue: 'issues:write',
+  closeIssue: 'issues:write',
   claimIssue: 'issues:write',
   createPr: 'pull_requests:write, contents:read',
   commit: 'contents:write',
@@ -192,6 +194,13 @@ class Broker {
         if (issue.data.state === 'open' && issue.data.assignees.length === 0) return { status: 'not-applied' };
         return { status: 'unverified' };
       }
+      if (operation === 'closeIssue') {
+        const issue = await this.d.reader.getIssue(payload.number, { forceRefresh: true });
+        if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data) || issue.data.isPullRequest !== false) return { status: 'unverified' };
+        // Closed with a different reason than asked is not the same write: only the exact reason counts as applied.
+        if (issue.data.state === 'closed') return issue.data.stateReason === payload.reason ? { status: 'already-applied', result: { ok: true, number: payload.number } } : { status: 'unverified' };
+        return issue.data.state === 'open' ? { status: 'not-applied' } : { status: 'unverified' };
+      }
       if (operation === 'editIssue') {
         const issue = await this.d.reader.getIssue(payload.number, { forceRefresh: true });
         if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data)) return { status: 'unverified' };
@@ -275,7 +284,7 @@ class Broker {
     // (commit, push, comment) are checked as a stand-in operation of the same role.
     // Review and merge need the pull request, which is read later; until then they are checked as
     // a stand-in of the same role, and the full rule runs once the state is known.
-    const known = ['createIssue', 'editIssue', 'claimIssue', 'createPr'].includes(operation) || (['reviewPr', 'mergePr'].includes(operation) && pullRequest !== undefined);
+    const known = ['createIssue', 'editIssue', 'closeIssue', 'claimIssue', 'createPr'].includes(operation) || (['reviewPr', 'mergePr'].includes(operation) && pullRequest !== undefined);
     const proxy = known ? operation : actor.role === 'pm' ? 'createIssue' : 'claimIssue';
     const verdict = evaluatePublishRequest({ operation: proxy, role: actor.role, actorId: actor.actorId, pullRequest }, config);
     return verdict.allowed ? null : deny(verdict.reason);
@@ -394,6 +403,12 @@ class Broker {
       if (payload.title !== undefined) units.push({ kind: 'issue-title', text: payload.title });
       if (payload.body !== undefined) units.push({ kind: 'issue-body', text: payload.body });
       send = () => this.d.transport.editIssue({ repository, number: payload.number, ...(payload.title !== undefined ? { title: payload.title } : {}), ...(payload.body !== undefined ? { body: payload.body } : {}) });
+    } else if (operation === 'closeIssue') {
+      // Nothing free-form is published: the number and a fixed reason. The issue is read fresh and must be open.
+      const issue = await this.#readIssue(payload.number);
+      if (!issue.ok) return issue;
+      if (issue.data.state !== 'open') return deny('issue-not-open');
+      send = () => this.d.transport.closeIssue({ repository, number: payload.number, reason: payload.reason });
     } else if (operation === 'comment') {
       units = [{ kind: 'comment', text: payload.body }];
       send = () => this.d.transport.comment({ repository, target: payload.target, number: payload.number, body: payload.body });
@@ -439,6 +454,20 @@ class Broker {
     } finally {
       if (release) release();
     }
+  }
+
+  async #readIssue(number) {
+    let issue;
+    try {
+      issue = await this.d.reader.getIssue(number, { forceRefresh: true });
+    } catch {
+      return deny('cannot-verify');
+    }
+    if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data) || !['open', 'closed'].includes(issue.data.state)) return deny('issue-unverified');
+    // The issues endpoint also answers for pull request numbers. A pull request is closed through review and merge, never here;
+    // a read that does not say which it is, is refused.
+    if (issue.data.isPullRequest !== false) return deny(issue.data.isPullRequest === true ? 'target-is-pull-request' : 'issue-unverified');
+    return { ok: true, data: issue.data };
   }
 
   async #readPullRequest(number) {
