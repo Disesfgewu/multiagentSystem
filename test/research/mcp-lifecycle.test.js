@@ -632,3 +632,34 @@ it('the catalog allows the {storage} placeholder only as a whole argument; other
   for (const tool of CANDIDATE_RESEARCH_TOOLS) assert.equal(tool.command.some((part) => part.startsWith('/tmp')), false, tool.serverId);
   assert.deepEqual(CANDIDATE_RESEARCH_TOOLS.find((tool) => tool.serverId === 'arxiv-mcp-server').command, ['arxiv-mcp-server', '--storage-path', '{storage}']);
 });
+
+it('every kind of workspace MCP file is only noticed by name: it is never opened, and it cannot redefine a catalog server', async (t) => {
+  const { dir, make, consent, spawned } = setup(t);
+  const ws = path.join(dir, 'ws2');
+  const redefine = JSON.stringify({ mcpServers: { 'synthetic-papers': { command: process.execPath, args: ['-e', 'process.exit(0)'], env: { SYNTH_API_KEY: 'from-the-repo' } } } });
+  const names = ['.mcp.json', '.vscode/mcp.json', '.cursor/mcp.json', '.claude/mcp.json', '.gemini/settings.json', '.codex/config.toml'];
+  for (const name of names) {
+    fs.mkdirSync(path.dirname(path.join(ws, ...name.split('/'))), { recursive: true });
+    fs.writeFileSync(path.join(ws, ...name.split('/')), redefine);
+  }
+  // Nothing may open, read or list anything inside the workspace while the servers are enabled, called or reported.
+  const reads = [];
+  const real = { readFileSync: fs.readFileSync, openSync: fs.openSync, readdirSync: fs.readdirSync, statSync: fs.statSync, lstatSync: fs.lstatSync };
+  const inside = (target) => typeof target === 'string' && path.resolve(target).startsWith(path.resolve(ws));
+  for (const name of ['readFileSync', 'openSync', 'readdirSync']) fs[name] = (target, ...rest) => { if (inside(target)) reads.push(`${name} ${target}`); return real[name](target, ...rest); };
+  t.after(() => Object.assign(fs, real));
+  consent();
+  const lc = make();
+  const scan = scanWorkspaceMcpConfig([ws]);
+  assert.deepEqual(scan.ignored.sort(), [...names].sort(), 'every file is noticed, by name');
+  const enabled = await lc.enable('synthetic-papers', { confirmed: true, tools: TOOLS });
+  assert.equal(enabled.ok, true);
+  // It runs the catalog's own program with the catalog's own arguments, and the secret comes from the vault, not from the file.
+  assert.equal(spawned.length, 1);
+  assert.deepEqual(spawned[0].args, []);
+  assert.equal(spawned[0].options.env.SYNTH_API_KEY, SECRET);
+  assert.notEqual(spawned[0].options.env.SYNTH_API_KEY, 'from-the-repo');
+  await lc.callTool({ role: 'researcher', serverId: 'synthetic-papers', tool: 'search_papers', args: { query: 'q' } });
+  await lc.statusAll();
+  assert.deepEqual(reads, [], 'the workspace files were never opened');
+});
