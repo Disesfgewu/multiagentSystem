@@ -46,7 +46,7 @@ function launchScriptPath(extensionPath) {
 }
 
 /** The request the script reads, checked here first so the script only ever receives well-formed data. */
-const RESTRICTION_KEYS = ['denyUser', 'denyAdmins', 'dropPrivileges', 'noWindow', 'useJob', 'breakawayOk'];
+const RESTRICTION_KEYS = ['denyUser', 'denyAdmins', 'dropPrivileges', 'noWindow', 'useJob', 'breakawayOk', 'plainCopy', 'keepDefaultDacl', 'ownerUser', 'restrictingSids'];
 
 function requestFor({ exe, args = [], cwd = '', env = [], stdin = '', timeoutMs = 15000, restriction } = {}) {
   if (typeof exe !== 'string' || !win32.isAbsolute(exe) || exe.length > 520 || CONTROL.test(exe)) return refuse('program-invalid');

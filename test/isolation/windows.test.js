@@ -27,6 +27,17 @@ test('a request is checked before the script sees it: program, arguments, folder
   assert.equal(requestFor({ exe: GOOD.exe }).ok, true, 'only the program is required');
 });
 
+test('every switch the script reads can be sent in a request, and nothing else can', () => {
+  const text = fs.readFileSync(SCRIPT, 'utf8');
+  const hash = /\$switches = @\{([^}]*)\}/.exec(text)[1];
+  const names = [...hash.matchAll(/(\w+) = \$(?:true|false)/g)].map((match) => match[1]);
+  assert.ok(names.length >= 8, names.join(','));
+  for (const name of names) assert.equal(requestFor({ ...GOOD, restriction: { [name]: true } }).ok, true, name);
+  for (const bad of ['unknownSwitch', '__proto__', 'constructor']) assert.equal(requestFor({ ...GOOD, restriction: { [bad]: true } }).reason, 'restriction-invalid', bad);
+  for (const value of ['true', 1, null, undefined, {}]) assert.equal(requestFor({ ...GOOD, restriction: { denyUser: value } }).reason, 'restriction-invalid', String(value));
+  for (const restriction of [true, 'x', [], 5]) assert.equal(requestFor({ ...GOOD, restriction }).reason, 'restriction-invalid');
+});
+
 test('the script\'s reply is read strictly: one line, and anything else is an error, never a pass', () => {
   const output = Buffer.from('line one\r\nline two', 'utf8').toString('base64');
   assert.deepEqual(parseReply(`${JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output })}\r\n`), { ok: true, exitCode: 0, timedOut: false, output: 'line one\r\nline two' });
