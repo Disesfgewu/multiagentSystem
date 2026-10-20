@@ -20,8 +20,9 @@ const { runSearchFlow } = require('./search-flow') as {
   runSearchFlow(input: { lifecycle: unknown; ui: Record<string, (...args: any[]) => any>; given?: { serverId?: unknown; tool?: unknown; query?: unknown } }): Promise<{ ok: boolean; code?: string; truncated?: boolean }>;
 };
 const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
-const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
-  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
+const { listResearchTools, resolveLaunchExecutable, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
+  resolveLaunchExecutable(input: { store?: any; root?: string; serverId: string; catalog?: any[] }): string | null;
+  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
   PROHIBITED_AGENT_TOOLS: Record<string, readonly string[]>;
 };
@@ -71,10 +72,8 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       const made = ensureToolFolder({ base: currentStore.dir, serverId });
       return made.ok ? made.dir : null;
     },
-    resolveExecutable: async (serverId: string) => {
-      const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);
-      return found && found.installStatus === 'ready' && found.installPath ? path.join(found.installPath, found.command[0]) : null;
-    }
+    // A start always re-reads the program's bytes and uses the file name recorded at install (`.exe` on Windows).
+    resolveExecutable: async (serverId: string) => resolveLaunchExecutable({ store: currentStore, root, serverId })
   });
 
   const pickServer = async (placeHolder: string, given?: string): Promise<string | undefined> => {
@@ -108,7 +107,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       {
         modal: true,
         detail: [
-          `Program that will run: ${listed?.installStatus === 'ready' ? path.join(listed.installPath, tool.command[0]) : `not installed (${tool.command[0]})`}`,
+          `Program that will run: ${listed?.installStatus === 'ready' && listed.installExecutable ? listed.installExecutable : `not installed (${tool.command[0]})`}`,
           `Arguments: ${JSON.stringify(tool.command.slice(1))}`,
           `Researcher role may call exactly: ${tools.join(', ') || 'none'}`,
           `Secrets injected into this server only: ${secretKeys.join(', ') || 'none'}`,
