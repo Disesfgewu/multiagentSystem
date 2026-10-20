@@ -99,7 +99,7 @@ test('identity comes only from the trusted source: forged fields are refused and
 
 test('roles: each operation only for its role; the PM cannot claim or open a PR; a worker cannot define issues, review or merge', async () => {
   const asks = {
-    createIssue: { title: 't', body: 'b' }, editIssue: { number: 3, title: 't' }, claimIssue: { number: 3 },
+    createIssue: { title: 't', body: 'b' }, editIssue: { number: 3, title: 't' }, closeIssue: { number: 3, reason: 'completed' }, claimIssue: { number: 3 },
     createPr: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }, commit: { headSha: HEAD },
     push: { branch: 'feat/x', headSha: HEAD }, comment: { target: 'issue', number: 3, body: 'hi' },
     reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD }, mergePr: { number: 7 }
@@ -434,7 +434,7 @@ test('every field of every operation is either scanned, a fixed value set, a num
   for (const [operation, spec] of Object.entries(OPERATIONS)) {
     for (const field of [...Object.keys(spec.fields), ...Object.keys(spec.optional || {})]) {
       const probe = { operation, field };
-      const kind = ['number', 'target', 'decision', 'headSha', 'expectedHeadSha'].includes(field) ? 'fixed' : 'text';
+      const kind = ['number', 'target', 'decision', 'reason', 'headSha', 'expectedHeadSha'].includes(field) ? 'fixed' : 'text';
       if (kind === 'text') assert.ok(covered.has(`${operation}.${field}`), `${operation}.${field} is a text field and must be in the leak test`, probe);
     }
   }
@@ -685,4 +685,68 @@ test('an unusable or invalid store is rejected and fails closed before any write
   const failingWrite = new Broker({ ...broker.d, store: { get: () => ({ ok: true, found: false, value: null }), put: () => ({ ok: false, reason: 'locked' }) } });
   assert.equal((await failingWrite.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' })).reason, 'store-unavailable');
   assert.equal(calls.length, 0);
+});
+
+test('closeIssue: PM only, a fixed reason, the issue must be open right now, and exactly that goes to the transport', async () => {
+  const closed = { state: 'closed', stateReason: 'completed', assignees: [] };
+  const { broker, calls } = setup({ actor: asPm });
+  assert.deepEqual(await broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' }), { ok: true, number: 5 });
+  assert.deepEqual(calls, [['closeIssue', { repository: REPO, number: 3, reason: 'not_planned'.replace('not_planned', 'completed') }]]);
+  const second = setup({ actor: asPm });
+  await second.broker.request({ operation: 'closeIssue', requestId: id(), number: 4, reason: 'not_planned' });
+  assert.equal(second.calls[0][1].reason, 'not_planned');
+
+  for (const bad of [undefined, '', 'done', 'Completed', 'not planned', 5, null, ['completed']]) {
+    const probe = setup({ actor: asPm });
+    assert.equal((await probe.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: bad })).reason, 'invalid-field', String(bad));
+    assert.equal(probe.calls.length, 0);
+  }
+  for (const extra of [{ body: 'x' }, { state: 'open' }, { comment: 'x' }]) {
+    const probe = setup({ actor: asPm });
+    assert.equal((await probe.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed', ...extra })).reason, 'unknown-field');
+    assert.equal(probe.calls.length, 0);
+  }
+
+  const alreadyClosed = setup({ actor: asPm, reader: { getIssue: async () => ({ kind: 'ok', data: closed }) } });
+  assert.equal((await alreadyClosed.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' })).reason, 'issue-not-open');
+  for (const reader of [
+    { getIssue: async () => ({ kind: 'unavailable' }) },
+    { getIssue: async () => { throw new Error('offline'); } },
+    { getIssue: async () => ({ kind: 'ok', data: { state: 'merged' } }) },
+    { getIssue: async () => ({ kind: 'ok', data: null }) }
+  ]) {
+    const probe = setup({ actor: asPm, reader });
+    const result = await probe.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' });
+    assert.equal(result.ok, false);
+    assert.equal(probe.calls.length, 0, 'an issue whose state cannot be read is never closed');
+  }
+  const worker = setup({ actor: { actorId: '20', role: 'worker' } });
+  assert.equal((await worker.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' })).reason, 'role-forbidden');
+  assert.equal(worker.calls.length, 0);
+});
+
+test('closeIssue after a restart with an unknown outcome: closed with the same reason is done, closed for another reason stays unknown, still open is sent once', async () => {
+  const store = (() => { const data = new Map(); return { get: (c, k) => (data.has(`${c}/${k}`) ? { ok: true, found: true, value: JSON.parse(data.get(`${c}/${k}`)) } : { ok: true, found: false }), put: (c, k, v) => { data.set(`${c}/${k}`, JSON.stringify(v)); return { ok: true }; }, delete: (c, k) => { data.delete(`${c}/${k}`); return { ok: true }; } }; })();
+  const ask = (requestId, reason = 'completed') => ({ operation: 'closeIssue', requestId, number: 3, reason });
+  const crash = async (requestId) => {
+    const first = setup({ actor: asPm, transport: { closeIssue: async () => { throw new Error('reset'); } } });
+    const broker = new Broker({ ...first.broker.d, store });
+    assert.equal((await broker.request(ask(requestId))).reason, 'outcome-unknown');
+  };
+  const restart = (data) => { const restarted = setup({ actor: asPm, reader: { getIssue: async () => ({ kind: 'ok', data }) } }); return { ...restarted, broker: new Broker({ ...restarted.broker.d, store }) }; };
+
+  const sameReason = id(); await crash(sameReason);
+  const landed = restart({ state: 'closed', stateReason: 'completed', assignees: [] });
+  assert.deepEqual(await landed.broker.request(ask(sameReason)), { ok: true, number: 3, replay: true });
+  assert.equal(landed.calls.length, 0, 'closed already: nothing is sent again');
+
+  const otherReason = id(); await crash(otherReason);
+  const different = restart({ state: 'closed', stateReason: 'not_planned', assignees: [] });
+  assert.equal((await different.broker.request(ask(otherReason))).reason, 'outcome-unknown');
+  assert.equal(different.calls.length, 0);
+
+  const notApplied = id(); await crash(notApplied);
+  const stillOpen = restart({ state: 'open', assignees: [] });
+  assert.deepEqual(await stillOpen.broker.request(ask(notApplied)), { ok: true, number: 5 });
+  assert.equal(stillOpen.calls.length, 1, 'confirmed still open: sent once');
 });

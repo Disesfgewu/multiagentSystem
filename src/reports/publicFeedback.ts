@@ -18,6 +18,7 @@ const PUBLIC_VALUES = new Set(['unassigned', 'allow', 'deny', 'ask', 'unknown', 
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 const recordId = (repository: string, kind: string, number: number): string => `public-feedback-${hash(repository.toLowerCase()).slice(0, 20)}-${kind}-${number}`;
 const reviewRecordId = (repository: string, number: number): string => `pr-review-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
+const closeRecordId = (repository: string, number: number): string => `issue-close-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const mergeRecordId = (repository: string, number: number): string => `pr-merge-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const plainText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && Array.from(value).length <= 4000 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 
@@ -29,6 +30,7 @@ const { publisherFor, mergeModeFor } = require('./publisherPolicy') as {
 type Kind = 'issue' | 'pullRequest';
 export type ReviewDecision = 'approve' | 'request_changes' | 'comment';
 export type MergeAuthorityMode = 'human' | 'pm';
+export type CloseReason = 'completed' | 'not_planned';
 export type PublicTarget = { repository: string; kind: Kind; number: number; version: string };
 type Store = { get(collection: string, id: string): any; put(collection: string, id: string, value: unknown): any; delete?(collection: string, id: string): any; list(collection: string): any };
 type GitHubUser = { id: number; login: string };
@@ -204,6 +206,9 @@ type Hooks = {
   comment(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, body: string): Promise<{ ok: boolean; number?: number }>;
   review(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, decision: ReviewDecision, body: string, expectedHeadSha: string): Promise<{ ok: boolean; number?: number }>;
   merge(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, expectedHeadSha: string, commitTitle: string, commitMessage: string): Promise<{ ok: boolean; reason?: string; sha?: string }>;
+  issue(target: PublicTarget): Promise<any>;
+  closeIssue(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, reason: CloseReason): Promise<{ ok: boolean; number?: number }>;
+  pickCloseReason(): Promise<CloseReason | undefined>;
   confirm(message: string, action: string): Promise<boolean>;
   prompt(initialValue: string): Promise<string | undefined>;
   pickReviewDecision(): Promise<ReviewDecision | undefined>;
@@ -242,9 +247,21 @@ async function realMerge(auth: vscode.AuthenticationSession, repository: { owner
   const reason = response.status === 409 ? 'head-changed' : response.status === 405 ? 'not-mergeable' : response.status === 403 ? 'denied' : response.status === 404 ? 'not-found' : response.status === 422 ? 'validation-failed' : response.status === 429 ? 'rate-limited' : 'unknown';
   return { ok: false, reason };
 }
+async function realIssue(target: PublicTarget): Promise<any> {
+  const reader: any = githubReaderFor(target.repository); if (!reader) return { kind: 'unavailable' };
+  try { return await reader.getIssue(target.number, { forceRefresh: true }); } catch { return { kind: 'unavailable' }; }
+}
+async function realCloseIssue(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, reason: CloseReason): Promise<{ ok: boolean; number?: number }> {
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${number}`;
+  const response = await api(auth.accessToken, endpoint, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: 'closed', state_reason: reason }) });
+  const data = response.ok ? await response.json() as any : null;
+  const verified = response.ok && data?.number === number && data?.state === 'closed' && data?.state_reason === reason;
+  if (classifyWrite(response, verified) === 'unknown') throw new Error('write-outcome-unknown');
+  return verified ? { ok: true, number } : { ok: false };
+}
 const realHooks: Hooks = {
   session: realSession, user: userFor, version: currentVersion, snapshot: realSnapshot, publication: realPublication, authorId: realAuthorId,
-  comment: realComment, review: realReview, merge: realMerge,
+  comment: realComment, review: realReview, merge: realMerge, issue: realIssue, closeIssue: realCloseIssue,
   confirm: async (message, action) => (await vscode.window.showWarningMessage(message, { modal: true }, action)) === action,
   prompt: async (value) => await vscode.window.showInputBox({ prompt: 'Public GitHub comment (starts blank; private feedback is never copied here)', value, ignoreFocusOut: true }),
   pickReviewDecision: async () => {
@@ -256,6 +273,13 @@ const realHooks: Hooks = {
     return picked?.value;
   },
   promptReview: async (value, decision) => await vscode.window.showInputBox({ prompt: `Public GitHub review body (${decision}; starts blank and never copies private feedback)`, value, ignoreFocusOut: true }),
+  pickCloseReason: async () => {
+    const picked = await vscode.window.showQuickPick([
+      { label: 'Completed', description: 'The work is done', value: 'completed' as const },
+      { label: 'Not planned', description: 'Closed without doing the work', value: 'not_planned' as const }
+    ], { placeHolder: 'Why is this Issue being closed?' });
+    return picked?.value;
+  },
   pickMergeAuthority: async (current) => {
     const picked = await vscode.window.showQuickPick([
       { label: 'Human only (default)', description: `${current === 'human' ? 'Current · ' : ''}PM merge requests from reports are refused`, value: 'human' as const },
@@ -427,5 +451,48 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
     config: { pmActorId: configured.actorId, pmLogin: configured.login, mergeAuthority: authority }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'mergePr', requestId, number: target.number });
+  return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
+}
+
+export async function closeIssueReport(target: PublicTarget, input?: { reason?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
+  if (target.kind !== 'issue' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
+  const opened = await privateStorage()?.use(); const store = useStore(opened);
+  if (!store) return { ok: false, code: 'private-storage-unavailable' };
+  const configured = publisher(store, target.repository);
+  if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
+  if (!configured) return { ok: false, code: 'publisher-not-configured' };
+  const id = closeRecordId(target.repository, target.number);
+  const old = previousBy(store, id, 'issue-close-request-v1');
+  if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
+  if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
+  // The confirmation and the reason come from the person. Only the Extension Host tests may supply them.
+  const allowBypass = testMode && input?.interactive === false;
+  const picked = allowBypass ? input?.reason : await hooks.pickCloseReason();
+  if (picked === undefined) return { ok: false, code: 'cancelled' };
+  if (picked !== 'completed' && picked !== 'not_planned') return { ok: false, code: 'invalid-close-reason' };
+  if (old?.status === 'done' && old.version === target.version && old.reason === picked) return { ok: true, code: 'already-closed' };
+  if (!allowBypass) {
+    if (!await hooks.confirm(`Close ${target.repository} Issue #${target.number} as ${picked === 'completed' ? 'completed' : 'not planned'}? Closing is visible to everyone and does not remove the Issue.`, 'Close Issue')) return { ok: false, code: 'cancelled' };
+  }
+  if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };
+  const auth = await hooks.session(false); if (!auth) return { ok: false, code: 'github-sign-in-required' };
+  const actor = await hooks.user(auth); if (!actor || String(actor.id) !== configured.actorId || actor.login.toLowerCase() !== configured.login.toLowerCase()) return { ok: false, code: 'publisher-identity-changed' };
+  // The report the person read must still be the Issue as it is now.
+  const current = await hooks.version(target); if (!current || current.toLowerCase() !== target.version.toLowerCase()) return { ok: false, code: 'report-context-changed' };
+  const refs = privateReferences(store); if (!refs) return { ok: false, code: 'private-reference-unreadable' };
+  const match = REPOSITORY.exec(target.repository)!; const repository = { owner: match[1], name: match[2] };
+  const requestId = old?.status === 'draft' && old.version === target.version && old.reason === picked && typeof old.requestId === 'string' ? old.requestId : `close_${randomBytes(12).toString('hex')}`;
+  const audit = { record(entry: any) {
+    const status = entry.stage === 'result' ? (entry.outcome === 'done' ? 'done' : entry.outcome === 'unknown' ? 'unknown' : 'draft') : 'sending';
+    if (!saveBy(store, id, 'issue-close-request-v1', target, { reason: picked, status, requestId, updatedAt: new Date().toISOString(), audit: { stage: entry.stage, outcome: entry.outcome ?? null } })) throw new Error('audit-unavailable');
+  } };
+  const broker = new Broker({
+    identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
+    reader: { getIssue: async (number: number) => await hooks.issue({ ...target, number }) },
+    transport: { closeIssue: ({ number, reason }: any) => hooks.closeIssue(auth, repository, number, reason) },
+    audit,
+    config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
+  });
+  const result = await broker.request({ operation: 'closeIssue', requestId, number: target.number, reason: picked });
   return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
 }
