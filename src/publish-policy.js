@@ -7,7 +7,8 @@ const roles = Object.freeze({
   claimIssue: 'worker',
   createPr: 'worker',
   reviewPr: 'pm',
-  mergePr: 'pm'
+  mergePr: 'pm',
+  deleteBranch: 'pm'
 });
 
 const decision = (allowed, reason) => ({ allowed, reason });

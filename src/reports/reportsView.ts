@@ -4,7 +4,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
-import { closeIssueReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
+import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
@@ -45,6 +45,7 @@ export const REPORT_COMMANDS = {
   publicFeedback: 'multiagentSystem.reports.publicFeedback',
   reviewPullRequest: 'multiagentSystem.reports.reviewPullRequest',
   mergePullRequest: 'multiagentSystem.reports.mergePullRequest',
+  deleteBranch: 'multiagentSystem.reports.deleteBranch',
   closeIssue: 'multiagentSystem.reports.closeIssue',
   configurePublisher: 'multiagentSystem.reports.configurePublisher',
   configureMergeAuthority: 'multiagentSystem.reports.configureMergeAuthority'
@@ -558,6 +559,21 @@ export function registerReports(context: vscode.ExtensionContext): void {
         } else {
           void vscode.window.showErrorMessage(`Pull request was not merged: ${result.code ?? 'unknown'}.`);
         }
+      }
+      return result;
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.deleteBranch, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { interactive?: unknown } : {};
+      const interactive = requireInteractive(input).interactive !== false;
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
+      if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
+      const result = await deleteMergedBranchReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive });
+      if (result.ok) {
+        refresh();
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-deleted' ? 'This branch was already deleted.' : 'Branch deleted.');
+      } else if (interactive && result.code !== 'cancelled') {
+        void vscode.window.showErrorMessage(`Branch was not deleted: ${result.code ?? 'unknown'}.`);
       }
       return result;
     }),

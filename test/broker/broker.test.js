@@ -102,7 +102,7 @@ test('roles: each operation only for its role; the PM cannot claim or open a PR;
     createIssue: { title: 't', body: 'b' }, editIssue: { number: 3, title: 't' }, closeIssue: { number: 3, reason: 'completed' }, claimIssue: { number: 3 },
     createPr: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }, commit: { headSha: HEAD },
     push: { branch: 'feat/x', headSha: HEAD }, comment: { target: 'issue', number: 3, body: 'hi' },
-    reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD }, mergePr: { number: 7 }
+    reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD }, mergePr: { number: 7 }, deleteBranch: { number: 7, expectedHeadSha: HEAD }
   };
   for (const [operation, fields] of Object.entries(asks)) {
     const allowed = OPERATIONS[operation].roles;
@@ -687,6 +687,93 @@ test('an unusable or invalid store is rejected and fails closed before any write
   assert.equal(calls.length, 0);
 });
 
+// A merged pull request whose head branch may go: every fact comes from a fresh read.
+const MERGED = { merged: true, state: 'closed', headRef: 'feat/done', headRepository: 'example/project', baseRef: 'main' };
+const deletable = (over = {}) => setup({
+  actor: asPm,
+  reader: {
+    getPullRequestSnapshot: async () => snapshot({ pr: { ...MERGED, ...(over.pr || {}) } }),
+    getRepository: async () => ({ kind: 'ok', data: { defaultBranch: 'main' }, ...(over.repo || {}) }),
+    getBranchRequirements: async () => ({ kind: 'empty', data: { complete: true, ruleTypes: [] }, ...(over.requirements || {}) }),
+    getBranchHead: async () => ({ kind: 'ok', data: { sha: HEAD }, ...(over.tip || {}) }),
+    ...(over.reader || {})
+  }
+});
+const askDelete = (broker, extra = {}) => broker.request({ operation: 'deleteBranch', requestId: id(), number: 7, expectedHeadSha: HEAD, ...extra });
+
+test('deleteBranch: a merged pull request with the reviewed head and an unprotected, non-default branch in this repository is deleted, and the transport gets exactly that', async () => {
+  const { broker, calls } = deletable();
+  assert.deepEqual(await askDelete(broker), { ok: true, number: 5 });
+  assert.deepEqual(calls, [['deleteBranch', { repository: REPO, branch: 'feat/done', expectedHeadSha: HEAD }]]);
+});
+
+test('deleteBranch refuses, and sends nothing, unless every fact is confirmed', async () => {
+  const cases = {
+    'pr-not-merged': { pr: { merged: false, state: 'open' } },
+    'pr-not-merged ': { pr: { merged: true, state: 'open' } },
+    'branch-not-in-repository': { pr: { headRepository: 'someone/fork' } },
+    'branch-invalid': { pr: { headRef: '-x' } },
+    'branch-is-default': { pr: { headRef: 'main' } },
+    'branch-is-default ': { pr: { headRef: 'release', baseRef: 'release' } },
+    'default-branch-unverified': { repo: { kind: 'unavailable', data: null } },
+    'branch-protected': { requirements: { kind: 'ok', data: { complete: true, ruleTypes: ['pull_request'] } } },
+    'protection-unverified': { requirements: { kind: 'partial', data: { complete: false, ruleTypes: [] } } },
+    'protection-unverified ': { requirements: { kind: 'unavailable' } },
+    'head-changed': { askHead: OTHER },
+    'head-changed ': { tip: { data: { sha: OTHER } } },
+    'branch-tip-unverified': { tip: { kind: 'unavailable', data: null } },
+    'branch-tip-unverified ': { tip: { data: { sha: 'not-a-sha' } } },
+    'branch-invalid': { pr: { headRef: 'feat/../../heads/main' } },
+    'branch-invalid ': { pr: { headRef: 'feat/.hidden' } },
+    'branch-invalid  ': { pr: { headRef: 'feat/x.lock' } },
+    'branch-invalid   ': { pr: { headRef: 'feat//x' } },
+    'branch-invalid    ': { pr: { headRef: 'feat/x/' } }
+  };
+  for (const [expected, setting] of Object.entries(cases)) {
+    const { broker, calls } = deletable(setting);
+    const result = await askDelete(broker, setting.askHead ? { expectedHeadSha: setting.askHead } : {});
+    assert.deepEqual([result.ok, result.reason], [false, expected.trim()], expected);
+    assert.equal(calls.length, 0, expected);
+  }
+  for (const reader of [
+    { getPullRequestSnapshot: async () => { throw new Error('offline'); } },
+    { getBranchRequirements: async () => { throw new Error('offline'); } },
+    { getBranchHead: async () => { throw new Error('offline'); } },
+    { getBranchHead: undefined },
+    { getPullRequestSnapshot: async () => ({ ...snapshot({ pr: MERGED }), consistent: false }) },
+    { getRepository: undefined }
+  ]) {
+    const { broker, calls } = deletable({ reader });
+    assert.equal((await askDelete(broker)).ok, false);
+    assert.equal(calls.length, 0, 'unreadable state never deletes');
+  }
+  const worker = setup({ actor: { actorId: '20', role: 'worker' } });
+  assert.equal((await askDelete(worker.broker)).reason, 'role-forbidden');
+  assert.equal(worker.calls.length, 0);
+});
+
+test('deleteBranch scans the branch name, and an unknown outcome is never sent again', async () => {
+  const leak = deletable({ pr: { headRef: `feat/${TOKEN}` } });
+  assert.deepEqual([(await askDelete(leak.broker)).ok, leak.calls.length], [false, 0]);
+  const crash = setup({ actor: asPm, reader: deletable().broker.d.reader, transport: { deleteBranch: async () => { throw new Error('reset'); } } });
+  const requestId = id();
+  assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
+  assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
+  assert.equal(crash.calls.length, 1);
+});
+
+test('deleteBranch: work pushed to the branch after the merge is never deleted, whether it arrives before the first read or between the last read and the write', async () => {
+  // The pull request's own head is fixed at the merge; only the branch's tip shows a later push.
+  const late = deletable({ tip: { data: { sha: OTHER } } });
+  assert.equal((await askDelete(late.broker)).reason, 'head-changed');
+  assert.equal(late.calls.length, 0);
+  let reads = 0;
+  const racing = deletable({ reader: { getBranchHead: async () => ({ kind: 'ok', data: { sha: ++reads === 1 ? HEAD : OTHER } }) } });
+  assert.equal((await askDelete(racing.broker)).reason, 'head-changed', 'a push between the checks and the write is caught by the read right before it');
+  assert.equal(racing.calls.length, 0);
+  assert.equal(reads, 2, 'the tip is read twice');
+});
+
 test('closeIssue: PM only, a fixed reason, the issue must be open right now, and exactly that goes to the transport', async () => {
   const closed = { state: 'closed', isPullRequest: false, stateReason: 'completed', assignees: [] };
   const { broker, calls } = setup({ actor: asPm });
@@ -760,4 +847,50 @@ test('closeIssue after a restart with an unknown outcome: closed with the same r
   const stillOpen = restart({ state: 'open', assignees: [] });
   assert.deepEqual(await stillOpen.broker.request(ask(notApplied)), { ok: true, number: 5 });
   assert.equal(stillOpen.calls.length, 1, 'confirmed still open: sent once');
+});
+
+// The researcher role reads and reports; it never writes to GitHub. The broker knows two callers, the PM and a worker.
+const researcherRequests = {
+  createIssue: { title: 't', body: 'b' },
+  editIssue: { number: 3, title: 't' },
+  closeIssue: { number: 3, reason: 'completed' },
+  claimIssue: { number: 3 },
+  createPr: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' },
+  commit: { headSha: HEAD },
+  push: { branch: 'feat/x', headSha: HEAD },
+  comment: { target: 'issue', number: 3, body: 'hi' },
+  reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD },
+  mergePr: { number: 7 },
+  deleteBranch: { number: 7, expectedHeadSha: HEAD }
+};
+
+test('a researcher can write nothing to GitHub: every operation is refused before the transport, whatever identity it claims', async () => {
+  assert.deepEqual(Object.keys(researcherRequests).sort(), Object.keys(OPERATIONS).sort(), 'this test covers every operation the broker has');
+  for (const [operation, fields] of Object.entries(researcherRequests)) {
+    for (const actor of [{ actorId: '30', role: 'researcher' }, { actorId: '10', role: 'researcher' }, { actorId: '20', role: 'Researcher' }, { actorId: '20', role: 'worker ' }, { actorId: '20', role: 'researcher', extra: 'pm' }]) {
+      const { broker, calls } = setup({ actor });
+      const result = await broker.request({ operation, requestId: id(), ...fields });
+      assert.equal(result.ok, false, `${operation} as ${actor.role}`);
+      assert.ok(['identity-unverified', 'role-forbidden'].includes(result.reason), `${operation}: ${result.reason}`);
+      assert.equal(calls.length, 0, `${operation} reached the transport`);
+    }
+    // The role cannot be claimed in the request either: the identity comes from the trusted source only.
+    const { broker, calls } = setup({ actor: { actorId: '30', role: 'researcher' } });
+    const claimed = await broker.request({ operation, requestId: id(), ...fields, role: 'pm', actorId: '10' });
+    assert.equal(claimed.ok, false);
+    assert.equal(calls.length, 0);
+    // And no operation lists the researcher among the roles that may ask.
+    assert.equal(OPERATIONS[operation].roles.includes('researcher'), false, `${operation} must not allow the researcher`);
+    assert.ok(OPERATIONS[operation].roles.every((role) => role === 'pm' || role === 'worker'), `${operation}: ${OPERATIONS[operation].roles}`);
+  }
+});
+
+test('the publish policy has no operation for the researcher either', () => {
+  const { evaluatePublishRequest } = require('../../src/publish-policy');
+  for (const operation of ['createIssue', 'editIssue', 'closeIssue', 'claimIssue', 'createPr', 'reviewPr', 'mergePr', 'deleteBranch']) {
+    for (const actorId of ['30', '10', '20']) {
+      const verdict = evaluatePublishRequest({ operation, role: 'researcher', actorId }, { pmActorId: '10' });
+      assert.equal(verdict.allowed, false, `${operation} as researcher ${actorId}`);
+    }
+  }
 });

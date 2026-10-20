@@ -34,6 +34,7 @@
     "onCommand:multiagentSystem.reports.publicFeedback",
     "onCommand:multiagentSystem.reports.reviewPullRequest",
     "onCommand:multiagentSystem.reports.mergePullRequest",
+    "onCommand:multiagentSystem.reports.deleteBranch",
     "onCommand:multiagentSystem.providers.showCustom",
     "onCommand:multiagentSystem.reports.closeIssue",
     "onCommand:multiagentSystem.reports.configurePublisher",
@@ -85,6 +86,7 @@
     "onCommand:multiagentSystem.research.mcp.stop",
     "onCommand:multiagentSystem.research.mcp.revoke",
     "onCommand:multiagentSystem.research.mcp.status",
+    "onCommand:multiagentSystem.research.searchPapers",
     "onCommand:multiagentSystem.research.mcp.setSecret",
     "onCommand:multiagentSystem.skills.install",
     "onCommand:multiagentSystem.skills.remove"
@@ -280,6 +282,7 @@
       { "command": "multiagentSystem.reports.publicFeedback", "title": "Multiagent: Publish Feedback for Open Report", "icon": "$(comment-discussion)" },
       { "command": "multiagentSystem.reports.reviewPullRequest", "title": "Multiagent: Submit Formal Pull Request Review", "icon": "$(check)" },
       { "command": "multiagentSystem.reports.mergePullRequest", "title": "Multiagent: Merge Pull Request from Report", "icon": "$(git-merge)" },
+      { "command": "multiagentSystem.reports.deleteBranch", "title": "Multiagent: Delete Merged Pull Request Branch", "icon": "$(trash)" },
       { "command": "multiagentSystem.reports.closeIssue", "title": "Multiagent: Close Issue from Report", "icon": "$(issue-closed)" },
       { "command": "multiagentSystem.reports.configurePublisher", "title": "Multiagent: Configure Public Feedback Publisher" },
       { "command": "multiagentSystem.reports.configureMergeAuthority", "title": "Multiagent: Configure Pull Request Merge Authority" },
@@ -326,6 +329,7 @@
       { "command": "multiagentSystem.research.mcp.stop", "title": "Multiagent: Stop Research MCP Server" },
       { "command": "multiagentSystem.research.mcp.revoke", "title": "Multiagent: Revoke Research MCP Server" },
       { "command": "multiagentSystem.research.mcp.status", "title": "Multiagent: Show Research MCP Server Status" },
+      { "command": "multiagentSystem.research.searchPapers", "title": "Multiagent: Research: Search Papers" },
       { "command": "multiagentSystem.research.mcp.setSecret", "title": "Multiagent: Set Research MCP Server Secret" },
       { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace" },
       { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
@@ -341,6 +345,7 @@
         { "command": "multiagentSystem.reports.publicFeedback", "when": "resourceScheme == multiagent-report", "group": "navigation@4" },
         { "command": "multiagentSystem.reports.reviewPullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@5" },
         { "command": "multiagentSystem.reports.mergePullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@6" },
+        { "command": "multiagentSystem.reports.deleteBranch", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@7" },
         { "command": "multiagentSystem.reports.closeIssue", "when": "resourceScheme == multiagent-report && resourcePath =~ /issue-/", "group": "navigation@5" }
       ],
       "view/title": [

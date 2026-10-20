@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
 import { requireInteractive } from '../shared/testMode';
+import { runSearchCommand } from './searchCommand';
 
 const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
   createMcpLifecycle(deps: any): {
@@ -17,8 +18,9 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   ENFORCEMENT_NOTICE: string;
 };
 const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
-const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
-  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
+const { listResearchTools, resolveLaunchExecutable, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
+  resolveLaunchExecutable(input: { store?: any; root?: string; serverId: string; catalog?: any[] }): string | null;
+  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
   PROHIBITED_AGENT_TOOLS: Record<string, readonly string[]>;
 };
@@ -32,7 +34,8 @@ export const MCP_COMMANDS = {
   stop: 'multiagentSystem.research.mcp.stop',
   revoke: 'multiagentSystem.research.mcp.revoke',
   status: 'multiagentSystem.research.mcp.status',
-  setSecret: 'multiagentSystem.research.mcp.setSecret'
+  setSecret: 'multiagentSystem.research.mcp.setSecret',
+  search: 'multiagentSystem.research.searchPapers'
 } as const;
 
 export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Disposable {
@@ -67,10 +70,8 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       const made = ensureToolFolder({ base: currentStore.dir, serverId });
       return made.ok ? made.dir : null;
     },
-    resolveExecutable: async (serverId: string) => {
-      const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);
-      return found && found.installStatus === 'ready' && found.installPath ? path.join(found.installPath, found.command[0]) : null;
-    }
+    // A start always re-reads the program's bytes and uses the file name recorded at install (`.exe` on Windows).
+    resolveExecutable: async (serverId: string) => resolveLaunchExecutable({ store: currentStore, root, serverId })
   });
 
   const pickServer = async (placeHolder: string, given?: string): Promise<string | undefined> => {
@@ -104,7 +105,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       {
         modal: true,
         detail: [
-          `Program that will run: ${listed?.installStatus === 'ready' ? path.join(listed.installPath, tool.command[0]) : `not installed (${tool.command[0]})`}`,
+          `Program that will run: ${listed?.installStatus === 'ready' && listed.installExecutable ? listed.installExecutable : `not installed (${tool.command[0]})`}`,
           `Arguments: ${JSON.stringify(tool.command.slice(1))}`,
           `Researcher role may call exactly: ${tools.join(', ') || 'none'}`,
           `Secrets injected into this server only: ${secretKeys.join(', ') || 'none'}`,
@@ -154,6 +155,31 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     return result;
   };
 
+  // Search papers: the person picks, types and confirms. In an installed extension no argument can choose or confirm for them.
+  const search = async (arg?: { serverId?: unknown; tool?: unknown; query?: unknown; interactive?: boolean }) => {
+    if (!(await refresh())) return unavailable();
+    const ui = {
+      pick: async (choices: Array<{ serverId: string; tool: string }>) => (await vscode.window.showQuickPick(
+        choices.map((choice) => ({ label: choice.tool, description: choice.serverId, choice })),
+        { placeHolder: 'Which research search should run?', ignoreFocusOut: true }))?.choice,
+      promptQuery: async () => await vscode.window.showInputBox({ prompt: 'Search query (sent to the research server; do not include private data)', ignoreFocusOut: true }),
+      confirm: async (text: string) => (await vscode.window.showWarningMessage('Run this research search?', { modal: true, detail: text }, 'Search')) === 'Search',
+      show: async (result: { payload: string; truncated: boolean }) => {
+        const header = `${result.truncated ? 'The result was cut to the size limit.\n' : ''}This is quoted data from an outside source, shown to you only. Nothing was sent to an agent, a terminal or GitHub. Copy it yourself if you want to give it to an agent.\n\n`;
+        const answer = await vscode.window.showInformationMessage('Research search finished.', 'Open Result', 'Copy Result');
+        if (answer === 'Copy Result') await vscode.env.clipboard.writeText(result.payload);
+        else if (answer === 'Open Result') await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ content: header + result.payload, language: 'markdown' }));
+      }
+    };
+    const { outcome, interactive } = await runSearchCommand(arg, lifecycle, ui);
+    if (!outcome.ok && interactive && outcome.code !== 'cancelled') {
+      void vscode.window.showErrorMessage(outcome.code === 'no-search-tool-available'
+        ? 'No research search is available: start a research MCP server that the researcher role may use for searching.'
+        : `Research search did not run: ${outcome.code}.`);
+    }
+    return outcome;
+  };
+
   const status = async () => {
     if (!(await refresh())) return unavailable();
     const all = await lifecycle.statusAll();
@@ -191,6 +217,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     vscode.commands.registerCommand(MCP_COMMANDS.stop, stop),
     vscode.commands.registerCommand(MCP_COMMANDS.revoke, revoke),
     vscode.commands.registerCommand(MCP_COMMANDS.status, status),
+    vscode.commands.registerCommand(MCP_COMMANDS.search, search),
     vscode.commands.registerCommand(MCP_COMMANDS.setSecret, setSecret),
     { dispose: () => { void lifecycle.stopAll(); } }
   );
