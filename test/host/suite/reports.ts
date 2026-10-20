@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
 import { installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
+import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
 
 const HEAD = 'd'.repeat(40);
@@ -427,6 +428,7 @@ export async function runReportChecks(): Promise<string> {
     // Branch clean-up after a merge: only a merged PR's unprotected, non-default branch in this repository.
     const deletesSent: Array<{ branch: string; expectedHeadSha: string }> = [];
     let requirements: any = { kind: 'empty', data: { complete: true, ruleTypes: [] } };
+    let branchTip = HEAD;
     let mergedPr: Record<string, any> = { merged: true, state: 'closed', headRef: 'feat/reports', headRepository: 'host/repo' };
     const branchHooks = {
       session: async () => auth,
@@ -435,6 +437,7 @@ export async function runReportChecks(): Promise<string> {
       snapshot: async () => completeSnapshot({ pr: mergedPr }),
       repositoryInfo: async () => ({ kind: 'ok', data: { defaultBranch: 'main' } }),
       branchRequirements: async () => requirements,
+      branchHead: async () => ({ kind: 'ok', data: { sha: branchTip } }),
       deleteBranch: async (_session: any, _repository: any, branch: string, expectedHeadSha: string) => { deletesSent.push({ branch, expectedHeadSha }); return { ok: true }; }
     };
     installPublicFeedbackTestOverrides(branchHooks);
@@ -450,6 +453,18 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'branch-is-default' });
     assert.equal(deletesSent.length, 0, 'nothing was deleted for any refusal');
     mergedPr = { merged: true, state: 'closed', headRef: 'feat/reports', headRepository: 'host/repo' };
+    branchTip = 'f'.repeat(40);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'head-changed' });
+    assert.equal(deletesSent.length, 0, 'work pushed after the merge is never deleted');
+    branchTip = HEAD;
+    // As an installed extension the confirmation cannot be skipped by an argument: the person is asked, and declining deletes nothing.
+    let asked = 0;
+    installPublicFeedbackTestOverrides({ ...branchHooks, confirm: async () => { asked += 1; return false; } });
+    const outside = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false })));
+    assert.deepEqual(outside.result, { ok: false, code: 'cancelled' });
+    assert.equal(asked, 1, 'the interactive:false argument was ignored');
+    assert.equal(deletesSent.length, 0);
+    installPublicFeedbackTestOverrides(branchHooks);
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: true });
     assert.deepEqual(deletesSent, [{ branch: 'feat/reports', expectedHeadSha: HEAD }]);
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: true, code: 'already-deleted' });

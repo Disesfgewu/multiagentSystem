@@ -695,6 +695,7 @@ const deletable = (over = {}) => setup({
     getPullRequestSnapshot: async () => snapshot({ pr: { ...MERGED, ...(over.pr || {}) } }),
     getRepository: async () => ({ kind: 'ok', data: { defaultBranch: 'main' }, ...(over.repo || {}) }),
     getBranchRequirements: async () => ({ kind: 'empty', data: { complete: true, ruleTypes: [] }, ...(over.requirements || {}) }),
+    getBranchHead: async () => ({ kind: 'ok', data: { sha: HEAD }, ...(over.tip || {}) }),
     ...(over.reader || {})
   }
 });
@@ -718,7 +719,15 @@ test('deleteBranch refuses, and sends nothing, unless every fact is confirmed', 
     'branch-protected': { requirements: { kind: 'ok', data: { complete: true, ruleTypes: ['pull_request'] } } },
     'protection-unverified': { requirements: { kind: 'partial', data: { complete: false, ruleTypes: [] } } },
     'protection-unverified ': { requirements: { kind: 'unavailable' } },
-    'head-changed': { askHead: OTHER }
+    'head-changed': { askHead: OTHER },
+    'head-changed ': { tip: { data: { sha: OTHER } } },
+    'branch-tip-unverified': { tip: { kind: 'unavailable', data: null } },
+    'branch-tip-unverified ': { tip: { data: { sha: 'not-a-sha' } } },
+    'branch-invalid': { pr: { headRef: 'feat/../../heads/main' } },
+    'branch-invalid ': { pr: { headRef: 'feat/.hidden' } },
+    'branch-invalid  ': { pr: { headRef: 'feat/x.lock' } },
+    'branch-invalid   ': { pr: { headRef: 'feat//x' } },
+    'branch-invalid    ': { pr: { headRef: 'feat/x/' } }
   };
   for (const [expected, setting] of Object.entries(cases)) {
     const { broker, calls } = deletable(setting);
@@ -729,6 +738,8 @@ test('deleteBranch refuses, and sends nothing, unless every fact is confirmed', 
   for (const reader of [
     { getPullRequestSnapshot: async () => { throw new Error('offline'); } },
     { getBranchRequirements: async () => { throw new Error('offline'); } },
+    { getBranchHead: async () => { throw new Error('offline'); } },
+    { getBranchHead: undefined },
     { getPullRequestSnapshot: async () => ({ ...snapshot({ pr: MERGED }), consistent: false }) },
     { getRepository: undefined }
   ]) {
@@ -749,4 +760,16 @@ test('deleteBranch scans the branch name, and an unknown outcome is never sent a
   assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
   assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
   assert.equal(crash.calls.length, 1);
+});
+
+test('deleteBranch: work pushed to the branch after the merge is never deleted, whether it arrives before the first read or between the last read and the write', async () => {
+  // The pull request's own head is fixed at the merge; only the branch's tip shows a later push.
+  const late = deletable({ tip: { data: { sha: OTHER } } });
+  assert.equal((await askDelete(late.broker)).reason, 'head-changed');
+  assert.equal(late.calls.length, 0);
+  let reads = 0;
+  const racing = deletable({ reader: { getBranchHead: async () => ({ kind: 'ok', data: { sha: ++reads === 1 ? HEAD : OTHER } }) } });
+  assert.equal((await askDelete(racing.broker)).reason, 'head-changed', 'a push between the checks and the write is caught by the read right before it');
+  assert.equal(racing.calls.length, 0);
+  assert.equal(reads, 2, 'the tip is read twice');
 });

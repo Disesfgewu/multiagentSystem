@@ -207,6 +207,7 @@ type Hooks = {
   merge(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, expectedHeadSha: string, commitTitle: string, commitMessage: string): Promise<{ ok: boolean; reason?: string; sha?: string }>;
   repositoryInfo(target: PublicTarget): Promise<any>;
   branchRequirements(target: PublicTarget, branch: string): Promise<any>;
+  branchHead(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string): Promise<any>;
   deleteBranch(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string, expectedHeadSha: string): Promise<{ ok: boolean; reason?: string }>;
   confirm(message: string, action: string): Promise<boolean>;
   prompt(initialValue: string): Promise<string | undefined>;
@@ -254,6 +255,14 @@ async function realBranchRequirements(target: PublicTarget, branch: string): Pro
   const reader: any = githubReaderFor(target.repository); if (!reader) return { kind: 'unavailable' };
   try { return await reader.getBranchRequirements(branch, { forceRefresh: true }); } catch { return { kind: 'unavailable' }; }
 }
+async function realBranchHead(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string): Promise<any> {
+  const refPath = branch.split('/').map(encodeURIComponent).join('/');
+  try {
+    const response = await api(auth.accessToken, `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/ref/heads/${refPath}`);
+    const data = response.ok ? await response.json() as any : null;
+    return typeof data?.object?.sha === 'string' && SHA.test(data.object.sha) ? { kind: 'ok', data: { sha: data.object.sha.toLowerCase() } } : { kind: response.status === 404 ? 'not_found' : 'unavailable' };
+  } catch { return { kind: 'unavailable' }; }
+}
 async function realDeleteBranch(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string, expectedHeadSha: string): Promise<{ ok: boolean; reason?: string }> {
   const refPath = branch.split('/').map(encodeURIComponent).join('/');
   const base = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/refs/heads/${refPath}`;
@@ -270,7 +279,7 @@ async function realDeleteBranch(auth: vscode.AuthenticationSession, repository: 
 }
 const realHooks: Hooks = {
   session: realSession, user: userFor, version: currentVersion, snapshot: realSnapshot, publication: realPublication, authorId: realAuthorId,
-  comment: realComment, review: realReview, merge: realMerge, repositoryInfo: realRepositoryInfo, branchRequirements: realBranchRequirements, deleteBranch: realDeleteBranch,
+  comment: realComment, review: realReview, merge: realMerge, repositoryInfo: realRepositoryInfo, branchRequirements: realBranchRequirements, branchHead: realBranchHead, deleteBranch: realDeleteBranch,
   confirm: async (message, action) => (await vscode.window.showWarningMessage(message, { modal: true }, action)) === action,
   prompt: async (value) => await vscode.window.showInputBox({ prompt: 'Public GitHub comment (starts blank; private feedback is never copied here)', value, ignoreFocusOut: true }),
   pickReviewDecision: async () => {
@@ -491,7 +500,8 @@ export async function deleteMergedBranchReport(target: PublicTarget, input?: { i
     reader: {
       getPullRequestSnapshot: async (number: number) => await hooks.snapshot({ ...target, number }),
       getRepository: async () => await hooks.repositoryInfo(target),
-      getBranchRequirements: async (name: string) => await hooks.branchRequirements(target, name)
+      getBranchRequirements: async (name: string) => await hooks.branchRequirements(target, name),
+      getBranchHead: async (name: string) => await hooks.branchHead(auth, repository, name)
     },
     transport: { deleteBranch: ({ branch: name, expectedHeadSha }: any) => hooks.deleteBranch(auth, repository, name, expectedHeadSha) },
     audit,
