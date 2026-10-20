@@ -54,12 +54,12 @@
 
 `src/isolation/windows.js` 提供 Windows 的積木（受限啟動的請求檢查與回覆解析、環境清除、使用者資料夾的憑證位置清單）；實際啟動由隨 VSIX 出貨的 `resources/isolation/restricted-launch.ps1` 完成，驗證 harness 是**測試程式碼** `test/isolation/windows-harness.js`（與 macOS 相同，不隨套件發佈）。環境清除與 macOS 共用 `src/isolation/environment.js`。
 
-**機制（第一版）**：受限權杖＋Job Object。腳本把目前使用者與 Administrators 兩個 SID 設為 *deny-only*（不能再授予存取），移除除「略過走訪檢查」以外的所有特權，並讓程式在會於逾時或腳本結束時整批結束的 Job Object 內執行。P/Invoke 定義寫死在腳本內；以 `execFile`（不經 shell）執行 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File … -Request <Base64 JSON>`。`-ExecutionPolicy Bypass` 只對這個行程生效；若群組原則強制執行原則，啟動會失敗而回報為 unknown。程式與引數以資料傳入，腳本內以 C 執行階段規則加引號，不經任何 shell 字串；腳本不下載任何東西。
+**機制（第一版）**：受限權杖＋Job Object。腳本把目前使用者的 SID 設為 *deny-only*（不能再授予存取），移除除「略過走訪檢查」以外的所有特權，並讓程式在逾時或腳本結束會整批結束的 Job Object 內執行；把權杖的預設存取清單與權杖物件本身的存取清單改為登入階段（沒有就用 Everyone）與 SYSTEM，否則程式連自己建立的物件都用不了。P/Invoke 定義寫死在腳本內；以 `execFile`（不經 shell）執行 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File … -Request <Base64 JSON>`。`-ExecutionPolicy Bypass` 只對這個行程生效；若群組原則強制執行原則，啟動會失敗而回報為 unknown。程式與引數以資料傳入，腳本內以 C 執行階段規則加引號，不經任何 shell 字串；腳本不下載任何東西。回覆另外帶 `elevated`：呼叫者的權杖是否已提升權限。
 
-**能擋什麼、不能擋什麼（誠實）**
-- 能擋：存取清單只寫了該使用者（加 SYSTEM／Administrators）的檔案與資料夾，例如使用者資料夾下的 `.config\gh`、`.netrc`、`.ssh`、`AppData\Roaming\GitHub CLI`、Credential Manager 的檔案。對 `Users`／`Everyone` 也開放的地方（系統資料夾、程式資料夾）仍可讀，所以程式可以正常啟動。
-- **不能擋網路**：權杖不能禁止連線。`git-push`、`gh-cli`、`direct-http` 預期報 `open`，整體因此維持 advisory。要擋網路需要 Windows 防火牆規則或 AppContainer（需要回環豁免，且 AppContainer 與 CLI 登入的相容性未知），列為後續。
-- 不涵蓋：Credential Manager 的 API 呼叫（`git-credential-manager` 經 DPAPI 在使用者身分下解密）、真 CLI、真 GitHub 憑證、`terminal-interaction`（harness 沒有 pseudo-console，維持 unknown）。
-- harness 的每個 `blocked` 都要求：受限程式能對**開放的資源**做同一類動作（例如能讀 `shared` 內的檔案、能在開放的儲存庫 commit），否則視為受限啟動本身失敗而回報 unknown，不是 blocked。
+**windows-latest CI 實測（run 39436977571，`caller elevated=true`）**
+- 預設設定：git-commit／git-push／gh-cli／credential-helper／direct-http／file-credentials 全部報 `open`，只有 env-credentials 是 `blocked`、cli-own-login 是 `works`、terminal-interaction 是 `unknown`；整體 advisory。
+- **原因寫明（不是 bug）**：CI 的 runner 是**已提升權限的管理員**，權杖內 Administrators 群組是啟用的，而真實使用者資料夾的存取清單有 `使用者＋SYSTEM＋Administrators`（harness 的憑證資料夾照這個 ACL 建立），所以只讓使用者 SID 變成 deny-only 擋不住。**這個機制擋不了已提升權限的管理員 session**；一般（含 UAC 過濾後的管理員）session 的權杖中 Administrators 本來就是 deny-only，才有保護。未提升的 session 由實機驗證（#135 T26）。
+- 同時讓 Administrators 也 deny-only：檔案類通道會被擋（先前的 run 中 file-credentials／git-commit 報 `blocked`，且每個都有「受限程式能對開放資源做同一類動作」的對照），**但是**程式無法連到自己建立的具名管線（`CreateFile` 對自己的 pipe 回 EPERM：Node 的 `child_process` 以管線啟動子程序就失敗，匿名管線與 `cmd` 管線沒問題；用 restricting SIDs 也一樣）。這會讓 Claude Code／Codex 這類 Node 程式無法開子程序，所以**預設不啟用**；原因尚未查清（預設存取清單與權杖物件的存取清單都已改過仍不行），是後續工作。
+- 受限程式能正常啟動、git 與 gh 能運作；`git push`／`gh`／HTTP 一律 `open`（權杖不能擋網路）。
 
 **驗證環境**：本機開發環境是 macOS，Windows 只由 windows-latest CI 驗證（虛擬機，不能取代乾淨實機；實機項在 #135 T26）。CI 日誌印出受限啟動是否成功、被設為 deny-only 的群組數、每個通道的 `control`／`outcome`。
