@@ -1,0 +1,360 @@
+# Starts one program under a restricted copy of the current process's token and reports what it did.
+#
+# What the restriction is: the copy of the token keeps every group, but the current user is marked "deny only" (and the
+# Administrators group too when asked: that breaks named pipes a program makes for itself, so it is off by default). They can no longer grant access, so a file or folder whose access list names only the user (and
+# SYSTEM and Administrators) can no longer be opened by the program; places that also grant Users or Everyone still can.
+# All privileges except the right to bypass traversal checks are removed. The program also runs in a job object that
+# kills it, and everything it started, when the time limit is reached or this script ends.
+#
+# What it does NOT do: it does not block the network, and it does not hide anything that is open to Users or Everyone.
+# Nothing here is downloaded, and no value is run through a shell: the program and its arguments are given as data.
+#
+# Input: -Request, a Base64 string of UTF-8 JSON: { "exe": absolute path, "args": [strings], "cwd": absolute path or "",
+#   "env": ["NAME=value", ...], "stdin": text or "", "timeoutMs": number, "restriction": optional { "denyUser", "denyAdmins",
+#   "dropPrivileges": booleans, true when left out; "noWindow": boolean, false when left out (a child created with the no-window
+#   flag from this hidden console failed to start on the Windows CI image: DLL initialization error) } }.
+# Output: one line of JSON on standard output: { "ok": true, "exitCode": n, "timedOut": bool, "output": Base64 of the
+#   program's standard output and error } or { "ok": false, "reason": short code }. Any error is a failure, never a pass.
+
+param([Parameter(Mandatory = $true)][string]$Request)
+
+$ErrorActionPreference = 'Stop'
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Text;
+using System.Threading;
+
+public static class RestrictedLaunch
+{
+    const uint TOKEN_ASSIGN_PRIMARY = 0x0001, TOKEN_DUPLICATE = 0x0002, TOKEN_QUERY = 0x0008;
+    // The restricted copy carries the rights the source handle has; changing its access lists needs write-DACL and adjust-default rights.
+    const uint TOKEN_ALL_ACCESS = 0xF01FF;
+    const uint DISABLE_MAX_PRIVILEGE = 0x1;
+    const uint SE_GROUP_ENABLED = 0x4;
+    const int TokenUser = 1, TokenGroups = 2;
+    const uint STARTF_USESTDHANDLES = 0x100;
+    const uint CREATE_SUSPENDED = 0x4, CREATE_NO_WINDOW = 0x08000000, CREATE_UNICODE_ENVIRONMENT = 0x400;
+    const uint HANDLE_FLAG_INHERIT = 0x1;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x800, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000;
+    const int JobObjectExtendedLimitInformation = 9;
+    const uint WAIT_TIMEOUT = 0x102;
+    const int TokenDefaultDacl = 6;
+    const uint SE_GROUP_LOGON_ID = 0xC0000000;
+
+    [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct STARTUPINFO
+    {
+        public int cb; public string lpReserved, lpDesktop, lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit;
+        public UIntPtr Affinity; public uint PriorityClass, SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong a, b, c, d, e, f; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SECURITY_ATTRIBUTES sa, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr h, byte[] buffer, uint toRead, out uint read, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(IntPtr h, byte[] buffer, uint toWrite, out uint written, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObject(IntPtr attrs, string name);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int cls, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int size);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr hTok);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attrs, int level, int type, out IntPtr newToken);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetKernelObjectSecurity(IntPtr handle, uint info, byte[] descriptor);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int cls, IntPtr buffer, int size);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr hTok, int cls, IntPtr buffer, int size, out int needed);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr deletePrivs, uint restrictCount, IntPtr restrict, out IntPtr newToken);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool EqualSid(IntPtr a, IntPtr b);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUserW(IntPtr hTok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+
+    public class Result { public bool Ok; public string Reason; public uint ExitCode; public bool TimedOut; public byte[] Output; public bool Elevated; }
+
+    static Result Fail(string reason) { Result r = new Result(); r.Ok = false; r.Reason = reason; return r; }
+
+    static IntPtr UserSid(IntPtr hTok, out IntPtr buffer)
+    {
+        int needed; GetTokenInformation(hTok, TokenUser, IntPtr.Zero, 0, out needed);
+        buffer = Marshal.AllocHGlobal(needed);
+        if (!GetTokenInformation(hTok, TokenUser, buffer, needed, out needed)) return IntPtr.Zero;
+        return Marshal.ReadIntPtr(buffer); // TOKEN_USER begins with a SID_AND_ATTRIBUTES whose first field is the SID
+    }
+
+    // The restricted token's default access list for what the program creates (pipes, events, mutexes) names the user, and the
+    // user is deny-only now: the program could then not use its own objects (git failed to make a pipe). It is replaced with
+    // one that names the logon session (or Everyone when the token has none) and SYSTEM.
+    static bool SetOpenDefaultDacl(IntPtr hToken)
+    {
+        SecurityIdentifier owner = null;
+        int needed; GetTokenInformation(hToken, TokenGroups, IntPtr.Zero, 0, out needed);
+        IntPtr groups = Marshal.AllocHGlobal(needed);
+        try
+        {
+            if (GetTokenInformation(hToken, TokenGroups, groups, needed, out needed))
+            {
+                int count = Marshal.ReadInt32(groups);
+                int entry = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr at = IntPtr.Add(groups, IntPtr.Size + i * entry);
+                    uint attributes = (uint)Marshal.ReadInt32(at, IntPtr.Size);
+                    if ((attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) { owner = new SecurityIdentifier(Marshal.ReadIntPtr(at)); break; }
+                }
+            }
+        }
+        finally { Marshal.FreeHGlobal(groups); }
+        if (owner == null) owner = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+        RawAcl acl = new RawAcl(2, 2);
+        acl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, 0x10000000, owner, false, null));
+        acl.InsertAce(1, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, 0x10000000, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), false, null));
+        byte[] bytes = new byte[acl.BinaryLength]; acl.GetBinaryForm(bytes, 0);
+        IntPtr aclPtr = Marshal.AllocHGlobal(bytes.Length), info = Marshal.AllocHGlobal(IntPtr.Size);
+        try
+        {
+            Marshal.Copy(bytes, 0, aclPtr, bytes.Length);
+            Marshal.WriteIntPtr(info, aclPtr);
+            if (!SetTokenInformation(hToken, TokenDefaultDacl, info, IntPtr.Size)) return false;
+            // The token object itself carries an access list naming the user too; without this the program cannot open its own
+            // token (the system's own tools fail with "access denied", and so do programs that look at it while starting).
+            RawSecurityDescriptor descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.SelfRelative, null, null, null, acl);
+            byte[] descriptorBytes = new byte[descriptor.BinaryLength]; descriptor.GetBinaryForm(descriptorBytes, 0);
+            return SetKernelObjectSecurity(hToken, 4, descriptorBytes);
+        }
+        finally { Marshal.FreeHGlobal(aclPtr); Marshal.FreeHGlobal(info); }
+    }
+
+    // Restricting SIDs: an access check must then succeed for the token's own groups AND for this short list. A file whose
+    // access list names only the user fails the second check; places that also grant Users or Everyone still pass.
+    static SID_AND_ATTRIBUTES[] RestrictingList(IntPtr hToken, List<IntPtr> toFree)
+    {
+        List<SID_AND_ATTRIBUTES> list = new List<SID_AND_ATTRIBUTES>();
+        foreach (string text in new string[] { "S-1-1-0", "S-1-5-32-545", "S-1-5-12" })
+        {
+            IntPtr sid; if (!ConvertStringSidToSid(text, out sid)) continue;
+            toFree.Add(sid); SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = sid; list.Add(entry);
+        }
+        int needed; GetTokenInformation(hToken, TokenGroups, IntPtr.Zero, 0, out needed);
+        IntPtr groups = Marshal.AllocHGlobal(needed); toFree.Add(groups);
+        if (GetTokenInformation(hToken, TokenGroups, groups, needed, out needed))
+        {
+            int count = Marshal.ReadInt32(groups); int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr at = IntPtr.Add(groups, IntPtr.Size + i * entrySize);
+                if (((uint)Marshal.ReadInt32(at, IntPtr.Size) & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = Marshal.ReadIntPtr(at); list.Add(entry); }
+            }
+        }
+        return list.ToArray();
+    }
+
+    // Whether the caller's token is elevated: then the Administrators group is enabled in it, and a place whose access list names
+    // Administrators stays open to the program unless that group is also made deny-only.
+    static bool Elevated(IntPtr hToken)
+    {
+        IntPtr buffer = Marshal.AllocHGlobal(4);
+        try { int needed; return GetTokenInformation(hToken, 20, buffer, 4, out needed) && Marshal.ReadInt32(buffer) != 0; }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    static byte[] EnvBlock(string[] env)
+    {
+        StringBuilder sb = new StringBuilder();
+        foreach (string pair in env) { sb.Append(pair); sb.Append('\0'); }
+        sb.Append('\0');
+        return Encoding.Unicode.GetBytes(sb.ToString());
+    }
+
+    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk, bool plainCopy, bool keepDefaultDacl, bool ownerUser, bool restrictingSids)
+    {
+        IntPtr process = GetCurrentProcess(), hTok = IntPtr.Zero, hRestricted = IntPtr.Zero, job = IntPtr.Zero;
+        IntPtr userBuffer = IntPtr.Zero, adminSid = IntPtr.Zero, envPtr = IntPtr.Zero;
+        IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
+        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+        bool created = false;
+        try
+        {
+            if (!OpenProcessToken(process, TOKEN_ALL_ACCESS, out hTok)) return Fail("open-token-failed");
+            IntPtr userSid = UserSid(hTok, out userBuffer);
+            if (userSid == IntPtr.Zero) return Fail("user-sid-failed");
+            if (!ConvertStringSidToSid("S-1-5-32-544", out adminSid)) return Fail("admin-sid-failed");
+            List<SID_AND_ATTRIBUTES> toDisable = new List<SID_AND_ATTRIBUTES>();
+            if (denyUser) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = userSid; toDisable.Add(entry); }
+            if (denyAdmins) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = adminSid; toDisable.Add(entry); }
+            SID_AND_ATTRIBUTES[] disable = toDisable.ToArray();
+            if (plainCopy)
+            {
+                // Diagnostic only: a plain primary copy of the token, with none of the restrictions.
+                if (!DuplicateTokenEx(hTok, 0xF01FF, IntPtr.Zero, 2, 1, out hRestricted)) return Fail("token-copy-failed-" + Marshal.GetLastWin32Error());
+            }
+            else
+            {
+                SID_AND_ATTRIBUTES[] restrict = new SID_AND_ATTRIBUTES[0];
+                List<IntPtr> restrictFree = new List<IntPtr>();
+                int restrictCount = 0; IntPtr restrictPtr = IntPtr.Zero;
+                if (restrictingSids)
+                {
+                    restrict = RestrictingList(hTok, restrictFree);
+                    restrictCount = restrict.Length;
+                    int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+                    restrictPtr = Marshal.AllocHGlobal(entrySize * restrictCount); restrictFree.Add(restrictPtr);
+                    for (int i = 0; i < restrictCount; i++) Marshal.StructureToPtr(restrict[i], IntPtr.Add(restrictPtr, i * entrySize), false);
+                }
+                bool madeToken = CreateRestrictedToken(hTok, dropPrivileges ? DISABLE_MAX_PRIVILEGE : 0, (uint)disable.Length, disable.Length == 0 ? null : disable, 0, IntPtr.Zero, (uint)restrictCount, restrictPtr, out hRestricted);
+                int lastError = Marshal.GetLastWin32Error();
+                if (!madeToken) return Fail("restricted-token-failed-" + lastError);
+                if (ownerUser)
+                {
+                    IntPtr ownerInfo = Marshal.AllocHGlobal(IntPtr.Size);
+                    Marshal.WriteIntPtr(ownerInfo, userSid);
+                    bool ownerSet = SetTokenInformation(hRestricted, 4, ownerInfo, IntPtr.Size);
+                    int ownerError = Marshal.GetLastWin32Error();
+                    Marshal.FreeHGlobal(ownerInfo);
+                    if (!ownerSet) return Fail("owner-failed-" + ownerError);
+                }
+                if (!keepDefaultDacl && !SetOpenDefaultDacl(hRestricted)) return Fail("default-dacl-failed-" + Marshal.GetLastWin32Error());
+            }
+
+            if (useJob)
+            {
+                job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return Fail("job-failed");
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | (breakawayOk ? (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) : 0);
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) return Fail("job-limits-failed");
+            }
+
+            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
+            sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = true;
+            if (!CreatePipe(out inRead, out inWrite, ref sa, 0)) return Fail("pipe-failed");
+            if (!CreatePipe(out outRead, out outWrite, ref sa, 0)) return Fail("pipe-failed");
+            // Only the child's ends are inherited.
+            if (!SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0) || !SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0)) return Fail("pipe-failed");
+
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFO)); si.dwFlags = (int)STARTF_USESTDHANDLES;
+            si.hStdInput = inRead; si.hStdOutput = outWrite; si.hStdError = outWrite;
+            byte[] block = EnvBlock(env);
+            envPtr = Marshal.AllocHGlobal(block.Length);
+            Marshal.Copy(block, 0, envPtr, block.Length);
+            StringBuilder cmd = new StringBuilder(commandLine);
+            if (!CreateProcessAsUserW(hRestricted, exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED | (noWindow ? CREATE_NO_WINDOW : 0) | CREATE_UNICODE_ENVIRONMENT, envPtr, string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) return Fail("create-process-failed-" + Marshal.GetLastWin32Error());
+            created = true;
+            if (job != IntPtr.Zero && !AssignProcessToJobObject(job, pi.hProcess)) { TerminateJobObject(job, 1); return Fail("job-assign-failed"); }
+            CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
+            if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); return Fail("resume-failed"); }
+
+            MemoryStream captured = new MemoryStream();
+            IntPtr readHandle = outRead;
+            Thread reader = new Thread(delegate ()
+            {
+                byte[] buffer = new byte[8192]; uint got;
+                while (ReadFile(readHandle, buffer, (uint)buffer.Length, out got, IntPtr.Zero) && got > 0)
+                {
+                    lock (captured) { if (captured.Length < 1048576) captured.Write(buffer, 0, (int)got); }
+                }
+            });
+            reader.IsBackground = true; reader.Start();
+            if (!string.IsNullOrEmpty(stdinText))
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes(stdinText); uint written;
+                WriteFile(inWrite, bytes, (uint)bytes.Length, out written, IntPtr.Zero);
+            }
+            CloseHandle(inWrite); inWrite = IntPtr.Zero;
+
+            Result result = new Result();
+            uint wait = WaitForSingleObject(pi.hProcess, (uint)timeoutMs);
+            if (wait == WAIT_TIMEOUT) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); else TerminateProcess(pi.hProcess, 1); result.TimedOut = true; WaitForSingleObject(pi.hProcess, 5000); }
+            reader.Join(5000);
+            uint code; GetExitCodeProcess(pi.hProcess, out code);
+            result.Ok = true; result.ExitCode = code; result.Elevated = Elevated(hTok);
+            lock (captured) { result.Output = captured.ToArray(); }
+            return result;
+        }
+        catch (Exception) { return Fail("launch-exception"); }
+        finally
+        {
+            if (created && job != IntPtr.Zero) TerminateJobObject(job, 1);
+            foreach (IntPtr h in new IntPtr[] { pi.hProcess, pi.hThread, inRead, inWrite, outRead, outWrite, job, hRestricted, hTok })
+                if (h != IntPtr.Zero) CloseHandle(h);
+            if (userBuffer != IntPtr.Zero) Marshal.FreeHGlobal(userBuffer);
+            if (envPtr != IntPtr.Zero) Marshal.FreeHGlobal(envPtr);
+        }
+    }
+}
+'@
+
+function Quote-Argument([string]$argument) {
+    # The rules the C runtime and CommandLineToArgvW read a command line by.
+    if ($argument.Length -gt 0 -and $argument -notmatch '[\s"]') { return $argument }
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $argument.ToCharArray()) {
+        if ($character -eq '\') { $backslashes++; continue }
+        if ($character -eq '"') { [void]$builder.Append('\', $backslashes * 2 + 1); [void]$builder.Append('"'); $backslashes = 0; continue }
+        if ($backslashes -gt 0) { [void]$builder.Append('\', $backslashes); $backslashes = 0 }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append('\', $backslashes * 2) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Write-Failure([string]$reason) {
+    [Console]::Out.WriteLine((@{ ok = $false; reason = $reason } | ConvertTo-Json -Compress))
+    exit 3
+}
+
+try {
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Request))
+    $spec = $json | ConvertFrom-Json
+    $exe = [string]$spec.exe
+    if (-not [IO.Path]::IsPathRooted($exe) -or $exe -match '[\x00-\x1f]' -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { Write-Failure 'program-invalid' }
+    $arguments = @($spec.args | ForEach-Object { [string]$_ })
+    foreach ($argument in $arguments) { if ($argument -match '\x00') { Write-Failure 'argument-invalid' } }
+    $commandLine = ((@($exe) + $arguments) | ForEach-Object { Quote-Argument $_ }) -join ' '
+    $environment = @($spec.env | ForEach-Object { [string]$_ })
+    $timeout = [int]$spec.timeoutMs
+    if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
+    # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
+    $switches = @{ denyUser = $true; denyAdmins = $false; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false; ownerUser = $false; restrictingSids = $false }
+    foreach ($name in @($switches.Keys)) {
+        $given = $spec.restriction.$name
+        if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
+    }
+    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk, $switches.plainCopy, $switches.keepDefaultDacl, $switches.ownerUser, $switches.restrictingSids)
+    if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
+    $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; elevated = [bool]$result.Elevated; output = [Convert]::ToBase64String($result.Output) }
+    [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
+    exit 0
+} catch {
+    Write-Failure 'script-error'
+}
