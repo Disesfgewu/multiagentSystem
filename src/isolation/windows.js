@@ -46,7 +46,9 @@ function launchScriptPath(extensionPath) {
 }
 
 /** The request the script reads, checked here first so the script only ever receives well-formed data. */
-function requestFor({ exe, args = [], cwd = '', env = [], stdin = '', timeoutMs = 15000 } = {}) {
+const RESTRICTION_KEYS = ['denyUser', 'denyAdmins', 'dropPrivileges', 'noWindow'];
+
+function requestFor({ exe, args = [], cwd = '', env = [], stdin = '', timeoutMs = 15000, restriction } = {}) {
   if (typeof exe !== 'string' || !win32.isAbsolute(exe) || exe.length > 520 || CONTROL.test(exe)) return refuse('program-invalid');
   if (!Array.isArray(args) || args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.length > MAX_ARG_CHARS || arg.includes('\u0000'))) return refuse('argument-invalid');
   if (typeof cwd !== 'string' || (cwd !== '' && (!win32.isAbsolute(cwd) || CONTROL.test(cwd)))) return refuse('cwd-invalid');
@@ -57,7 +59,8 @@ function requestFor({ exe, args = [], cwd = '', env = [], stdin = '', timeoutMs 
   }
   if (typeof stdin !== 'string' || stdin.length > MAX_STDIN_CHARS) return refuse('stdin-invalid');
   if (!Number.isInteger(timeoutMs) || timeoutMs < MIN_TIMEOUT_MS || timeoutMs > MAX_TIMEOUT_MS) return refuse('timeout-invalid');
-  const json = JSON.stringify({ exe, args, cwd, env, stdin, timeoutMs });
+  if (restriction !== undefined && (!isPlain(restriction) || Object.keys(restriction).some((key) => !RESTRICTION_KEYS.includes(key) || typeof restriction[key] !== 'boolean'))) return refuse('restriction-invalid');
+  const json = JSON.stringify({ exe, args, cwd, env, stdin, timeoutMs, ...(restriction ? { restriction } : {}) });
   return { ok: true, encoded: Buffer.from(json, 'utf8').toString('base64') };
 }
 

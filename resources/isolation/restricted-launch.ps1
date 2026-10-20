@@ -10,7 +10,8 @@
 # Nothing here is downloaded, and no value is run through a shell: the program and its arguments are given as data.
 #
 # Input: -Request, a Base64 string of UTF-8 JSON: { "exe": absolute path, "args": [strings], "cwd": absolute path or "",
-#   "env": ["NAME=value", ...], "stdin": text or "", "timeoutMs": number }.
+#   "env": ["NAME=value", ...], "stdin": text or "", "timeoutMs": number, "restriction": optional { "denyUser", "denyAdmins",
+#   "dropPrivileges", "noWindow": booleans, all true when left out } }.
 # Output: one line of JSON on standard output: { "ok": true, "exitCode": n, "timedOut": bool, "output": Base64 of the
 #   program's standard output and error } or { "ok": false, "reason": short code }. Any error is a failure, never a pass.
 
@@ -104,7 +105,7 @@ public static class RestrictedLaunch
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
 
-    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs)
+    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow)
     {
         IntPtr process = GetCurrentProcess(), hTok = IntPtr.Zero, hRestricted = IntPtr.Zero, job = IntPtr.Zero;
         IntPtr userBuffer = IntPtr.Zero, adminSid = IntPtr.Zero, envPtr = IntPtr.Zero;
@@ -141,7 +142,7 @@ public static class RestrictedLaunch
             envPtr = Marshal.AllocHGlobal(block.Length);
             Marshal.Copy(block, 0, envPtr, block.Length);
             StringBuilder cmd = new StringBuilder(commandLine);
-            if (!CreateProcessAsUserW(hRestricted, exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, envPtr, string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) return Fail("create-process-failed-" + Marshal.GetLastWin32Error());
+            if (!CreateProcessAsUserW(hRestricted, exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED | (noWindow ? CREATE_NO_WINDOW : 0) | CREATE_UNICODE_ENVIRONMENT, envPtr, string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) return Fail("create-process-failed-" + Marshal.GetLastWin32Error());
             created = true;
             if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateJobObject(job, 1); return Fail("job-assign-failed"); }
             CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
@@ -220,7 +221,13 @@ try {
     $environment = @($spec.env | ForEach-Object { [string]$_ })
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
-    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout)
+    # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
+    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $true }
+    foreach ($name in @($switches.Keys)) {
+        $given = $spec.restriction.$name
+        if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
+    }
+    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow)
     if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
     $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; output = [Convert]::ToBase64String($result.Output) }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))

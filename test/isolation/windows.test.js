@@ -141,3 +141,26 @@ test('on Windows: every channel is tried against a control, and the results are 
     assert.equal(assessment.mode, 'advisory', 'not every required channel is enforced, so enforcement is not available');
   } finally { await module.dispose(); }
 });
+
+test('on Windows: which parts of the restriction still let a program start (printed for the log); with none of them the launcher itself must work', onlyWindows, async () => {
+  const system = process.env.SystemRoot;
+  const cmd = path.win32.join(system, 'System32', 'cmd.exe');
+  const variants = [
+    { name: 'no restriction at all', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false, noWindow: false } },
+    { name: 'no window flag only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false, noWindow: true } },
+    { name: 'privileges dropped only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: true, noWindow: true } },
+    { name: 'administrators deny-only only', restriction: { denyUser: false, denyAdmins: true, dropPrivileges: false, noWindow: true } },
+    { name: 'user deny-only only', restriction: { denyUser: true, denyAdmins: false, dropPrivileges: false, noWindow: true } },
+    { name: 'user and administrators deny-only', restriction: { denyUser: true, denyAdmins: true, dropPrivileges: false, noWindow: true } },
+    { name: 'the full restriction', restriction: { denyUser: true, denyAdmins: true, dropPrivileges: true, noWindow: true } }
+  ];
+  const results = {};
+  for (const variant of variants) {
+    for (const [label, exe, args] of [['cmd', cmd, ['/d', '/c', 'echo ok']], ['node', nodeExe, ['-e', 'process.stdout.write("ok")']]]) {
+      const reply = await runRestricted({ exe, args, env: environmentPairs(process.env), timeoutMs: 20000, restriction: variant.restriction }, { script: SCRIPT });
+      results[`${variant.name} / ${label}`] = reply.ok ? `exit ${reply.exitCode >>> 0 === reply.exitCode ? `0x${reply.exitCode.toString(16)}` : reply.exitCode}${reply.timedOut ? ' (timed out)' : ''} output=${JSON.stringify(reply.output.trim().slice(0, 20))}` : `launch failed: ${reply.reason}`;
+    }
+  }
+  for (const [name, outcome] of Object.entries(results)) console.log(`windows isolation: variant ${name}: ${outcome}`);
+  assert.match(results['no restriction at all / cmd'], /^exit 0 output="ok"/, 'the launcher itself (token copy, job, pipes, process creation) works');
+});
