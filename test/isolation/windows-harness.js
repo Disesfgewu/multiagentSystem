@@ -240,6 +240,9 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     async diagnoseVariants() {
       await prepare();
       const variants = [
+        ['deny user+admins, owner set to the user', { denyUser: true, denyAdmins: true, dropPrivileges: false, ownerUser: true }],
+        ['restricting SIDs only', { denyUser: false, denyAdmins: false, dropPrivileges: false, restrictingSids: true }],
+        ['restricting SIDs and privileges dropped', { denyUser: false, denyAdmins: false, dropPrivileges: true, restrictingSids: true }],
         ['none', { denyUser: false, denyAdmins: false, dropPrivileges: false }],
         ['none, no job', { denyUser: false, denyAdmins: false, dropPrivileges: false, useJob: false }],
         ['none, job allows breakaway', { denyUser: false, denyAdmins: false, dropPrivileges: false, breakawayOk: true }],

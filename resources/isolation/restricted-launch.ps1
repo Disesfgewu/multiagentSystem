@@ -151,6 +151,30 @@ public static class RestrictedLaunch
         finally { Marshal.FreeHGlobal(aclPtr); Marshal.FreeHGlobal(info); }
     }
 
+    // Restricting SIDs: an access check must then succeed for the token's own groups AND for this short list. A file whose
+    // access list names only the user fails the second check; places that also grant Users or Everyone still pass.
+    static SID_AND_ATTRIBUTES[] RestrictingList(IntPtr hToken, List<IntPtr> toFree)
+    {
+        List<SID_AND_ATTRIBUTES> list = new List<SID_AND_ATTRIBUTES>();
+        foreach (string text in new string[] { "S-1-1-0", "S-1-5-32-545", "S-1-5-12" })
+        {
+            IntPtr sid; if (!ConvertStringSidToSid(text, out sid)) continue;
+            toFree.Add(sid); SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = sid; list.Add(entry);
+        }
+        int needed; GetTokenInformation(hToken, TokenGroups, IntPtr.Zero, 0, out needed);
+        IntPtr groups = Marshal.AllocHGlobal(needed); toFree.Add(groups);
+        if (GetTokenInformation(hToken, TokenGroups, groups, needed, out needed))
+        {
+            int count = Marshal.ReadInt32(groups); int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr at = IntPtr.Add(groups, IntPtr.Size + i * entrySize);
+                if (((uint)Marshal.ReadInt32(at, IntPtr.Size) & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = Marshal.ReadIntPtr(at); list.Add(entry); }
+            }
+        }
+        return list.ToArray();
+    }
+
     static byte[] EnvBlock(string[] env)
     {
         StringBuilder sb = new StringBuilder();
@@ -159,7 +183,7 @@ public static class RestrictedLaunch
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
 
-    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk, bool plainCopy, bool keepDefaultDacl)
+    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk, bool plainCopy, bool keepDefaultDacl, bool ownerUser, bool restrictingSids)
     {
         IntPtr process = GetCurrentProcess(), hTok = IntPtr.Zero, hRestricted = IntPtr.Zero, job = IntPtr.Zero;
         IntPtr userBuffer = IntPtr.Zero, adminSid = IntPtr.Zero, envPtr = IntPtr.Zero;
@@ -183,7 +207,29 @@ public static class RestrictedLaunch
             }
             else
             {
-                if (!CreateRestrictedToken(hTok, dropPrivileges ? DISABLE_MAX_PRIVILEGE : 0, (uint)disable.Length, disable.Length == 0 ? null : disable, 0, IntPtr.Zero, 0, IntPtr.Zero, out hRestricted)) return Fail("restricted-token-failed-" + Marshal.GetLastWin32Error());
+                SID_AND_ATTRIBUTES[] restrict = new SID_AND_ATTRIBUTES[0];
+                List<IntPtr> restrictFree = new List<IntPtr>();
+                int restrictCount = 0; IntPtr restrictPtr = IntPtr.Zero;
+                if (restrictingSids)
+                {
+                    restrict = RestrictingList(hTok, restrictFree);
+                    restrictCount = restrict.Length;
+                    int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+                    restrictPtr = Marshal.AllocHGlobal(entrySize * restrictCount); restrictFree.Add(restrictPtr);
+                    for (int i = 0; i < restrictCount; i++) Marshal.StructureToPtr(restrict[i], IntPtr.Add(restrictPtr, i * entrySize), false);
+                }
+                bool madeToken = CreateRestrictedToken(hTok, dropPrivileges ? DISABLE_MAX_PRIVILEGE : 0, (uint)disable.Length, disable.Length == 0 ? null : disable, 0, IntPtr.Zero, (uint)restrictCount, restrictPtr, out hRestricted);
+                int lastError = Marshal.GetLastWin32Error();
+                if (!madeToken) return Fail("restricted-token-failed-" + lastError);
+                if (ownerUser)
+                {
+                    IntPtr ownerInfo = Marshal.AllocHGlobal(IntPtr.Size);
+                    Marshal.WriteIntPtr(ownerInfo, userSid);
+                    bool ownerSet = SetTokenInformation(hRestricted, 4, ownerInfo, IntPtr.Size);
+                    int ownerError = Marshal.GetLastWin32Error();
+                    Marshal.FreeHGlobal(ownerInfo);
+                    if (!ownerSet) return Fail("owner-failed-" + ownerError);
+                }
                 if (!keepDefaultDacl && !SetOpenDefaultDacl(hRestricted)) return Fail("default-dacl-failed-" + Marshal.GetLastWin32Error());
             }
 
@@ -290,12 +336,12 @@ try {
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
     # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
-    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false }
+    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false; ownerUser = $false; restrictingSids = $false }
     foreach ($name in @($switches.Keys)) {
         $given = $spec.restriction.$name
         if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
     }
-    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk, $switches.plainCopy, $switches.keepDefaultDacl)
+    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk, $switches.plainCopy, $switches.keepDefaultDacl, $switches.ownerUser, $switches.restrictingSids)
     if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
     $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; output = [Convert]::ToBase64String($result.Output) }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
