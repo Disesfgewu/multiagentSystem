@@ -183,7 +183,10 @@ test('on Windows: the time limit ends a program that does not stop, and what it 
 test('on Windows: every channel is tried against a control, and the results are printed for the log', onlyWindows, async () => {
   const module = realModule();
   try {
-    for (const line of await module.describe()) console.log(`windows isolation: ${line}`);
+    const described = await module.describe();
+    for (const line of described) console.log(`windows isolation: ${line}`);
+    // The user's own SID no longer grants access: a place whose access list names only the user can be read outside the restriction and not inside it.
+    assert.equal(described.__userSidDenyOnly, true, 'the user SID is deny-only in the restricted token');
     for (const line of await module.diagnoseVariants()) console.log(`windows isolation: ${line}`);
     for (const line of await module.diagnoseFacilities()) console.log(`windows isolation: ${line}`);
     const { probes } = await collectProbes(module, { timeoutMs: 120000 });

@@ -106,7 +106,12 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     fs.writeFileSync(path.join(cliHome, 'auth.json'), '{"synthetic":true}\n');
     fs.writeFileSync(path.join(shared, 'open-secret.txt'), `${secret}\n`);
     fs.writeFileSync(path.join(shared, 'open-git-credentials'), `https://synthetic:${secret}${String.fromCharCode(64)}github.com\n`);
-    fixture = { root, shared, creds, cliHome, secret, sid, userOnly, repos: 0, github: await countingServer(), provider: await countingServer() };
+    // A folder whose access list names ONLY the user: the plainest evidence that the user's SID is deny-only in the restricted token.
+    const onlyMine = path.join(root, 'only-me');
+    fs.mkdirSync(onlyMine);
+    fs.writeFileSync(path.join(onlyMine, 'note.txt'), `${secret}\n`);
+    await run(icacls, [onlyMine, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`]);
+    fixture = { root, shared, creds, cliHome, onlyMine, secret, sid, userOnly, repos: 0, github: await countingServer(), provider: await countingServer() };
     return fixture;
   }
 
@@ -239,6 +244,11 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       }
       const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.argv[1],["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))', win32.join(parentEnv.SystemRoot, 'System32', 'cmd.exe')));
       lines.push(`restricted node spawning a child over pipes: ${pipes.launchFailed ? `failed (${pipes.launchFailed})` : clean(pipes.stdout || `exit failed`)}`);
+      const mine = path.join(fixture.onlyMine, 'note.txt');
+      const asControl = await launch(false, node, nodeRun(READ_FILE, mine));
+      const asRestricted = await launch(true, node, nodeRun(READ_FILE, mine));
+      lines.push(`user-only file (access list names only the user): control reads it=${asControl.stdout.includes(fixture.secret)}, restricted reads it=${asRestricted.stdout.includes(fixture.secret)}`);
+      lines.__userSidDenyOnly = asControl.stdout.includes(fixture.secret) && !asRestricted.stdout.includes(fixture.secret) && !asRestricted.launchFailed;
       const priv = await launch(true, whoami, ['/priv', '/fo', 'csv', '/nh']);
       lines.push(`whoami /priv (restricted): ${priv.launchFailed ? `failed (${priv.launchFailed})` : clean(priv.stdout)}`);
       if (git()) {
