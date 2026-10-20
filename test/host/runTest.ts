@@ -33,11 +33,19 @@ async function main(): Promise<void> {
   const fakeBin = path.join(sandbox, 'fake-cli-bin');
   const agySentinel = path.join(sandbox, 'agy-started.txt');
   const ghSentinel = path.join(sandbox, 'gh-started.txt');
+  const customSentinel = path.join(sandbox, 'custom-started.txt');
   fs.mkdirSync(fakeBin);
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(fakeBin, 'agy.cmd'), '@echo off\r\necho synthetic > "%MULTIAGENT_TEST_AGY_SENTINEL%"\r\n');
   } else {
     fs.writeFileSync(path.join(fakeBin, 'agy'), '#!/bin/sh\nprintf synthetic > "$MULTIAGENT_TEST_AGY_SENTINEL"\n', { mode: 0o700 });
+  }
+  // A synthetic custom provider program: on macOS an executable script that records its arguments; on Windows only a .cmd
+  // (which the extension must refuse: only .exe and .com are started).
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(fakeBin, 'synthetic-custom-cli.cmd'), '@echo off\r\necho %* > "%MULTIAGENT_TEST_CUSTOM_SENTINEL%"\r\n');
+  } else {
+    fs.writeFileSync(path.join(fakeBin, 'synthetic-custom-cli'), '#!/bin/sh\nprintf "%s" "$*" > "$MULTIAGENT_TEST_CUSTOM_SENTINEL"\n', { mode: 0o700 });
   }
   const testPath = `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`;
   const userData = path.join(sandbox, 'ud');
@@ -61,6 +69,7 @@ async function main(): Promise<void> {
         MULTIAGENT_TEST_WORKTREE: worktreeTarget,
         MULTIAGENT_TEST_AGY_SENTINEL: agySentinel,
         MULTIAGENT_TEST_GH_SENTINEL: ghSentinel,
+        MULTIAGENT_TEST_CUSTOM_SENTINEL: customSentinel,
         PATH: testPath
       },
       launchArgs: [

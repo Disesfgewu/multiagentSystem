@@ -31,6 +31,7 @@ import { ClaudeRelease } from '../../../src/setup/managedClaude';
 
 const COMMANDS = [
   'multiagentSystem.providers.showCustom',
+  'multiagentSystem.providers.startCustom',
   'multiagentSystem.openTerminalGroup',
   'multiagentSystem.launchAgent',
   'multiagentSystem.sessions.list',
