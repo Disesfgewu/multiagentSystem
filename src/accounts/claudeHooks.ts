@@ -214,7 +214,8 @@ export function enableClaudeHooks(configDir: string, scriptPath: string, isWindo
   try {
     if (!path.isAbsolute(configDir)) return { ok: false, reason: 'config-dir-not-absolute' };
     const settingsPath = path.join(configDir, 'settings.json');
-    if (!isSafePath(scriptPath, isWindows) || !isSafePath(settingsPath, isWindows)) return { ok: false, reason: 'unsafe-path-characters' };
+    // Only the script path becomes part of a shell command; the settings file path is never put in one.
+    if (!isSafePath(scriptPath, isWindows)) return { ok: false, reason: 'unsafe-path-characters' };
     const command = buildHookCommand(scriptPath, isWindows);
 
     const loaded = loadSettings(settingsPath);

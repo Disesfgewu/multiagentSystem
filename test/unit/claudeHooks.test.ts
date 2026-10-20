@@ -359,3 +359,14 @@ test('wizard refuses an unreadable settings.json before asking anything', async 
     assert.equal(fs.readFileSync(p.settingsPath, 'utf8'), '{ nope');
   } finally { p.cleanup(); }
 });
+
+test('a profile folder whose name has shell characters can still enable the bridge: only the script path goes into a command', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-hooks-'));
+  const dir = path.join(parent, "o'brien (work) & co");
+  fs.mkdirSync(dir);
+  try {
+    assert.deepEqual(enableClaudeHooks(dir, SCRIPT, WIN), { ok: true, changed: true });
+    assert.equal(inspectHookConfig(dir, SCRIPT, WIN).status, 'active');
+    assert.equal(read(path.join(dir, 'settings.json')).hooks.Stop.at(-1).hooks[0].command, buildHookCommand(SCRIPT, WIN));
+  } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+});
