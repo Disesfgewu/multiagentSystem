@@ -10,7 +10,9 @@ import {
 
 // Settings shapes follow https://code.claude.com/docs/en/hooks ("Configuration", "Matcher patterns").
 const SCRIPT = '/opt/multiagent/out/src/accounts/claudeHookBridge.js';
-const COMMAND = buildHookCommand(SCRIPT, false);
+// Paths and quoting follow the platform the test runs on, so a real temporary folder passes the path check there too.
+const WIN = process.platform === 'win32';
+const COMMAND = buildHookCommand(SCRIPT, WIN);
 const USER_HOOKS = {
   PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: '/path/to/lint-check.sh' }] }],
   PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', if: 'Bash(rm *)', command: '${CLAUDE_PROJECT_DIR}/.claude/hooks/block-rm.sh', args: [] }] }]
@@ -23,7 +25,7 @@ function profile(settings?: string | object): { dir: string; settingsPath: strin
   return { dir, settingsPath, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 const read = (file: string): any => JSON.parse(fs.readFileSync(file, 'utf8'));
-const enable = (dir: string) => enableClaudeHooks(dir, SCRIPT, false);
+const enable = (dir: string) => enableClaudeHooks(dir, SCRIPT, WIN);
 
 test('the hook group is one command handler with no matcher; SessionEnd has no timeout of its own', () => {
   assert.deepEqual(buildHookGroup('Stop', COMMAND), { hooks: [{ type: 'command', command: COMMAND, timeout: 5 }] });
@@ -57,7 +59,7 @@ test('enable merges into a profile with existing hooks and keeps every other key
     assert.deepEqual(after.hooks.PreToolUse[0], USER_HOOKS.PreToolUse[0]);
     assert.equal(after.hooks.PostToolUse.length, 2);
     for (const event of HOOK_BRIDGE_EVENTS) assert.deepEqual(after.hooks[event].at(-1), buildHookGroup(event, COMMAND));
-    assert.equal(inspectHookConfig(p.dir, SCRIPT, false).status, 'active');
+    assert.equal(inspectHookConfig(p.dir, SCRIPT, WIN).status, 'active');
     if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(p.dir, HOOK_OWNER_FILE_NAME)).mode & 0o777, 0o600);
   } finally { p.cleanup(); }
 });
@@ -170,7 +172,7 @@ test('corrupt, non-object and oddly shaped settings.json are refused and left un
       assert.equal(result.ok, false, text);
       assert.equal(fs.readFileSync(p.settingsPath, 'utf8'), text);
       assert.equal(fs.existsSync(path.join(p.dir, HOOK_OWNER_FILE_NAME)), false);
-      assert.equal(inspectHookConfig(p.dir, SCRIPT, false).status, 'unreadable');
+      assert.equal(inspectHookConfig(p.dir, SCRIPT, WIN).status, 'unreadable');
     } finally { p.cleanup(); }
   }
   const p = profile({});
@@ -260,7 +262,7 @@ test('only the profile settings.json is written: no settings.local.json, no work
     enable(p.dir);
     assert.deepEqual(fs.readdirSync(path.join(workspace, '.claude')), []);
     assert.deepEqual(fs.readdirSync(p.dir).sort(), [HOOK_OWNER_FILE_NAME, 'settings.json']);
-    assert.deepEqual(enableClaudeHooks('relative/profile', SCRIPT, false), { ok: false, reason: 'config-dir-not-absolute' });
+    assert.deepEqual(enableClaudeHooks('relative/profile', SCRIPT, WIN), { ok: false, reason: 'config-dir-not-absolute' });
     assert.equal(fs.existsSync(path.join(workspace, 'relative')), false);
   } finally { process.chdir(previous); p.cleanup(); fs.rmSync(workspace, { recursive: true, force: true }); }
 });
@@ -268,7 +270,7 @@ test('only the profile settings.json is written: no settings.local.json, no work
 test('an install from an older script location is replaced, not duplicated', () => {
   const p = profile({ hooks: USER_HOOKS });
   try {
-    enableClaudeHooks(p.dir, '/old/place/claudeHookBridge.js', false);
+    enableClaudeHooks(p.dir, '/old/place/claudeHookBridge.js', WIN);
     assert.equal(enable(p.dir).ok, true);
     const after = read(p.settingsPath);
     assert.equal(after.hooks.Stop.length, 1);
@@ -312,7 +314,7 @@ test('wizard: the dialog shows the file and the command, and declining writes no
     const { ui, calls } = fakeUi({ enable: false });
     const outcome = await configureHooksWizard({ id: 'a', provider: 'claude', label: 'Work', configDir: p.dir }, { ui });
     assert.equal(outcome.status, 'cancelled');
-    assert.match(calls[0], new RegExp(`^enable:${p.settingsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:node '.*claudeHookBridge\\.js':6$`));
+    assert.match(calls[0], new RegExp(`^enable:${p.settingsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:node [\\x27\\x22].*claudeHookBridge\\.js[\\x27\\x22]:6$`));
     assert.equal(fs.readFileSync(p.settingsPath, 'utf8'), before);
     assert.equal(fs.existsSync(path.join(p.dir, HOOK_OWNER_FILE_NAME)), false);
   } finally { p.cleanup(); }

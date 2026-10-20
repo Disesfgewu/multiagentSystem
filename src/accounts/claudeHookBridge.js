@@ -115,7 +115,6 @@ function runHookBridge({ stdin = process.stdin, env = process.env, now = () => n
 
     // Input that never ends (or ends too late) is abandoned: the hook must not hold the CLI up.
     timer = setTimeout(() => finish(null), timeoutMs);
-    if (timer.unref) timer.unref();
 
     stdin.on('data', (chunk) => {
       if (done || overflow) return;
