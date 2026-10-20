@@ -22,6 +22,8 @@ const {
   grantConsent,
   revokeConsent,
   listResearchTools,
+  resolveLaunchExecutable,
+  primeHashCacheForTests,
   prepareResearchTool
 } = require('../../src/research/installer');
 
@@ -416,5 +418,123 @@ test('a prepared program is only ready while its bytes still hash to what was ve
     assert.equal(state().installStatus, 'stale');
     await reinstall();
     assert.equal(state().installStatus, 'ready');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// A prepared folder as the installer writes it, with the program under the given recorded name (`.exe` on Windows).
+function writePrepared(root, tool, name, bytes) {
+  const dir = path.join(root, tool.serverId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, '.prepared.json'), JSON.stringify({
+    schema: 2, serverId: tool.serverId, version: tool.version, integrity: tool.integrity, fingerprint: consentFingerprint(tool),
+    executable: name, executableSha256: createHash('sha256').update(bytes).digest('hex'), verifiedAt: new Date().toISOString()
+  }));
+  return path.join(dir, name);
+}
+
+test('the program to run is the file name recorded at install, including .exe on Windows, never command[0] by itself', () => {
+  const store = new FakeStore();
+  const base = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-exe-name-'));
+  try {
+    const tool = validateCatalogItem(base);
+    for (const name of [tool.command[0], `${tool.command[0]}.exe`]) {
+      fs.rmSync(path.join(root, tool.serverId), { recursive: true, force: true });
+      const file = writePrepared(root, tool, name, Buffer.from(`program ${name}`));
+      const entry = listResearchTools({ store, root, catalog: [tool] })[0];
+      assert.equal(entry.installStatus, 'ready', name);
+      assert.equal(entry.installExecutable, file, name);
+      assert.equal(path.basename(entry.installExecutable), name);
+    }
+    // Not ready: no executable path is offered at all.
+    fs.writeFileSync(path.join(root, tool.serverId, `${tool.command[0]}.exe`), 'changed program bytes');
+    const stale = listResearchTools({ store, root, catalog: [tool], fullCheck: true })[0];
+    assert.deepEqual([stale.installStatus, stale.installExecutable, stale.installPath], ['stale', null, null]);
+    // Some other name in the record is refused.
+    writePrepared(root, tool, 'other-name', Buffer.from('x'));
+    assert.equal(listResearchTools({ store, root, catalog: [tool] })[0].installStatus, 'stale');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('showing a status may use a remembered hash while size, time and file are unchanged; a start (fullCheck) always reads the bytes', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-hash-cache-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const fixed = 1_700_000_000; // a whole second, so the modified time can be put back exactly
+    const put = (text) => { fs.writeFileSync(file, Buffer.from(text)); fs.utimesSync(file, fixed, fixed); };
+    const show = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    const start = () => listResearchTools({ store, root, catalog: [tool], fullCheck: true })[0].installStatus;
+    put('AAAAAAAA');
+    assert.equal(show(), 'ready');
+    // Same length and same modified time, different bytes: only what reads the bytes can see it.
+    put('BBBBBBBB');
+    assert.equal(start(), 'stale', 'a start reads the bytes');
+    assert.equal(show(), 'stale', 'and what a start read is what is remembered next');
+    // The quick check does notice a different length even when the modified time is put back.
+    put('AAAAAAAA');
+    assert.equal(start(), 'ready', 'a start re-reads and refreshes what is remembered');
+    assert.equal(show(), 'ready');
+    put('AAAA');
+    assert.equal(show(), 'stale');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a start re-reads the program: with the status list\'s remembered hash filled in and the stat put back, a swapped program is still not started', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-launch-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const fixed = 1_700_000_000;
+    fs.utimesSync(file, fixed, fixed);
+    const status = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    const launch = () => resolveLaunchExecutable({ store, root, serverId: tool.serverId, catalog: [tool] });
+    assert.equal(status(), 'ready', 'the remembered hash is filled in');
+    assert.equal(launch(), file);
+    // The program is swapped, and the remembered hash is made to match the file's size, times and identity as they are now
+    // (what a restored modified time would look like to the quick check). Only reading the bytes can tell.
+    const original = createHash('sha256').update('AAAAAAAA').digest('hex');
+    fs.writeFileSync(file, Buffer.from('BBBBBBBB'));
+    primeHashCacheForTests(file, original);
+    assert.equal(status(), 'ready', 'the quick status trusts what it remembers (that is what it is for)');
+    assert.equal(launch(), null, 'a start does not use the remembered hash: the swapped program is not started');
+    // Unknown tool, missing root and not-installed all give null, never a guess.
+    assert.equal(resolveLaunchExecutable({ store, root, serverId: 'nope', catalog: [tool] }), null);
+    assert.equal(resolveLaunchExecutable({ store, serverId: tool.serverId, catalog: [tool] }), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a recorded program name that is a path is refused', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-basename-'));
+  try {
+    writePrepared(root, tool, tool.command[0], Buffer.from('x'));
+    const manifestPath = path.join(root, tool.serverId, '.prepared.json');
+    const recorded = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    for (const name of [`./${tool.command[0]}`, `sub/${tool.command[0]}`, `../${tool.command[0]}`]) {
+      fs.writeFileSync(manifestPath, JSON.stringify({ ...recorded, executable: name }));
+      assert.equal(listResearchTools({ store, root, catalog: [tool] })[0].installStatus, 'stale', name);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the quick status does not trust a remembered hash once the file\'s change time moved, even if its size and modified time look the same', { skip: process.platform === 'win32' }, () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-ctime-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const status = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    primeHashCacheForTests(file, 'f'.repeat(64));
+    assert.equal(status(), 'stale', 'a remembered hash that does not match is believed while nothing about the file moved');
+    // A permission change moves the change time (and nothing else a restored modified time could hide).
+    const before = fs.statSync(file);
+    fs.chmodSync(file, before.mode & 0o777 ^ 0o001);
+    fs.chmodSync(file, before.mode & 0o777);
+    assert.equal(status(), 'ready', 'the file is read again once its change time moved');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

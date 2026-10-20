@@ -13,7 +13,7 @@ const {
   isConsentActive
 } = require('./installer') as {
   formatConsentManifest(tool: any): string;
-  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
+  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
   grantConsent(serverId: string, deps: { store: any; catalog?: any[] }): { ok: boolean; record: any };
   revokeConsent(serverId: string, deps: { store: any; root?: string }): { ok: boolean; serverId: string; status: string; cleanup: 'none' | 'done' | 'failed' };
   prepareResearchTool(serverId: string, deps: { store: any; root: string; boundary?: string; download?: any; catalog?: any[]; assetBytes?: Uint8Array; signal?: AbortSignal; progress?: (value: { received: number; total: number | null }) => void; fetchImpl?: any }): Promise<any>;
