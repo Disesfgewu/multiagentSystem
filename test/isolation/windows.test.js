@@ -150,6 +150,7 @@ test('on Windows: every channel is tried against a control, and the results are 
   try {
     for (const line of await module.describe()) console.log(`windows isolation: ${line}`);
     for (const line of await module.diagnoseVariants()) console.log(`windows isolation: ${line}`);
+    for (const line of await module.diagnoseFacilities()) console.log(`windows isolation: ${line}`);
     const { probes } = await collectProbes(module, { timeoutMs: 120000 });
     const assessment = assessIsolation({ platform: 'win32', probes });
     for (const line of describeAssessment(assessment)) console.log(`windows isolation: ${line}`);

@@ -266,6 +266,30 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       }
       return lines;
     },
+    /** What a program can do for itself under the launcher (pipes, named pipes, child processes, files), unrestricted and under the plainest launch. */
+    async diagnoseFacilities() {
+      await prepare();
+      const cmdExe = win32.join(parentEnv.SystemRoot, 'System32', 'cmd.exe');
+      const probe = `
+        const cp=require('child_process'),net=require('net'),fs=require('fs'),os=require('os'),path=require('path');
+        const out={};
+        const cmd=process.argv[1];
+        let r=cp.spawnSync(cmd,['/d','/c','echo ok'],{stdio:'ignore'}); out.spawnNoPipes=r.error?r.error.code:r.status;
+        r=cp.spawnSync(cmd,['/d','/c','echo ok'],{encoding:'utf8'}); out.spawnPipes=r.error?r.error.code:r.status;
+        r=cp.spawnSync(cmd,['/d','/c','echo ok'],{stdio:['inherit','inherit','inherit']}); out.spawnInherit=r.error?r.error.code:r.status;
+        try{const s=net.createServer();s.on('error',e=>{out.namedPipe=e.code;finish()});s.listen('\\\\.\\pipe\\mas-diag-'+process.pid,()=>{out.namedPipe='ok';s.close(finish)});}catch(e){out.namedPipe='throw '+e.code;finish()}
+        try{fs.writeFileSync(path.join(os.tmpdir(),'mas-diag-'+process.pid),'x');fs.unlinkSync(path.join(os.tmpdir(),'mas-diag-'+process.pid));out.tmpWrite='ok'}catch(e){out.tmpWrite=e.code}
+        function finish(){process.stdout.write(JSON.stringify(out))}
+      `.replace(/\s+/g, ' ');
+      const lines = [];
+      const control = await launch(false, node, ['-e', probe, cmdExe]);
+      lines.push(`facilities (control, unrestricted): ${String(control.stdout || control.stderr).slice(0, 300)}`);
+      for (const [name, restriction] of [['none, no job', { denyUser: false, denyAdmins: false, dropPrivileges: false, useJob: false }], ['full', undefined]]) {
+        const seen = await launch(true, node, ['-e', probe, cmdExe], { restriction });
+        lines.push(`facilities (${name}): ${seen.launchFailed ? `launch failed (${seen.launchFailed})` : String(seen.stdout).slice(0, 300)}`);
+      }
+      return lines;
+    },
     async dispose() {
       if (!fixture) return;
       const { root, github, provider } = fixture;
