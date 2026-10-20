@@ -148,7 +148,8 @@ function createMcpLifecycle(deps = {}) {
     startTimeoutMs = 5000,
     callTimeoutMs = 15000,
     stopTimeoutMs = 2000,
-    storageDir
+    storageDir,
+    cleanupStorage
   } = deps;
 
   const running = new Map(); // serverId -> { child, pending, nextId, buffer, exited }
@@ -274,14 +275,14 @@ function createMcpLifecycle(deps = {}) {
     if (persisted(serverId).revoked === true && saved.revoked !== true) return no('revoked');
     if (running.has(serverId)) return no('already-running');
 
-    // `{storage}` becomes the tool's own private folder. Without one nothing starts: never a shared default like /tmp.
+    // Every tool gets a private folder of its own, and its temporary files go there, never to the shared system folder the
+    // parent process uses. `{storage}` in the command becomes that folder. Without one nothing starts.
     let args = tool.command.slice(1);
-    if (args.includes('{storage}')) {
+    {
       let dir = null;
       try { dir = typeof storageDir === 'function' ? await storageDir(serverId) : null; } catch { dir = null; }
       if (typeof dir !== 'string' || !path.isAbsolute(dir) || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(dir)) return no('storage-unavailable');
       args = args.map((arg) => (arg === '{storage}' ? dir : arg));
-      // The tool's temporary files go under its own folder too, not the shared system folder the parent process uses.
       const scratch = path.join(dir, 'tmp');
       env.TMPDIR = scratch; env.TEMP = scratch; env.TMP = scratch;
       if (!trusted()) return no('workspace-untrusted');
@@ -374,7 +375,12 @@ function createMcpLifecycle(deps = {}) {
       grantsCleared = saveAllowlist(map);
       if (!persistedOk) return no('persist-failed', { terminated });
       if (!terminated) return no('kill-unconfirmed');
-      return { ok: true, serverId, state: 'revoked', grantsCleared };
+      // The tool's own folder goes only once the program is confirmed gone. A failure here does not undo the revoke.
+      let storageRemoved = null;
+      if (typeof cleanupStorage === 'function') {
+        try { const cleaned = await cleanupStorage(serverId); storageRemoved = cleaned && cleaned.ok === true; } catch { storageRemoved = false; }
+      }
+      return { ok: true, serverId, state: 'revoked', grantsCleared, storageRemoved };
     } catch { return no('internal-error'); }
   }
 

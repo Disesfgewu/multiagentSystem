@@ -86,6 +86,8 @@ function setup(t, { trusted = true, serverSource = SERVER_SOURCE, secrets = { SY
     isWorkspaceTrusted: () => trusted,
     readSecret: async (serverId, key) => secrets[key] ?? null,
     resolveExecutable: async () => script,
+    // Every tool needs a folder of its own; the tests give each one a plain path under the test folder.
+    storageDir: async (serverId) => path.join(dir, 'tool-folders', serverId),
     spawn: (file, args, options) => {
       spawned.push({ file, args, options });
       const dump = path.join(dir, `${spawned.length}.env`);
@@ -613,7 +615,7 @@ it('the {storage} argument becomes the tool\'s own private folder; without one, 
   const own = path.join(dir, 'tool-folder');
   const ask = (lc) => lc.enable('storage-papers', { confirmed: true, tools: TOOLS });
   for (const storageDir of [undefined, async () => null, async () => '', async () => 'relative/dir', async () => `${own}‮`, async () => { throw new Error('boom'); }, async () => 5]) {
-    assert.equal((await ask(make({ catalog: STORAGE_CATALOG, ...(storageDir ? { storageDir } : {}) }))).code, 'storage-unavailable');
+    assert.equal((await ask(make({ catalog: STORAGE_CATALOG, storageDir }))).code, 'storage-unavailable');
   }
   assert.equal(spawned.length, 0, 'no process was started for any of them');
   const lc = make({ catalog: STORAGE_CATALOG, storageDir: async (serverId) => { assert.equal(serverId, 'storage-papers'); return own; } });
@@ -662,4 +664,46 @@ it('every kind of workspace MCP file is only noticed by name: it is never opened
   await lc.callTool({ role: 'researcher', serverId: 'synthetic-papers', tool: 'search_papers', args: { query: 'q' } });
   await lc.statusAll();
   assert.deepEqual(reads, [], 'the workspace files were never opened');
+});
+
+it('every tool, not only one that names {storage}, gets a folder of its own and temporary files in it; without a usable folder nothing starts', async (t) => {
+  const { make, consent, spawned, dir } = setup(t);
+  consent();
+  for (const storageDir of [undefined, async () => null, async () => 'relative/dir', async () => { throw new Error('x'); }]) {
+    assert.equal((await make({ storageDir }).enable('synthetic-papers', { confirmed: true, tools: TOOLS })).code, 'storage-unavailable');
+  }
+  assert.equal(spawned.length, 0, 'nothing started without a folder');
+  const lc = make();
+  assert.equal((await lc.enable('synthetic-papers', { confirmed: true, tools: TOOLS })).ok, true);
+  const scratch = path.join(dir, 'tool-folders', 'synthetic-papers', 'tmp');
+  assert.deepEqual([spawned[0].options.env.TMPDIR, spawned[0].options.env.TEMP, spawned[0].options.env.TMP], [scratch, scratch, scratch], 'the parent process\'s temporary folder is not passed on');
+});
+
+it('revoking removes the tool\'s folder only after the program is gone; a failing clean-up does not undo the revoke', async (t) => {
+  const { make, consent, store } = setup(t);
+  consent();
+  const cleaned = [];
+  const lc = make({ cleanupStorage: async (serverId) => { cleaned.push(serverId); return { ok: true, removed: true }; } });
+  assert.equal((await lc.enable('synthetic-papers', { confirmed: true, tools: TOOLS })).ok, true);
+  const revoked = await lc.revoke('synthetic-papers');
+  assert.deepEqual([revoked.ok, revoked.state, revoked.storageRemoved], [true, 'revoked', true]);
+  assert.deepEqual(cleaned, ['synthetic-papers']);
+  for (const cleanupStorage of [async () => { throw new Error('x'); }, async () => ({ ok: false, reason: 'storage-remove-failed' })]) {
+    const failing = make({ cleanupStorage });
+    const result = await failing.revoke('synthetic-papers');
+    assert.deepEqual([result.ok, result.storageRemoved], [true, false], 'the revoke stands');
+  }
+  assert.equal(make().status('synthetic-papers').revoked, true);
+  void store;
+});
+
+it('when the program cannot be confirmed gone, the folder is left alone', async (t) => {
+  const { make, consent } = setup(t);
+  consent();
+  const cleaned = [];
+  const lc = make({ cleanupStorage: async (serverId) => { cleaned.push(serverId); return { ok: true }; }, killTree: () => undefined });
+  assert.equal((await lc.enable('synthetic-papers', { confirmed: true, tools: TOOLS })).ok, true);
+  const result = await lc.revoke('synthetic-papers');
+  assert.equal(result.ok, false);
+  assert.deepEqual(cleaned, [], 'nothing was removed while the program may still be running');
 });
