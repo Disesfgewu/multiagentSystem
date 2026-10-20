@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
-import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
+import { requireInteractive } from '../shared/testMode';
 
 const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
   createMcpLifecycle(deps: any): {
@@ -160,9 +160,10 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
 
   // Search papers: the person picks, types and confirms. In an installed extension no argument can choose or confirm for them.
   const search = async (arg?: { serverId?: unknown; tool?: unknown; query?: unknown; interactive?: boolean }) => {
-    // Only the Extension Host tests may answer for the person; in an installed extension no argument can.
-    const given = searchGiven(arg, { testMode: isExtensionTestMode() });
-    const interactive = given === undefined;
+    // Only the Extension Host tests may answer for the person; in an installed extension no argument can:
+    // `requireInteractive` turns `interactive: false` into `true` there, so `testMode` below is false.
+    const interactive = requireInteractive(arg ?? {}).interactive !== false;
+    const given = searchGiven(arg, { testMode: !interactive });
     if (!(await refresh())) return unavailable();
     const ui = {
       pick: async (choices: Array<{ serverId: string; tool: string }>) => (await vscode.window.showQuickPick(
