@@ -4,6 +4,10 @@ import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, report
 import { closeIssueReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
+const { saveFeedback, readFeedback } = require('../../../src/reports/feedback-store') as {
+  saveFeedback(store: unknown, target: unknown, input: { note: string; headSha: string | null }, expectedRevision: number | null): { ok: boolean; reason?: string; record?: { revision: number } };
+  readFeedback(store: unknown, target: unknown): { state: string; record?: { note: string; revision: number } };
+};
 
 const HEAD = 'd'.repeat(40);
 
@@ -162,6 +166,28 @@ export async function runReportChecks(): Promise<string> {
     const feedbackStatus = await reportText('pullRequest', 7);
     assert.match(feedbackStatus, /LOCAL FEEDBACK\nSaved only on this machine.*Nothing was sent to GitHub\./);
     assert.equal(feedbackStatus.includes('Please add a second test'), false, 'private feedback is never put into the report text');
+
+    // The saved state survives a refresh and another window: a second open of the private store (what another VS Code window
+    // does) sees the note, its newer write is seen here, and a write based on an out-of-date revision is refused, not merged over it.
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    assert.match(await reportText('pullRequest', 7), /LOCAL FEEDBACK\nSaved only on this machine/, 'a refresh keeps the saved state');
+    const prTarget = { repository: 'host/repo', kind: 'pullRequest', number: 7 };
+    const otherWindow = await privateStorage()?.use();
+    assert.equal(otherWindow?.ok, true);
+    const mine = readFeedback((otherWindow as any).store, prTarget);
+    assert.deepEqual([mine.state, mine.record?.note], ['saved', 'Please add a second test'], 'another window reads the note written here');
+    const theirs = saveFeedback((otherWindow as any).store, prTarget, { note: 'Written from another window', headSha: null }, mine.record!.revision);
+    assert.equal(theirs.ok, true);
+    const refusedStale = saveFeedback((otherWindow as any).store, prTarget, { note: 'Based on an old revision', headSha: null }, mine.record!.revision);
+    assert.deepEqual([refusedStale.ok, refusedStale.reason], [false, 'stale-feedback'], 'a write from an out-of-date window is refused');
+    assert.equal(readFeedback((otherWindow as any).store, prTarget).record?.note, 'Written from another window', 'the refused write changed nothing');
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    assert.match(await reportText('pullRequest', 7), /LOCAL FEEDBACK\nSaved only on this machine/);
+    const afterOther = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Edited here after the other window', interactive: false });
+    assert.equal(afterOther.ok, true, 'this window picks up the newer revision and saves on top of it');
+    assert.equal(readFeedback((otherWindow as any).store, prTarget).record?.note, 'Edited here after the other window');
+    // Put the note the rest of this check relies on back (later steps look for it as a private reference).
+    assert.equal((await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Please add a second test', interactive: false })).ok, true);
 
     const published: Array<{ number: number; body: string }> = [];
     const previews: string[] = [];
