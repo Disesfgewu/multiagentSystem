@@ -910,6 +910,9 @@ export async function run(): Promise<void> {
   for (const id of COMMANDS) assert.ok(registered.includes(id), `${id} is registered`);
   // Registration only: these open modal dialogs or start programs, so they are never executed headless.
   for (const name of ['enable', 'stop', 'revoke', 'status', 'setSecret']) assert.ok(registered.includes(`multiagentSystem.research.mcp.${name}`), `mcp.${name} is registered`);
+  assert.ok(registered.includes('multiagentSystem.research.searchPapers'), 'the research search command is registered');
+  // With no research server running there is nothing to search: it answers at once, asks nothing and sends nothing.
+  assert.deepEqual(await vscode.commands.executeCommand('multiagentSystem.research.searchPapers', { serverId: 'arxiv-mcp-server', tool: 'search_papers', query: 'q', interactive: false }), { ok: false, code: 'no-search-tool-available' });
   console.log(await runGitHubChecks(registered));
 
   const workspace = process.env.MULTIAGENT_TEST_WORKSPACE;
