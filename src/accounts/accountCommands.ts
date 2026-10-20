@@ -7,6 +7,7 @@ import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explai
 import { runCommand, childEnvironment } from './identityRunner';
 import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState, recordVerifiedIdentity, setIdentityProbe } from './quotaGateUi';
 import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
+import { configureHooksWizard, describeHookEnable, inspectHookConfig, getHookBridgeScriptPath, HookUi } from './claudeHooks';
 import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
 
 const { accountProviderChoices } = require('./provider-choices') as {
@@ -32,7 +33,8 @@ export const ACCOUNT_COMMANDS = {
   launch: 'multiagentSystem.accounts.launch',
   check: 'multiagentSystem.accounts.check',
   limits: 'multiagentSystem.accounts.limits',
-  configureStatusLine: 'multiagentSystem.accounts.configureStatusLine'
+  configureStatusLine: 'multiagentSystem.accounts.configureStatusLine',
+  configureHooks: 'multiagentSystem.accounts.configureHooks'
 } as const;
 
 const LOGIN_COMMANDS: Record<string, string> = {
@@ -280,7 +282,8 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.launch, (id?: unknown) => launch(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.limits, (value?: unknown) => limits(value)),
-    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureStatusLine, (value?: unknown) => configureStatusLine(value))
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureStatusLine, (value?: unknown) => configureStatusLine(value)),
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureHooks, (value?: unknown) => configureHooks(value))
   );
 }
 
@@ -337,6 +340,12 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
       if (info.status === 'active') return 'Status line bridge: configured (receipt and freshness are shown separately in quota readings)';
       if (info.status === 'custom') return `Status line bridge: custom command (${info.currentCommand ?? 'custom'})`;
       return 'Status line bridge: not configured (use Configure Claude Status Line Bridge)';
+    })(), (() => {
+      const info = inspectHookConfig(profile.configDir, getHookBridgeScriptPath(extensionContext?.extensionPath));
+      if (info.status === 'active') return 'Hook bridge: configured (session state comes from the CLI\'s own hooks)';
+      if (info.status === 'partial') return 'Hook bridge: partly configured (run Configure Claude Hook Bridge to review it)';
+      if (info.status === 'unreadable') return `Hook bridge: cannot be checked (${info.reason ?? 'settings unreadable'})`;
+      return 'Hook bridge: not configured (use Configure Claude Hook Bridge)';
     })()] : []),
     `Health: ${described.health}`,
     lastCheckedText(id),
@@ -651,3 +660,74 @@ export async function configureStatusLine(value: unknown): Promise<unknown> {
   return outcome;
 }
 
+
+/**
+ * Configures or removes the Claude Code hook bridge (session state from the CLI's own hooks). Interactive
+ * only: `interactive: false`, `consent` and `action` are honoured in extension test mode alone, so no other
+ * extension or command caller can write to a settings.json without the person seeing the dialog.
+ */
+export async function configureHooks(value: unknown): Promise<unknown> {
+  const rawOptions = value && typeof value === 'object' && !(value instanceof vscode.TreeItem)
+    ? (value as { id?: unknown; interactive?: boolean; consent?: boolean; action?: 'enable' | 'disable' })
+    : {};
+  const testMode = isExtensionTestMode();
+  const interactive = testMode ? (rawOptions.interactive !== false) : true;
+  const consent = testMode ? rawOptions.consent : undefined;
+  const action = testMode ? rawOptions.action : undefined;
+  const id = selectedId(rawOptions.id ?? value);
+  const profile = id ? undefined : await chooseProfile('claude');
+  const selected = profile ?? (id ? { id } : undefined);
+  if (!selected) return { ok: false, status: 'cancelled' };
+
+  const result = await accountService(() => sessions?.list() ?? []);
+  if (!result.ok) {
+    if (interactive) void vscode.window.showErrorMessage(result.message);
+    return { ok: false, status: 'failed', message: result.message };
+  }
+  const loaded = result.service.get(selected.id);
+  if (!loaded.ok) {
+    if (interactive) void vscode.window.showErrorMessage(errorFor(loaded));
+    return { ok: false, status: 'failed', message: errorFor(loaded) };
+  }
+
+  const hookUi: HookUi = {
+    async confirmEnable(label, settingsPath, command, events) {
+      const answer = await vscode.window.showInformationMessage(
+        `Enable Claude hook bridge for “${label}”?`,
+        {
+          modal: true,
+          detail: `${describeHookEnable(label)}\n\nFile: ${settingsPath}\nCommand added to each of these events: ${events.join(', ')}\n${command}\n\nNot verified against a real Claude Code CLI yet.`
+        },
+        'Enable Hook Bridge'
+      );
+      return answer === 'Enable Hook Bridge';
+    },
+    async promptActiveChoice(label) {
+      const picked = await vscode.window.showQuickPick([
+        { label: '$(check) Keep Hook Bridge Enabled', description: 'Session state from the CLI\'s own hooks', value: 'keep' as const },
+        { label: '$(trash) Disable / Remove Hook Bridge', description: 'Remove only the hook entries Multiagent added', value: 'disable' as const }
+      ], { placeHolder: `Hook Bridge is active for “${label}”` });
+      return picked?.value;
+    },
+    async confirmDisable(label) {
+      const confirm = await vscode.window.showWarningMessage(
+        `Remove the hook bridge from “${label}”?`,
+        { modal: true, detail: 'This removes only the hook entries Multiagent added to settings.json. Your own hooks and other settings stay untouched.' },
+        'Remove Hook Bridge'
+      );
+      return confirm === 'Remove Hook Bridge';
+    },
+    showInfo(message) { void vscode.window.showInformationMessage(message); },
+    showError(message) { void vscode.window.showErrorMessage(message); }
+  };
+
+  // In test mode a caller that asks for non-interactive operation gets no UI, as for the status line.
+  const outcome = await configureHooksWizard(loaded.profile, {
+    consent,
+    action,
+    extensionPath: extensionContext?.extensionPath,
+    ui: interactive ? hookUi : undefined
+  });
+  currentTree?.refresh();
+  return outcome;
+}

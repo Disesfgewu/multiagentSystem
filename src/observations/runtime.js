@@ -4,11 +4,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { SessionObservationCore, DEFAULT_TTL_MS, USAGE_FIELDS } = require('./session');
 const { unknown } = require('../accounts/observation');
-const { createClaudeSessionEvidenceAdapter } = require('./claude');
+const { createClaudeSessionEvidenceAdapter, createClaudeHookEvidenceAdapter } = require('./claude');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
-const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine', 'providerSessionId']);
+const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine', 'hook', 'providerSessionId']);
+// The hook events a record may name (the six the hook bridge writes); the state each means is decided in claude.js.
+const HOOK_EVENT_NAMES = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd']);
+// The status line bridge and the hook bridge write different files: both fire often and independently, so
+// sharing one file would let each overwrite the other's evidence.
+const HOOK_SUFFIX = '.hook';
 const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 const STATUS_KEYS = new Set(['model', 'cost']);
 // A record holds an id, a time and two short fields: a few hundred bytes. Anything larger is not one.
@@ -18,17 +23,17 @@ const POLL_MS = 2000;
 // to a session that is long gone (a crash or a closed window never ran its cleanup).
 const STALE_MS = 24 * 60 * 60 * 1000;
 const MAX_SWEEP = 200;
-const RECORD_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}\.json$/;
+const RECORD_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}(?:\.hook)?\.json$/;
 // What the bridge leaves behind if it stops between writing a temporary file and renaming it.
-const TEMP_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}\.json\.tmp\.[A-Za-z0-9.-]{1,80}$/;
+const TEMP_FILE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}(?:\.hook)?\.json\.tmp\.[A-Za-z0-9.-]{1,80}$/;
 
 const isPlain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-function observationPath(configDir, sessionId) {
+function observationPath(configDir, sessionId, kind = 'statusLine') {
   if (typeof configDir !== 'string' || !path.isAbsolute(configDir) || !SESSION_ID.test(sessionId)) {
     throw new TypeError('managed observation binding is invalid');
   }
-  return path.join(configDir, 'session-observations', `${sessionId}.json`);
+  return path.join(configDir, 'session-observations', `${sessionId}${kind === 'hook' ? HOOK_SUFFIX : ''}.json`);
 }
 
 /**
@@ -37,7 +42,7 @@ function observationPath(configDir, sessionId) {
  * (to a secret or a huge file), a FIFO or device (which would block the Extension Host on open) and an
  * oversized file are all refused before anything is read.
  */
-function readRecord(file) {
+function readRecord(file, kind = 'statusLine') {
   let descriptor;
   try {
     const before = fs.lstatSync(file);
@@ -56,9 +61,16 @@ function readRecord(file) {
     const parsed = JSON.parse(buffer.subarray(0, read).toString('utf8'));
     if (!isPlain(parsed) || Object.keys(parsed).some(key => !RECORD_KEYS.has(key)) || parsed.schemaVersion !== 1 ||
         typeof parsed.eventId !== 'string' || typeof parsed.observedAt !== 'string' ||
-        !Number.isSafeInteger(parsed.sequence) || !isPlain(parsed.statusLine) ||
-        Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key)) ||
+        !Number.isSafeInteger(parsed.sequence) ||
         (parsed.providerSessionId !== undefined && !(typeof parsed.providerSessionId === 'string' && PROVIDER_SESSION_ID.test(parsed.providerSessionId)))) return null;
+    if (kind === 'hook') {
+      // A hook record is exactly an event name and the CLI's session id, nothing else.
+      if (parsed.statusLine !== undefined || typeof parsed.providerSessionId !== 'string' || !isPlain(parsed.hook) ||
+          Object.keys(parsed.hook).length !== 1 || !HOOK_EVENT_NAMES.has(parsed.hook.hookEventName)) return null;
+    } else if (parsed.hook !== undefined || !isPlain(parsed.statusLine) ||
+        Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key))) {
+      return null;
+    }
     return parsed;
   } catch {
     return null;
@@ -86,7 +98,7 @@ function sweepStale(dir, nowMs, keep = new Set()) {
       const info = fs.lstatSync(file);
       if (!info.isFile() || info.isSymbolicLink() || nowMs - info.mtimeMs < STALE_MS) continue;
       // Only a recognizable record of this feature, not any old file that happens to have such a name.
-      if (!temporary && readRecord(file) === null) continue;
+      if (!temporary && readRecord(file, name.endsWith(`${HOOK_SUFFIX}.json`) ? 'hook' : 'statusLine') === null) continue;
       fs.rmSync(file, { force: true });
       removed += 1;
     } catch { /* Best effort: a file that cannot be judged stays. */ }
@@ -191,19 +203,23 @@ class SessionObservationRuntime {
   poll() {
     const now = this.nowMs();
     for (const [sessionId, binding] of [...this.bindings]) {
-      const signature = fileSignature(binding.file);
-      if (signature !== binding.signature) {
-        binding.signature = signature;
-        const record = signature === 'absent' ? null : readRecord(binding.file);
-        if (record) this.#judgeProvider(sessionId, binding, record);
-        const observed = record ? Date.parse(record.observedAt) : Number.NaN;
-        binding.expiresAtMs = Number.isFinite(observed) ? observed + this.ttlMs : null;
-        binding.expiryNotified = false;
-        this.#notify(sessionId);
-      } else if (binding.expiresAtMs !== null && !binding.expiryNotified && now >= binding.expiresAtMs) {
-        binding.expiryNotified = true;
-        this.#notify(sessionId);
+      let changed = false;
+      for (const [kind, watch] of Object.entries(binding.watches)) {
+        const signature = fileSignature(watch.file);
+        if (signature !== watch.signature) {
+          watch.signature = signature;
+          const record = signature === 'absent' ? null : readRecord(watch.file, kind);
+          if (record) this.#judgeProvider(sessionId, binding, record);
+          const observed = record ? Date.parse(record.observedAt) : Number.NaN;
+          watch.expiresAtMs = Number.isFinite(observed) ? observed + this.ttlMs : null;
+          watch.expiryNotified = false;
+          changed = true;
+        } else if (watch.expiresAtMs !== null && !watch.expiryNotified && now >= watch.expiresAtMs) {
+          watch.expiryNotified = true;
+          changed = true;
+        }
       }
+      if (changed) this.#notify(sessionId);
     }
   }
 
@@ -218,20 +234,20 @@ class SessionObservationRuntime {
     if (provider !== 'claude' || !env || typeof env.CLAUDE_CONFIG_DIR !== 'string' || accountProfileId === 'unassigned') {
       return { env, active: false };
     }
-    const file = observationPath(env.CLAUDE_CONFIG_DIR, sessionId);
-    removeRecord(file);
-    sweepStale(path.dirname(file), this.nowMs(), new Set([...this.bindings.values()].map((binding) => path.basename(binding.file))));
+    const files = { statusLine: observationPath(env.CLAUDE_CONFIG_DIR, sessionId), hook: observationPath(env.CLAUDE_CONFIG_DIR, sessionId, 'hook') };
+    // Whatever an earlier run of this id left is not evidence for this one.
+    for (const file of Object.values(files)) removeRecord(file);
+    sweepStale(path.dirname(files.statusLine), this.nowMs(), new Set([...this.bindings.values()].flatMap((binding) => Object.values(binding.watches).map((watch) => path.basename(watch.file)))));
     // Preparing an id again starts it afresh: nothing seen for an earlier run of that id carries over.
     this.core.unregister(sessionId);
     this.core.register({ sessionId, provider, accountProfileId });
     this.bindings.set(sessionId, {
-      file,
+      watches: Object.fromEntries(Object.entries(files).map(([kind, file]) => [kind, { file, signature: fileSignature(file), expiresAtMs: null, expiryNotified: false }])),
+      sessionId,
+      accountProfileId,
       adapter: createClaudeSessionEvidenceAdapter({ core: this.core, sessionId, accountProfileId }),
-      signature: fileSignature(file),
       providerSessionId: null,
-      providerSession: 'unbound',
-      expiresAtMs: null,
-      expiryNotified: false
+      providerSession: 'unbound'
     });
     this.#syncTimer();
     return { env: { ...env, [SESSION_ID_ENV]: sessionId }, active: true };
@@ -254,12 +270,21 @@ class SessionObservationRuntime {
     }
     const binding = this.bindings.get(sessionId);
     if (!binding) return null;
-    const record = readRecord(binding.file);
-    if (record) {
+    const records = Object.entries(binding.watches)
+      .map(([kind, watch]) => ({ kind, record: readRecord(watch.file, kind) }))
+      .filter((entry) => entry.record !== null)
+      .sort((left, right) => left.record.sequence - right.record.sequence);
+    for (const { kind, record } of records) {
       this.#judgeProvider(sessionId, binding, record);
-      if (binding.providerSession !== 'mismatch') {
-        const { eventId, observedAt, sequence, statusLine } = record;
-        binding.adapter.accept({ eventId, observedAt, sequence, statusLine });
+      if (binding.providerSession === 'mismatch') break;
+      const { eventId, observedAt, sequence } = record;
+      if (kind === 'hook') {
+        // The hook adapter accepts only events of the CLI session this managed session is bound to.
+        createClaudeHookEvidenceAdapter({
+          core: this.core, sessionId, accountProfileId: binding.accountProfileId, claudeSessionId: binding.providerSessionId
+        }).accept({ eventId, observedAt, sequence, notification: { session_id: record.providerSessionId, hook_event_name: record.hook.hookEventName } });
+      } else {
+        binding.adapter.accept({ eventId, observedAt, sequence, statusLine: record.statusLine });
       }
     }
     const snapshot = this.core.snapshot(sessionId, at);
@@ -275,7 +300,7 @@ class SessionObservationRuntime {
     const binding = this.bindings.get(sessionId);
     this.bindings.delete(sessionId);
     if (binding) {
-      removeRecord(binding.file);
+      for (const watch of Object.values(binding.watches)) removeRecord(watch.file);
       this.core.unregister(sessionId);
     }
     this.#syncTimer();

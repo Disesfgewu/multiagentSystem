@@ -112,5 +112,10 @@ export async function runNonInteractiveGateChecks(workspace: string): Promise<st
   assert.equal(statusLineAttempt.result?.ok, false, 'outside test mode configureStatusLine fails closed');
   assert.ok(statusLineAttempt.prompts.length > 0, 'outside test mode configureStatusLine reports to user instead of executing silently');
 
-  return 'host smoke: outside test mode interactive:false no longer skips the session-start account prompt, account check report, or statusLine wizard';
+  // Registration is checked in index.ts; here only that the interactive-only hook bridge command cannot be driven silently.
+  const hooksAttempt = await outsideTestMode(() => run<{ ok: boolean; status?: string }>(ACCOUNT_COMMANDS.configureHooks, { id: 'acct-does-not-exist', interactive: false, consent: true, action: 'enable' }));
+  assert.equal(hooksAttempt.result?.ok, false, 'outside test mode configureHooks fails closed');
+  assert.ok(hooksAttempt.prompts.length > 0, 'outside test mode configureHooks reports to the user instead of executing silently');
+
+  return 'host smoke: outside test mode interactive:false no longer skips the session-start account prompt, account check report, statusLine wizard, or hook bridge command';
 }
