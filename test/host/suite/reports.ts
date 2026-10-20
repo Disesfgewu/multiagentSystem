@@ -463,16 +463,36 @@ export async function runReportChecks(): Promise<string> {
       version: async (target) => target.version,
       repository: async () => 'host/repo',
       issue: async () => ({ kind: 'ok', data: { number: 12, isPullRequest: false, ...issueState } }),
-      closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); return { ok: true, number }; }
+      closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); closedOnGitHub = true; return { ok: true, number }; }
     });
+    // The report lists read GitHub again after a decision: once the Issue is closed there, it leaves the "needs a decision" list.
+    let closedOnGitHub = false;
+    const listBefore = fakeReader();
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      listIssues: async (filter) => {
+        const open = await listBefore.listIssues({ state: 'open' } as any) as any;
+        const twelve = (open.data as any[]).find((entry) => entry.number === 12);
+        const rest = (open.data as any[]).filter((entry) => entry.number !== 12);
+        if (!closedOnGitHub) return filter.state === 'closed' ? { kind: 'empty' } : open;
+        return filter.state === 'closed' ? { kind: 'ok', data: [{ ...twelve, state: 'closed' }] } : { kind: 'ok', data: rest };
+      }
+    }) });
+    await reportTreeForTests('issue').getChildren();
+    assert.equal(reportBadgeForTests('issue'), 2, 'before the close, both Issues need a decision');
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'finished', interactive: false }), { ok: false, code: 'invalid-close-reason' });
     assert.equal(closesSent.length, 0);
     issueState = { state: 'closed', stateReason: 'completed' };
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false }), { ok: false, code: 'issue-not-open' });
     assert.equal(closesSent.length, 0, 'an Issue that is already closed is not closed again');
     issueState = { state: 'open' };
+    let listChanged = 0;
+    const listening = reportTreeForTests('issue').onDidChangeTreeData?.(() => { listChanged += 1; });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true });
+    listening?.dispose();
+    assert.ok(listChanged > 0, 'a successful close tells the Issues list to read GitHub again');
     assert.deepEqual(closesSent, [{ number: 12, reason: 'not_planned' }]);
+    assert.deepEqual(((await reportTreeForTests('issue').getChildren()) ?? []).map((item) => String(item.label)), ['待我決策／待補證據 (1)', '要求修改 (0)', '已通過 (0)', '已處理 (1)'], 'the closed Issue moved to processed');
+    assert.equal(reportBadgeForTests('issue'), 1, 'and the badge no longer counts it');
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true, code: 'already-closed' });
     assert.equal(closesSent.length, 1, 'repeating the same close sends nothing');
     // Declining the confirmation closes nothing: the person, not a parameter, decides.
