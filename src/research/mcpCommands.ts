@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
@@ -17,6 +16,7 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   scanWorkspaceMcpConfig(folders: string[]): { ignored: string[]; notice: string | null };
   ENFORCEMENT_NOTICE: string;
 };
+const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
 const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
@@ -63,10 +63,9 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       return currentVault.read(ref);
     },
     storageDir: async (serverId: string) => {
-      // The tool's own folder inside the extension's private storage, created private; never a shared location.
-      const dir = path.join(currentStore.dir, 'research-tools', serverId);
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      return dir;
+      // The tool's own folder inside the extension's private storage; links and open or foreign folders are refused.
+      const made = ensureToolFolder({ base: currentStore.dir, serverId });
+      return made.ok ? made.dir : null;
     },
     resolveExecutable: async (serverId: string) => {
       const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);

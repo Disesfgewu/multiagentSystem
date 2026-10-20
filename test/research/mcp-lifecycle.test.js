@@ -619,6 +619,7 @@ it('the {storage} argument becomes the tool\'s own private folder; without one, 
   const lc = make({ catalog: STORAGE_CATALOG, storageDir: async (serverId) => { assert.equal(serverId, 'storage-papers'); return own; } });
   assert.equal((await ask(lc)).ok, true);
   assert.deepEqual(spawned[0].args, ['--storage-path', own]);
+  assert.deepEqual([spawned[0].options.env.TMPDIR, spawned[0].options.env.TEMP, spawned[0].options.env.TMP], [path.join(own, 'tmp')].concat([path.join(own, 'tmp'), path.join(own, 'tmp')]), 'temporary files go under the tool folder');
   assert.equal(JSON.stringify(spawned[0].args).includes('{storage}'), false);
 });
 

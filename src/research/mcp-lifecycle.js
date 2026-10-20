@@ -281,6 +281,9 @@ function createMcpLifecycle(deps = {}) {
       try { dir = typeof storageDir === 'function' ? await storageDir(serverId) : null; } catch { dir = null; }
       if (typeof dir !== 'string' || !path.isAbsolute(dir) || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(dir)) return no('storage-unavailable');
       args = args.map((arg) => (arg === '{storage}' ? dir : arg));
+      // The tool's temporary files go under its own folder too, not the shared system folder the parent process uses.
+      const scratch = path.join(dir, 'tmp');
+      env.TMPDIR = scratch; env.TEMP = scratch; env.TMP = scratch;
       if (!trusted()) return no('workspace-untrusted');
       if (persisted(serverId).revoked === true && saved.revoked !== true) return no('revoked');
       if (running.has(serverId)) return no('already-running');
