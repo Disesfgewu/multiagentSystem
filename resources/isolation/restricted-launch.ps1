@@ -33,6 +33,8 @@ using System.Threading;
 public static class RestrictedLaunch
 {
     const uint TOKEN_ASSIGN_PRIMARY = 0x0001, TOKEN_DUPLICATE = 0x0002, TOKEN_QUERY = 0x0008;
+    // The restricted copy carries the rights the source handle has; changing its access lists needs write-DACL and adjust-default rights.
+    const uint TOKEN_ALL_ACCESS = 0xF01FF;
     const uint DISABLE_MAX_PRIVILEGE = 0x1;
     const uint SE_GROUP_ENABLED = 0x4;
     const int TokenUser = 1, TokenGroups = 2;
@@ -166,7 +168,7 @@ public static class RestrictedLaunch
         bool created = false;
         try
         {
-            if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, out hTok)) return Fail("open-token-failed");
+            if (!OpenProcessToken(process, TOKEN_ALL_ACCESS, out hTok)) return Fail("open-token-failed");
             IntPtr userSid = UserSid(hTok, out userBuffer);
             if (userSid == IntPtr.Zero) return Fail("user-sid-failed");
             if (!ConvertStringSidToSid("S-1-5-32-544", out adminSid)) return Fail("admin-sid-failed");
