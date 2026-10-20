@@ -41,6 +41,8 @@ test('every switch the script reads can be sent in a request, and nothing else c
 test('the script\'s reply is read strictly: one line, and anything else is an error, never a pass', () => {
   const output = Buffer.from('line one\r\nline two', 'utf8').toString('base64');
   assert.deepEqual(parseReply(`${JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output })}\r\n`), { ok: true, exitCode: 0, timedOut: false, output: 'line one\r\nline two' });
+  assert.equal(parseReply(JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output, elevated: true })).elevated, true, 'whether the caller was elevated is passed on');
+  assert.equal(parseReply(JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output, elevated: 'yes' })).ok, false);
   assert.deepEqual(parseReply(JSON.stringify({ ok: false, reason: 'restricted-token-failed' })), { ok: false, reason: 'restricted-token-failed', fromScript: true });
   assert.deepEqual(parseReply(JSON.stringify({ ok: false, reason: 'Contains Spaces and C:\\path' })), { ok: false, reason: 'launch-failed', fromScript: true }, 'a reason that is not a short code is not repeated');
   for (const text of ['', '\n', 'not json', '[]', '{}', `${JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output })}\nsecond line`, JSON.stringify({ ok: true, exitCode: 'x', timedOut: false, output }), JSON.stringify({ ok: true, exitCode: 0, timedOut: 'no', output }), JSON.stringify({ ok: true, exitCode: 0, timedOut: false, output: 5 }), JSON.stringify({ ok: 'true', exitCode: 0, timedOut: false, output }), undefined, null]) {

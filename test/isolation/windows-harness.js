@@ -73,7 +73,8 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     if (!sid) throw new Error('user-sid-unavailable');
     const icacls = win32.join(parentEnv.SystemRoot, 'System32', 'icacls.exe');
     const grantEveryone = (target) => run(icacls, [target, '/grant', '*S-1-1-0:(OI)(CI)F']);
-    const userOnly = (target) => run(icacls, [target, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`]);
+    // As a real user folder is: the user, SYSTEM and Administrators, and nobody else.
+    const userOnly = (target) => run(icacls, [target, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F']);
 
     // Open to everyone: what the restricted program may use. Only the user (so, deny-only in the restricted token) holds the rest.
     const shared = path.join(root, 'shared');
@@ -105,7 +106,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     if (!restricted) return run(exe, args, { cwd, env, input, timeoutMs });
     const reply = await runRestricted({ exe, args, cwd: cwd ?? fixture.shared, env: environmentPairs(env), stdin: input ?? '', timeoutMs, ...(restriction ? { restriction } : {}) }, { script, powershell });
     if (!reply.ok) return { ok: false, stdout: '', stderr: '', launchFailed: reply.reason };
-    return { ok: reply.exitCode === 0 && !reply.timedOut, stdout: reply.output, stderr: '', launchFailed: null };
+    return { ok: reply.exitCode === 0 && !reply.timedOut, stdout: reply.output, stderr: '', launchFailed: null, elevated: reply.elevated };
   }
 
   const identity = ['-c', 'user.name=Synthetic', '-c', `user.email=synthetic${String.fromCharCode(64)}example.test`, '-c', 'commit.gpgsign=false'];
@@ -214,7 +215,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       const lines = [];
       const clean = (text) => String(text).replace(/S-1-5-21-[0-9-]+/g, 'S-1-5-21-…').split(fixture.secret).join('<secret>').replace(/\s+/g, ' ').slice(0, 220);
       const versions = await launch(true, node, nodeRun('process.stdout.write(process.version)'));
-      lines.push(`restricted launch of node: ${versions.launchFailed ? `failed (${versions.launchFailed})` : versions.ok ? `ok (${versions.stdout})` : 'program failed'}`);
+      lines.push(`restricted launch of node: ${versions.launchFailed ? `failed (${versions.launchFailed})` : versions.ok ? `ok (${versions.stdout}), caller elevated=${versions.elevated}` : 'program failed'}`);
       const whoami = win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe');
       for (const restricted of [false, true]) {
         const groups = await launch(restricted, whoami, ['/groups', '/fo', 'csv', '/nh']);

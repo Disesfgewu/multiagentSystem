@@ -77,10 +77,10 @@ function parseReply(stdout) {
   try { reply = JSON.parse(lines[0]); } catch { return refuse('reply-invalid'); }
   if (!isPlain(reply)) return refuse('reply-invalid');
   if (reply.ok === false) return { ok: false, reason: typeof reply.reason === 'string' && /^[a-z0-9-]{1,64}$/.test(reply.reason) ? reply.reason : 'launch-failed', fromScript: true };
-  if (reply.ok !== true || !Number.isSafeInteger(reply.exitCode) || typeof reply.timedOut !== 'boolean' || typeof reply.output !== 'string') return refuse('reply-invalid');
+  if (reply.ok !== true || !Number.isSafeInteger(reply.exitCode) || typeof reply.timedOut !== 'boolean' || typeof reply.output !== 'string' || (reply.elevated !== undefined && typeof reply.elevated !== 'boolean')) return refuse('reply-invalid');
   let output;
   try { output = Buffer.from(reply.output, 'base64').toString('utf8'); } catch { return refuse('reply-invalid'); }
-  return { ok: true, exitCode: reply.exitCode, timedOut: reply.timedOut, output };
+  return { ok: true, exitCode: reply.exitCode, timedOut: reply.timedOut, output, ...(reply.elevated === undefined ? {} : { elevated: reply.elevated }) };
 }
 
 /**

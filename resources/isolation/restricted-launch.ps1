@@ -1,7 +1,7 @@
 # Starts one program under a restricted copy of the current process's token and reports what it did.
 #
-# What the restriction is: the copy of the token keeps every group, but the current user and the Administrators group are
-# marked "deny only". They can no longer grant access, so a file or folder whose access list names only the user (and
+# What the restriction is: the copy of the token keeps every group, but the current user is marked "deny only" (and the
+# Administrators group too when asked: that breaks named pipes a program makes for itself, so it is off by default). They can no longer grant access, so a file or folder whose access list names only the user (and
 # SYSTEM and Administrators) can no longer be opened by the program; places that also grant Users or Everyone still can.
 # All privileges except the right to bypass traversal checks are removed. The program also runs in a job object that
 # kills it, and everything it started, when the time limit is reached or this script ends.
@@ -96,7 +96,7 @@ public static class RestrictedLaunch
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool EqualSid(IntPtr a, IntPtr b);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessAsUserW(IntPtr hTok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
 
-    public class Result { public bool Ok; public string Reason; public uint ExitCode; public bool TimedOut; public byte[] Output; }
+    public class Result { public bool Ok; public string Reason; public uint ExitCode; public bool TimedOut; public byte[] Output; public bool Elevated; }
 
     static Result Fail(string reason) { Result r = new Result(); r.Ok = false; r.Reason = reason; return r; }
 
@@ -173,6 +173,15 @@ public static class RestrictedLaunch
             }
         }
         return list.ToArray();
+    }
+
+    // Whether the caller's token is elevated: then the Administrators group is enabled in it, and a place whose access list names
+    // Administrators stays open to the program unless that group is also made deny-only.
+    static bool Elevated(IntPtr hToken)
+    {
+        IntPtr buffer = Marshal.AllocHGlobal(4);
+        try { int needed; return GetTokenInformation(hToken, 20, buffer, 4, out needed) && Marshal.ReadInt32(buffer) != 0; }
+        finally { Marshal.FreeHGlobal(buffer); }
     }
 
     static byte[] EnvBlock(string[] env)
@@ -285,7 +294,7 @@ public static class RestrictedLaunch
             if (wait == WAIT_TIMEOUT) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); else TerminateProcess(pi.hProcess, 1); result.TimedOut = true; WaitForSingleObject(pi.hProcess, 5000); }
             reader.Join(5000);
             uint code; GetExitCodeProcess(pi.hProcess, out code);
-            result.Ok = true; result.ExitCode = code;
+            result.Ok = true; result.ExitCode = code; result.Elevated = Elevated(hTok);
             lock (captured) { result.Output = captured.ToArray(); }
             return result;
         }
@@ -336,14 +345,14 @@ try {
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
     # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
-    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false; ownerUser = $false; restrictingSids = $false }
+    $switches = @{ denyUser = $true; denyAdmins = $false; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false; ownerUser = $false; restrictingSids = $false }
     foreach ($name in @($switches.Keys)) {
         $given = $spec.restriction.$name
         if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
     }
     $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk, $switches.plainCopy, $switches.keepDefaultDacl, $switches.ownerUser, $switches.restrictingSids)
     if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
-    $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; output = [Convert]::ToBase64String($result.Output) }
+    $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; elevated = [bool]$result.Elevated; output = [Convert]::ToBase64String($result.Output) }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
     exit 0
 } catch {
