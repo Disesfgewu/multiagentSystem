@@ -241,6 +241,10 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       await prepare();
       const variants = [
         ['none', { denyUser: false, denyAdmins: false, dropPrivileges: false }],
+        ['none, no job', { denyUser: false, denyAdmins: false, dropPrivileges: false, useJob: false }],
+        ['none, job allows breakaway', { denyUser: false, denyAdmins: false, dropPrivileges: false, breakawayOk: true }],
+        ['full, job allows breakaway', { breakawayOk: true }],
+        ['full, no job', { useJob: false }],
         ['privileges only', { denyUser: false, denyAdmins: false, dropPrivileges: true }],
         ['administrators only', { denyUser: false, denyAdmins: true, dropPrivileges: false }],
         ['user only', { denyUser: true, denyAdmins: false, dropPrivileges: false }],

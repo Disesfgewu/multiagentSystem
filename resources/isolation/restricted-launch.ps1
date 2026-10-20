@@ -39,7 +39,7 @@ public static class RestrictedLaunch
     const uint STARTF_USESTDHANDLES = 0x100;
     const uint CREATE_SUSPENDED = 0x4, CREATE_NO_WINDOW = 0x08000000, CREATE_UNICODE_ENVIRONMENT = 0x400;
     const uint HANDLE_FLAG_INHERIT = 0x1;
-    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000, JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x800, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000;
     const int JobObjectExtendedLimitInformation = 9;
     const uint WAIT_TIMEOUT = 0x102;
     const int TokenDefaultDacl = 6;
@@ -82,6 +82,7 @@ public static class RestrictedLaunch
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObject(IntPtr attrs, string name);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int cls, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, int size);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr hTok);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetKernelObjectSecurity(IntPtr handle, uint info, byte[] descriptor);
@@ -155,7 +156,7 @@ public static class RestrictedLaunch
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
 
-    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow)
+    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk)
     {
         IntPtr process = GetCurrentProcess(), hTok = IntPtr.Zero, hRestricted = IntPtr.Zero, job = IntPtr.Zero;
         IntPtr userBuffer = IntPtr.Zero, adminSid = IntPtr.Zero, envPtr = IntPtr.Zero;
@@ -172,11 +173,14 @@ public static class RestrictedLaunch
             disable[0].Sid = userSid; disable[1].Sid = adminSid;
             if (!CreateRestrictedToken(hTok, DISABLE_MAX_PRIVILEGE, 2, disable, 0, IntPtr.Zero, 0, IntPtr.Zero, out hRestricted)) return Fail("hRestricted-hTok-failed");
 
-            job = CreateJobObject(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) return Fail("job-failed");
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) return Fail("job-limits-failed");
+            if (useJob)
+            {
+                job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return Fail("job-failed");
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | (breakawayOk ? (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) : 0);
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))) return Fail("job-limits-failed");
+            }
 
             SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
             sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = true;
@@ -194,9 +198,9 @@ public static class RestrictedLaunch
             StringBuilder cmd = new StringBuilder(commandLine);
             if (!CreateProcessAsUserW(hRestricted, exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED | (noWindow ? CREATE_NO_WINDOW : 0) | CREATE_UNICODE_ENVIRONMENT, envPtr, string.IsNullOrEmpty(cwd) ? null : cwd, ref si, out pi)) return Fail("create-process-failed-" + Marshal.GetLastWin32Error());
             created = true;
-            if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateJobObject(job, 1); return Fail("job-assign-failed"); }
+            if (job != IntPtr.Zero && !AssignProcessToJobObject(job, pi.hProcess)) { TerminateJobObject(job, 1); return Fail("job-assign-failed"); }
             CloseHandle(inRead); inRead = IntPtr.Zero; CloseHandle(outWrite); outWrite = IntPtr.Zero;
-            if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { TerminateJobObject(job, 1); return Fail("resume-failed"); }
+            if (ResumeThread(pi.hThread) == 0xFFFFFFFF) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); return Fail("resume-failed"); }
 
             MemoryStream captured = new MemoryStream();
             IntPtr readHandle = outRead;
@@ -218,7 +222,7 @@ public static class RestrictedLaunch
 
             Result result = new Result();
             uint wait = WaitForSingleObject(pi.hProcess, (uint)timeoutMs);
-            if (wait == WAIT_TIMEOUT) { TerminateJobObject(job, 1); result.TimedOut = true; WaitForSingleObject(pi.hProcess, 5000); }
+            if (wait == WAIT_TIMEOUT) { if (job != IntPtr.Zero) TerminateJobObject(job, 1); else TerminateProcess(pi.hProcess, 1); result.TimedOut = true; WaitForSingleObject(pi.hProcess, 5000); }
             reader.Join(5000);
             uint code; GetExitCodeProcess(pi.hProcess, out code);
             result.Ok = true; result.ExitCode = code;
@@ -272,12 +276,12 @@ try {
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
     # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
-    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false }
+    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false }
     foreach ($name in @($switches.Keys)) {
         $given = $spec.restriction.$name
         if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
     }
-    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow)
+    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk)
     if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
     $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; output = [Convert]::ToBase64String($result.Output) }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
