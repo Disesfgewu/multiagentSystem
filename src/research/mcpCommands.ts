@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
 import { requireInteractive } from '../shared/testMode';
+import { runSearchCommand } from './searchCommand';
 
 const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
   createMcpLifecycle(deps: any): {
@@ -15,10 +16,6 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   statusText(status: any): string;
   scanWorkspaceMcpConfig(folders: string[]): { ignored: string[]; notice: string | null };
   ENFORCEMENT_NOTICE: string;
-};
-const { runSearchFlow, searchGiven } = require('./search-flow') as {
-  searchGiven(arg: unknown, options: { testMode: boolean }): { serverId?: unknown; tool?: unknown; query?: unknown } | undefined;
-  runSearchFlow(input: { lifecycle: unknown; ui: Record<string, (...args: any[]) => any>; given?: { serverId?: unknown; tool?: unknown; query?: unknown } }): Promise<{ ok: boolean; code?: string; truncated?: boolean }>;
 };
 const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
 const { listResearchTools, resolveLaunchExecutable, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
@@ -160,10 +157,6 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
 
   // Search papers: the person picks, types and confirms. In an installed extension no argument can choose or confirm for them.
   const search = async (arg?: { serverId?: unknown; tool?: unknown; query?: unknown; interactive?: boolean }) => {
-    // Only the Extension Host tests may answer for the person; in an installed extension no argument can:
-    // `requireInteractive` turns `interactive: false` into `true` there, so `testMode` below is false.
-    const interactive = requireInteractive(arg ?? {}).interactive !== false;
-    const given = searchGiven(arg, { testMode: !interactive });
     if (!(await refresh())) return unavailable();
     const ui = {
       pick: async (choices: Array<{ serverId: string; tool: string }>) => (await vscode.window.showQuickPick(
@@ -178,7 +171,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
         else if (answer === 'Open Result') await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ content: header + result.payload, language: 'markdown' }));
       }
     };
-    const outcome = await runSearchFlow({ lifecycle, ui, given });
+    const { outcome, interactive } = await runSearchCommand(arg, lifecycle, ui);
     if (!outcome.ok && interactive && outcome.code !== 'cancelled') {
       void vscode.window.showErrorMessage(outcome.code === 'no-search-tool-available'
         ? 'No research search is available: start a research MCP server that the researcher role may use for searching.'
