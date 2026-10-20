@@ -76,6 +76,32 @@ test('a program inside an open workspace folder or the working folder is never u
   assert.ok(inCwd);
 });
 
+test('a workspace opened through a link is the same folder as its real one: a program in it is refused whichever way the folder or the PATH entry is spelled', onlyPosix, (t) => {
+  const { root, workspace, program } = sandbox(t);
+  const inside = path.join(workspace, 'bin');
+  fs.mkdirSync(inside);
+  const planted = program(inside, 'mycli');
+  const wslink = path.join(root, 'wslink');
+  fs.symlinkSync(workspace, wslink);
+  const sys = path.join(root, 'sys');
+  fs.mkdirSync(sys);
+  fs.symlinkSync(planted, path.join(sys, 'mycli'));
+  const resolve = (forbiddenFolders, pathEntry) => resolveCustomExecutable('mycli', { env: { PATH: pathEntry }, platform: 'linux', forbiddenFolders });
+  // A: the workspace given by its real path.
+  assert.equal(resolve([workspace], sys).reason, 'executable-only-in-workspace');
+  // B: the workspace given through a link, the program reached through a link in another folder.
+  assert.equal(resolve([wslink], sys).reason, 'executable-only-in-workspace');
+  // C: the workspace given through a link, the PATH entry given by its real path.
+  assert.equal(resolve([wslink], inside).reason, 'executable-only-in-workspace');
+  // D: the PATH entry given through the link, the workspace by its real path.
+  assert.equal(resolve([workspace], path.join(wslink, 'bin')).reason, 'executable-only-in-workspace');
+  // E: both through the link.
+  assert.equal(resolve([wslink], path.join(wslink, 'bin')).reason, 'executable-only-in-workspace');
+  // A folder that cannot be resolved is still compared as given.
+  assert.equal(resolve([path.join(root, 'gone', 'missing')], sys).ok, true, 'a program elsewhere is still found');
+  assert.equal(resolveCustomExecutable('mycli', { env: { PATH: inside }, platform: 'linux', forbiddenFolders: [workspace], realpath: () => { throw new Error('x'); } }).reason, 'executable-only-in-workspace', 'when nothing can be resolved the spelling as given still decides');
+});
+
 test('folder containment is exact: the folder itself and what is inside it, not a name that merely starts the same way', () => {
   assert.equal(isInside('/a/b', '/a/b', 'linux'), true);
   assert.equal(isInside('/a/b/c/d', '/a/b', 'linux'), true);

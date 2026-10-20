@@ -13,7 +13,10 @@ const { scrubEnvironment } = require('../isolation/environment');
  * Resolving the name:
  *   - only absolute PATH entries count (an empty or relative entry can mean the current folder);
  *   - a PATH entry, or a resolved file, inside an open workspace folder or the working folder is never used, so a
- *     repository cannot supply a same-named program; links are followed before this check;
+ *     repository cannot supply a same-named program. BOTH sides are compared in both spellings: each forbidden folder as
+ *     given and after `realpath`, each PATH folder as given and after `realpath`, and each program after `realpath`. A
+ *     workspace opened through a link (or under `/tmp`, which is `/private/tmp` on macOS, or by a short Windows name) is
+ *     the same folder as its real one, and a program reached through a link is the program it points at;
  *   - on Windows only `.exe` and `.com` are accepted: a `.cmd` or `.bat` file is read by a command interpreter, whose
  *     rules for quoting arguments are not the ones used here.
  *
@@ -47,13 +50,25 @@ function resolveCustomExecutable(name, { env = process.env, platform = process.p
   const pathKey = env && typeof env === 'object' ? Object.keys(env).find((key) => key.toLowerCase() === 'path') : undefined;
   const rawPath = pathKey === undefined ? undefined : env[pathKey];
   if (typeof rawPath !== 'string') return refuse('path-unavailable');
-  const forbidden = (Array.isArray(forbiddenFolders) ? forbiddenFolders : []).filter((folder) => typeof folder === 'string' && flavour.isAbsolute(folder));
+  // Each forbidden folder as it was given and as it really is; a folder that cannot be resolved is only compared as given.
+  const forbidden = [];
+  for (const folder of Array.isArray(forbiddenFolders) ? forbiddenFolders : []) {
+    if (typeof folder !== 'string' || !flavour.isAbsolute(folder)) continue;
+    forbidden.push(folder);
+    try { const real = realpath(folder); if (typeof real === 'string' && flavour.isAbsolute(real)) forbidden.push(real); } catch { /* compared as given */ }
+  }
+  const insideForbiddenFolder = (target) => forbidden.some((folder) => isInside(target, folder, platform));
+  const spellings = (directory) => {
+    const list = [directory];
+    try { const real = realpath(directory); if (typeof real === 'string' && flavour.isAbsolute(real)) list.push(real); } catch { /* as given only */ }
+    return list;
+  };
   const suffixes = platform === 'win32' ? WINDOWS_EXTENSIONS : [''];
   let scriptSeen = false;
   let insideForbidden = false;
   for (const directory of rawPath.split(flavour.delimiter)) {
     if (!flavour.isAbsolute(directory)) continue;
-    if (forbidden.some((folder) => isInside(directory, folder, platform))) {
+    if (spellings(directory).some(insideForbiddenFolder)) {
       // Skipped. It only matters to the answer if the program really is there, so the person is told why it was not used.
       for (const suffix of suffixes) { try { if (stat(flavour.join(directory, `${name}${suffix}`)).isFile()) insideForbidden = true; } catch { /* not here */ } }
       continue;
@@ -68,7 +83,7 @@ function resolveCustomExecutable(name, { env = process.env, platform = process.p
       } catch { continue; }
       if (typeof real !== 'string' || !flavour.isAbsolute(real)) continue;
       // A link out of a system folder into the repository is the same as a program in the repository.
-      if (forbidden.some((folder) => isInside(real, folder, platform))) { insideForbidden = true; continue; }
+      if (insideForbiddenFolder(real)) { insideForbidden = true; continue; }
       return { ok: true, executable: real };
     }
     if (platform === 'win32') {
