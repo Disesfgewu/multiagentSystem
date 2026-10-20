@@ -273,11 +273,17 @@ const HASH_CACHE_LIMIT = 64;
 function programHash(file, info, fullCheck) {
   const key = file;
   const seen = HASH_CACHE.get(key);
-  if (!fullCheck && seen && seen.size === info.size && seen.mtimeMs === info.mtimeMs && seen.ino === info.ino) return seen.sha;
+  if (!fullCheck && seen && seen.size === info.size && seen.mtimeMs === info.mtimeMs && seen.ctimeMs === info.ctimeMs && seen.ino === info.ino && seen.dev === info.dev) return seen.sha;
   const sha = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (HASH_CACHE.size >= HASH_CACHE_LIMIT) HASH_CACHE.delete(HASH_CACHE.keys().next().value);
-  HASH_CACHE.set(key, { size: info.size, mtimeMs: info.mtimeMs, ino: info.ino, sha });
+  HASH_CACHE.set(key, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev, sha });
   return sha;
+}
+
+/** For tests only: remembers `sha` for the file as it is on disk right now, as if a status check had just read it. */
+function primeHashCacheForTests(file, sha) {
+  const info = fs.lstatSync(file);
+  HASH_CACHE.set(file, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev, sha });
 }
 
 /** `{ state, executable }`: `executable` is the file name recorded at install (with `.exe` on Windows), only when ready. */
@@ -287,6 +293,8 @@ function preparedInfo(dir, tool, { fullCheck = false } = {}) {
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, PREPARED_MANIFEST), 'utf8'));
     const name = manifest && manifest.executable;
     if (name !== tool.command[0] && name !== `${tool.command[0]}.exe`) return { state: 'stale', executable: null };
+    // Defense in depth: the recorded name is a plain file name, never a path.
+    if (path.basename(name) !== name) return { state: 'stale', executable: null };
     const file = path.join(dir, name);
     const executable = fs.lstatSync(file);
     if (manifest.schema !== PREPARED_SCHEMA || manifest.fingerprint !== consentFingerprint(tool) || !executable.isFile() || executable.isSymbolicLink()) return { state: 'stale', executable: null };
@@ -298,6 +306,16 @@ function preparedInfo(dir, tool, { fullCheck = false } = {}) {
   } catch {
     return { state: 'stale', executable: null };
   }
+}
+
+/**
+ * The program to START for a tool, or null. It always reads the program's bytes again (never the remembered hash that
+ * the status list may use), so a program replaced while its size and time look the same cannot be started.
+ * @returns {string|null} the full path of the installed program, only when it is ready
+ */
+function resolveLaunchExecutable({ store, root, serverId, catalog = CANDIDATE_RESEARCH_TOOLS } = {}) {
+  const found = listResearchTools({ store, root, catalog, fullCheck: true }).find((tool) => tool.serverId === serverId);
+  return found && found.installStatus === 'ready' && typeof found.installExecutable === 'string' ? found.installExecutable : null;
 }
 
 /**
@@ -500,5 +518,7 @@ module.exports = {
   grantConsent,
   revokeConsent,
   listResearchTools,
+  resolveLaunchExecutable,
+  primeHashCacheForTests,
   prepareResearchTool
 };

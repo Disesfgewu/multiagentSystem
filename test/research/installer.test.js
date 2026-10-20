@@ -22,6 +22,8 @@ const {
   grantConsent,
   revokeConsent,
   listResearchTools,
+  resolveLaunchExecutable,
+  primeHashCacheForTests,
   prepareResearchTool
 } = require('../../src/research/installer');
 
@@ -477,5 +479,62 @@ test('showing a status may use a remembered hash while size, time and file are u
     assert.equal(show(), 'ready');
     put('AAAA');
     assert.equal(show(), 'stale');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a start re-reads the program: with the status list\'s remembered hash filled in and the stat put back, a swapped program is still not started', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-launch-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const fixed = 1_700_000_000;
+    fs.utimesSync(file, fixed, fixed);
+    const status = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    const launch = () => resolveLaunchExecutable({ store, root, serverId: tool.serverId, catalog: [tool] });
+    assert.equal(status(), 'ready', 'the remembered hash is filled in');
+    assert.equal(launch(), file);
+    // The program is swapped, and the remembered hash is made to match the file's size, times and identity as they are now
+    // (what a restored modified time would look like to the quick check). Only reading the bytes can tell.
+    const original = createHash('sha256').update('AAAAAAAA').digest('hex');
+    fs.writeFileSync(file, Buffer.from('BBBBBBBB'));
+    primeHashCacheForTests(file, original);
+    assert.equal(status(), 'ready', 'the quick status trusts what it remembers (that is what it is for)');
+    assert.equal(launch(), null, 'a start does not use the remembered hash: the swapped program is not started');
+    // Unknown tool, missing root and not-installed all give null, never a guess.
+    assert.equal(resolveLaunchExecutable({ store, root, serverId: 'nope', catalog: [tool] }), null);
+    assert.equal(resolveLaunchExecutable({ store, serverId: tool.serverId, catalog: [tool] }), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a recorded program name that is a path is refused', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-basename-'));
+  try {
+    writePrepared(root, tool, tool.command[0], Buffer.from('x'));
+    const manifestPath = path.join(root, tool.serverId, '.prepared.json');
+    const recorded = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    for (const name of [`./${tool.command[0]}`, `sub/${tool.command[0]}`, `../${tool.command[0]}`]) {
+      fs.writeFileSync(manifestPath, JSON.stringify({ ...recorded, executable: name }));
+      assert.equal(listResearchTools({ store, root, catalog: [tool] })[0].installStatus, 'stale', name);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the quick status does not trust a remembered hash once the file\'s change time moved, even if its size and modified time look the same', { skip: process.platform === 'win32' }, () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-ctime-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const status = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    primeHashCacheForTests(file, 'f'.repeat(64));
+    assert.equal(status(), 'stale', 'a remembered hash that does not match is believed while nothing about the file moved');
+    // A permission change moves the change time (and nothing else a restored modified time could hide).
+    const before = fs.statSync(file);
+    fs.chmodSync(file, before.mode & 0o777 ^ 0o001);
+    fs.chmodSync(file, before.mode & 0o777);
+    assert.equal(status(), 'ready', 'the file is read again once its change time moved');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

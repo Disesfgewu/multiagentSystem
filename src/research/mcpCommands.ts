@@ -17,7 +17,8 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   ENFORCEMENT_NOTICE: string;
 };
 const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
-const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
+const { listResearchTools, resolveLaunchExecutable, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
+  resolveLaunchExecutable(input: { store?: any; root?: string; serverId: string; catalog?: any[] }): string | null;
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
   PROHIBITED_AGENT_TOOLS: Record<string, readonly string[]>;
@@ -67,11 +68,8 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       const made = ensureToolFolder({ base: currentStore.dir, serverId });
       return made.ok ? made.dir : null;
     },
-    resolveExecutable: async (serverId: string) => {
-      // A start always re-reads the program's bytes (fullCheck) and uses the file name recorded at install (`.exe` on Windows).
-      const found = listResearchTools({ store: currentStore, root, fullCheck: true }).find((t) => t.serverId === serverId);
-      return found && found.installStatus === 'ready' && found.installExecutable ? found.installExecutable : null;
-    }
+    // A start always re-reads the program's bytes and uses the file name recorded at install (`.exe` on Windows).
+    resolveExecutable: async (serverId: string) => resolveLaunchExecutable({ store: currentStore, root, serverId })
   });
 
   const pickServer = async (placeHolder: string, given?: string): Promise<string | undefined> => {
