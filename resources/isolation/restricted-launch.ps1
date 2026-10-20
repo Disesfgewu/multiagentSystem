@@ -11,7 +11,8 @@
 #
 # Input: -Request, a Base64 string of UTF-8 JSON: { "exe": absolute path, "args": [strings], "cwd": absolute path or "",
 #   "env": ["NAME=value", ...], "stdin": text or "", "timeoutMs": number, "restriction": optional { "denyUser", "denyAdmins",
-#   "dropPrivileges", "noWindow": booleans, all true when left out } }.
+#   "dropPrivileges": booleans, true when left out; "noWindow": boolean, false when left out (a child created with the no-window
+#   flag from this hidden console failed to start on the Windows CI image: DLL initialization error) } }.
 # Output: one line of JSON on standard output: { "ok": true, "exitCode": n, "timedOut": bool, "output": Base64 of the
 #   program's standard output and error } or { "ok": false, "reason": short code }. Any error is a failure, never a pass.
 
@@ -222,7 +223,7 @@ try {
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
     # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
-    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $true }
+    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false }
     foreach ($name in @($switches.Keys)) {
         $given = $spec.restriction.$name
         if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }

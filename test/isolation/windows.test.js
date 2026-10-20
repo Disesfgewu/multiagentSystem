@@ -146,18 +146,18 @@ test('on Windows: which parts of the restriction still let a program start (prin
   const system = process.env.SystemRoot;
   const cmd = path.win32.join(system, 'System32', 'cmd.exe');
   const variants = [
-    { name: 'no restriction at all', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false, noWindow: false } },
-    { name: 'no window flag only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false, noWindow: true } },
-    { name: 'privileges dropped only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: true, noWindow: true } },
-    { name: 'administrators deny-only only', restriction: { denyUser: false, denyAdmins: true, dropPrivileges: false, noWindow: true } },
-    { name: 'user deny-only only', restriction: { denyUser: true, denyAdmins: false, dropPrivileges: false, noWindow: true } },
-    { name: 'user and administrators deny-only', restriction: { denyUser: true, denyAdmins: true, dropPrivileges: false, noWindow: true } },
-    { name: 'the full restriction', restriction: { denyUser: true, denyAdmins: true, dropPrivileges: true, noWindow: true } }
+    { name: 'no restriction at all', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false } },
+    { name: 'no-window flag only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: false, noWindow: true } },
+    { name: 'privileges dropped only', restriction: { denyUser: false, denyAdmins: false, dropPrivileges: true } },
+    { name: 'administrators deny-only only', restriction: { denyUser: false, denyAdmins: true, dropPrivileges: false } },
+    { name: 'user deny-only only', restriction: { denyUser: true, denyAdmins: false, dropPrivileges: false } },
+    { name: 'user and administrators deny-only', restriction: { denyUser: true, denyAdmins: true, dropPrivileges: false } },
+    { name: 'the full restriction (the default)', restriction: undefined }
   ];
   const results = {};
   for (const variant of variants) {
     for (const [label, exe, args] of [['cmd', cmd, ['/d', '/c', 'echo ok']], ['node', nodeExe, ['-e', 'process.stdout.write("ok")']]]) {
-      const reply = await runRestricted({ exe, args, env: environmentPairs(process.env), timeoutMs: 20000, restriction: variant.restriction }, { script: SCRIPT });
+      const reply = await runRestricted({ exe, args, env: environmentPairs(process.env), timeoutMs: 20000, ...(variant.restriction ? { restriction: variant.restriction } : {}) }, { script: SCRIPT });
       results[`${variant.name} / ${label}`] = reply.ok ? `exit ${reply.exitCode >>> 0 === reply.exitCode ? `0x${reply.exitCode.toString(16)}` : reply.exitCode}${reply.timedOut ? ' (timed out)' : ''} output=${JSON.stringify(reply.output.trim().slice(0, 20))}` : `launch failed: ${reply.reason}`;
     }
   }
