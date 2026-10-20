@@ -7,6 +7,7 @@ import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runReportChecks } from './reports';
+import { runCustomProviderChecks } from './customProviders';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
@@ -29,6 +30,7 @@ import { CodexRelease } from '../../../src/setup/managedCodex';
 import { ClaudeRelease } from '../../../src/setup/managedClaude';
 
 const COMMANDS = [
+  'multiagentSystem.providers.showCustom',
   'multiagentSystem.openTerminalGroup',
   'multiagentSystem.launchAgent',
   'multiagentSystem.sessions.list',
@@ -915,6 +917,7 @@ export async function run(): Promise<void> {
   console.log(await runStorageChecks(registered, workspace));
   console.log(await runOverviewChecks(workspace));
   console.log(await runReportChecks());
+  console.log(await runCustomProviderChecks());
   await setupFlow();
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);
 
