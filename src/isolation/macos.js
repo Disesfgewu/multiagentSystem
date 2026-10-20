@@ -38,12 +38,20 @@ function safeProfilePath(value) {
  * a bad input can never produce a profile that is more open than the caller asked for.
  * @param {{ denyRead?: string[], denyWrite?: string[], allowLocalPorts?: number[] }} spec
  */
-function seatbeltProfile({ denyRead = [], denyWrite = [], allowLocalPorts = [] } = {}) {
+// The system service that hands out keychain items. `git-credential-osxkeychain` and `security` ask it, so refusing the file
+// reads under ~/Library/Keychains does not stop them: the lookup of this service has to be refused too.
+const KEYCHAIN_SERVICES = Object.freeze(['com.apple.SecurityServer']);
+const SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function seatbeltProfile({ denyRead = [], denyWrite = [], allowLocalPorts = [], denyMachServices = [] } = {}) {
   for (const list of [denyRead, denyWrite]) {
     if (!Array.isArray(list) || !list.every(safeProfilePath)) throw Object.assign(new Error('isolation-profile-path-invalid'), { code: 'isolation-profile-path-invalid' });
   }
   if (!Array.isArray(allowLocalPorts) || !allowLocalPorts.every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) {
     throw Object.assign(new Error('isolation-profile-port-invalid'), { code: 'isolation-profile-port-invalid' });
+  }
+  if (!Array.isArray(denyMachServices) || !denyMachServices.every((name) => typeof name === 'string' && SERVICE_NAME.test(name))) {
+    throw Object.assign(new Error('isolation-profile-service-invalid'), { code: 'isolation-profile-service-invalid' });
   }
   return [
     '(version 1)',
@@ -52,6 +60,7 @@ function seatbeltProfile({ denyRead = [], denyWrite = [], allowLocalPorts = [] }
     ...allowLocalPorts.map((port) => `(allow network-outbound (remote ip "localhost:${port}"))`),
     ...denyRead.map((target) => `(deny file-read* (subpath "${target}"))`),
     ...denyWrite.map((target) => `(deny file-write* (subpath "${target}"))`),
+    ...denyMachServices.map((name) => `(deny mach-lookup (global-name "${name}"))`),
     ''
   ].join('\n');
 }
@@ -68,4 +77,4 @@ function credentialLocations(home) {
   return HOME_CREDENTIAL_PATHS.map((relative) => path.posix.join(home, relative));
 }
 
-module.exports = { credentialLocations, HOME_CREDENTIAL_PATHS, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };
+module.exports = { KEYCHAIN_SERVICES, credentialLocations, HOME_CREDENTIAL_PATHS, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };
