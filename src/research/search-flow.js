@@ -82,4 +82,14 @@ async function runSearchFlow({ lifecycle, ui, given } = {}) {
   return { ok: true, truncated: reply.truncated === true };
 }
 
-module.exports = { runSearchFlow, searchChoices, QUERY_TOOL, MAX_QUERY_CHARS };
+/**
+ * The test-only answers a caller may pass in place of the person's choices. Outside the Extension Host test mode there are
+ * none: whatever arguments a command receives, the person still picks, types and confirms (the #183 rule).
+ * @returns {{ serverId: unknown, tool: unknown, query: unknown } | undefined}
+ */
+function searchGiven(arg, { testMode } = {}) {
+  if (testMode !== true || !isPlain(arg) || arg.interactive !== false) return undefined;
+  return { serverId: arg.serverId, tool: arg.tool, query: arg.query };
+}
+
+module.exports = { runSearchFlow, searchGiven, searchChoices, QUERY_TOOL, MAX_QUERY_CHARS };

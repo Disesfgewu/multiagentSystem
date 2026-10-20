@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
-const { runSearchFlow, searchChoices, MAX_QUERY_CHARS } = require('../../src/research/search-flow');
+const { runSearchFlow, searchChoices, searchGiven, MAX_QUERY_CHARS } = require('../../src/research/search-flow');
 const { createMcpLifecycle } = require('../../src/research/mcp-lifecycle');
 const { grantConsent, revokeConsent } = require('../../src/research/installer');
 
@@ -219,4 +219,13 @@ test('real lifecycle: a reply that tries to give instructions is refused, and an
   const dropped = await runSearchFlow({ lifecycle: absurd.lifecycle, ui: uiAbsurd });
   assert.equal(dropped.ok, false, 'a reply beyond the transport limit is not a result');
   assert.equal(uiAbsurd.seen.shown.length, 0);
+});
+
+test('outside test mode no argument can answer for the person; in test mode only interactive:false does', () => {
+  const arg = { serverId: 'papers', tool: 'search_papers', query: 'q', interactive: false };
+  for (const testMode of [false, undefined, null, 0, 'true', 1]) assert.equal(searchGiven(arg, { testMode }), undefined, `testMode ${String(testMode)}`);
+  assert.equal(searchGiven(arg), undefined, 'no options at all');
+  assert.equal(searchGiven(arg, {}), undefined);
+  assert.deepEqual(searchGiven(arg, { testMode: true }), { serverId: 'papers', tool: 'search_papers', query: 'q' });
+  for (const other of [{ ...arg, interactive: true }, { ...arg, interactive: undefined }, { ...arg, interactive: 'false' }, { serverId: 'papers' }, null, undefined, 'x', []]) assert.equal(searchGiven(other, { testMode: true }), undefined, JSON.stringify(other));
 });
