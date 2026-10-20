@@ -4,6 +4,10 @@ import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, report
 import { closeIssueReport, deleteMergedBranchReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
+const { saveFeedback, readFeedback } = require('../../../src/reports/feedback-store') as {
+  saveFeedback(store: unknown, target: unknown, input: { note: string; headSha: string | null }, expectedRevision: number | null): { ok: boolean; reason?: string; record?: { revision: number } };
+  readFeedback(store: unknown, target: unknown): { state: string; record?: { note: string; revision: number } };
+};
 
 const HEAD = 'd'.repeat(40);
 
@@ -162,6 +166,28 @@ export async function runReportChecks(): Promise<string> {
     const feedbackStatus = await reportText('pullRequest', 7);
     assert.match(feedbackStatus, /LOCAL FEEDBACK\nSaved only on this machine.*Nothing was sent to GitHub\./);
     assert.equal(feedbackStatus.includes('Please add a second test'), false, 'private feedback is never put into the report text');
+
+    // The saved state survives a refresh and another window: a second open of the private store (what another VS Code window
+    // does) sees the note, its newer write is seen here, and a write based on an out-of-date revision is refused, not merged over it.
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    assert.match(await reportText('pullRequest', 7), /LOCAL FEEDBACK\nSaved only on this machine/, 'a refresh keeps the saved state');
+    const prTarget = { repository: 'host/repo', kind: 'pullRequest', number: 7 };
+    const otherWindow = await privateStorage()?.use();
+    assert.equal(otherWindow?.ok, true);
+    const mine = readFeedback((otherWindow as any).store, prTarget);
+    assert.deepEqual([mine.state, mine.record?.note], ['saved', 'Please add a second test'], 'another window reads the note written here');
+    const theirs = saveFeedback((otherWindow as any).store, prTarget, { note: 'Written from another window', headSha: null }, mine.record!.revision);
+    assert.equal(theirs.ok, true);
+    const refusedStale = saveFeedback((otherWindow as any).store, prTarget, { note: 'Based on an old revision', headSha: null }, mine.record!.revision);
+    assert.deepEqual([refusedStale.ok, refusedStale.reason], [false, 'stale-feedback'], 'a write from an out-of-date window is refused');
+    assert.equal(readFeedback((otherWindow as any).store, prTarget).record?.note, 'Written from another window', 'the refused write changed nothing');
+    await vscode.commands.executeCommand(REPORT_COMMANDS.refresh);
+    assert.match(await reportText('pullRequest', 7), /LOCAL FEEDBACK\nSaved only on this machine/);
+    const afterOther = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Edited here after the other window', interactive: false });
+    assert.equal(afterOther.ok, true, 'this window picks up the newer revision and saves on top of it');
+    assert.equal(readFeedback((otherWindow as any).store, prTarget).record?.note, 'Edited here after the other window');
+    // Put the note the rest of this check relies on back (later steps look for it as a private reference).
+    assert.equal((await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'pullRequest', number: 7, note: 'Please add a second test', interactive: false })).ok, true);
 
     const published: Array<{ number: number; body: string }> = [];
     const previews: string[] = [];
@@ -483,16 +509,36 @@ export async function runReportChecks(): Promise<string> {
       version: async (target) => target.version,
       repository: async () => 'host/repo',
       issue: async () => ({ kind: 'ok', data: { number: 12, isPullRequest: false, ...issueState } }),
-      closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); return { ok: true, number }; }
+      closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); closedOnGitHub = true; return { ok: true, number }; }
     });
+    // The report lists read GitHub again after a decision: once the Issue is closed there, it leaves the "needs a decision" list.
+    let closedOnGitHub = false;
+    const listBefore = fakeReader();
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader({
+      listIssues: async (filter) => {
+        const open = await listBefore.listIssues({ state: 'open' } as any) as any;
+        const twelve = (open.data as any[]).find((entry) => entry.number === 12);
+        const rest = (open.data as any[]).filter((entry) => entry.number !== 12);
+        if (!closedOnGitHub) return filter.state === 'closed' ? { kind: 'empty' } : open;
+        return filter.state === 'closed' ? { kind: 'ok', data: [{ ...twelve, state: 'closed' }] } : { kind: 'ok', data: rest };
+      }
+    }) });
+    await reportTreeForTests('issue').getChildren();
+    assert.equal(reportBadgeForTests('issue'), 2, 'before the close, both Issues need a decision');
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'finished', interactive: false }), { ok: false, code: 'invalid-close-reason' });
     assert.equal(closesSent.length, 0);
     issueState = { state: 'closed', stateReason: 'completed' };
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false }), { ok: false, code: 'issue-not-open' });
     assert.equal(closesSent.length, 0, 'an Issue that is already closed is not closed again');
     issueState = { state: 'open' };
+    let listChanged = 0;
+    const listening = reportTreeForTests('issue').onDidChangeTreeData?.(() => { listChanged += 1; });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true });
+    listening?.dispose();
+    assert.ok(listChanged > 0, 'a successful close tells the Issues list to read GitHub again');
     assert.deepEqual(closesSent, [{ number: 12, reason: 'not_planned' }]);
+    assert.deepEqual(((await reportTreeForTests('issue').getChildren()) ?? []).map((item) => String(item.label)), ['待我決策／待補證據 (1)', '要求修改 (0)', '已通過 (0)', '已處理 (1)'], 'the closed Issue moved to processed');
+    assert.equal(reportBadgeForTests('issue'), 1, 'and the badge no longer counts it');
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true, code: 'already-closed' });
     assert.equal(closesSent.length, 1, 'repeating the same close sends nothing');
     // Declining the confirmation closes nothing: the person, not a parameter, decides.
