@@ -58,6 +58,20 @@ function countingServer() {
 }
 
 /**
+ * What `whoami /groups /fo csv /nh` said, as one line for the log. A tool that failed (it cannot open its own token under the
+ * restriction) prints "ERROR: ..." and exits non-zero: that is "could not enumerate", never "0 deny-only".
+ */
+function summarizeGroups({ ok, stdout, launchFailed }) {
+  if (launchFailed) return `could not enumerate (launch failed: ${launchFailed})`;
+  const rows = String(stdout ?? '').split(/\r?\n/).filter((line) => line.trim() !== '');
+  const error = rows.find((line) => /^\s*ERROR:/i.test(line));
+  if (error) return `could not enumerate (${error.replace(/^\s*ERROR:\s*/i, '').trim().slice(0, 100)})`;
+  if (!ok) return 'could not enumerate (the program failed)';
+  if (rows.length === 0) return 'could not enumerate (no output)';
+  return `${rows.length} group row(s), ${rows.filter((line) => /deny only/i.test(line)).length} deny-only`;
+}
+
+/**
  * @param {{ platform?: string, tmpRoot?: string, parentEnv?: object, script?: string, powershell?: string | null, timeoutMs?: number }} [options]
  */
 function createWindowsModule({ attempts: injected, platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS } = {}) {
@@ -220,7 +234,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       for (const restricted of [false, true]) {
         const groups = await launch(restricted, whoami, ['/groups', '/fo', 'csv', '/nh']);
         const rows = groups.stdout.split(/\r?\n/).filter((line) => line.trim() !== '');
-        lines.push(`whoami /groups (${restricted ? 'restricted' : 'control'}): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} row(s), ${rows.filter((line) => /deny only/i.test(line)).length} deny-only`}`);
+        lines.push(`whoami /groups (${restricted ? 'restricted' : 'control'}): ${summarizeGroups(groups)}`);
         for (const row of rows.slice(0, 14)) lines.push(`  ${clean(row.split('","').map((part) => part.replace(/"/g, '')).filter((_, index) => index !== 2).join(' | '))}`);
       }
       const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.argv[1],["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))', win32.join(parentEnv.SystemRoot, 'System32', 'cmd.exe')));
@@ -318,4 +332,4 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
   };
 }
 
-module.exports = { createWindowsModule };
+module.exports = { createWindowsModule, summarizeGroups };

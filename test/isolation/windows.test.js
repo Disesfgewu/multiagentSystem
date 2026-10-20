@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { requestFor, parseReply, runRestricted, environmentPairs, powershellPath, launchScriptPath, credentialLocations, HOME_CREDENTIAL_PATHS } = require('../../src/isolation/windows');
-const { createWindowsModule } = require('./windows-harness');
+const { createWindowsModule, summarizeGroups } = require('./windows-harness');
 const { CHANNELS, collectProbes, assessIsolation, describeAssessment, decideLaunch } = require('../../src/isolation/capabilities');
 
 const onWindows = process.platform === 'win32';
@@ -25,6 +25,18 @@ test('a request is checked before the script sees it: program, arguments, folder
   for (const stdin of [5, 'x'.repeat(65537)]) bad({ stdin }, 'stdin-invalid');
   for (const timeoutMs of [0, 99, 120001, 1.5, '5000', NaN]) bad({ timeoutMs }, 'timeout-invalid');
   assert.equal(requestFor({ exe: GOOD.exe }).ok, true, 'only the program is required');
+});
+
+test('a tool that could not list the token\'s groups is reported as "could not enumerate", never as 0 deny-only', () => {
+  const rows = '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"\r\n"BUILTIN\\Administrators","Alias","S-1-5-32-544","Group used for deny only"\r\n';
+  assert.equal(summarizeGroups({ ok: true, stdout: rows }), '2 group row(s), 1 deny-only');
+  assert.equal(summarizeGroups({ ok: true, stdout: '"Everyone","Well-known group","S-1-1-0","Mandatory group"\r\n' }), '1 group row(s), 0 deny-only', 'a real zero is still a zero');
+  assert.equal(summarizeGroups({ ok: false, stdout: 'ERROR: Access is denied.\r\nERROR: Unable to get group membership information.\r\n' }), 'could not enumerate (Access is denied.)');
+  assert.equal(summarizeGroups({ ok: true, stdout: 'ERROR: Access is denied.' }), 'could not enumerate (Access is denied.)', 'an ERROR line counts even if the exit code was 0');
+  assert.match(summarizeGroups({ ok: false, stdout: rows }), /could not enumerate \(the program failed\)/, 'a non-zero exit is not a list');
+  assert.match(summarizeGroups({ ok: true, stdout: '' }), /could not enumerate \(no output\)/);
+  assert.match(summarizeGroups({ ok: true, stdout: undefined }), /no output/);
+  assert.equal(summarizeGroups({ launchFailed: 'create-process-failed-5' }), 'could not enumerate (launch failed: create-process-failed-5)');
 });
 
 test('every switch the script reads can be sent in a request, and nothing else can', () => {
