@@ -208,19 +208,30 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       if (kind === 'bypass') return { control: true, outcome: inside.achieved ? 'open' : 'blocked' };
       return { control: true, outcome: inside.achieved ? 'works' : 'broken' };
     },
-    /** What the restricted launch can do at all, for the log: one line per question. */
+    /** What the restricted launch can do at all, for the log: one line per question. Secrets and SIDs are never printed. */
     async describe() {
       await prepare();
       const lines = [];
+      const clean = (text) => String(text).replace(/S-1-5-21-[0-9-]+/g, 'S-1-5-21-…').split(fixture.secret).join('<secret>').replace(/\s+/g, ' ').slice(0, 220);
       const versions = await launch(true, node, nodeRun('process.stdout.write(process.version)'));
       lines.push(`restricted launch of node: ${versions.launchFailed ? `failed (${versions.launchFailed})` : versions.ok ? `ok (${versions.stdout})` : 'program failed'}`);
-      const groups = await launch(true, win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/groups', '/fo', 'csv', '/nh']);
-      const rows = groups.stdout.split(/\r?\n/).filter((line) => line.trim() !== '');
-      const denyOnly = rows.filter((line) => /deny only/i.test(line)).length;
-      lines.push(`restricted token (whoami /groups): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} group row(s), ${denyOnly} deny-only`}`);
-      for (const row of rows.filter((line) => /deny only|S-1-5-32-544/i.test(line)).slice(0, 4)) lines.push(`  ${row.replace(/S-1-5-21-[0-9-]+/g, 'S-1-5-21-…').slice(0, 160)}`);
-      const user = await launch(true, win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/priv', '/fo', 'csv', '/nh']);
-      lines.push(`restricted token (whoami /priv): ${user.launchFailed ? `failed (${user.launchFailed})` : `${user.stdout.split(/\r?\n/).filter((line) => line.trim() !== '').length} privilege row(s)`}`);
+      const whoami = win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe');
+      for (const restricted of [false, true]) {
+        const groups = await launch(restricted, whoami, ['/groups', '/fo', 'csv', '/nh']);
+        const rows = groups.stdout.split(/\r?\n/).filter((line) => line.trim() !== '');
+        lines.push(`whoami /groups (${restricted ? 'restricted' : 'control'}): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} row(s), ${rows.filter((line) => /deny only/i.test(line)).length} deny-only`}`);
+        for (const row of rows.slice(0, 14)) lines.push(`  ${clean(row.split('","').map((part) => part.replace(/"/g, '')).filter((_, index) => index !== 2).join(' | '))}`);
+      }
+      const priv = await launch(true, whoami, ['/priv', '/fo', 'csv', '/nh']);
+      lines.push(`whoami /priv (restricted): ${priv.launchFailed ? `failed (${priv.launchFailed})` : clean(priv.stdout)}`);
+      if (git()) {
+        const repo = await newRepo(true);
+        fixture.provider.reset();
+        const lsRemote = await launch(true, git(), ['-C', repo, '-c', 'credential.helper=', 'ls-remote', `http://127.0.0.1:${fixture.provider.port}/synthetic.git`]);
+        lines.push(`restricted git ls-remote to the open endpoint: reached=${fixture.provider.count() > 0} ok=${lsRemote.ok} launchFailed=${lsRemote.launchFailed} output=${clean(lsRemote.stdout || lsRemote.stderr)}`);
+        const ask = await launch(false, git(), ['-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials').replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' });
+        lines.push(`control git credential fill: ok=${ask.ok} output=${clean(ask.stdout || ask.stderr)}`);
+      }
       return lines;
     },
     async dispose() {
