@@ -15,6 +15,7 @@ import { registerResearchCommands } from './research/researchCommands';
 import { registerMcpCommands } from './research/mcpCommands';
 import { setExtensionTestMode } from './shared/testMode';
 import { registerSkillCommands } from './skills/skillCommands';
+import { registerCustomProviderCommands } from './providers/customProviderCommands';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
@@ -79,6 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerResearchCommands(context);
   registerMcpCommands(context);
   registerSkillCommands(context);
+  registerCustomProviderCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
     vscode.commands.registerCommand('multiagentSystem.launchAgent', launchAgent)

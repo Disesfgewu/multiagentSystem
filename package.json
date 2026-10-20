@@ -34,6 +34,7 @@
     "onCommand:multiagentSystem.reports.publicFeedback",
     "onCommand:multiagentSystem.reports.reviewPullRequest",
     "onCommand:multiagentSystem.reports.mergePullRequest",
+    "onCommand:multiagentSystem.providers.showCustom",
     "onCommand:multiagentSystem.reports.closeIssue",
     "onCommand:multiagentSystem.reports.configurePublisher",
     "onCommand:multiagentSystem.reports.configureMergeAuthority",
@@ -92,6 +93,24 @@
     "configuration": {
       "title": "Multiagent System",
       "properties": {
+        "multiagentSystem.providers.custom": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "maxItems": 10,
+          "description": "Custom CLI providers (user settings only; workspace values are ignored). Each entry: id (lowercase letters, digits, hyphen), label, executable (a plain program name found on PATH), optional args (a list of plain strings). A custom provider only starts a terminal; its capabilities stay unknown. Nothing is started from this setting yet.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "executable"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+              "label": { "type": "string", "maxLength": 64 },
+              "executable": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+              "args": { "type": "array", "maxItems": 32, "items": { "type": "string", "pattern": "^[A-Za-z0-9._=:/@+-]{1,256}$" } }
+            }
+          }
+        },
         "multiagentSystem.skills.autoInstall": {
           "type": "boolean",
           "default": true,
@@ -270,6 +289,7 @@
       { "command": "multiagentSystem.accounts.edit", "title": "Multiagent: Edit Account Profile" },
       { "command": "multiagentSystem.accounts.remove", "title": "Multiagent: Remove Account Profile" },
       { "command": "multiagentSystem.accounts.login", "title": "Multiagent: Sign In to Account" },
+      { "command": "multiagentSystem.providers.showCustom", "title": "Multiagent: Show Custom Providers" },
       { "command": "multiagentSystem.accounts.check", "title": "Multiagent: Check Account Sign-in", "icon": "$(verified)" },
       { "command": "multiagentSystem.accounts.limits", "title": "Multiagent: Set Account Limits", "icon": "$(dashboard)" },
       { "command": "multiagentSystem.accounts.configureStatusLine", "title": "Multiagent: Configure Claude Status Line Bridge" },
