@@ -84,6 +84,7 @@ public static class RestrictedLaunch
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr hTok);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetKernelObjectSecurity(IntPtr handle, uint info, byte[] descriptor);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int cls, IntPtr buffer, int size);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr hTok, int cls, IntPtr buffer, int size, out int needed);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr deletePrivs, uint restrictCount, IntPtr restrict, out IntPtr newToken);
@@ -136,7 +137,12 @@ public static class RestrictedLaunch
         {
             Marshal.Copy(bytes, 0, aclPtr, bytes.Length);
             Marshal.WriteIntPtr(info, aclPtr);
-            return SetTokenInformation(hToken, TokenDefaultDacl, info, IntPtr.Size);
+            if (!SetTokenInformation(hToken, TokenDefaultDacl, info, IntPtr.Size)) return false;
+            // The token object itself carries an access list naming the user too; without this the program cannot open its own
+            // token (the system's own tools fail with "access denied", and so do programs that look at it while starting).
+            RawSecurityDescriptor descriptor = new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.SelfRelative, null, null, null, acl);
+            byte[] descriptorBytes = new byte[descriptor.BinaryLength]; descriptor.GetBinaryForm(descriptorBytes, 0);
+            return SetKernelObjectSecurity(hToken, 4, descriptorBytes);
         }
         finally { Marshal.FreeHGlobal(aclPtr); Marshal.FreeHGlobal(info); }
     }

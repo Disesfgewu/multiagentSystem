@@ -222,6 +222,8 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         lines.push(`whoami /groups (${restricted ? 'restricted' : 'control'}): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} row(s), ${rows.filter((line) => /deny only/i.test(line)).length} deny-only`}`);
         for (const row of rows.slice(0, 14)) lines.push(`  ${clean(row.split('","').map((part) => part.replace(/"/g, '')).filter((_, index) => index !== 2).join(' | '))}`);
       }
+      const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.env.ComSpec,["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))'));
+      lines.push(`restricted node spawning a child over pipes: ${pipes.launchFailed ? `failed (${pipes.launchFailed})` : clean(pipes.stdout || `exit failed`)}`);
       const priv = await launch(true, whoami, ['/priv', '/fo', 'csv', '/nh']);
       lines.push(`whoami /priv (restricted): ${priv.launchFailed ? `failed (${priv.launchFailed})` : clean(priv.stdout)}`);
       if (git()) {
