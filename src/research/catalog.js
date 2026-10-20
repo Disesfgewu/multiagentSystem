@@ -25,6 +25,9 @@ const INTEGRITY_HASH = /^sha256:[a-f0-9]{64}$/i;
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const hasUnsafe = (value) => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 
+// A command argument that stands for the tool's private working folder, chosen at start (never a shared folder like /tmp).
+const STORAGE_PLACEHOLDER = '{storage}';
+
 const ALLOWED_LICENSES = Object.freeze(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
 
 // Disallowed command tokens: shells, package downloaders, and dangerous tools
@@ -108,6 +111,8 @@ function validateCommand(commandArray) {
   for (let i = 0; i < commandArray.length; i++) {
     const part = commandArray[i];
     if (typeof part !== 'string' || part.trim() === '' || hasUnsafe(part)) fail('command-invalid');
+    // The only placeholder is the whole argument `{storage}`: the lifecycle replaces it with the tool's own private folder.
+    if (/[{}]/.test(part) && part !== STORAGE_PLACEHOLDER) fail('command-invalid');
     cleanArgs.push(part.trim());
   }
 
@@ -358,7 +363,7 @@ const CANDIDATE_RESEARCH_TOOLS = Object.freeze([
     // and how to run one is not verified. `integrity` is the GitHub-reported digest of the darwin-arm64
     // .mcpb (metadata only, not downloaded here); it replaces an earlier value that was a commit SHA
     // extended with unexplained characters and matched no release asset.
-    command: ['arxiv-mcp-server', '--storage-path', '/tmp/arxiv'],
+    command: ['arxiv-mcp-server', '--storage-path', '{storage}'],
     tools: [
       { name: 'search_papers', readOnly: true, description: 'Search arXiv papers by query' },
       { name: 'get_abstract', readOnly: true, description: 'Get official arXiv paper abstract and metadata' },

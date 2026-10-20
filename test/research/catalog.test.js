@@ -36,7 +36,7 @@ const SAMPLE_ARXIV_ITEM = {
   integrity: 'sha256:572e301bb3198962c025d5ed5e14becb86868daae477454fcda4e1ece0202a0c',
   source: 'https://github.com/blazickjp/arxiv-mcp-server',
   license: 'Apache-2.0',
-  command: ['arxiv-mcp-server', '--storage-path', '/tmp/arxiv'],
+  command: ['arxiv-mcp-server', '--storage-path', '{storage}'],
   tools: [
     { name: 'search_papers', readOnly: true, description: 'Search papers' },
     { name: 'get_abstract', readOnly: true, description: 'Read abstract' }

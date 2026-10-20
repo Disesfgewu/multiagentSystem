@@ -16,6 +16,7 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   scanWorkspaceMcpConfig(folders: string[]): { ignored: string[]; notice: string | null };
   ENFORCEMENT_NOTICE: string;
 };
+const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
 const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
@@ -60,6 +61,11 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     readSecret: async (serverId: string, key: string) => {
       const ref = currentVault.refFor(`mcp.${serverId}.${key}`);
       return currentVault.read(ref);
+    },
+    storageDir: async (serverId: string) => {
+      // The tool's own folder inside the extension's private storage; links and open or foreign folders are refused.
+      const made = ensureToolFolder({ base: currentStore.dir, serverId });
+      return made.ok ? made.dir : null;
     },
     resolveExecutable: async (serverId: string) => {
       const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);
