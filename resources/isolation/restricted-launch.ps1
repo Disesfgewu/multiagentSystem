@@ -25,6 +25,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 
@@ -40,6 +42,8 @@ public static class RestrictedLaunch
     const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
     const int JobObjectExtendedLimitInformation = 9;
     const uint WAIT_TIMEOUT = 0x102;
+    const int TokenDefaultDacl = 6;
+    const uint SE_GROUP_LOGON_ID = 0xC0000000;
 
     [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
@@ -80,6 +84,7 @@ public static class RestrictedLaunch
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr hTok);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int cls, IntPtr buffer, int size);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr hTok, int cls, IntPtr buffer, int size, out int needed);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags, uint disableCount, SID_AND_ATTRIBUTES[] disable, uint deleteCount, IntPtr deletePrivs, uint restrictCount, IntPtr restrict, out IntPtr newToken);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
@@ -96,6 +101,44 @@ public static class RestrictedLaunch
         buffer = Marshal.AllocHGlobal(needed);
         if (!GetTokenInformation(hTok, TokenUser, buffer, needed, out needed)) return IntPtr.Zero;
         return Marshal.ReadIntPtr(buffer); // TOKEN_USER begins with a SID_AND_ATTRIBUTES whose first field is the SID
+    }
+
+    // The restricted token's default access list for what the program creates (pipes, events, mutexes) names the user, and the
+    // user is deny-only now: the program could then not use its own objects (git failed to make a pipe). It is replaced with
+    // one that names the logon session (or Everyone when the token has none) and SYSTEM.
+    static bool SetOpenDefaultDacl(IntPtr hToken)
+    {
+        SecurityIdentifier owner = null;
+        int needed; GetTokenInformation(hToken, TokenGroups, IntPtr.Zero, 0, out needed);
+        IntPtr groups = Marshal.AllocHGlobal(needed);
+        try
+        {
+            if (GetTokenInformation(hToken, TokenGroups, groups, needed, out needed))
+            {
+                int count = Marshal.ReadInt32(groups);
+                int entry = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr at = IntPtr.Add(groups, IntPtr.Size + i * entry);
+                    uint attributes = (uint)Marshal.ReadInt32(at, IntPtr.Size);
+                    if ((attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) { owner = new SecurityIdentifier(Marshal.ReadIntPtr(at)); break; }
+                }
+            }
+        }
+        finally { Marshal.FreeHGlobal(groups); }
+        if (owner == null) owner = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+        RawAcl acl = new RawAcl(2, 2);
+        acl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, 0x10000000, owner, false, null));
+        acl.InsertAce(1, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, 0x10000000, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), false, null));
+        byte[] bytes = new byte[acl.BinaryLength]; acl.GetBinaryForm(bytes, 0);
+        IntPtr aclPtr = Marshal.AllocHGlobal(bytes.Length), info = Marshal.AllocHGlobal(IntPtr.Size);
+        try
+        {
+            Marshal.Copy(bytes, 0, aclPtr, bytes.Length);
+            Marshal.WriteIntPtr(info, aclPtr);
+            return SetTokenInformation(hToken, TokenDefaultDacl, info, IntPtr.Size);
+        }
+        finally { Marshal.FreeHGlobal(aclPtr); Marshal.FreeHGlobal(info); }
     }
 
     static byte[] EnvBlock(string[] env)

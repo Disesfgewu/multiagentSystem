@@ -162,7 +162,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     async 'credential-helper'(restricted) {
       if (!git()) return { skipped: true };
       // git reads this value as text: backslashes would be taken as escapes, so the path is given with forward slashes.
-      const ask = async (file) => (await launch(restricted, git(), ['-c', `credential.helper=store --file=${file.replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' })).stdout.includes(fixture.secret);
+      const ask = async (file) => (await launch(restricted, git(), ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${file.replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' })).stdout.includes(fixture.secret);
       return { achieved: await ask(path.join(fixture.creds, 'git-credentials')), can: restricted ? await ask(path.join(fixture.shared, 'open-git-credentials')) : true };
     },
     async 'direct-http'(restricted) {
@@ -229,7 +229,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         fixture.provider.reset();
         const lsRemote = await launch(true, git(), ['-C', repo, '-c', 'credential.helper=', 'ls-remote', `http://127.0.0.1:${fixture.provider.port}/synthetic.git`]);
         lines.push(`restricted git ls-remote to the open endpoint: reached=${fixture.provider.count() > 0} ok=${lsRemote.ok} launchFailed=${lsRemote.launchFailed} output=${clean(lsRemote.stdout || lsRemote.stderr)}`);
-        const ask = await launch(false, git(), ['-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials').replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' });
+        const ask = await launch(false, git(), ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials').replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' });
         lines.push(`control git credential fill: ok=${ask.ok} output=${clean(ask.stdout || ask.stderr)}`);
       }
       return lines;
