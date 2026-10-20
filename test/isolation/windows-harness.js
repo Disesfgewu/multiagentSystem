@@ -116,6 +116,14 @@ function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(
   const PRINT_ENV = 'process.stdout.write(JSON.stringify(process.env))';
   const CONNECT = 'const s=require("net").connect(Number(process.argv[1]),"127.0.0.1");s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1));setTimeout(()=>process.exit(2),8000)';
 
+  // Whether the restricted git can use its HTTP transport at all (its helper program, libraries, settings): it must be able to
+  // reach the open provider endpoint the same way, or a push that never arrived says nothing about the network.
+  async function gitReachesProvider(repo) {
+    fixture.provider.reset();
+    await launch(true, git(), ['-C', repo, '-c', 'credential.helper=', 'ls-remote', `http://127.0.0.1:${fixture.provider.port}/synthetic.git`]);
+    return fixture.provider.count() > 0;
+  }
+
   async function newRepo(openGit) {
     const dir = path.join(fixture.shared, `repo-${fixture.repos += 1}`);
     fs.mkdirSync(dir);
@@ -141,7 +149,7 @@ function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(
       const repo = await newRepo(true);
       fixture.github.reset();
       await launch(restricted, git(), ['-C', repo, '-c', 'credential.helper=', 'push', `http://127.0.0.1:${fixture.github.port}/synthetic.git`, 'HEAD:refs/heads/bypass']);
-      return { achieved: fixture.github.count() > 0, can: restricted ? await runs(git(), ['--version']) : true };
+      return { achieved: fixture.github.count() > 0, can: restricted ? await gitReachesProvider(repo) : true };
     },
     async 'gh-cli'(restricted) {
       if (!gh()) return { skipped: true };
@@ -153,7 +161,8 @@ function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(
     },
     async 'credential-helper'(restricted) {
       if (!git()) return { skipped: true };
-      const ask = async (file) => (await launch(restricted, git(), ['-c', `credential.helper=store --file=${file}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' })).stdout.includes(fixture.secret);
+      // git reads this value as text: backslashes would be taken as escapes, so the path is given with forward slashes.
+      const ask = async (file) => (await launch(restricted, git(), ['-c', `credential.helper=store --file=${file.replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' })).stdout.includes(fixture.secret);
       return { achieved: await ask(path.join(fixture.creds, 'git-credentials')), can: restricted ? await ask(path.join(fixture.shared, 'open-git-credentials')) : true };
     },
     async 'direct-http'(restricted) {
@@ -204,8 +213,12 @@ function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(
       const versions = await launch(true, node, nodeRun('process.stdout.write(process.version)'));
       lines.push(`restricted launch of node: ${versions.launchFailed ? `failed (${versions.launchFailed})` : versions.ok ? `ok (${versions.stdout})` : 'program failed'}`);
       const groups = await launch(true, win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/groups', '/fo', 'csv', '/nh']);
-      const denyOnly = groups.stdout.split(/\r?\n/).filter((line) => /Group used for deny only/i.test(line)).length;
-      lines.push(`restricted token: ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${denyOnly} group(s) deny-only`}`);
+      const rows = groups.stdout.split(/\r?\n/).filter((line) => line.trim() !== '');
+      const denyOnly = rows.filter((line) => /deny only/i.test(line)).length;
+      lines.push(`restricted token (whoami /groups): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} group row(s), ${denyOnly} deny-only`}`);
+      for (const row of rows.filter((line) => /deny only|S-1-5-32-544/i.test(line)).slice(0, 4)) lines.push(`  ${row.replace(/S-1-5-21-[0-9-]+/g, 'S-1-5-21-…').slice(0, 160)}`);
+      const user = await launch(true, win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/priv', '/fo', 'csv', '/nh']);
+      lines.push(`restricted token (whoami /priv): ${user.launchFailed ? `failed (${user.launchFailed})` : `${user.stdout.split(/\r?\n/).filter((line) => line.trim() !== '').length} privilege row(s)`}`);
       return lines;
     },
     async dispose() {

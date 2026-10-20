@@ -162,5 +162,5 @@ test('on Windows: which parts of the restriction still let a program start (prin
     }
   }
   for (const [name, outcome] of Object.entries(results)) console.log(`windows isolation: variant ${name}: ${outcome}`);
-  assert.match(results['no restriction at all / cmd'], /^exit 0 output="ok"/, 'the launcher itself (token copy, job, pipes, process creation) works');
+  assert.match(results['no restriction at all / cmd'], /^exit (?:0x0|0) output="ok"/, 'the launcher itself (token copy, job, pipes, process creation) works');
 });
