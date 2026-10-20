@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
-import { installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
+import { closeIssueReport, deleteMergedBranchReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
 
@@ -474,6 +474,45 @@ export async function runReportChecks(): Promise<string> {
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Not a PR', interactive: false }), { ok: false, code: 'no-pr-report-open' });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'no-pr-report-open' });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'no-pr-report-open' });
+    // Closing an Issue from its report: PM-configured publisher, a fixed reason, the Issue must be open now.
+    const closesSent: Array<{ number: number; reason: string }> = [];
+    let issueState: { state: string; stateReason?: string | null } = { state: 'open' };
+    installPublicFeedbackTestOverrides({
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      version: async (target) => target.version,
+      repository: async () => 'host/repo',
+      issue: async () => ({ kind: 'ok', data: { number: 12, isPullRequest: false, ...issueState } }),
+      closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); return { ok: true, number }; }
+    });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'finished', interactive: false }), { ok: false, code: 'invalid-close-reason' });
+    assert.equal(closesSent.length, 0);
+    issueState = { state: 'closed', stateReason: 'completed' };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false }), { ok: false, code: 'issue-not-open' });
+    assert.equal(closesSent.length, 0, 'an Issue that is already closed is not closed again');
+    issueState = { state: 'open' };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true });
+    assert.deepEqual(closesSent, [{ number: 12, reason: 'not_planned' }]);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'not_planned', interactive: false }), { ok: true, code: 'already-closed' });
+    assert.equal(closesSent.length, 1, 'repeating the same close sends nothing');
+    // Declining the confirmation closes nothing: the person, not a parameter, decides.
+    installPublicFeedbackTestOverrides({ repository: async () => 'host/repo', pickCloseReason: async () => 'completed', confirm: async () => false });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { interactive: true }), { ok: false, code: 'cancelled' });
+    assert.equal(closesSent.length, 1);
+    // As an installed extension (not test mode) the reason and the confirmation can no longer be supplied by arguments:
+    // both the command and the function underneath ask the person, and dismissing the dialogs closes nothing.
+    let reasonAsked = 0;
+    installPublicFeedbackTestOverrides({ repository: async () => 'host/repo', pickCloseReason: async () => { reasonAsked += 1; return undefined; }, confirm: async () => false });
+    const viaCommand = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false })));
+    assert.deepEqual(viaCommand.result, { ok: false, code: 'cancelled' });
+    assert.equal(reasonAsked, 1, 'the reason argument was ignored: the person was asked');
+    setPublicFeedbackTestMode(false);
+    const direct = await outsideTestMode(() => closeIssueReport({ repository: 'host/repo', kind: 'issue', number: 12, version: 'a'.repeat(40) }, { reason: 'completed', interactive: false }));
+    setPublicFeedbackTestMode(true);
+    assert.deepEqual(direct.result, { ok: false, code: 'cancelled' });
+    assert.ok(direct.prompts.some((prompt) => prompt.includes('Why is this Issue being closed?')), direct.prompts.join(' | '));
+    assert.equal(closesSent.length, 1, 'nothing was closed without the person');
+
     const issuePrivateSaved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'issue', number: 12, note: 'Private issue note kept on this machine', interactive: false });
     assert.equal(issuePrivateSaved.ok, true);
     installPublicFeedbackTestOverrides({
@@ -490,6 +529,7 @@ export async function runReportChecks(): Promise<string> {
     const refusedRetry = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'A distinct public issue comment.', interactive: false });
     assert.deepEqual(refusedRetry, { ok: false, code: 'outcome-unknown' }, 'an unknown write result is persisted and cannot be posted again after reopening');
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'pullRequest', number: 7 });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false }), { ok: false, code: 'no-issue-report-open' }, 'closing is only offered on an Issue report');
 
     // Feedback is bound to what the open report showed. A push while the input
     // box is open must not relabel A's note as if it had been written for B.
