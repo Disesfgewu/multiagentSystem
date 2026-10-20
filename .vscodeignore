@@ -22,3 +22,4 @@ tsconfig.json
 # Bundled agent skill and template sources are shipped; the repo's own .claude/ stays excluded above.
 !resources/agent-skills/**
 !resources/agent-templates/**
+!resources/isolation/restricted-launch.ps1

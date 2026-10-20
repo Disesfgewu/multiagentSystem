@@ -24,6 +24,8 @@ function allowed(name) {
   if (/^extension\/out\/(?:src|packages)\/[\w./-]+\.js$/.test(name)) return true;
   if (/^extension\/node_modules\/fflate\/[\w./-]+$/.test(name)) return true;
   if (/^extension\/resources\/agent-skills\/[a-z0-9][a-z0-9-]*\/SKILL\.md$/.test(name)) return true;
+  // The one script that starts a program under a restricted token on Windows (issue #26): reviewed, fixed content.
+  if (name === 'extension/resources/isolation/restricted-launch.ps1') return true;
   if (name === 'extension/resources/agent-templates/ISSUE_TEMPLATE/standard.md' || name === 'extension/resources/agent-templates/pull_request_template.md') return true;
   return false;
 }

@@ -49,3 +49,17 @@
 - **真實憑證位置**：`credentialLocations(home)` 回傳 `~/.git-credentials`、`~/.config/git/credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、`~/Library/Keychains`，harness 的設定檔都拒絕讀取它們；測試用暫存 HOME 實際驗證每一個在沙箱內讀不到、沙箱外讀得到。**鑰匙圈只是檔案路徑被拒**：透過 Security 服務（mach 服務）取得登入鑰匙圈內容的路徑沒有試，也沒有封。
 - **環境變數**：`scrubEnvironment` 另移除 `GIT_CONFIG_PARAMETERS`（git 可由它注入 `credential.helper` 等設定）。
 - **對照組沒成功就不是 blocked**：測試以 PATH 不含 `gh` 實測 gh-cli 回 `{ control: false }`，`assessIsolation` 為 `control-did-not-run`，整體 mode 不是 enforced。
+
+## 原生 Windows 平台模組（Refs #26）
+
+`src/isolation/windows.js` 提供 Windows 的積木（受限啟動的請求檢查與回覆解析、環境清除、使用者資料夾的憑證位置清單）；實際啟動由隨 VSIX 出貨的 `resources/isolation/restricted-launch.ps1` 完成，驗證 harness 是**測試程式碼** `test/isolation/windows-harness.js`（與 macOS 相同，不隨套件發佈）。環境清除與 macOS 共用 `src/isolation/environment.js`。
+
+**機制（第一版）**：受限權杖＋Job Object。腳本把目前使用者與 Administrators 兩個 SID 設為 *deny-only*（不能再授予存取），移除除「略過走訪檢查」以外的所有特權，並讓程式在會於逾時或腳本結束時整批結束的 Job Object 內執行。P/Invoke 定義寫死在腳本內；以 `execFile`（不經 shell）執行 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File … -Request <Base64 JSON>`。`-ExecutionPolicy Bypass` 只對這個行程生效；若群組原則強制執行原則，啟動會失敗而回報為 unknown。程式與引數以資料傳入，腳本內以 C 執行階段規則加引號，不經任何 shell 字串；腳本不下載任何東西。
+
+**能擋什麼、不能擋什麼（誠實）**
+- 能擋：存取清單只寫了該使用者（加 SYSTEM／Administrators）的檔案與資料夾，例如使用者資料夾下的 `.config\gh`、`.netrc`、`.ssh`、`AppData\Roaming\GitHub CLI`、Credential Manager 的檔案。對 `Users`／`Everyone` 也開放的地方（系統資料夾、程式資料夾）仍可讀，所以程式可以正常啟動。
+- **不能擋網路**：權杖不能禁止連線。`git-push`、`gh-cli`、`direct-http` 預期報 `open`，整體因此維持 advisory。要擋網路需要 Windows 防火牆規則或 AppContainer（需要回環豁免，且 AppContainer 與 CLI 登入的相容性未知），列為後續。
+- 不涵蓋：Credential Manager 的 API 呼叫（`git-credential-manager` 經 DPAPI 在使用者身分下解密）、真 CLI、真 GitHub 憑證、`terminal-interaction`（harness 沒有 pseudo-console，維持 unknown）。
+- harness 的每個 `blocked` 都要求：受限程式能對**開放的資源**做同一類動作（例如能讀 `shared` 內的檔案、能在開放的儲存庫 commit），否則視為受限啟動本身失敗而回報 unknown，不是 blocked。
+
+**驗證環境**：本機開發環境是 macOS，Windows 只由 windows-latest CI 驗證（虛擬機，不能取代乾淨實機；實機項在 #135 T26）。CI 日誌印出受限啟動是否成功、被設為 deny-only 的群組數、每個通道的 `control`／`outcome`。
