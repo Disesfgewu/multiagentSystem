@@ -39,7 +39,7 @@ function setup(over = {}) {
   const deps = {
     identity: { current: () => { if (actor instanceof Error) throw actor; return actor; }, actorIdForLogin: (login) => (login === 'worker-user' ? '20' : login === 'pm-user' ? '10' : null) },
     reader: {
-      getIssue: async () => ({ kind: 'ok', data: { state: 'open', assignees: [] } }),
+      getIssue: async () => ({ kind: 'ok', data: { state: 'open', isPullRequest: false, assignees: [] } }),
       getPullRequestSnapshot: async () => snapshot(),
       getPullRequestPublication: async () => ({ kind: 'ok', data: { complete: true, number: 7, headSha: HEAD, diff: 'diff --git a/a.js b/a.js\n+const safe = 1;\n' } }),
       ...(over.reader || {})
@@ -688,7 +688,7 @@ test('an unusable or invalid store is rejected and fails closed before any write
 });
 
 test('closeIssue: PM only, a fixed reason, the issue must be open right now, and exactly that goes to the transport', async () => {
-  const closed = { state: 'closed', stateReason: 'completed', assignees: [] };
+  const closed = { state: 'closed', isPullRequest: false, stateReason: 'completed', assignees: [] };
   const { broker, calls } = setup({ actor: asPm });
   assert.deepEqual(await broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' }), { ok: true, number: 5 });
   assert.deepEqual(calls, [['closeIssue', { repository: REPO, number: 3, reason: 'not_planned'.replace('not_planned', 'completed') }]]);
@@ -720,6 +720,12 @@ test('closeIssue: PM only, a fixed reason, the issue must be open right now, and
     assert.equal(result.ok, false);
     assert.equal(probe.calls.length, 0, 'an issue whose state cannot be read is never closed');
   }
+  // A pull request number is answered by the issues endpoint too; it is never closed through here.
+  for (const [isPullRequest, expected] of [[true, 'target-is-pull-request'], [undefined, 'issue-unverified'], ['false', 'issue-unverified'], [null, 'issue-unverified']]) {
+    const probe = setup({ actor: asPm, reader: { getIssue: async () => ({ kind: 'ok', data: { state: 'open', ...(isPullRequest === undefined ? {} : { isPullRequest }), assignees: [] } }) } });
+    assert.equal((await probe.broker.request({ operation: 'closeIssue', requestId: id(), number: 7, reason: 'completed' })).reason, expected, String(isPullRequest));
+    assert.equal(probe.calls.length, 0, 'a pull request is never closed as an Issue');
+  }
   const worker = setup({ actor: { actorId: '20', role: 'worker' } });
   assert.equal((await worker.broker.request({ operation: 'closeIssue', requestId: id(), number: 3, reason: 'completed' })).reason, 'role-forbidden');
   assert.equal(worker.calls.length, 0);
@@ -733,7 +739,7 @@ test('closeIssue after a restart with an unknown outcome: closed with the same r
     const broker = new Broker({ ...first.broker.d, store });
     assert.equal((await broker.request(ask(requestId))).reason, 'outcome-unknown');
   };
-  const restart = (data) => { const restarted = setup({ actor: asPm, reader: { getIssue: async () => ({ kind: 'ok', data }) } }); return { ...restarted, broker: new Broker({ ...restarted.broker.d, store }) }; };
+  const restart = (data) => { const restarted = setup({ actor: asPm, reader: { getIssue: async () => ({ kind: 'ok', data: { isPullRequest: false, ...data } }) } }); return { ...restarted, broker: new Broker({ ...restarted.broker.d, store }) }; };
 
   const sameReason = id(); await crash(sameReason);
   const landed = restart({ state: 'closed', stateReason: 'completed', assignees: [] });
@@ -744,6 +750,11 @@ test('closeIssue after a restart with an unknown outcome: closed with the same r
   const different = restart({ state: 'closed', stateReason: 'not_planned', assignees: [] });
   assert.equal((await different.broker.request(ask(otherReason))).reason, 'outcome-unknown');
   assert.equal(different.calls.length, 0);
+
+  const pullRequestId = id(); await crash(pullRequestId);
+  const wrongTarget = restart({ state: 'closed', stateReason: 'completed', isPullRequest: true });
+  assert.equal((await wrongTarget.broker.request(ask(pullRequestId))).reason, 'outcome-unknown', 'a pull request that is closed is not this write');
+  assert.equal(wrongTarget.calls.length, 0);
 
   const notApplied = id(); await crash(notApplied);
   const stillOpen = restart({ state: 'open', assignees: [] });

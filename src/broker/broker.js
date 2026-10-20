@@ -196,7 +196,7 @@ class Broker {
       }
       if (operation === 'closeIssue') {
         const issue = await this.d.reader.getIssue(payload.number, { forceRefresh: true });
-        if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data)) return { status: 'unverified' };
+        if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data) || issue.data.isPullRequest !== false) return { status: 'unverified' };
         // Closed with a different reason than asked is not the same write: only the exact reason counts as applied.
         if (issue.data.state === 'closed') return issue.data.stateReason === payload.reason ? { status: 'already-applied', result: { ok: true, number: payload.number } } : { status: 'unverified' };
         return issue.data.state === 'open' ? { status: 'not-applied' } : { status: 'unverified' };
@@ -464,6 +464,9 @@ class Broker {
       return deny('cannot-verify');
     }
     if (!isPlain(issue) || issue.kind !== 'ok' || !isPlain(issue.data) || !['open', 'closed'].includes(issue.data.state)) return deny('issue-unverified');
+    // The issues endpoint also answers for pull request numbers. A pull request is closed through review and merge, never here;
+    // a read that does not say which it is, is refused.
+    if (issue.data.isPullRequest !== false) return deny(issue.data.isPullRequest === true ? 'target-is-pull-request' : 'issue-unverified');
     return { ok: true, data: issue.data };
   }
 

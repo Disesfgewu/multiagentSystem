@@ -1,7 +1,8 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, reportTreeForTests, reportUri, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
-import { installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
+import { closeIssueReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
+import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
 
 const HEAD = 'd'.repeat(40);
@@ -435,7 +436,7 @@ export async function runReportChecks(): Promise<string> {
       user: async () => ({ id: 42, login: 'pm-user' }),
       version: async (target) => target.version,
       repository: async () => 'host/repo',
-      issue: async () => ({ kind: 'ok', data: { number: 12, ...issueState } }),
+      issue: async () => ({ kind: 'ok', data: { number: 12, isPullRequest: false, ...issueState } }),
       closeIssue: async (_session, _repository, number, reason) => { closesSent.push({ number, reason }); return { ok: true, number }; }
     });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'finished', interactive: false }), { ok: false, code: 'invalid-close-reason' });
@@ -452,6 +453,19 @@ export async function runReportChecks(): Promise<string> {
     installPublicFeedbackTestOverrides({ repository: async () => 'host/repo', pickCloseReason: async () => 'completed', confirm: async () => false });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { interactive: true }), { ok: false, code: 'cancelled' });
     assert.equal(closesSent.length, 1);
+    // As an installed extension (not test mode) the reason and the confirmation can no longer be supplied by arguments:
+    // both the command and the function underneath ask the person, and dismissing the dialogs closes nothing.
+    let reasonAsked = 0;
+    installPublicFeedbackTestOverrides({ repository: async () => 'host/repo', pickCloseReason: async () => { reasonAsked += 1; return undefined; }, confirm: async () => false });
+    const viaCommand = await outsideTestMode(() => Promise.resolve(vscode.commands.executeCommand(REPORT_COMMANDS.closeIssue, { reason: 'completed', interactive: false })));
+    assert.deepEqual(viaCommand.result, { ok: false, code: 'cancelled' });
+    assert.equal(reasonAsked, 1, 'the reason argument was ignored: the person was asked');
+    setPublicFeedbackTestMode(false);
+    const direct = await outsideTestMode(() => closeIssueReport({ repository: 'host/repo', kind: 'issue', number: 12, version: 'a'.repeat(40) }, { reason: 'completed', interactive: false }));
+    setPublicFeedbackTestMode(true);
+    assert.deepEqual(direct.result, { ok: false, code: 'cancelled' });
+    assert.ok(direct.prompts.some((prompt) => prompt.includes('Why is this Issue being closed?')), direct.prompts.join(' | '));
+    assert.equal(closesSent.length, 1, 'nothing was closed without the person');
 
     const issuePrivateSaved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'issue', number: 12, note: 'Private issue note kept on this machine', interactive: false });
     assert.equal(issuePrivateSaved.ok, true);
