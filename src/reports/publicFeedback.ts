@@ -18,6 +18,7 @@ const PUBLIC_VALUES = new Set(['unassigned', 'allow', 'deny', 'ask', 'unknown', 
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 const recordId = (repository: string, kind: string, number: number): string => `public-feedback-${hash(repository.toLowerCase()).slice(0, 20)}-${kind}-${number}`;
 const reviewRecordId = (repository: string, number: number): string => `pr-review-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
+const branchRecordId = (repository: string, number: number): string => `pr-branch-delete-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const mergeRecordId = (repository: string, number: number): string => `pr-merge-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
 const plainText = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && Array.from(value).length <= 4000 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
 
@@ -204,6 +205,9 @@ type Hooks = {
   comment(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, body: string): Promise<{ ok: boolean; number?: number }>;
   review(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, decision: ReviewDecision, body: string, expectedHeadSha: string): Promise<{ ok: boolean; number?: number }>;
   merge(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, number: number, expectedHeadSha: string, commitTitle: string, commitMessage: string): Promise<{ ok: boolean; reason?: string; sha?: string }>;
+  repositoryInfo(target: PublicTarget): Promise<any>;
+  branchRequirements(target: PublicTarget, branch: string): Promise<any>;
+  deleteBranch(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string, expectedHeadSha: string): Promise<{ ok: boolean; reason?: string }>;
   confirm(message: string, action: string): Promise<boolean>;
   prompt(initialValue: string): Promise<string | undefined>;
   pickReviewDecision(): Promise<ReviewDecision | undefined>;
@@ -242,9 +246,31 @@ async function realMerge(auth: vscode.AuthenticationSession, repository: { owner
   const reason = response.status === 409 ? 'head-changed' : response.status === 405 ? 'not-mergeable' : response.status === 403 ? 'denied' : response.status === 404 ? 'not-found' : response.status === 422 ? 'validation-failed' : response.status === 429 ? 'rate-limited' : 'unknown';
   return { ok: false, reason };
 }
+async function realRepositoryInfo(target: PublicTarget): Promise<any> {
+  const reader: any = githubReaderFor(target.repository); if (!reader) return { kind: 'unavailable' };
+  try { return await reader.getRepository({ forceRefresh: true }); } catch { return { kind: 'unavailable' }; }
+}
+async function realBranchRequirements(target: PublicTarget, branch: string): Promise<any> {
+  const reader: any = githubReaderFor(target.repository); if (!reader) return { kind: 'unavailable' };
+  try { return await reader.getBranchRequirements(branch, { forceRefresh: true }); } catch { return { kind: 'unavailable' }; }
+}
+async function realDeleteBranch(auth: vscode.AuthenticationSession, repository: { owner: string; name: string }, branch: string, expectedHeadSha: string): Promise<{ ok: boolean; reason?: string }> {
+  const refPath = branch.split('/').map(encodeURIComponent).join('/');
+  const base = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/refs/heads/${refPath}`;
+  // The branch must still point at the reviewed head right before it goes. A short gap remains between this read and the delete.
+  const current = await api(auth.accessToken, base.replace('/git/refs/', '/git/ref/'));
+  if (current.status === 404) return { ok: false, reason: 'branch-not-found' };
+  const ref = current.ok ? await current.json() as any : null;
+  if (typeof ref?.object?.sha !== 'string') return { ok: false, reason: 'branch-unverified' };
+  if (ref.object.sha.toLowerCase() !== expectedHeadSha.toLowerCase()) return { ok: false, reason: 'head-changed' };
+  const response = await api(auth.accessToken, base, { method: 'DELETE' });
+  const outcome = classifyWrite(response, response.status === 204);
+  if (outcome === 'unknown') throw new Error('write-outcome-unknown');
+  return response.status === 204 ? { ok: true } : { ok: false, reason: response.status === 403 ? 'denied' : response.status === 422 ? 'validation-failed' : 'refused' };
+}
 const realHooks: Hooks = {
   session: realSession, user: userFor, version: currentVersion, snapshot: realSnapshot, publication: realPublication, authorId: realAuthorId,
-  comment: realComment, review: realReview, merge: realMerge,
+  comment: realComment, review: realReview, merge: realMerge, repositoryInfo: realRepositoryInfo, branchRequirements: realBranchRequirements, deleteBranch: realDeleteBranch,
   confirm: async (message, action) => (await vscode.window.showWarningMessage(message, { modal: true }, action)) === action,
   prompt: async (value) => await vscode.window.showInputBox({ prompt: 'Public GitHub comment (starts blank; private feedback is never copied here)', value, ignoreFocusOut: true }),
   pickReviewDecision: async () => {
@@ -427,5 +453,50 @@ export async function mergePullRequestReport(target: PublicTarget, input?: { int
     config: { pmActorId: configured.actorId, pmLogin: configured.login, mergeAuthority: authority }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'mergePr', requestId, number: target.number });
+  return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
+}
+
+export async function deleteMergedBranchReport(target: PublicTarget, input?: { interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
+  if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
+  const opened = await privateStorage()?.use(); const store = useStore(opened);
+  if (!store) return { ok: false, code: 'private-storage-unavailable' };
+  const configured = publisher(store, target.repository);
+  if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
+  if (!configured) return { ok: false, code: 'publisher-not-configured' };
+  const id = branchRecordId(target.repository, target.number);
+  const old = previousBy(store, id, 'pr-branch-delete-request-v1');
+  if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
+  if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
+  if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-deleted' };
+  const allowBypass = testMode && input?.interactive === false;
+  if ((await hooks.repository())?.toLowerCase() !== target.repository.toLowerCase()) return { ok: false, code: 'report-context-changed' };
+  const auth = await hooks.session(false); if (!auth) return { ok: false, code: 'github-sign-in-required' };
+  const actor = await hooks.user(auth); if (!actor || String(actor.id) !== configured.actorId || actor.login.toLowerCase() !== configured.login.toLowerCase()) return { ok: false, code: 'publisher-identity-changed' };
+  const snapshot = await hooks.snapshot(target);
+  const branch = snapshot?.pullRequest?.data?.headRef;
+  if (!allowBypass) {
+    // The person sees which branch goes, read now, before anything is deleted.
+    const name = typeof branch === 'string' ? branch : 'the head branch';
+    if (!await hooks.confirm(`Delete the branch “${name}” of ${target.repository} PR #${target.number} (head ${target.version})? Only a merged pull request's unprotected, non-default branch in this repository is deleted; the commits stay in the merged history.`, 'Delete branch')) return { ok: false, code: 'cancelled' };
+  }
+  const refs = privateReferences(store); if (!refs) return { ok: false, code: 'private-reference-unreadable' };
+  const match = REPOSITORY.exec(target.repository)!; const repository = { owner: match[1], name: match[2] };
+  const requestId = `branch_${randomBytes(12).toString('hex')}`;
+  const audit = { record(entry: any) {
+    const status = entry.stage === 'result' ? (entry.outcome === 'done' ? 'done' : entry.outcome === 'unknown' ? 'unknown' : 'draft') : 'sending';
+    if (!saveBy(store, id, 'pr-branch-delete-request-v1', target, { status, requestId, updatedAt: new Date().toISOString(), audit: { stage: entry.stage, outcome: entry.outcome ?? null } })) throw new Error('audit-unavailable');
+  } };
+  const broker = new Broker({
+    identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
+    reader: {
+      getPullRequestSnapshot: async (number: number) => await hooks.snapshot({ ...target, number }),
+      getRepository: async () => await hooks.repositoryInfo(target),
+      getBranchRequirements: async (name: string) => await hooks.branchRequirements(target, name)
+    },
+    transport: { deleteBranch: ({ branch: name, expectedHeadSha }: any) => hooks.deleteBranch(auth, repository, name, expectedHeadSha) },
+    audit,
+    config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
+  });
+  const result = await broker.request({ operation: 'deleteBranch', requestId, number: target.number, expectedHeadSha: target.version.toLowerCase() });
   return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
 }

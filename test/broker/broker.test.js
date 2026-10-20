@@ -102,7 +102,7 @@ test('roles: each operation only for its role; the PM cannot claim or open a PR;
     createIssue: { title: 't', body: 'b' }, editIssue: { number: 3, title: 't' }, claimIssue: { number: 3 },
     createPr: { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }, commit: { headSha: HEAD },
     push: { branch: 'feat/x', headSha: HEAD }, comment: { target: 'issue', number: 3, body: 'hi' },
-    reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD }, mergePr: { number: 7 }
+    reviewPr: { number: 7, decision: 'approve', body: 'ok', expectedHeadSha: HEAD }, mergePr: { number: 7 }, deleteBranch: { number: 7, expectedHeadSha: HEAD }
   };
   for (const [operation, fields] of Object.entries(asks)) {
     const allowed = OPERATIONS[operation].roles;
@@ -685,4 +685,68 @@ test('an unusable or invalid store is rejected and fails closed before any write
   const failingWrite = new Broker({ ...broker.d, store: { get: () => ({ ok: true, found: false, value: null }), put: () => ({ ok: false, reason: 'locked' }) } });
   assert.equal((await failingWrite.request({ operation: 'createIssue', requestId: id(), title: 't', body: 'b' })).reason, 'store-unavailable');
   assert.equal(calls.length, 0);
+});
+
+// A merged pull request whose head branch may go: every fact comes from a fresh read.
+const MERGED = { merged: true, state: 'closed', headRef: 'feat/done', headRepository: 'example/project', baseRef: 'main' };
+const deletable = (over = {}) => setup({
+  actor: asPm,
+  reader: {
+    getPullRequestSnapshot: async () => snapshot({ pr: { ...MERGED, ...(over.pr || {}) } }),
+    getRepository: async () => ({ kind: 'ok', data: { defaultBranch: 'main' }, ...(over.repo || {}) }),
+    getBranchRequirements: async () => ({ kind: 'empty', data: { complete: true, ruleTypes: [] }, ...(over.requirements || {}) }),
+    ...(over.reader || {})
+  }
+});
+const askDelete = (broker, extra = {}) => broker.request({ operation: 'deleteBranch', requestId: id(), number: 7, expectedHeadSha: HEAD, ...extra });
+
+test('deleteBranch: a merged pull request with the reviewed head and an unprotected, non-default branch in this repository is deleted, and the transport gets exactly that', async () => {
+  const { broker, calls } = deletable();
+  assert.deepEqual(await askDelete(broker), { ok: true, number: 5 });
+  assert.deepEqual(calls, [['deleteBranch', { repository: REPO, branch: 'feat/done', expectedHeadSha: HEAD }]]);
+});
+
+test('deleteBranch refuses, and sends nothing, unless every fact is confirmed', async () => {
+  const cases = {
+    'pr-not-merged': { pr: { merged: false, state: 'open' } },
+    'pr-not-merged ': { pr: { merged: true, state: 'open' } },
+    'branch-not-in-repository': { pr: { headRepository: 'someone/fork' } },
+    'branch-invalid': { pr: { headRef: '-x' } },
+    'branch-is-default': { pr: { headRef: 'main' } },
+    'branch-is-default ': { pr: { headRef: 'release', baseRef: 'release' } },
+    'default-branch-unverified': { repo: { kind: 'unavailable', data: null } },
+    'branch-protected': { requirements: { kind: 'ok', data: { complete: true, ruleTypes: ['pull_request'] } } },
+    'protection-unverified': { requirements: { kind: 'partial', data: { complete: false, ruleTypes: [] } } },
+    'protection-unverified ': { requirements: { kind: 'unavailable' } },
+    'head-changed': { askHead: OTHER }
+  };
+  for (const [expected, setting] of Object.entries(cases)) {
+    const { broker, calls } = deletable(setting);
+    const result = await askDelete(broker, setting.askHead ? { expectedHeadSha: setting.askHead } : {});
+    assert.deepEqual([result.ok, result.reason], [false, expected.trim()], expected);
+    assert.equal(calls.length, 0, expected);
+  }
+  for (const reader of [
+    { getPullRequestSnapshot: async () => { throw new Error('offline'); } },
+    { getBranchRequirements: async () => { throw new Error('offline'); } },
+    { getPullRequestSnapshot: async () => ({ ...snapshot({ pr: MERGED }), consistent: false }) },
+    { getRepository: undefined }
+  ]) {
+    const { broker, calls } = deletable({ reader });
+    assert.equal((await askDelete(broker)).ok, false);
+    assert.equal(calls.length, 0, 'unreadable state never deletes');
+  }
+  const worker = setup({ actor: { actorId: '20', role: 'worker' } });
+  assert.equal((await askDelete(worker.broker)).reason, 'role-forbidden');
+  assert.equal(worker.calls.length, 0);
+});
+
+test('deleteBranch scans the branch name, and an unknown outcome is never sent again', async () => {
+  const leak = deletable({ pr: { headRef: `feat/${TOKEN}` } });
+  assert.deepEqual([(await askDelete(leak.broker)).ok, leak.calls.length], [false, 0]);
+  const crash = setup({ actor: asPm, reader: deletable().broker.d.reader, transport: { deleteBranch: async () => { throw new Error('reset'); } } });
+  const requestId = id();
+  assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
+  assert.equal((await crash.broker.request({ operation: 'deleteBranch', requestId, number: 7, expectedHeadSha: HEAD })).reason, 'outcome-unknown');
+  assert.equal(crash.calls.length, 1);
 });

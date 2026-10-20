@@ -424,9 +424,41 @@ export async function runReportChecks(): Promise<string> {
     assert.equal(mergesSent.length, 1);
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority, { mode: 'human', interactive: false }), { ok: true, mode: 'human' });
 
+    // Branch clean-up after a merge: only a merged PR's unprotected, non-default branch in this repository.
+    const deletesSent: Array<{ branch: string; expectedHeadSha: string }> = [];
+    let requirements: any = { kind: 'empty', data: { complete: true, ruleTypes: [] } };
+    let mergedPr: Record<string, any> = { merged: true, state: 'closed', headRef: 'feat/reports', headRepository: 'host/repo' };
+    const branchHooks = {
+      session: async () => auth,
+      user: async () => ({ id: 42, login: 'pm-user' }),
+      repository: async () => 'host/repo',
+      snapshot: async () => completeSnapshot({ pr: mergedPr }),
+      repositoryInfo: async () => ({ kind: 'ok', data: { defaultBranch: 'main' } }),
+      branchRequirements: async () => requirements,
+      deleteBranch: async (_session: any, _repository: any, branch: string, expectedHeadSha: string) => { deletesSent.push({ branch, expectedHeadSha }); return { ok: true }; }
+    };
+    installPublicFeedbackTestOverrides(branchHooks);
+    mergedPr = { ...mergedPr, merged: false, state: 'open' };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'pr-not-merged' });
+    mergedPr = { merged: true, state: 'closed', headRef: 'feat/reports', headRepository: 'host/repo' };
+    requirements = { kind: 'ok', data: { complete: true, ruleTypes: ['pull_request'] } };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'branch-protected' });
+    requirements = { kind: 'partial', data: { complete: false, ruleTypes: [] } };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'protection-unverified' });
+    mergedPr = { ...mergedPr, headRef: 'main' };
+    requirements = { kind: 'empty', data: { complete: true, ruleTypes: [] } };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'branch-is-default' });
+    assert.equal(deletesSent.length, 0, 'nothing was deleted for any refusal');
+    mergedPr = { merged: true, state: 'closed', headRef: 'feat/reports', headRepository: 'host/repo' };
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: true });
+    assert.deepEqual(deletesSent, [{ branch: 'feat/reports', expectedHeadSha: HEAD }]);
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: true, code: 'already-deleted' });
+    assert.equal(deletesSent.length, 1, 'repeating sends nothing');
+
     await vscode.commands.executeCommand(REPORT_COMMANDS.open, { kind: 'issue', number: 12 });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Not a PR', interactive: false }), { ok: false, code: 'no-pr-report-open' });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.mergePullRequest, { interactive: false }), { ok: false, code: 'no-pr-report-open' });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.deleteBranch, { interactive: false }), { ok: false, code: 'no-pr-report-open' });
     const issuePrivateSaved = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.feedback, { kind: 'issue', number: 12, note: 'Private issue note kept on this machine', interactive: false });
     assert.equal(issuePrivateSaved.ok, true);
     installPublicFeedbackTestOverrides({

@@ -42,7 +42,8 @@ const OPERATIONS = Object.freeze({
   push: { roles: ['worker'], fields: { branch: (v) => typeof v === 'string' && BRANCH.test(v), headSha: (v) => typeof v === 'string' && SHA.test(v) } },
   comment: { roles: ['pm', 'worker'], fields: { target: (v) => v === 'issue' || v === 'pr', number: positive, body: text } },
   reviewPr: { roles: ['pm'], fields: { number: positive, decision: (v) => ['approve', 'request_changes', 'comment'].includes(v), body: text, expectedHeadSha: (v) => typeof v === 'string' && SHA.test(v) } },
-  mergePr: { roles: ['pm'], fields: { number: positive } }
+  mergePr: { roles: ['pm'], fields: { number: positive } },
+  deleteBranch: { roles: ['pm'], fields: { number: positive, expectedHeadSha: (v) => typeof v === 'string' && SHA.test(v) } }
 });
 
 /**
@@ -59,7 +60,8 @@ const EXPECTED_PERMISSIONS = Object.freeze({
   push: 'contents:write',
   comment: 'issues:write (issue) or pull_requests:write (pull request)',
   reviewPr: 'pull_requests:write',
-  mergePr: 'pull_requests:write, contents:write'
+  mergePr: 'pull_requests:write, contents:write',
+  deleteBranch: 'contents:write'
 });
 
 const deny = (reason, extra = {}) => ({ ok: false, reason, ...extra });
@@ -275,7 +277,7 @@ class Broker {
     // (commit, push, comment) are checked as a stand-in operation of the same role.
     // Review and merge need the pull request, which is read later; until then they are checked as
     // a stand-in of the same role, and the full rule runs once the state is known.
-    const known = ['createIssue', 'editIssue', 'claimIssue', 'createPr'].includes(operation) || (['reviewPr', 'mergePr'].includes(operation) && pullRequest !== undefined);
+    const known = ['createIssue', 'editIssue', 'deleteBranch', 'claimIssue', 'createPr'].includes(operation) || (['reviewPr', 'mergePr'].includes(operation) && pullRequest !== undefined);
     const proxy = known ? operation : actor.role === 'pm' ? 'createIssue' : 'claimIssue';
     const verdict = evaluatePublishRequest({ operation: proxy, role: actor.role, actorId: actor.actorId, pullRequest }, config);
     return verdict.allowed ? null : deny(verdict.reason);
@@ -394,6 +396,11 @@ class Broker {
       if (payload.title !== undefined) units.push({ kind: 'issue-title', text: payload.title });
       if (payload.body !== undefined) units.push({ kind: 'issue-body', text: payload.body });
       send = () => this.d.transport.editIssue({ repository, number: payload.number, ...(payload.title !== undefined ? { title: payload.title } : {}), ...(payload.body !== undefined ? { body: payload.body } : {}) });
+    } else if (operation === 'deleteBranch') {
+      const checked = await this.#branchDeletable(payload);
+      if (!checked.ok) return checked;
+      units = [{ kind: 'branch-name', text: checked.branch }];
+      send = () => this.d.transport.deleteBranch({ repository, branch: checked.branch, expectedHeadSha: payload.expectedHeadSha });
     } else if (operation === 'comment') {
       units = [{ kind: 'comment', text: payload.body }];
       send = () => this.d.transport.comment({ repository, target: payload.target, number: payload.number, body: payload.body });
@@ -439,6 +446,44 @@ class Broker {
     } finally {
       if (release) release();
     }
+  }
+
+  /**
+   * A pull request's head branch may be deleted only when everything is read fresh and agrees: the pull request is
+   * merged and closed, its head is the one that was reviewed, the branch lives in this repository (not a fork), it is
+   * neither the default branch nor the pull request's base, and it is confirmed unprotected. Anything that cannot be
+   * read, or is only partly known, refuses: unknown protection is never read as "unprotected".
+   */
+  async #branchDeletable(payload) {
+    const { repository } = this.d.project;
+    const reader = this.d.reader;
+    let snapshot;
+    let repo;
+    try {
+      snapshot = await reader.getPullRequestSnapshot(payload.number, { forceRefresh: true });
+      repo = typeof reader.getRepository === 'function' ? await reader.getRepository({ forceRefresh: true }) : null;
+    } catch {
+      return deny('cannot-verify');
+    }
+    const data = isPlain(snapshot) && snapshot.status === 'complete' && snapshot.consistent === true && isPlain(snapshot.pullRequest) && snapshot.pullRequest.kind === 'ok' ? snapshot.pullRequest.data : null;
+    if (!isPlain(data) || !SHA.test(String(snapshot.headSha))) return deny('pr-unverified');
+    if (data.merged !== true || data.state !== 'closed') return deny('pr-not-merged');
+    if (snapshot.headSha !== payload.expectedHeadSha) return deny('head-changed');
+    if (typeof data.headRef !== 'string' || !BRANCH.test(data.headRef)) return deny('branch-invalid');
+    if (typeof data.headRepository !== 'string' || data.headRepository.toLowerCase() !== `${repository.owner}/${repository.name}`.toLowerCase()) return deny('branch-not-in-repository');
+    const defaultBranch = isPlain(repo) && repo.kind === 'ok' && isPlain(repo.data) ? repo.data.defaultBranch : null;
+    if (typeof defaultBranch !== 'string' || defaultBranch === '') return deny('default-branch-unverified');
+    if (data.headRef === defaultBranch || data.headRef === data.baseRef) return deny('branch-is-default');
+    let requirements;
+    try {
+      requirements = typeof reader.getBranchRequirements === 'function' ? await reader.getBranchRequirements(data.headRef, { forceRefresh: true }) : null;
+    } catch {
+      return deny('cannot-verify');
+    }
+    if (!isPlain(requirements)) return deny('protection-unverified');
+    if (requirements.kind === 'ok') return deny('branch-protected');
+    if (requirements.kind !== 'empty') return deny('protection-unverified');
+    return { ok: true, branch: data.headRef };
   }
 
   async #readPullRequest(number) {
