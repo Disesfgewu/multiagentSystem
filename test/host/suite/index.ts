@@ -985,8 +985,11 @@ export async function run(): Promise<void> {
     const layoutBeforeRepeat = await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout');
     await vscode.commands.executeCommand('vscode.setEditorLayout', { orientation: 0, groups: [{}, {}] });
     const repeatMessages: string[] = [];
+    const repeatSnapshots: string[] = [];
+    const rerunStartedAt = Date.now();
     (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = ((message: string, ...rest: unknown[]) => {
       repeatMessages.push(message);
+      repeatSnapshots.push(`${Date.now() - rerunStartedAt}ms: ${groupTerminals().length} group terminals, ${vscode.window.terminals.length} terminals in all, message “${String(message).slice(0, 40)}”`);
       return (realShowInformationMessage as (...args: unknown[]) => Thenable<unknown>)(message, ...rest);
     }) as typeof vscode.window.showInformationMessage;
     try {
@@ -1008,7 +1011,7 @@ export async function run(): Promise<void> {
     console.log(`host smoke: group terminals before rerun ${describe(openBefore)}; after ${describe(openAfter)}`);
     assert.equal(openAfter.length, EXPECTED_TITLES.length, `rerunning opens no extra terminal of the group: ${describe(openAfter)}`);
     assert.ok(openAfter.every((terminal) => openBefore.includes(terminal)) && openBefore.every((terminal) => openAfter.includes(terminal)), 'rerunning focuses the very same terminals: none created, none replaced');
-    assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, 'refocusing an already-open group does not repeat the drag guidance');
+    assert.equal(repeatMessages.some((message) => /Drag any terminal's tab/.test(message)), false, `refocusing an already-open group does not repeat the drag guidance (messages seen while rerunning: ${JSON.stringify(repeatSnapshots)})`);
     assert.notDeepEqual(await vscode.commands.executeCommand<unknown>('vscode.getEditorLayout'), layoutBeforeRepeat, 'rerunning preserves the user-adjusted layout');
     console.log(`host smoke: extension active, ${registered.filter((id) => COMMANDS.includes(id)).length} commands registered, ${created.length} native terminals created in the project directory`);
   } finally {

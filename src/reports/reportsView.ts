@@ -4,7 +4,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
-import { configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
+import { closeIssueReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
@@ -45,6 +45,7 @@ export const REPORT_COMMANDS = {
   publicFeedback: 'multiagentSystem.reports.publicFeedback',
   reviewPullRequest: 'multiagentSystem.reports.reviewPullRequest',
   mergePullRequest: 'multiagentSystem.reports.mergePullRequest',
+  closeIssue: 'multiagentSystem.reports.closeIssue',
   configurePublisher: 'multiagentSystem.reports.configurePublisher',
   configureMergeAuthority: 'multiagentSystem.reports.configureMergeAuthority'
 } as const;
@@ -557,6 +558,21 @@ export function registerReports(context: vscode.ExtensionContext): void {
         } else {
           void vscode.window.showErrorMessage(`Pull request was not merged: ${result.code ?? 'unknown'}.`);
         }
+      }
+      return result;
+    }),
+    vscode.commands.registerCommand(REPORT_COMMANDS.closeIssue, async (value?: unknown) => {
+      const input = value && typeof value === 'object' ? value as { reason?: unknown; interactive?: unknown } : {};
+      const interactive = requireInteractive(input).interactive !== false;
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
+      if (!target || target.kind !== 'issue') return { ok: false, code: 'no-issue-report-open' };
+      const result = await closeIssueReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { reason: input.reason, interactive });
+      if (result.ok) {
+        refresh();
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-closed' ? 'This Issue was already closed with that reason.' : 'Issue closed and verified.');
+      } else if (interactive && result.code !== 'cancelled') {
+        void vscode.window.showErrorMessage(`Issue was not closed: ${result.code ?? 'unknown'}.`);
       }
       return result;
     }),
