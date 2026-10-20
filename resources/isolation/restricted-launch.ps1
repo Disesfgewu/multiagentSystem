@@ -85,6 +85,7 @@ public static class RestrictedLaunch
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr hTok);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attrs, int level, int type, out IntPtr newToken);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetKernelObjectSecurity(IntPtr handle, uint info, byte[] descriptor);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int cls, IntPtr buffer, int size);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr hTok, int cls, IntPtr buffer, int size, out int needed);
@@ -156,7 +157,7 @@ public static class RestrictedLaunch
         return Encoding.Unicode.GetBytes(sb.ToString());
     }
 
-    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk)
+    public static Result Run(string exe, string commandLine, string cwd, string[] env, string stdinText, int timeoutMs, bool denyUser, bool denyAdmins, bool dropPrivileges, bool noWindow, bool useJob, bool breakawayOk, bool plainCopy, bool keepDefaultDacl)
     {
         IntPtr process = GetCurrentProcess(), hTok = IntPtr.Zero, hRestricted = IntPtr.Zero, job = IntPtr.Zero;
         IntPtr userBuffer = IntPtr.Zero, adminSid = IntPtr.Zero, envPtr = IntPtr.Zero;
@@ -165,13 +166,24 @@ public static class RestrictedLaunch
         bool created = false;
         try
         {
-            if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, out hTok)) return Fail("open-hTok-failed");
+            if (!OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, out hTok)) return Fail("open-token-failed");
             IntPtr userSid = UserSid(hTok, out userBuffer);
             if (userSid == IntPtr.Zero) return Fail("user-sid-failed");
             if (!ConvertStringSidToSid("S-1-5-32-544", out adminSid)) return Fail("admin-sid-failed");
-            SID_AND_ATTRIBUTES[] disable = new SID_AND_ATTRIBUTES[2];
-            disable[0].Sid = userSid; disable[1].Sid = adminSid;
-            if (!CreateRestrictedToken(hTok, DISABLE_MAX_PRIVILEGE, 2, disable, 0, IntPtr.Zero, 0, IntPtr.Zero, out hRestricted)) return Fail("hRestricted-hTok-failed");
+            List<SID_AND_ATTRIBUTES> toDisable = new List<SID_AND_ATTRIBUTES>();
+            if (denyUser) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = userSid; toDisable.Add(entry); }
+            if (denyAdmins) { SID_AND_ATTRIBUTES entry = new SID_AND_ATTRIBUTES(); entry.Sid = adminSid; toDisable.Add(entry); }
+            SID_AND_ATTRIBUTES[] disable = toDisable.ToArray();
+            if (plainCopy)
+            {
+                // Diagnostic only: a plain primary copy of the token, with none of the restrictions.
+                if (!DuplicateTokenEx(hTok, 0xF01FF, IntPtr.Zero, 2, 1, out hRestricted)) return Fail("token-copy-failed-" + Marshal.GetLastWin32Error());
+            }
+            else
+            {
+                if (!CreateRestrictedToken(hTok, dropPrivileges ? DISABLE_MAX_PRIVILEGE : 0, (uint)disable.Length, disable.Length == 0 ? null : disable, 0, IntPtr.Zero, 0, IntPtr.Zero, out hRestricted)) return Fail("restricted-token-failed-" + Marshal.GetLastWin32Error());
+                if (!keepDefaultDacl && !SetOpenDefaultDacl(hRestricted)) return Fail("default-dacl-failed-" + Marshal.GetLastWin32Error());
+            }
 
             if (useJob)
             {
@@ -276,12 +288,12 @@ try {
     $timeout = [int]$spec.timeoutMs
     if ($timeout -lt 100 -or $timeout -gt 120000) { Write-Failure 'timeout-invalid' }
     # What the token restricts, as four switches; each defaults to the full restriction. Anything but a true or false is refused.
-    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false }
+    $switches = @{ denyUser = $true; denyAdmins = $true; dropPrivileges = $true; noWindow = $false; useJob = $true; breakawayOk = $false; plainCopy = $false; keepDefaultDacl = $false }
     foreach ($name in @($switches.Keys)) {
         $given = $spec.restriction.$name
         if ($null -ne $given) { if ($given -isnot [bool]) { Write-Failure 'restriction-invalid' }; $switches[$name] = $given }
     }
-    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk)
+    $result = [RestrictedLaunch]::Run($exe, $commandLine, [string]$spec.cwd, $environment, [string]$spec.stdin, $timeout, $switches.denyUser, $switches.denyAdmins, $switches.dropPrivileges, $switches.noWindow, $switches.useJob, $switches.breakawayOk, $switches.plainCopy, $switches.keepDefaultDacl)
     if (-not $result.Ok) { Write-Failure ([string]$result.Reason) }
     $reply = @{ ok = $true; exitCode = [int64]$result.ExitCode; timedOut = [bool]$result.TimedOut; output = [Convert]::ToBase64String($result.Output) }
     [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))

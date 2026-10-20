@@ -276,7 +276,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         const cmd=process.argv[1];
         let r=cp.spawnSync(cmd,['/d','/c','echo ok'],{stdio:'ignore'}); out.spawnNoPipes=r.error?r.error.code:r.status;
         r=cp.spawnSync(cmd,['/d','/c','echo ok'],{encoding:'utf8'}); out.spawnPipes=r.error?r.error.code:r.status;
-        try{const s=net.createServer();s.on('error',e=>{out.namedPipe=e.code;finish()});s.listen('\\\\.\\pipe\\mas-diag-'+process.pid,()=>{out.namedPipe='ok';s.close(finish)});}catch(e){out.namedPipe='throw '+e.code;finish()}
+        try{const s=net.createServer();s.on('error',e=>{out.namedPipe=e.code;finish()});const B=String.fromCharCode(92);s.listen(B+B+'.'+B+'pipe'+B+'mas-diag-'+process.pid,()=>{out.namedPipe='ok';s.close(finish)});}catch(e){out.namedPipe='throw '+e.code;finish()}
         try{fs.writeFileSync(path.join(os.tmpdir(),'mas-diag-'+process.pid),'x');fs.unlinkSync(path.join(os.tmpdir(),'mas-diag-'+process.pid));out.tmpWrite='ok'}catch(e){out.tmpWrite=e.code}
         function finish(){process.stdout.write(JSON.stringify(out))}
       `.replace(/\s+/g, ' ');

@@ -86,6 +86,16 @@ test('the shipped script is in the extension folder and contains no shell call a
   for (const forbidden of [/Invoke-Expression/i, /\biex\b/i, /Invoke-WebRequest/i, /Invoke-RestMethod/i, /DownloadString|DownloadFile|WebClient/i, /Start-Process/i, /cmd\.exe/i, /-EncodedCommand/i]) assert.doesNotMatch(text, forbidden, String(forbidden));
 });
 
+test('every failure reason the script can give is a short lower-case code (a reason that is not one is dropped by the reader)', () => {
+  const text = fs.readFileSync(SCRIPT, 'utf8');
+  const reasons = [...text.matchAll(/Fail\("([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(reasons.length >= 10, `found ${reasons.length} reasons`);
+  for (const reason of reasons) assert.match(reason, /^[a-z0-9-]+$/, reason);
+  for (const needed of ['open-token-failed', 'restricted-token-failed-', 'default-dacl-failed-', 'create-process-failed-', 'job-failed']) assert.ok(reasons.includes(needed), needed);
+  // Every switch the request may carry is read by the script.
+  for (const name of ['denyUser', 'denyAdmins', 'dropPrivileges', 'noWindow', 'useJob', 'breakawayOk', 'plainCopy', 'keepDefaultDacl']) assert.match(text, new RegExp(`\\b${name}\\b`), name);
+});
+
 test('off Windows, or without PowerShell, nothing is probed and every channel stays unknown', async () => {
   for (const options of [{ platform: 'linux' }, { platform: 'darwin' }, { platform: 'win32', powershell: 'C:\\does-not-exist\\powershell.exe' }, { platform: 'win32', script: 'C:\\does-not-exist\\script.ps1' }]) {
     const module = createWindowsModule(options);
