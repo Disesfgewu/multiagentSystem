@@ -60,7 +60,7 @@ function countingServer() {
 /**
  * @param {{ platform?: string, tmpRoot?: string, parentEnv?: object, script?: string, powershell?: string | null, timeoutMs?: number }} [options]
  */
-function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS } = {}) {
+function createWindowsModule({ attempts: injected, platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS } = {}) {
   let fixture;
   const supported = platform === 'win32' && typeof powershell === 'string' && fs.existsSync(powershell) && fs.existsSync(script);
 
@@ -194,15 +194,17 @@ function createWindowsModule({ platform = process.platform, tmpRoot = os.tmpdir(
   return {
     platform: 'win32',
     async probe(channel) {
+      // `injected` lets a test supply the attempts, so the judging below runs on any platform with made-up outcomes.
+      const table = injected ?? attempts;
       const kind = Object.hasOwn(CHANNELS, channel) ? CHANNELS[channel].kind : undefined;
-      if (!kind || !supported || !Object.hasOwn(attempts, channel)) return { control: false };
-      await prepare();
-      const control = await attempts[channel](false);
-      if (control.skipped || control.achieved !== true) return { control: false };
-      const inside = await attempts[channel](true);
+      if (!kind || (injected === undefined && !supported) || !Object.hasOwn(table, channel)) return { control: false };
+      if (injected === undefined) await prepare();
+      const control = await table[channel](false);
+      if (!control || control.skipped || control.achieved !== true) return { control: false };
+      const inside = await table[channel](true);
       // The restricted program must be able to do the same kind of thing where the restriction does not reach, or the
       // restricted launch (not the channel) is what failed.
-      if (inside.skipped || inside.can !== true) return { control: false };
+      if (!inside || inside.skipped || inside.can !== true) return { control: false };
       if (kind === 'bypass') return { control: true, outcome: inside.achieved ? 'open' : 'blocked' };
       return { control: true, outcome: inside.achieved ? 'works' : 'broken' };
     },

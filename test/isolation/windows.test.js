@@ -99,6 +99,29 @@ test('off Windows, or without PowerShell, nothing is probed and every channel st
   assert.deepEqual(await createWindowsModule({ platform: 'linux' }).probe('not-a-channel'), { control: false });
 });
 
+test('judging a channel: only a control that got through AND a restricted program that could do the same kind of thing elsewhere make a result; anything else is unknown', async () => {
+  const attempt = (control, inside) => async (restricted) => (restricted ? inside : control);
+  const probe = (channel, control, inside) => createWindowsModule({ attempts: { [channel]: attempt(control, inside) } }).probe(channel);
+  const got = { achieved: true, can: true };
+  // A bypass: nothing got through inside, with a working control and a working restricted program, is "blocked"; something got through is "open".
+  assert.deepEqual(await probe('file-credentials', got, { achieved: false, can: true }), { control: true, outcome: 'blocked' });
+  assert.deepEqual(await probe('file-credentials', got, { achieved: true, can: true }), { control: true, outcome: 'open' });
+  // An interaction channel is judged the other way round.
+  assert.deepEqual(await probe('cli-own-login', got, { achieved: true, can: true }), { control: true, outcome: 'works' });
+  assert.deepEqual(await probe('cli-own-login', got, { achieved: false, can: true }), { control: true, outcome: 'broken' });
+  // The control did not get through, was skipped, or gave nothing: the channel is unknown, whatever happened inside.
+  for (const control of [{ achieved: false, can: true }, { skipped: true }, { achieved: 'yes' }, {}, undefined, null]) {
+    assert.deepEqual(await probe('file-credentials', control, { achieved: false, can: true }), { control: false }, JSON.stringify(control));
+  }
+  // The restricted program could not do the same kind of thing where the restriction does not reach: its launch failed, not the channel.
+  for (const inside of [{ achieved: false, can: false }, { achieved: false }, { achieved: false, can: 'yes' }, { skipped: true }, undefined, null]) {
+    assert.deepEqual(await probe('file-credentials', got, inside), { control: false }, JSON.stringify(inside));
+  }
+  // A channel with no attempt, or a name that is not a channel, is unknown.
+  assert.deepEqual(await createWindowsModule({ attempts: {} }).probe('file-credentials'), { control: false });
+  assert.deepEqual(await createWindowsModule({ attempts: { x: attempt(got, got) } }).probe('x'), { control: false });
+});
+
 // ---- on native Windows only: the real script and the real harness --------------------------------------------------
 
 const realModule = () => createWindowsModule();
