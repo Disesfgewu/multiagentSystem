@@ -18,7 +18,7 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
 };
 const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
 const { listResearchTools, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
-  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string }): any[];
+  listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
   revokeConsent(serverId: string, deps: { store: any }): any;
   PROHIBITED_AGENT_TOOLS: Record<string, readonly string[]>;
 };
@@ -68,8 +68,9 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       return made.ok ? made.dir : null;
     },
     resolveExecutable: async (serverId: string) => {
-      const found = listResearchTools({ store: currentStore, root }).find((t) => t.serverId === serverId);
-      return found && found.installStatus === 'ready' && found.installPath ? path.join(found.installPath, found.command[0]) : null;
+      // A start always re-reads the program's bytes (fullCheck) and uses the file name recorded at install (`.exe` on Windows).
+      const found = listResearchTools({ store: currentStore, root, fullCheck: true }).find((t) => t.serverId === serverId);
+      return found && found.installStatus === 'ready' && found.installExecutable ? found.installExecutable : null;
     }
   });
 
@@ -104,7 +105,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       {
         modal: true,
         detail: [
-          `Program that will run: ${listed?.installStatus === 'ready' ? path.join(listed.installPath, tool.command[0]) : `not installed (${tool.command[0]})`}`,
+          `Program that will run: ${listed?.installStatus === 'ready' && listed.installExecutable ? listed.installExecutable : `not installed (${tool.command[0]})`}`,
           `Arguments: ${JSON.stringify(tool.command.slice(1))}`,
           `Researcher role may call exactly: ${tools.join(', ') || 'none'}`,
           `Secrets injected into this server only: ${secretKeys.join(', ') || 'none'}`,

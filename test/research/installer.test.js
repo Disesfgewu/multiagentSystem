@@ -418,3 +418,64 @@ test('a prepared program is only ready while its bytes still hash to what was ve
     assert.equal(state().installStatus, 'ready');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// A prepared folder as the installer writes it, with the program under the given recorded name (`.exe` on Windows).
+function writePrepared(root, tool, name, bytes) {
+  const dir = path.join(root, tool.serverId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), bytes, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, '.prepared.json'), JSON.stringify({
+    schema: 2, serverId: tool.serverId, version: tool.version, integrity: tool.integrity, fingerprint: consentFingerprint(tool),
+    executable: name, executableSha256: createHash('sha256').update(bytes).digest('hex'), verifiedAt: new Date().toISOString()
+  }));
+  return path.join(dir, name);
+}
+
+test('the program to run is the file name recorded at install, including .exe on Windows, never command[0] by itself', () => {
+  const store = new FakeStore();
+  const base = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-exe-name-'));
+  try {
+    const tool = validateCatalogItem(base);
+    for (const name of [tool.command[0], `${tool.command[0]}.exe`]) {
+      fs.rmSync(path.join(root, tool.serverId), { recursive: true, force: true });
+      const file = writePrepared(root, tool, name, Buffer.from(`program ${name}`));
+      const entry = listResearchTools({ store, root, catalog: [tool] })[0];
+      assert.equal(entry.installStatus, 'ready', name);
+      assert.equal(entry.installExecutable, file, name);
+      assert.equal(path.basename(entry.installExecutable), name);
+    }
+    // Not ready: no executable path is offered at all.
+    fs.writeFileSync(path.join(root, tool.serverId, `${tool.command[0]}.exe`), 'changed program bytes');
+    const stale = listResearchTools({ store, root, catalog: [tool], fullCheck: true })[0];
+    assert.deepEqual([stale.installStatus, stale.installExecutable, stale.installPath], ['stale', null, null]);
+    // Some other name in the record is refused.
+    writePrepared(root, tool, 'other-name', Buffer.from('x'));
+    assert.equal(listResearchTools({ store, root, catalog: [tool] })[0].installStatus, 'stale');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('showing a status may use a remembered hash while size, time and file are unchanged; a start (fullCheck) always reads the bytes', () => {
+  const store = new FakeStore();
+  const tool = validateCatalogItem(CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-hash-cache-'));
+  try {
+    const file = writePrepared(root, tool, tool.command[0], Buffer.from('AAAAAAAA'));
+    const fixed = 1_700_000_000; // a whole second, so the modified time can be put back exactly
+    const put = (text) => { fs.writeFileSync(file, Buffer.from(text)); fs.utimesSync(file, fixed, fixed); };
+    const show = () => listResearchTools({ store, root, catalog: [tool] })[0].installStatus;
+    const start = () => listResearchTools({ store, root, catalog: [tool], fullCheck: true })[0].installStatus;
+    put('AAAAAAAA');
+    assert.equal(show(), 'ready');
+    // Same length and same modified time, different bytes: only what reads the bytes can see it.
+    put('BBBBBBBB');
+    assert.equal(start(), 'stale', 'a start reads the bytes');
+    assert.equal(show(), 'stale', 'and what a start read is what is remembered next');
+    // The quick check does notice a different length even when the modified time is put back.
+    put('AAAAAAAA');
+    assert.equal(start(), 'ready', 'a start re-reads and refreshes what is remembered');
+    assert.equal(show(), 'ready');
+    put('AAAA');
+    assert.equal(show(), 'stale');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
