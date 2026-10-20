@@ -279,14 +279,27 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         const cmd=process.argv[1];
         let r=cp.spawnSync(cmd,['/d','/c','echo ok'],{stdio:'ignore'}); out.spawnNoPipes=r.error?r.error.code:r.status;
         r=cp.spawnSync(cmd,['/d','/c','echo ok'],{encoding:'utf8'}); out.spawnPipes=r.error?r.error.code:r.status;
-        try{const s=net.createServer();s.on('error',e=>{out.namedPipe=e.code;finish()});const B=String.fromCharCode(92);s.listen(B+B+'.'+B+'pipe'+B+'mas-diag-'+process.pid,()=>{out.namedPipe='ok';s.close(finish)});}catch(e){out.namedPipe='throw '+e.code;finish()}
+        const B=String.fromCharCode(92);
+        r=cp.spawnSync(cmd,['/d','/c','echo ok | findstr ok'],{stdio:'ignore'}); out.cmdPipeline=r.error?r.error.code:r.status;
         try{fs.writeFileSync(path.join(os.tmpdir(),'mas-diag-'+process.pid),'x');fs.unlinkSync(path.join(os.tmpdir(),'mas-diag-'+process.pid));out.tmpWrite='ok'}catch(e){out.tmpWrite=e.code}
+        const name=B+B+'.'+B+'pipe'+B+'mas-diag-'+process.pid;
+        try{
+          const server=net.createServer(c=>{c.end('hi')});
+          server.on('error',e=>{out.namedPipeServer=e.code;finish()});
+          server.listen(name,()=>{
+            out.namedPipeServer='ok';
+            const client=net.connect(name);
+            client.on('data',()=>{out.namedPipeClient='ok'});
+            client.on('error',e=>{out.namedPipeClient=e.code;server.close(finish)});
+            client.on('close',()=>{server.close(finish)});
+          });
+        }catch(e){out.namedPipeServer='throw '+e.code;finish()}
         function finish(){process.stdout.write(JSON.stringify(out))}
       `.replace(/\s+/g, ' ');
       const lines = [];
       const control = await launch(false, node, ['-e', probe, cmdExe]);
       lines.push(`facilities (control, unrestricted): ${JSON.stringify(String(control.stdout || control.stderr).slice(-300))}`);
-      for (const [name, restriction] of [['none, no job', { denyUser: false, denyAdmins: false, dropPrivileges: false, useJob: false }], ['full', undefined]]) {
+      for (const [name, restriction] of [['plain token copy', { plainCopy: true, useJob: false }], ['none, no job', { denyUser: false, denyAdmins: false, dropPrivileges: false, useJob: false }], ['user deny-only only', { denyUser: true, denyAdmins: false, dropPrivileges: false, useJob: false }], ['administrators deny-only only', { denyUser: false, denyAdmins: true, dropPrivileges: false, useJob: false }], ['user and administrators deny-only', { denyUser: true, denyAdmins: true, dropPrivileges: false, useJob: false }], ['restricting SIDs only', { denyUser: false, denyAdmins: false, dropPrivileges: false, restrictingSids: true, useJob: false }]]) {
         const seen = await launch(true, node, ['-e', probe, cmdExe], { restriction });
         lines.push(`facilities (${name}): ${seen.launchFailed ? `launch failed (${seen.launchFailed})` : JSON.stringify(String(seen.stdout).slice(-300))}`);
       }
