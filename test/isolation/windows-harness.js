@@ -101,9 +101,9 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
   const baseEnv = (extra = {}) => ({ SystemRoot: parentEnv.SystemRoot, Path: parentEnv.Path ?? parentEnv.PATH ?? '', TEMP: fixture.shared, TMP: fixture.shared, HOME: fixture.shared, USERPROFILE: fixture.shared, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', ...extra });
 
   /** Runs inside the restriction, or (spec null) outside it as the control. */
-  async function launch(restricted, exe, args, { cwd, env = baseEnv(), input } = {}) {
+  async function launch(restricted, exe, args, { cwd, env = baseEnv(), input, restriction } = {}) {
     if (!restricted) return run(exe, args, { cwd, env, input, timeoutMs });
-    const reply = await runRestricted({ exe, args, cwd: cwd ?? fixture.shared, env: environmentPairs(env), stdin: input ?? '', timeoutMs }, { script, powershell });
+    const reply = await runRestricted({ exe, args, cwd: cwd ?? fixture.shared, env: environmentPairs(env), stdin: input ?? '', timeoutMs, ...(restriction ? { restriction } : {}) }, { script, powershell });
     if (!reply.ok) return { ok: false, stdout: '', stderr: '', launchFailed: reply.reason };
     return { ok: reply.exitCode === 0 && !reply.timedOut, stdout: reply.output, stderr: '', launchFailed: null };
   }
@@ -222,7 +222,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         lines.push(`whoami /groups (${restricted ? 'restricted' : 'control'}): ${groups.launchFailed ? `failed (${groups.launchFailed})` : `${rows.length} row(s), ${rows.filter((line) => /deny only/i.test(line)).length} deny-only`}`);
         for (const row of rows.slice(0, 14)) lines.push(`  ${clean(row.split('","').map((part) => part.replace(/"/g, '')).filter((_, index) => index !== 2).join(' | '))}`);
       }
-      const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.env.ComSpec,["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))'));
+      const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.argv[1],["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))', win32.join(parentEnv.SystemRoot, 'System32', 'cmd.exe')));
       lines.push(`restricted node spawning a child over pipes: ${pipes.launchFailed ? `failed (${pipes.launchFailed})` : clean(pipes.stdout || `exit failed`)}`);
       const priv = await launch(true, whoami, ['/priv', '/fo', 'csv', '/nh']);
       lines.push(`whoami /priv (restricted): ${priv.launchFailed ? `failed (${priv.launchFailed})` : clean(priv.stdout)}`);
@@ -233,6 +233,32 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
         lines.push(`restricted git ls-remote to the open endpoint: reached=${fixture.provider.count() > 0} ok=${lsRemote.ok} launchFailed=${lsRemote.launchFailed} output=${clean(lsRemote.stdout || lsRemote.stderr)}`);
         const ask = await launch(false, git(), ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials').replace(/\\/g, '/')}`, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n' });
         lines.push(`control git credential fill: ok=${ask.ok} output=${clean(ask.stdout || ask.stderr)}`);
+      }
+      return lines;
+    },
+    /** Which part of the restriction keeps git (or a program that makes pipes) from working, one line per variant. */
+    async diagnoseVariants() {
+      await prepare();
+      const variants = [
+        ['none', { denyUser: false, denyAdmins: false, dropPrivileges: false }],
+        ['privileges only', { denyUser: false, denyAdmins: false, dropPrivileges: true }],
+        ['administrators only', { denyUser: false, denyAdmins: true, dropPrivileges: false }],
+        ['user only', { denyUser: true, denyAdmins: false, dropPrivileges: false }],
+        ['user and administrators', { denyUser: true, denyAdmins: true, dropPrivileges: false }],
+        ['full', undefined]
+      ];
+      const lines = [];
+      const cmdExe = win32.join(parentEnv.SystemRoot, 'System32', 'cmd.exe');
+      for (const [name, restriction] of variants) {
+        const pipes = await launch(true, node, nodeRun('const r=require("child_process").spawnSync(process.argv[1],["/d","/c","echo ok"],{encoding:"utf8"});process.stdout.write(JSON.stringify({status:r.status,error:r.error&&r.error.code,out:(r.stdout||"").trim()}))', cmdExe), { restriction });
+        let git1 = 'no git';
+        if (git()) {
+          const repo = await newRepo(true);
+          fixture.provider.reset();
+          const out = await launch(true, git(), ['-C', repo, '-c', 'credential.helper=', 'ls-remote', `http://127.0.0.1:${fixture.provider.port}/synthetic.git`], { restriction });
+          git1 = `reached=${fixture.provider.count() > 0} ${String(out.launchFailed ?? out.stdout ?? '').replace(/\s+/g, ' ').slice(0, 100)}`;
+        }
+        lines.push(`variant ${name}: node spawn over pipes ${pipes.launchFailed ? `launch failed (${pipes.launchFailed})` : String(pipes.stdout).replace(/\s+/g, ' ').slice(0, 120)} | git ls-remote ${git1}`);
       }
       return lines;
     },
