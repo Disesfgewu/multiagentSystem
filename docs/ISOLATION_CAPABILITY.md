@@ -38,7 +38,7 @@
 
 **已知邊界（沒有試、也不宣稱）**
 - Seatbelt 只能依位址與埠過濾網路，不能依主機名稱。「允許 CLI 連自己的供應商、擋 GitHub」需要本機過濾代理，這裡**沒有**做；本模組只證明「只放行一個本機埠、其餘全拒」。真 CLI 是否肯走代理、登入是否仍可用，要實機驗證（#135）。
-- 沒有測系統鑰匙圈（`osxkeychain` helper）、真的 GitHub 憑證、真的遠端、SSH、真的 CLI。`credential-helper` 通道只證明「檔案型 helper 讀不到被拒絕的目錄」。
+- 沒有測真的 `git-credential-osxkeychain`、真的 GitHub 憑證、真的遠端、SSH、真的 CLI。`credential-helper` 通道證明「檔案型 helper 讀不到被拒絕的目錄」與「`security` 讀不到暫存測試鑰匙圈的項目（Security 服務被拒）」。
 - 環境憑證由 `scrubEnvironment` 移除（`GH_*`／`GITHUB_*` 含 TOKEN／KEY／SECRET／PASSWORD／CREDENTIAL 的變數、`GIT_ASKPASS`、`SSH_ASKPASS`、`SSH_AUTH_SOCK`、注入的 git config）；這不是 Seatbelt 的功能，而是啟動端的責任，尚未接進實際的 terminal 啟動流程。
 - 這個模組還沒有接到任何命令或 terminal 啟動：現在使用者看不到任何變化。
 
@@ -46,7 +46,7 @@
 
 - **接受 `sandbox-exec` 的理由與條件**：Apple 把它標為 deprecated，但目前版本仍可用；判定完全依實測探測，所以它不存在、回錯或行為改變時，得不到「對照組成功＋嘗試被擋」，結果一律是 `unknown`／advisory，不會誤報 enforced（fail closed）。實測版本：macOS 26.6（`sw_vers -productVersion`），Apple Silicon。這只代表在這個版本上跑過，不代表其他版本。
 - **網路**：harness 的 `direct-http` 實際嘗試連到允許清單以外的本機埠（假的 GitHub 端點）並被擋，對照組在沙箱外連得上；放行的是另一個本機埠（`cli-own-login` 通道用它證明「被放行的位址仍可連」）。**沒有**證明真 CLI 的登入與 API 呼叫在這種「只放行一個本機埠」的網路下仍可用：真的供應商位址不是固定一個埠，需要本機代理，尚未做（#135）。
-- **真實憑證位置**：`credentialLocations(home)` 回傳 `~/.git-credentials`、`~/.config/git/credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、`~/Library/Keychains`，harness 的設定檔都拒絕讀取它們；測試用暫存 HOME 實際驗證每一個在沙箱內讀不到、沙箱外讀得到。**鑰匙圈只是檔案路徑被拒**：透過 Security 服務（mach 服務）取得登入鑰匙圈內容的路徑沒有試，也沒有封。
+- **真實憑證位置**：`credentialLocations(home)` 回傳 `~/.git-credentials`、`~/.config/git/credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、`~/Library/Keychains`，harness 的設定檔都拒絕讀取它們；測試用暫存 HOME 實際驗證每一個在沙箱內讀不到、沙箱外讀得到。**鑰匙圈**：除了拒絕 `~/Library/Keychains` 的檔案讀取，profile 也拒絕 `mach-lookup com.apple.SecurityServer`（`git-credential-osxkeychain` 與 `security` 取鑰匙圈內容走的服務）。harness 以一個暫存的測試鑰匙圈（合成密碼，絕不碰使用者的鑰匙圈）實測：不受限讀得到、沙箱內讀不到、拿掉這條規則就讀得到（測試保證是這條規則在擋）。仍未試：不經這個服務取得憑證的其他途徑，以及真的 `git-credential-osxkeychain`。
 - **環境變數**：`scrubEnvironment` 另移除 `GIT_CONFIG_PARAMETERS`（git 可由它注入 `credential.helper` 等設定）。
 - **對照組沒成功就不是 blocked**：測試以 PATH 不含 `gh` 實測 gh-cli 回 `{ control: false }`，`assessIsolation` 為 `control-did-not-run`，整體 mode 不是 enforced。
 

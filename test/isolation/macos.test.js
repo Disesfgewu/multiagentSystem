@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { seatbeltProfile, scrubEnvironment, safeProfilePath, credentialLocations, HOME_CREDENTIAL_PATHS, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { seatbeltProfile, scrubEnvironment, safeProfilePath, credentialLocations, KEYCHAIN_SERVICES, HOME_CREDENTIAL_PATHS, SANDBOX_EXEC } = require('../../src/isolation/macos');
 const { createMacosModule } = require('./macos-harness');
 const { CHANNELS, collectProbes, assessIsolation, decideLaunch } = require('../../src/isolation/capabilities');
 
@@ -107,6 +107,14 @@ test('disposing removes the temporary folder with the synthetic credentials', on
   await module.dispose();
 });
 
+test('the keychain service is refused by name in the profile, and only a valid service name can be put there', () => {
+  assert.deepEqual(KEYCHAIN_SERVICES, ['com.apple.SecurityServer']);
+  assert.ok(seatbeltProfile({ denyMachServices: KEYCHAIN_SERVICES }).includes('(deny mach-lookup (global-name "com.apple.SecurityServer"))'));
+  assert.equal(seatbeltProfile().includes('mach-lookup'), false, 'nothing is added unless asked for');
+  for (const bad of ['', 'a"b', 'a b', 'a)b', '(allow default)', 'a\nb', 'x'.repeat(129), '.x', 5, null]) assert.throws(() => seatbeltProfile({ denyMachServices: [bad] }), /isolation-profile-service-invalid/, String(bad));
+  assert.throws(() => seatbeltProfile({ denyMachServices: 'x' }), /isolation-profile-service-invalid/);
+});
+
 test('the real credential locations under a home folder are all in the profile\'s read denials', () => {
   const home = '/home/someone';
   const locations = credentialLocations(home);
@@ -149,4 +157,15 @@ test('a control that could not run is never reported as blocked: without gh on t
     assert.equal(full.channels.find((entry) => entry.channel === 'gh-cli').state, 'unknown');
     assert.equal(full.mode, 'advisory', 'one channel without a control keeps the whole assessment from being enforced');
   } finally { await module.dispose(); }
+});
+
+test('a keychain item is out of reach inside the sandbox and in reach without the service rule: the rule is what closes it', onlyMac, async () => {
+  const closed = createMacosModule();
+  const open = createMacosModule({ shapeSandbox: (spec) => ({ ...spec, denyMachServices: [] }) });
+  try {
+    const withRule = await closed.probe('credential-helper');
+    const without = await open.probe('credential-helper');
+    assert.deepEqual(withRule, { control: true, outcome: 'blocked' });
+    assert.deepEqual(without, { control: true, outcome: 'open' }, 'with the service reachable, the keychain item comes back');
+  } finally { await closed.dispose(); await open.dispose(); }
 });

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { CHANNELS } = require('../../src/isolation/capabilities');
-const { seatbeltProfile, scrubEnvironment, credentialLocations, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { seatbeltProfile, scrubEnvironment, credentialLocations, KEYCHAIN_SERVICES, SANDBOX_EXEC } = require('../../src/isolation/macos');
 
 /**
  * The macOS verification harness for the managed-isolation interface (issue #25). It tries every bypass channel for
@@ -77,7 +77,17 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     const cliHome = path.join(root, 'cli-home');
     fs.mkdirSync(cliHome);
     fs.writeFileSync(path.join(cliHome, 'auth.json'), '{"synthetic":true}\n');
-    fixture = { root, secret, creds, cliHome, github: await countingServer(), provider: await countingServer(), repos: 0 };
+    // A keychain of its own (never the person's): one synthetic internet password, readable by the `security` tool.
+    // Without it (no `security` command) the keychain half of the credential-helper channel is simply not tried.
+    const keychain = path.join(root, 'test.keychain-db');
+    const made = await run('/usr/bin/security', ['create-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
+    let keychainReady = false;
+    if (made.ok) {
+      const unlocked = await run('/usr/bin/security', ['unlock-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
+      const added = await run('/usr/bin/security', ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', secret, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
+      keychainReady = unlocked.ok && added.ok;
+    }
+    fixture = { root, secret, creds, cliHome, keychain: keychainReady ? keychain : null, github: await countingServer(), provider: await countingServer(), repos: 0 };
     return fixture;
   }
 
@@ -99,7 +109,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   }
 
   // `protectRepoGit` is resolved per attempt, because each attempt works in its own repository.
-  const sandboxSpec = () => ({ denyRead: [fixture.creds, ...credentialLocations(fixture.root)], allowLocalPorts: [fixture.provider.port], protectRepoGit: true });
+  const sandboxSpec = () => ({ denyRead: [fixture.creds, ...credentialLocations(fixture.root)], allowLocalPorts: [fixture.provider.port], denyMachServices: KEYCHAIN_SERVICES, protectRepoGit: true });
 
   // Each attempt answers one question: did the bypass get through? `spec` is the sandbox, or null for the control.
   const attempts = {
@@ -127,7 +137,13 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     },
     async 'credential-helper'(spec, ctx) {
       const filled = await launch(spec, '/usr/bin/git', ['-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials')}`, 'credential', 'fill'], { ...ctx, env: baseEnv(), input: 'protocol=https\nhost=github.com\n\n' });
-      return filled.stdout.includes(fixture.secret);
+      // The keychain: the system service answers `security` and `git-credential-osxkeychain`, whatever files are readable.
+      let fromKeychain = false;
+      if (fixture.keychain) {
+        const found = await launch(spec, '/usr/bin/security', ['find-internet-password', '-s', 'example.test', '-w', fixture.keychain], { ...ctx, env: baseEnv() });
+        fromKeychain = found.stdout.includes(fixture.secret);
+      }
+      return filled.stdout.includes(fixture.secret) || fromKeychain;
     },
     async 'direct-http'(spec, ctx) {
       fixture.github.reset();
@@ -185,6 +201,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       const { root, github, provider } = fixture;
       fixture = undefined;
       await Promise.all([github.close(), provider.close()]);
+      if (fixture === undefined && root) await run('/usr/bin/security', ['delete-keychain', path.join(root, 'test.keychain-db')], { env: { PATH: '/usr/bin:/bin' } });
       fs.rmSync(root, { recursive: true, force: true });
     }
   };
