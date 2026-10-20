@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { CHANNELS } = require('../../src/isolation/capabilities');
-const { seatbeltProfile, scrubEnvironment, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { seatbeltProfile, scrubEnvironment, credentialLocations, SANDBOX_EXEC } = require('../../src/isolation/macos');
 
 /**
  * The macOS verification harness for the managed-isolation interface (issue #25). It tries every bypass channel for
@@ -71,6 +71,8 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     const creds = path.join(root, 'credentials');
     fs.mkdirSync(path.join(creds, 'home', '.config', 'gh'), { recursive: true });
     fs.writeFileSync(path.join(creds, 'home', '.config', 'gh', 'hosts.yml'), `github.com:\n  oauth_token: ${secret}\n`);
+    // A file at one of the real credential locations under the fixture home: the sandbox must keep it unreadable too.
+    fs.writeFileSync(path.join(root, '.netrc'), `synthetic ${secret}\n`);
     fs.writeFileSync(path.join(creds, 'git-credentials'), `https://synthetic:${secret}@github.com\n`);
     const cliHome = path.join(root, 'cli-home');
     fs.mkdirSync(cliHome);
@@ -97,7 +99,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   }
 
   // `protectRepoGit` is resolved per attempt, because each attempt works in its own repository.
-  const sandboxSpec = () => ({ denyRead: [fixture.creds], allowLocalPorts: [fixture.provider.port], protectRepoGit: true });
+  const sandboxSpec = () => ({ denyRead: [fixture.creds, ...credentialLocations(fixture.root)], allowLocalPorts: [fixture.provider.port], protectRepoGit: true });
 
   // Each attempt answers one question: did the bypass get through? `spec` is the sandbox, or null for the control.
   const attempts = {
@@ -139,8 +141,9 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       return seen.stdout.includes(fixture.secret);
     },
     async 'file-credentials'(spec, ctx) {
-      const read = await launch(spec, '/bin/cat', [path.join(fixture.creds, 'home', '.config', 'gh', 'hosts.yml')], { ...ctx, env: baseEnv() });
-      return read.stdout.includes(fixture.secret);
+      const planted = await launch(spec, '/bin/cat', [path.join(fixture.creds, 'home', '.config', 'gh', 'hosts.yml')], { ...ctx, env: baseEnv() });
+      const atHome = await launch(spec, '/bin/cat', [path.join(fixture.root, '.netrc')], { ...ctx, env: baseEnv() });
+      return planted.stdout.includes(fixture.secret) || atHome.stdout.includes(fixture.secret);
     },
     // The two interaction channels answer "does it still work", so `true` here means working.
     async 'terminal-interaction'(spec, ctx) {

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { seatbeltProfile, scrubEnvironment, safeProfilePath, credentialLocations, HOME_CREDENTIAL_PATHS, SANDBOX_EXEC } = require('../../src/isolation/macos');
 const { createMacosModule } = require('./macos-harness');
 const { CHANNELS, collectProbes, assessIsolation, decideLaunch } = require('../../src/isolation/capabilities');
 
@@ -30,7 +30,7 @@ test('a path or port that could change the profile is refused: no profile is mad
 });
 
 test('the scrubbed environment has no GitHub credential, askpass program, agent socket or injected git config, and keeps the rest', () => {
-  const env = { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8', GH_TOKEN: 'x', GITHUB_TOKEN: 'x', gh_token: 'x', GH_ENTERPRISE_TOKEN: 'x', GITHUB_ENTERPRISE_TOKEN: 'x', GITHUB_PAT_SECRET: 'x', GIT_ASKPASS: '/p', SSH_ASKPASS: '/p', SSH_AUTH_SOCK: '/s', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '!x', GIT_CONFIG_GLOBAL: '/g', GH_HOST: 'github.com', NOT_A_STRING: undefined };
+  const env = { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8', GH_TOKEN: 'x', GITHUB_TOKEN: 'x', gh_token: 'x', GH_ENTERPRISE_TOKEN: 'x', GITHUB_ENTERPRISE_TOKEN: 'x', GITHUB_PAT_SECRET: 'x', GIT_ASKPASS: '/p', SSH_ASKPASS: '/p', SSH_AUTH_SOCK: '/s', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '!x', GIT_CONFIG_GLOBAL: '/g', GIT_CONFIG_PARAMETERS: "'credential.helper=!x'", GH_HOST: 'github.com', NOT_A_STRING: undefined };
   assert.deepEqual(scrubEnvironment(env), { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8', GH_HOST: 'github.com' });
   assert.deepEqual(scrubEnvironment(undefined), {});
 });
@@ -105,4 +105,48 @@ test('disposing removes the temporary folder with the synthetic credentials', on
   await module.dispose();
   assert.equal(fs.existsSync(require('node:path').join(require('node:os').tmpdir(), during[0])), false);
   await module.dispose();
+});
+
+test('the real credential locations under a home folder are all in the profile\'s read denials', () => {
+  const home = '/home/someone';
+  const locations = credentialLocations(home);
+  assert.deepEqual(locations, ['/home/someone/.git-credentials', '/home/someone/.config/git/credentials', '/home/someone/.config/gh', '/home/someone/.netrc', '/home/someone/.ssh', '/home/someone/Library/Keychains']);
+  assert.equal(HOME_CREDENTIAL_PATHS.length, 6);
+  const text = seatbeltProfile({ denyRead: locations });
+  for (const location of locations) assert.ok(text.includes(`(deny file-read* (subpath "${location}"))`), location);
+  for (const bad of ['relative', '/h"ome', '/h)ome', '', undefined]) assert.throws(() => credentialLocations(bad), /isolation-profile-path-invalid/);
+});
+
+test('under a temporary home, every credential location is unreadable inside the sandbox and readable outside it', onlyMac, async () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mas-home-')));
+  try {
+    const files = credentialLocations(home).map((location) => (/\.(git-credentials|netrc)$|credentials$/.test(location) ? location : path.join(location, 'file')));
+    for (const file of files) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'synthetic'); }
+    const profile = path.join(home, 'p.sb');
+    fs.writeFileSync(profile, seatbeltProfile({ denyRead: credentialLocations(home) }));
+    for (const file of files) {
+      assert.equal(spawnSync('/bin/cat', [file]).stdout.toString(), 'synthetic', `control: ${path.relative(home, file)}`);
+      const inside = spawnSync(SANDBOX_EXEC, ['-f', profile, '/bin/cat', file]);
+      assert.notEqual(inside.status, 0, path.relative(home, file));
+      assert.equal(inside.stdout.toString(), '');
+    }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a control that could not run is never reported as blocked: without gh on the path the gh channel is unknown and enforcement is refused', onlyMac, async () => {
+  const module = createMacosModule({ parentEnv: { PATH: '/usr/bin:/bin' } });
+  try {
+    const probe = await module.probe('gh-cli');
+    assert.deepEqual(probe, { control: false });
+    const assessment = assessIsolation({ platform: 'darwin', probes: { 'gh-cli': { ...probe, observedAt: new Date().toISOString() } } });
+    assert.equal(assessment.channels.find((entry) => entry.channel === 'gh-cli').reason, 'control-did-not-run');
+    assert.notEqual(assessment.mode, 'enforced');
+    const { probes } = await collectProbes(module, { timeoutMs: 60000 });
+    const full = assessIsolation({ platform: 'darwin', probes });
+    assert.equal(full.channels.find((entry) => entry.channel === 'gh-cli').state, 'unknown');
+    assert.equal(full.mode, 'advisory', 'one channel without a control keeps the whole assessment from being enforced');
+  } finally { await module.dispose(); }
 });

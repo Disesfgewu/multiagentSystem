@@ -57,7 +57,7 @@ function seatbeltProfile({ denyRead = [], denyWrite = [], allowLocalPorts = [] }
 }
 
 const TOKEN_NAME = /^(GH|GITHUB)_[A-Z0-9_]*(TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*$/;
-const CREDENTIAL_VARIABLES = new Set(['GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_AUTH_SOCK', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT']);
+const CREDENTIAL_VARIABLES = new Set(['GIT_ASKPASS', 'SSH_ASKPASS', 'SSH_AUTH_SOCK', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS']);
 
 /** A copy of the environment without GitHub credentials, credential-asking programs and agent sockets. */
 function scrubEnvironment(env) {
@@ -71,4 +71,14 @@ function scrubEnvironment(env) {
   return out;
 }
 
-module.exports = { seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };
+// Where a person's own GitHub and git credentials live under their home folder. A profile that is meant to keep an
+// agent from them must deny reading all of these, not only the synthetic files a test plants.
+const HOME_CREDENTIAL_PATHS = Object.freeze(['.git-credentials', '.config/git/credentials', '.config/gh', '.netrc', '.ssh', 'Library/Keychains']);
+
+/** The credential locations under `home`, as absolute paths ready for `denyRead`. Throws on a home that is not a safe path. */
+function credentialLocations(home) {
+  if (!safeProfilePath(home)) throw Object.assign(new Error('isolation-profile-path-invalid'), { code: 'isolation-profile-path-invalid' });
+  return HOME_CREDENTIAL_PATHS.map((relative) => path.posix.join(home, relative));
+}
+
+module.exports = { credentialLocations, HOME_CREDENTIAL_PATHS, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };
