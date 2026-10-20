@@ -276,7 +276,7 @@ test('"ready" needs the manifest written at prepare time, matching the current e
     await prepareResearchTool('zhtw-mcp', { store, root, catalog, assetBytes: bytes });
     entry = listResearchTools({ store, root, catalog })[0];
     assert.equal(entry.installStatus, 'ready');
-    assert.match(entry.statusLabel, /hash verified when installed; not re-checked, not running/);
+    assert.match(entry.statusLabel, /the program hash matches what was verified when installed; not running/);
     assert.doesNotMatch(entry.statusLabel, /Ready/);
 
     const newer = [validateCatalogItem({ ...catalog[0], version: 'v9.9.9' })];
@@ -362,4 +362,59 @@ test('consent is outdated when the credentials a tool needs or the tools it expo
   const b = validateCatalogItem({ ...base, env: { B_KEY: { secret: true }, A_KEY: { secret: true } } });
   assert.equal(consentFingerprint(a), consentFingerprint(b), 'env keys in another order');
   assert.equal(JSON.stringify(consentFingerprint(a)).includes('secret'), false);
+});
+
+test('a prepared program is only ready while its bytes still hash to what was verified: edited, replaced, truncated, swapped for a link, or an older install all read stale', async () => {
+  const store = new FakeStore();
+  const tool = CANDIDATE_RESEARCH_TOOLS.find((t) => t.serverId === 'zhtw-mcp');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-mcp-exe-'));
+  const bytes = Buffer.from('#!/bin/sh\necho verified\n');
+  const catalog = [validateCatalogItem({ ...tool, integrity: `sha256:${createHash('sha256').update(bytes).digest('hex')}` })];
+  const state = () => listResearchTools({ store, root, catalog })[0];
+  const exe = path.join(root, 'zhtw-mcp', 'zhtw-mcp');
+  const manifestPath = path.join(root, 'zhtw-mcp', '.prepared.json');
+  const reinstall = () => prepareResearchTool('zhtw-mcp', { store, root, catalog, assetBytes: bytes });
+  try {
+    grantConsent('zhtw-mcp', { store, catalog });
+    await reinstall();
+    const recorded = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.equal(recorded.schema, 2);
+    assert.equal(recorded.executableSha256, createHash('sha256').update(bytes).digest('hex'));
+    assert.equal(state().installStatus, 'ready');
+
+    // One changed byte, same length.
+    fs.writeFileSync(exe, Buffer.from('#!/bin/sh\necho verifieD\n'), { mode: 0o755 });
+    assert.equal(state().installStatus, 'stale');
+    assert.equal(state().installPath, null);
+    // Truncated.
+    fs.writeFileSync(exe, bytes.subarray(0, 5), { mode: 0o755 });
+    assert.equal(state().installStatus, 'stale');
+    // A reinstall puts the verified bytes back.
+    await reinstall();
+    assert.equal(state().installStatus, 'ready');
+
+    // A link to a program with the same content is still not the installed file.
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.writeFileSync(elsewhere, bytes, { mode: 0o755 });
+    fs.rmSync(exe);
+    try { fs.symlinkSync(elsewhere, exe); assert.equal(state().installStatus, 'stale'); } catch (error) { if (error.code !== 'EPERM') throw error; }
+    await reinstall();
+
+    // The record is not trusted on its own: a hash that is missing, malformed or for other bytes is not ready.
+    for (const executableSha256 of [undefined, 'abc', 'X'.repeat(64), createHash('sha256').update('other').digest('hex'), 5]) {
+      fs.writeFileSync(manifestPath, JSON.stringify({ ...recorded, executableSha256 }));
+      assert.equal(state().installStatus, 'stale', String(executableSha256));
+    }
+    // A record in another schema is not read, even with a matching hash.
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...recorded, schema: 1 }));
+    assert.equal(state().installStatus, 'stale');
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...recorded, schema: 3 }));
+    assert.equal(state().installStatus, 'stale');
+    // An install made before the program's hash was recorded (schema 1) must be prepared again.
+    const { executableSha256: _dropped, ...older } = recorded;
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...older, schema: 1 }));
+    assert.equal(state().installStatus, 'stale');
+    await reinstall();
+    assert.equal(state().installStatus, 'ready');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
