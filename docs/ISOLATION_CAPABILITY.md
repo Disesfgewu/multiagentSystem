@@ -27,3 +27,25 @@
 ## 尚未驗證
 
 這份介面只有合成資料的單元測試。沒有任何平台模組、沒有真機證據、沒有真 CLI；`broker` 不能阻止 agent 自己執行 `git`／`gh`／HTTP 這件事（見 `docs/WRITE_BROKER.md`）也沒有因此改變。
+
+## macOS 平台模組（Refs #25）
+
+`src/isolation/macos.js` 提供 macOS 的積木（Seatbelt 設定檔產生器、環境憑證清除）；實際去試每條旁路的驗證 harness 是**測試程式碼** `test/isolation/macos-harness.js`（`createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`，測試見 `test/isolation/macos.test.js`）。harness 不隨擴充套件發佈：它的合成憑證與信箱正是發佈掃描必須擋下的形狀，所以不放進 `src/`。因此目前**擴充套件執行時無法自行跑這個驗證**；要在執行時使用，需要另外決定怎麼產生探測夾具。
+
+**機制**：Seatbelt，透過 `/usr/bin/sandbox-exec`。Apple 把這個指令標為 deprecated；它是系統提供的「在設定檔下執行一個程序」的方式，不是長期承諾。設定檔由 `seatbeltProfile` 產生：預設全允許，但**一律拒絕網路**（只放行指定的本機埠）、拒絕讀取指定路徑、拒絕寫入指定路徑。路徑與埠不合格（相對路徑、含引號／括號／反斜線／控制字元／雙向字元、不是整數埠）直接丟錯，不會產生比呼叫端要求更開放的設定檔。
+
+**怎麼判定**：每個通道在**本機**用合成憑證與本機假端點真的試一次，看觀察到的事實，不看結束碼——假端點是否收到連線、合成秘密是否出現在輸出、commit 是否真的多了一筆。每個嘗試各跑兩次：隔離內，以及隔離外的對照組；對照組沒成功（例如沒裝 `gh`、沒有 Python）該通道就是 `unknown`，絕不是 `blocked`。終端互動以 Python `pty` 提供真的 pseudo-terminal，輸入一行、檢查回應、送 Ctrl-C 看程式是否結束。
+
+**已知邊界（沒有試、也不宣稱）**
+- Seatbelt 只能依位址與埠過濾網路，不能依主機名稱。「允許 CLI 連自己的供應商、擋 GitHub」需要本機過濾代理，這裡**沒有**做；本模組只證明「只放行一個本機埠、其餘全拒」。真 CLI 是否肯走代理、登入是否仍可用，要實機驗證（#135）。
+- 沒有測系統鑰匙圈（`osxkeychain` helper）、真的 GitHub 憑證、真的遠端、SSH、真的 CLI。`credential-helper` 通道只證明「檔案型 helper 讀不到被拒絕的目錄」。
+- 環境憑證由 `scrubEnvironment` 移除（`GH_*`／`GITHUB_*` 含 TOKEN／KEY／SECRET／PASSWORD／CREDENTIAL 的變數、`GIT_ASKPASS`、`SSH_ASKPASS`、`SSH_AUTH_SOCK`、注入的 git config）；這不是 Seatbelt 的功能，而是啟動端的責任，尚未接進實際的 terminal 啟動流程。
+- 這個模組還沒有接到任何命令或 terminal 啟動：現在使用者看不到任何變化。
+
+### PM 要求補充（#264 審查）
+
+- **接受 `sandbox-exec` 的理由與條件**：Apple 把它標為 deprecated，但目前版本仍可用；判定完全依實測探測，所以它不存在、回錯或行為改變時，得不到「對照組成功＋嘗試被擋」，結果一律是 `unknown`／advisory，不會誤報 enforced（fail closed）。實測版本：macOS 26.6（`sw_vers -productVersion`），Apple Silicon。這只代表在這個版本上跑過，不代表其他版本。
+- **網路**：harness 的 `direct-http` 實際嘗試連到允許清單以外的本機埠（假的 GitHub 端點）並被擋，對照組在沙箱外連得上；放行的是另一個本機埠（`cli-own-login` 通道用它證明「被放行的位址仍可連」）。**沒有**證明真 CLI 的登入與 API 呼叫在這種「只放行一個本機埠」的網路下仍可用：真的供應商位址不是固定一個埠，需要本機代理，尚未做（#135）。
+- **真實憑證位置**：`credentialLocations(home)` 回傳 `~/.git-credentials`、`~/.config/git/credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、`~/Library/Keychains`，harness 的設定檔都拒絕讀取它們；測試用暫存 HOME 實際驗證每一個在沙箱內讀不到、沙箱外讀得到。**鑰匙圈只是檔案路徑被拒**：透過 Security 服務（mach 服務）取得登入鑰匙圈內容的路徑沒有試，也沒有封。
+- **環境變數**：`scrubEnvironment` 另移除 `GIT_CONFIG_PARAMETERS`（git 可由它注入 `credential.helper` 等設定）。
+- **對照組沒成功就不是 blocked**：測試以 PATH 不含 `gh` 實測 gh-cli 回 `{ control: false }`，`assessIsolation` 為 `control-did-not-run`，整體 mode 不是 enforced。
