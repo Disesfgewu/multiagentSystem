@@ -79,8 +79,10 @@ class SessionObservationCore {
     if (this.sessions.has(fixed.sessionId)) throw new TypeError('session already registered');
     this.sessions.set(fixed.sessionId, {
       binding: fixed,
-      lastSequence: -1,
-      lastObservedAt: null,
+      // Ordering is judged per source: a status line refreshes several times a second and a hook
+      // fires on its own schedule, so one source's newer reading must not make the other's valid
+      // (older) event look out of order and silently drop it.
+      last: new Map(),
       status: null,
       model: null,
       usage: new Map(),
@@ -110,7 +112,8 @@ class SessionObservationCore {
     if (session.seen.has(event.eventId)) return result(true, 'duplicate', { accepted: false });
     if (session.retracted) return result(false, session.retracted);
     if (session.ended) return result(false, 'session-ended');
-    if (!Number.isSafeInteger(event.sequence) || event.sequence < 0 || event.sequence <= session.lastSequence) {
+    const previous = session.last.get(event.source) ?? { sequence: -1, observedAt: null };
+    if (!Number.isSafeInteger(event.sequence) || event.sequence < 0 || event.sequence <= previous.sequence) {
       return result(false, 'out-of-order');
     }
     if (!validTime(event.observedAt)) return result(false, 'observed-at-invalid');
@@ -118,7 +121,7 @@ class SessionObservationCore {
     const nowMs = Date.parse(this.now());
     if (!Number.isFinite(nowMs)) throw new TypeError('now returned an invalid time');
     if (eventMs > nowMs) return result(false, 'future-event');
-    if (session.lastObservedAt !== null && eventMs < Date.parse(session.lastObservedAt)) return result(false, 'out-of-order');
+    if (previous.observedAt !== null && eventMs < Date.parse(previous.observedAt)) return result(false, 'out-of-order');
     if (event.state !== undefined && !SESSION_STATES.includes(event.state)) return result(false, 'state-unknown');
     if (event.model !== undefined && !validCode(event.model)) return result(false, 'model-invalid');
     const checkedUsage = validateUsage(event.usage);
@@ -136,8 +139,10 @@ class SessionObservationCore {
         confidence: CONFIDENCE.ACTUAL,
         validForMs: this.ttlMs
       });
+    // An event that does not carry a model leaves the earlier reading alone (it ages out by itself):
+    // a hook event says nothing about the model, so it must not wipe what the status line reported.
     const model = event.model === undefined
-      ? unknown('session.model', { source: event.source, observedAt: event.observedAt, reason: 'not-reported' })
+      ? (session.model ?? unknown('session.model', { source: event.source, observedAt: event.observedAt, reason: 'not-reported' }))
       : observe('session.model', event.model, {
         source: event.source,
         observedAt: event.observedAt,
@@ -157,12 +162,11 @@ class SessionObservationCore {
           confidence: metric.measurement === 'actual' ? CONFIDENCE.ACTUAL : CONFIDENCE.ESTIMATED,
           validForMs: this.ttlMs
         })
-        : unknown(field, { source: event.source, observedAt: event.observedAt, reason: 'not-reported' }));
+        : (session.usage.get(field) ?? unknown(field, { source: event.source, observedAt: event.observedAt, reason: 'not-reported' })));
     }
 
     // Commit only after the entire envelope is valid.
-    session.lastSequence = event.sequence;
-    session.lastObservedAt = event.observedAt;
+    session.last.set(event.source, { sequence: event.sequence, observedAt: event.observedAt });
     session.status = status;
     session.model = model;
     session.usage = usage;

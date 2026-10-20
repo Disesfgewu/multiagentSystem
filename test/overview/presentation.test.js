@@ -339,3 +339,45 @@ test('an agent row states local Git evidence as facts, flags uncommitted work, a
   assert.ok(unreadable.tooltip.some((line) => line.startsWith('Git: unknown (Git could not read')));
   assert.equal(presentAgent(row(), { name: 'n' }).tooltip.some((line) => line.startsWith('Git')), false, 'no Git line when nothing was asked');
 });
+
+test('hook-derived working, waiting and ended are shown with their source, only while the evidence is fresh', () => {
+  for (const state of ['working', 'waiting', 'ended']) {
+    const providerObservation = {
+      status: { confidence: 'actual', value: state, source: 'claude-hook-v1', observedAt: '2026-01-01T00:00:01.000Z' },
+      model: { confidence: 'unknown', value: null },
+      usage: []
+    };
+    const shown = presentAgent(row({ state: 'cli-observed' }), { name: 'A', providerLabel: 'Claude Code', providerObservation });
+    assert.match(shown.description, new RegExp(` · ${state}$`));
+    const tooltip = shown.tooltip.join('\n');
+    assert.match(tooltip, new RegExp(`Provider state: ${state} \\(from the CLI's own hooks, observed 2026-01-01T00:00:01.000Z; not read from terminal text\\)`));
+  }
+});
+
+test('stale or missing hook evidence says unknown and never claims working', () => {
+  const stale = {
+    status: { confidence: 'unknown', value: null, source: 'claude-hook-v1', reason: 'stale' },
+    model: { confidence: 'unknown', value: null },
+    usage: []
+  };
+  for (const providerObservation of [stale, undefined, null]) {
+    const shown = presentAgent(row({ state: 'cli-observed' }), { name: 'A', providerLabel: 'Claude Code', providerObservation });
+    const tooltip = shown.tooltip.join('\n');
+    assert.match(tooltip, /Provider state: unknown \(no fresh hook evidence\)/);
+    assert.equal(/working|waiting|ended/.test(shown.description), false);
+    assert.equal(/not read from terminal text/.test(tooltip), false);
+  }
+});
+
+test('a state from any other source is not presented as coming from hooks', () => {
+  const providerObservation = { status: { confidence: 'actual', value: 'working', source: 'something-else' }, model: { confidence: 'unknown' }, usage: [] };
+  const tooltip = presentAgent(row({ state: 'cli-observed' }), { name: 'A', providerLabel: 'P', providerObservation }).tooltip.join('\n');
+  assert.equal(/from the CLI's own hooks/.test(tooltip), false);
+});
+
+test('text injected through a hook-state field is cleaned before it is shown', () => {
+  const providerObservation = { status: { confidence: 'actual', value: 'working‮\nevil', source: 'claude-hook-v1', observedAt: 'x‮' }, model: { confidence: 'unknown' }, usage: [] };
+  const shown = presentAgent(row({ state: 'cli-observed' }), { name: 'A', providerLabel: 'P', providerObservation });
+  assert.equal(/[‮\n]/.test(shown.description), false);
+  assert.equal(shown.tooltip.join('\n').includes('‮'), false);
+});

@@ -8,6 +8,7 @@ const { cleanTitle } = require('./model');
 const { describeEvidence } = require('../projects/gitEvidence');
 
 const UNKNOWN = 'unknown';
+const HOOK_SOURCE = 'claude-hook-v1';
 const SHOWN_LIMIT = 80;
 // Text that came from outside this module (a session name, a label, a branch) is shown as one clean,
 // short line: control, bidirectional and separator characters are removed and the length is limited.
@@ -59,8 +60,13 @@ function presentAgent(row, session) {
   const providerObservation = session?.providerObservation;
   const observedState = providerObservation?.status?.confidence === 'actual' ? providerObservation.status.value : null;
   const lifecycleText = row.sessionState.state === 'known' ? (Object.hasOwn(STATE_TEXT, row.sessionState.value) ? STATE_TEXT[row.sessionState.value] : UNKNOWN) : 'state unknown';
-  const stateText = typeof observedState === 'string' ? observedState : lifecycleText;
+  const stateText = typeof observedState === 'string' ? shown(observedState) : lifecycleText;
   const providerStateText = typeof observedState === 'string' ? observedState : 'unknown';
+  // Where the state came from is part of the claim: the CLI's own hook events, never terminal text.
+  const hookSourced = typeof observedState === 'string' && providerObservation.status.source === HOOK_SOURCE;
+  const providerStateLine = hookSourced
+    ? `Provider state: ${shown(observedState)} (from the CLI's own hooks${typeof providerObservation.status.observedAt === 'string' ? `, observed ${shown(providerObservation.status.observedAt)}` : ''}; not read from terminal text)`
+    : `Provider state: ${providerStateText}${providerStateText === 'unknown' ? ' (no fresh hook evidence)' : ''}`;
   const actualModel = providerObservation?.model?.confidence === 'actual' ? shown(providerObservation.model.value) : UNKNOWN;
   const observedCost = Array.isArray(providerObservation?.usage)
     ? providerObservation.usage.find((entry) => entry?.field === 'usage.cost_usd' && entry.confidence === 'estimated')
@@ -87,7 +93,7 @@ function presentAgent(row, session) {
       ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,
       `Account: ${account} (${identity})`,
-      `Provider state: ${providerStateText}`,
+      providerStateLine,
       `Terminal lifecycle: ${shown(session?.lifecycleState, lifecycleText)}`,
       `Branch: ${row.branch.state === 'known' ? shown(row.branch.value) : UNKNOWN}`,
       `Issue: ${issue}`,
