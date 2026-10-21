@@ -5,7 +5,8 @@ import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
 import { requireInteractive } from '../shared/testMode';
 import { runSearchCommand } from './searchCommand';
 
-const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
+const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, describeRevoke, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
+  describeRevoke(serverId: string, result: unknown): { level: 'info' | 'warning' | 'error'; text: string };
   createMcpLifecycle(deps: any): {
     enable(serverId: string, options: { confirmed: boolean; tools: string[] }): Promise<any>;
     stop(serverId: string): Promise<any>;
@@ -17,7 +18,10 @@ const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTI
   scanWorkspaceMcpConfig(folders: string[]): { ignored: string[]; notice: string | null };
   ENFORCEMENT_NOTICE: string;
 };
-const { ensureToolFolder } = require('./private-dir') as { ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string } };
+const { ensureToolFolder, removeToolFolder } = require('./private-dir') as {
+  ensureToolFolder(input: { base: string; serverId: string }): { ok: true; dir: string; tmp: string } | { ok: false; reason: string };
+  removeToolFolder(input: { base: string; serverId: string }): { ok: boolean; removed?: boolean; reason?: string };
+};
 const { listResearchTools, resolveLaunchExecutable, revokeConsent, PROHIBITED_AGENT_TOOLS } = require('./installer') as {
   resolveLaunchExecutable(input: { store?: any; root?: string; serverId: string; catalog?: any[] }): string | null;
   listResearchTools(deps: { store?: any; catalog?: any[]; root?: string; fullCheck?: boolean }): any[];
@@ -65,6 +69,8 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
       const ref = currentVault.refFor(`mcp.${serverId}.${key}`);
       return currentVault.read(ref);
     },
+    // On revoke: the tool's own folder goes (only that one; a link is removed as a link).
+    cleanupStorage: async (serverId: string) => removeToolFolder({ base: currentStore.dir, serverId }),
     storageDir: async (serverId: string) => {
       // The tool's own folder inside the extension's private storage; links and open or foreign folders are refused.
       const made = ensureToolFolder({ base: currentStore.dir, serverId });
@@ -142,7 +148,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     if (interactive) {
       const answer = await vscode.window.showWarningMessage(
         `Revoke research MCP server '${serverId}'?`,
-        { modal: true, detail: 'The server is stopped, its tool grants are removed and it cannot start again until you consent again.' },
+        { modal: true, detail: 'The server is stopped, its tool grants are removed, its private folder in this extension\'s storage is deleted, and it cannot start again until you consent again.' },
         'Revoke'
       );
       if (answer !== 'Revoke') return { ok: false, code: 'cancelled' };
@@ -151,7 +157,10 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     if (result.ok) {
       try { revokeConsent(serverId, { store: currentStore }); } catch { /* the lifecycle revoke already blocks a restart */ }
     }
-    if (interactive) void vscode.window.showInformationMessage(result.ok ? `MCP server '${serverId}' revoked.` : `Revoke problem for '${serverId}': ${result.code}.`);
+    if (interactive) {
+      const shown = describeRevoke(serverId, result);
+      void (shown.level === 'info' ? vscode.window.showInformationMessage(shown.text) : shown.level === 'warning' ? vscode.window.showWarningMessage(shown.text) : vscode.window.showInformationMessage(shown.text));
+    }
     return result;
   };
 

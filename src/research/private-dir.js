@@ -52,4 +52,31 @@ function ensureToolFolder({ base, serverId, fsImpl = fs, uid = typeof process.ge
   return { ok: true, dir: levels[1], tmp: levels[2] };
 }
 
-module.exports = { ensureToolFolder };
+/**
+ * Removes one tool's own folder (`<private>/research-tools/<serverId>`), and nothing else. A link in its place is removed as
+ * a link, never followed; a folder whose parent is a link, or something that is not a folder, is left alone.
+ * @returns {{ ok: true, removed: boolean } | { ok: false, reason: string }}
+ */
+function removeToolFolder({ base, serverId, fsImpl = fs } = {}) {
+  if (typeof base !== 'string' || !path.isAbsolute(base) || typeof serverId !== 'string' || !SERVER_ID.test(serverId)) return refuse('storage-input-invalid');
+  const parent = path.join(base, 'research-tools');
+  const target = path.join(parent, serverId);
+  const look = (file) => {
+    try { return fsImpl.lstatSync(file); } catch (error) { if (error && error.code === 'ENOENT') return null; throw error; }
+  };
+  try {
+    const parentInfo = look(parent);
+    if (parentInfo === null) return { ok: true, removed: false };
+    if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) return refuse('storage-parent-invalid');
+    const info = look(target);
+    if (info === null) return { ok: true, removed: false };
+    if (info.isSymbolicLink()) { fsImpl.unlinkSync(target); return { ok: true, removed: true }; }
+    if (!info.isDirectory()) return refuse('storage-not-a-folder');
+    fsImpl.rmSync(target, { recursive: true, force: true });
+    return { ok: true, removed: true };
+  } catch {
+    return refuse('storage-remove-failed');
+  }
+}
+
+module.exports = { ensureToolFolder, removeToolFolder };

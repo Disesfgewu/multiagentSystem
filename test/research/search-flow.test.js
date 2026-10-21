@@ -150,7 +150,7 @@ async function running(t, { tools = ['search_papers', 'get_record'], reply } = {
   if (reply !== undefined) fs.writeFileSync(replyFile, JSON.stringify(reply));
   const store = new Store();
   const lifecycle = createMcpLifecycle({
-    store, catalog: CATALOG, isWorkspaceTrusted: () => true, readSecret: async () => null, resolveExecutable: async () => script,
+    store, catalog: CATALOG, isWorkspaceTrusted: () => true, readSecret: async () => null, resolveExecutable: async () => script, storageDir: async (serverId) => path.join(dir, 'tool-folders', serverId),
     spawn: (file, args, options) => childProcess.spawn(process.execPath, [file, ...args], { ...options, env: { ...options.env, SEARCH_REPLY: replyFile } }),
     startTimeoutMs: 1500, callTimeoutMs: 1500, stopTimeoutMs: 2000, scanOptions: () => ({})
   });
