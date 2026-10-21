@@ -7,7 +7,16 @@ const { builtIn } = require('../providers/registry');
 const PROVIDERS = Object.freeze(builtIn.ids());
 // The tools a role group can grant or withhold. A tool that is not listed in a
 // group is denied, so a new tool never becomes available by omission.
-const TOOLS = Object.freeze(['shell', 'fileWrite', 'network', 'githubRead', 'githubWrite', 'merge']);
+//
+// The first six are the original coarse tools. The rest (issue #310) split GitHub work into the steps a role is
+// really given or denied: committing, pushing, opening a pull request, reviewing one, commenting, and using MCP tools.
+const COARSE_TOOLS = Object.freeze(['shell', 'fileWrite', 'network', 'githubRead', 'githubWrite', 'merge']);
+const FINE_TOOLS = Object.freeze(['gitCommit', 'gitPush', 'prCreate', 'prReview', 'comment', 'mcp']);
+const TOOLS = Object.freeze([...COARSE_TOOLS, ...FINE_TOOLS]);
+// A role group saved before the finer tools existed has no entry for them. The git and GitHub steps then follow what that group
+// said about `githubWrite` (so a group that asked before changing GitHub still asks, and one that denied it still denies);
+// MCP follows nothing and stays denied. Only a MISSING entry is filled this way; a stated level is never replaced.
+const FOLLOWS_GITHUB_WRITE = Object.freeze(['gitCommit', 'gitPush', 'prCreate', 'prReview', 'comment']);
 const LEVELS = Object.freeze(['deny', 'ask', 'allow']);
 const MEMORY_MODES = Object.freeze(['role-group', 'off']);
 
@@ -131,6 +140,9 @@ function validateRoleGroup(input) {
         else if (!LEVELS.includes(level)) add('invalid-level', `toolPermissions.${tool}`);
         else toolPermissions[tool] = level;
       }
+      for (const tool of FOLLOWS_GITHUB_WRITE) {
+        if (!Object.hasOwn(input.toolPermissions, tool) && LEVELS.includes(input.toolPermissions.githubWrite)) toolPermissions[tool] = input.toolPermissions.githubWrite;
+      }
     }
   }
 
@@ -164,4 +176,10 @@ function validateRoleGroup(input) {
   };
 }
 
-module.exports = { PROVIDERS, TOOLS, LEVELS, MEMORY_MODES, validateRoleGroup, validRelativePath, validRepository };
+/** The tools a stored group does not state itself and so takes from `githubWrite` (or leaves denied): for the screen to say so. */
+function inheritedTools(rawToolPermissions) {
+  if (!isPlainObject(rawToolPermissions)) return [];
+  return FOLLOWS_GITHUB_WRITE.filter((tool) => !Object.hasOwn(rawToolPermissions, tool) && LEVELS.includes(rawToolPermissions.githubWrite));
+}
+
+module.exports = { PROVIDERS, TOOLS, COARSE_TOOLS, FINE_TOOLS, inheritedTools, LEVELS, MEMORY_MODES, validateRoleGroup, validRelativePath, validRepository };

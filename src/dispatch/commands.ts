@@ -27,6 +27,7 @@ export const DISPATCH_COMMANDS = {
 
 const REFUSALS: Record<string, string> = {
   'hidden-characters': 'it contains hidden or direction-changing characters',
+  'marker-forged': 'it contains the wording this extension uses to mark a task from the administrator',
   'injection-suspected': 'it contains text that tells an agent to ignore or change its rules',
   'content-scan-rejected': 'the content scan found something that looks private (a credential, a local path or similar)',
   'content-scan-failed': 'the content scan could not run',
@@ -97,8 +98,8 @@ async function chooseTarget(sessions: SessionCommands, roleOf: (session: any) =>
  * waiting for input (the broadcast rule); a session of unknown state needs a second, explicit button. Everything else is listed
  * with a reason and left alone. "Typed" is not proof that the agent read it or will do it.
  */
-async function dispatch(sessions: SessionCommands, mode: Mode): Promise<void> {
-  if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('Trust this workspace before handing tasks to agents.'); return; }
+async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => boolean = () => vscode.workspace.isTrusted): Promise<void> {
+  if (!trusted()) { void vscode.window.showWarningMessage('Trust this workspace before handing tasks to agents.'); return; }
   const opened = await openStore();
   if (!opened) return;
   const roleOf = (session: { roleGroupId?: string }): string | undefined => {
@@ -169,9 +170,9 @@ export async function readAssignments(): Promise<Map<string, { issueNumber: numb
 }
 
 /** The dispatch flow run against the given sessions: only in the extension's own host tests (a real terminal with a synthetic CLI). */
-export function dispatchForTests(sessions: SessionCommands, mode: Mode): Promise<void> {
+export function dispatchForTests(sessions: SessionCommands, mode: Mode, options: { trusted?: boolean } = {}): Promise<void> {
   if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
-  return dispatch(sessions, mode);
+  return dispatch(sessions, mode, options.trusted === undefined ? undefined : () => options.trusted === true);
 }
 
 export function registerDispatchCommands(context: vscode.ExtensionContext, sessions: SessionCommands): void {

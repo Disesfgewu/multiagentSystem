@@ -7,6 +7,8 @@ const { TOOLS, LEVELS } = require('./role-group');
 // and whether it obeys them is not verified.
 
 const ENFORCEMENT_NOTE = 'Not enforced yet: the agent is only told about this, and the CLI is not verified to obey it.';
+// Tool permissions are the one setting a launch turns into the CLI's own configuration (issue #310); the note says exactly how far.
+const TOOL_ENFORCEMENT_NOTE = 'For Claude Code, deny and ask become the CLI\'s own permission rules when an agent starts (Preview Effective Rules says how firmly each holds); for Codex only "no file writing" becomes a read-only sandbox; for every other tool and CLI the agent is only told. None of it is verified on a real machine.';
 
 const TOOL_HELP = Object.freeze({
   shell: 'Run commands in a terminal shell.',
@@ -14,7 +16,13 @@ const TOOL_HELP = Object.freeze({
   network: 'Use the internet (download, search, call web services).',
   githubRead: 'Read GitHub Issues, pull requests and reviews.',
   githubWrite: 'Change GitHub: open or edit Issues, push, open pull requests, comment, review.',
-  merge: 'Merge a pull request.'
+  merge: 'Merge a pull request.',
+  gitCommit: 'Create a git commit.',
+  gitPush: 'Push commits to a remote branch.',
+  prCreate: 'Open a pull request.',
+  prReview: 'Review a pull request (approve, request changes or comment as a review).',
+  comment: 'Comment on an Issue or a pull request.',
+  mcp: 'Use MCP tools (research and other external tools the CLI has connected).'
 });
 
 const LEVEL_HELP = Object.freeze({
@@ -48,4 +56,4 @@ function fieldHelp(field) {
   return Object.hasOwn(FIELD_HELP, field) ? FIELD_HELP[field] : null;
 }
 
-module.exports = { toolHelp, levelHelp, fieldHelp, ENFORCEMENT_NOTE, TOOL_HELP, LEVEL_HELP, FIELD_HELP, TOOLS, LEVELS };
+module.exports = { toolHelp, levelHelp, fieldHelp, ENFORCEMENT_NOTE, TOOL_ENFORCEMENT_NOTE, TOOL_HELP, LEVEL_HELP, FIELD_HELP, TOOLS, LEVELS };

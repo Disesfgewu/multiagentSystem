@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { validRecord } = require('./role-store');
 
 const LAYERS = ['platform', 'user', 'project', 'roleGroup', 'task'];
-const TOOLS = ['shell', 'fileWrite', 'network', 'githubRead', 'githubWrite', 'merge'];
+const { TOOLS } = require('./role-group');
 const LEVELS = ['deny', 'ask', 'allow'];
 const fail = (reason) => ({ ok: false, reason });
 

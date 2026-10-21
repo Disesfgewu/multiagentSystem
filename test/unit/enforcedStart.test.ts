@@ -162,3 +162,18 @@ test('the broadcast delivery command takes no argument, asks for the confirmatio
   const manager = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sessions', 'manager.ts'), 'utf8') as string;
   assert.equal([...manager.matchAll(/terminal\.sendText\(/g)].length, 2, 'the manager types in two places only: the launch command and sendPrompt');
 });
+
+test('every start and reopen writes the role group\'s permissions into the session\'s settings file after the instructions are prepared, removes the file with the session, and passes Codex\'s sandbox on (issue #310)', () => {
+  // A checkout may use CRLF line ends (Windows): the patterns below span lines, so they read the source with LF.
+  const source = (require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string).replace(/\r\n/g, '\n');
+  const calls = [...source.matchAll(/manager\.(start|reopen)\(/g)].length;
+  const writes = [...source.matchAll(/attributionFile = attributionFileFor\([^)]*instructions\?\.toolPermissions\)/g)];
+  assert.equal(writes.length, calls, 'each one writes the file from the prepared instructions\' permissions');
+  assert.equal([...source.matchAll(/= attributionFileFor\(/g)].length, calls, 'and from nowhere else');
+  assert.equal([...source.matchAll(/removeClaudeSettings\(file\)/g)].length, calls, 'each one removes the file again with the session, or when the start fails');
+  assert.equal([...source.matchAll(/codexArguments\(instructions\?\.toolPermissions\)\.args/g)].length, calls, 'each one passes Codex its sandbox mode');
+  assert.equal([...source.matchAll(/if \(instructions\?\.plan\) cleanupSessionPlan\(instructions\.plan\);\n\s*(?:observations\.release\(newSessionId\);\n\s*)?throw error;/g)].length, calls, 'a settings file that cannot be written removes the prepared instruction files and starts nothing');
+  const startAt = source.indexOf('async function launch(');
+  const writeAt = source.indexOf('attributionFile = attributionFileFor(', startAt);
+  assert.ok(source.indexOf('instructions = prep;', startAt) < writeAt, 'the role group\'s permissions exist before the file is written');
+});
