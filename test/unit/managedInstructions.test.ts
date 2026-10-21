@@ -651,3 +651,29 @@ test('SessionManager launches native terminal for Codex with safe -p profile fla
   manager.stop(session.id);
   assert.equal(fs.existsSync(profileFile), false, 'Codex profile config file must be deleted upon session stop');
 });
+
+test('the prepared instructions carry the role group\'s effective tool levels, with a stronger layer\'s ban applied, and null without a role group (issue #310)', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-inst-perm-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = new FakeStore(privateDir);
+  const record = makeRoleRecord('worker-1', 1, 'worker');
+  (record.group.toolPermissions as Record<string, string>).gitPush = 'allow';
+  (record.layers as any).platform.push({ id: 'plat-no-push', type: 'forbid', key: 'tool:gitPush', version: 1 });
+  store.put('roleGroups', 'worker-1', record);
+  const prepared = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-perm-12345678', privateDir });
+  assert.equal(prepared.ok, true);
+  if (!prepared.ok) return;
+  assert.equal(prepared.toolPermissions?.fileWrite, 'allow');
+  assert.equal(prepared.toolPermissions?.gitPush, 'deny', 'the platform layer\'s ban wins over the group\'s allow');
+  assert.equal(prepared.toolPermissions?.mcp, 'deny', 'a tool the stored group does not state is denied');
+  assert.match(prepared.summaryText, /What the CLI is given when this role is started/);
+  assert.match(prepared.summaryText, /gitPush: deny — PARTLY enforced/);
+  cleanupSessionPlan(prepared.plan);
+  const without = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', targetSessionId: 'session-none-12345678', privateDir });
+  assert.equal(without.ok, true);
+  if (without.ok) { assert.equal(without.toolPermissions, null); cleanupSessionPlan(without.plan); }
+});

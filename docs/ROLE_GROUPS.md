@@ -13,7 +13,7 @@
 | PM 與 worker 兩個身份組的繼承、覆寫、衝突案例 | 完成，有測試 |
 | 身份組記錄的持久化 | **未做**：等 #35（`PrivateStore`）合併後再接 |
 | 對真實 Claude Code／Codex 的注入 | **未做、未驗證**：本模組只產出 `renderContext` 可直接使用的資料；實際注入屬 #5，其互動式與 `--resume` 效果仍是 #5 的未驗證項目 |
-| 工具權限的**強制** | **沒有**。本模組不強制任何權限，預覽對每個工具都標示「未強制，交由 broker 或隔離處理」（#24、#25、#26） |
+| 工具權限的**強制** | 預覽模組本身**不強制**任何權限（預覽的每個工具仍標示「未強制」）。**啟動時**才把權限轉成 CLI 自己的設定（Claude Code 的 `permissions` 規則；Codex 只有「不能寫檔」會變成唯讀沙箱），強度逐項標示：見「4a」（#310） |
 | 身份組編輯畫面、PM／worker 模板、個別 agent 覆寫預設帳號 | 未做（後續 P2 功能） |
 
 ## 2. 身份組欄位
@@ -30,7 +30,7 @@
 | `defaultAccountProfileId` | 選填；帳號設定的本機 ID 或 `null`（建立 agent 時再選）。只放 ID，不放標籤或 email |
 | `allowedScope.repositories` | 必填；`owner/name` 清單，不分大小寫去重。**空清單代表不允許任何 repo**，不是「全部」 |
 | `allowedScope.paths` | 必填；repo 內相對路徑前綴，以 `/` 分隔且已是最簡形式（`.` 代表整個 repo）。**空清單代表不允許任何路徑**。這份資料日後由 broker／隔離去執行，所以不留解讀空間，一律拒絕而不是修正：絕對路徑、`~`、`..`、`./`、`//`、結尾斜線；看起來像 glob 或 Windows 保留的字元 `* ? < > | " :` 與反斜線（`src/*` 若被當成 glob 會比字面前綴寬）；Unicode 控制與格式字元（`\p{Cc}`、`\p{Cf}`，含雙向覆寫與零寬字元，它們會讓預覽顯示的路徑與實際不同）；不是 NFC 的寫法（一個名稱只有一種拼法）；任何 `.git` 片段（不分大小寫，含 Windows 短名 `GIT~1`；其中的 hooks 是會被執行的程式）；Windows 裝置名稱（`CON`、`NUL`、`COM1` 等，含副檔名）；以點或空白結尾的片段。以 NFC 加小寫比對重複 |
-| `toolPermissions` | 選填；`shell`、`fileWrite`、`network`、`githubRead`、`githubWrite`、`merge` 各為 `deny`／`ask`／`allow`。**沒寫的工具視為 `deny`**；未知工具名稱拒絕 |
+| `toolPermissions` | 選填；`shell`、`fileWrite`、`network`、`githubRead`、`githubWrite`、`merge`，以及較細的 `gitCommit`、`gitPush`、`prCreate`、`prReview`、`comment`、`mcp`，各為 `deny`／`ask`／`allow`。**沒寫的工具視為 `deny`**；未知工具名稱拒絕。**例外（相容）**：在較細的工具出現之前存下來的身份組沒有那幾項時，`gitCommit`／`gitPush`／`prCreate`／`prReview`／`comment` 沿用該身份組自己寫的 `githubWrite`（原本要問的還是要問，原本禁止的還是禁止），`mcp` 維持 `deny`；明寫的值不會被取代 |
 | `memoryScope` | 選填；`{ mode: 'role-group' }` 或 `{ mode: 'off' }`；沒寫視為 `off`。跨 repo、跨身份組分享需要明確設計，這裡不接受 |
 | `rules` | 選填；身份組自己的規則，最多 200 條 |
 
@@ -55,7 +55,20 @@
 - `ask` → 一條 `instruction`：「Ask the user before using <名稱>.」。
 - `allow` → **不產生任何規則**。`allow` 永遠不能放寬較強層級的 `forbid`：預覽的 `effective` 在任何已生效的 forbid 存在時一律是 `deny`，並在 `limitedBy` 列出來源層級與版本。若被**較強**層級擋下，另外在衝突清單加上 `permission-relaxation-blocked`；較弱層級（任務）新增限制則只列入 `limitedBy`。
 
-**這些權限沒有被強制。** CLI 只是被告知；沒有任何一個 CLI 的原生權限機制在本專案被驗證過。因此每個工具的預覽項目都帶 `enforced: false`、`by: 'broker-or-isolation'`，不得在畫面或文件上宣稱「已限制」。
+**預覽本身沒有強制任何權限。** 預覽項目都帶 `enforced: false`、`by: 'broker-or-isolation'`；真正交給 CLI 的設定是**啟動時**才產生的（見下一節），預覽另外列出「啟動時會給 CLI 什麼、各項多牢」，但預覽本身什麼都不傳。
+
+## 4a. 啟動時給 CLI 的權限（#310）
+
+`src/roles/tool-permissions.js` 是唯一決定轉換的地方。每個工具的有效等級（較強層級的禁止已套用）轉成：
+
+- **等級語意**：`deny` → deny 規則；`ask` → ask 規則（CLI 即使在自動模式也會問，因為使用者選的就是「要問」）；`allow` → **不產生任何規則**：它不會放寬 CLI 自己的權限模式，也不會推翻使用者的自動模式設定（#296）。永遠不寫 `allow`，也不碰 `permissions.defaultMode`、不用 `bypassPermissions`。
+- **Claude Code**（官方文件：[permissions](https://code.claude.com/docs/en/permissions)、[settings](https://code.claude.com/docs/en/settings)，2026-10-22 查閱）：規則寫進該 session 的設定檔，經 `--settings <路徑>` 帶入，**與署名設定（#293）是同一個檔案**（每個 session 一個，放在擴充套件私人儲存區、權限 0600，session 結束或啟動失敗時刪除；寫不出來就不啟動）。官方文件說明：規則依 deny → ask → allow 評估、deny 優先；用裸工具名稱（`Bash`、`Edit`、`Write`、`NotebookEdit`、`MultiEdit`、`WebFetch`、`WebSearch`、`mcp__*`）作 deny 規則會把該工具從 CLI 的脈絡中**移除**；`--settings` 在使用者與專案設定檔之上、managed 設定之下，**清單類設定（如 `permissions.deny`）跨檔案是合併而不是覆蓋**，所以使用者自己的規則仍然有效。
+- **強度逐項標示，不誇大**：`ENFORCED`＝CLI 自己移除或擋下該工具（`shell`、`mcp`、檔案編輯工具、網路工具）；`PARTLY enforced`＝擋的是「通常的寫法」，另一種做同一件事的路徑仍在：官方文件明說 `Bash(git push *)` 這類規則**不是安全邊界**（`/usr/bin/curl`、`sh -c '…'`、`git -C . push` 不會被比對到），所以 `gitCommit`／`gitPush`／`prCreate`／`prReview`／`comment`／`merge`／`githubWrite`／`githubRead` 只有 PARTLY；`fileWrite` 與 `network` 在 shell 沒有同時被禁止時也只是 PARTLY（shell 還能 `sed -i`、`curl`）；`advice only`＝這個 CLI 沒有擴充套件能傳的設定，只是告知 agent。要真正擋住，要靠 shell 一併禁止，或沙箱／隔離（#25）。
+- **Codex**（官方旗標：[CLI reference](https://developers.openai.com/codex/cli/reference) 的 `--sandbox`）：Codex 沒有逐指令的允許／拒絕旗標，所以只有 `fileWrite: deny` 會變成 `--sandbox read-only`（也因此無法經由 shell 改檔；是否同時擋網路未驗證）；從不使用 `danger-full-access`。與自動模式（#296）的 `--sandbox workspace-write` 並用時，**身份組的沙箱取代自動模式的**（較嚴格者不會被便利功能蓋過），其餘自動模式參數照舊。
+- **agy、自訂 provider**：沒有已證實的設定，全部是 advice only，畫面這樣寫。
+- **預設範本**：PM（不能編輯檔案、commit、push、開或合併 PR、用 MCP；可下指令、讀、review、留言；寫 Issue 與 gh api 要先問）；Developer／worker（可編輯、跑測試、commit、push、開 PR、留言；不能 merge、review、用 MCP；改 Issue 與用網路先問）；Researcher（沒有 shell、不能改檔、不能寫 GitHub 或用 git；可用網路與 MCP 研究工具）；Blank 全部禁止。
+- **Broker 角色一致**：PM 身份組對應 Broker 的 `pm`、worker 對應 `worker`，其他角色沒有 Broker 寫入操作；PM 身份組若允許 commit／push／開 PR／改檔，或 worker 身份組若允許 review／merge，預覽會標出「DISAGREES」。Broker 本身目前仍是注入式身份（沒有真實 transport），這一版只做一致性檢查。
+- **未驗證**：真實 Claude Code 是否照這些規則運作（#135）；Claude Code 對特定版本的規則語法差異；Codex 的 sandbox 對網路的行為；擴充套件**沒有**驗證 shell 啟動檔或使用者自己的設定是否放寬（使用者自己的 allow 規則不會被 deny 取代，但 deny 優先）。
 
 ## 5. 預覽
 

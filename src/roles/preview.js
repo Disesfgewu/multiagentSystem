@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { LAYERS, byCodeUnit, resolveRules } = require('../memory/rules');
 const { isPlainObject, label, validateRuleList } = require('./rule-input');
 const { TOOLS, validateRoleGroup } = require('./role-group');
+const { permissionLines, brokerRoleFor } = require('./tool-permissions');
 const { evaluateMcpTools, formatMcpLines } = require('./mcp-evaluation');
 const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics');
 
@@ -234,6 +235,14 @@ function formatPreview(preview, options = {}) {
     const limited = entry.limitedBy.length > 0 ? ` limited by ${entry.limitedBy.map((s) => `${s.id} (${source(s)})`).join(', ')}` : '';
     lines.push(`  - ${entry.tool}: ${entry.declared} -> ${entry.effective}${limited}${injection ? '  <told to the agent only, not enforced>' : ''}`);
   }
+  // What a launch passes to the CLI for these permissions, and how firmly it holds (issue #310). A preview itself passes nothing.
+  const effectiveLevels = Object.fromEntries(permissions.map((entry) => [entry.tool, entry.effective]));
+  lines.push('', 'What the CLI is given when this role is started (a launch passes this; this preview passes nothing):');
+  for (const text of permissionLines(roleGroup.provider, effectiveLevels)) lines.push(`  - ${text}`);
+  const brokerRole = brokerRoleFor({ role: roleGroup.role, toolPermissions: effectiveLevels });
+  if (brokerRole.brokerRole !== null) {
+    lines.push(`  - Broker role: ${brokerRole.brokerRole}${brokerRole.conflicts.length > 0 ? `; DISAGREES with this role's permissions (${brokerRole.conflicts.join(', ')})` : '; consistent with this role\'s permissions'}.`);
+  } else lines.push('  - Broker role: none (only a PM or a worker role group has write operations through the Broker).');
   if (replaced.length > 0) {
     lines.push('', 'Replaced rules:');
     for (const entry of replaced) lines.push(`  - ${entry.rule.id} (${source(entry.rule)}) replaced ${entry.replaced.id} (${source(entry.replaced)})`);

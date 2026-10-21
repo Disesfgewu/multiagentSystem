@@ -62,6 +62,8 @@ export interface PreparedInstructions {
   injectionStatusLabel: string;
   renderedContext: string | null;
   summaryText: string;
+  /** The role group's effective level for each tool (a stronger layer's ban applied), or null without a role group: what the launch turns into the CLI's own permission settings (issue #310). */
+  toolPermissions: Record<string, string> | null;
 }
 
 export interface PrepareInstructionsFailure {
@@ -294,7 +296,8 @@ export async function prepareInstructionSnapshot(
     injectionState,
     injectionStatusLabel,
     renderedContext,
-    summaryText
+    summaryText,
+    toolPermissions: group && previewResult && previewResult.ok ? Object.fromEntries(previewResult.permissions.map((entry: { tool: string; effective: string }) => [entry.tool, entry.effective])) : null
   };
 }
 
