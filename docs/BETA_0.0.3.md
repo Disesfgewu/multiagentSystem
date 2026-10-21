@@ -12,21 +12,21 @@
 
 ## 此版更新（相對 Beta 3）
 
-- **受管隔離（macOS，需使用者明確選用）**：在使用者設定把 `multiagentSystem.isolation.mode` 設為 `enforced`，並填入 `isolation.allowedDomains` 後，session 的啟動與重新開啟會先在本機實測九個旁路通道。每個必要通道都有對照組證據、而且確實被擋下時，才會在 Seatbelt 沙箱中啟動 CLI。
-  - 沙箱會擋憑證檔讀取、`.git` 寫入與鑰匙圈服務，並移除 GitHub 憑證環境變數。
-  - 網路只能經過依主機名稱過濾的本機代理，GitHub 一律拒絕。
+- **受管隔離（macOS，需使用者明確選用）**：在使用者設定把 `multiagentSystem.isolation.mode` 設為 `enforced`，並填入 `isolation.allowedDomains` 後，session 的啟動與重新開啟會先在本機實測九項檢查（七個旁路通道，加上兩項確認 CLI 仍可互動與登入）。每一項都有對照組證據並通過時，才會在 Seatbelt 沙箱中啟動 CLI。
+  - 沙箱拒絕讀取已知的憑證位置、拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務；符合規則的 GitHub 憑證環境變數會被移除。其他位置的憑證、其他鑰匙圈存取方式、以其他名稱匯出的 token，都不在範圍內或尚未驗證。
+  - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
   - 任何證據不足、代理失敗或發生錯誤時，都不啟動，也不會退回無隔離的啟動。
   - 預設的 advisory 行為不變。
-- **Windows**：受限權杖與驗證 harness 已在 CI 實測，但權杖擋不了網路，所以 Windows 只有 advisory，選 enforced 時會直接拒絕並說明原因。
+- **Windows**：受限權杖與驗證 harness 已在 CI 的 Windows runner（管理員權限）上執行，但權杖擋不了網路，所以 Windows 只有 advisory，選 enforced 時會直接拒絕並說明原因。
 - **自訂 CLI provider**：在使用者設定 `multiagentSystem.providers.custom` 列出自己的 CLI，用 **Start Custom Provider Terminal** 在原生 terminal 啟動。
   - 程式會解析成絕對路徑；工作區內的同名程式不會被使用，經過 symlink 或 junction 也一樣。
   - 第一次啟動要確認；未信任的工作區不啟動；enforced 時拒絕啟動。
-- **研究工具**：
+- **研究工具（基礎工作）**：目前 **Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從介面無法完成下載，以下流程只有自動化測試。
   - 新增 **Research: Search Papers**。
   - 研究用 MCP 有允許清單，以及受控的啟用、停止、撤銷。
   - github-mcp-server 使用固定版本並驗證雜湊，啟動前一律重新核對。
   - 每個工具有自己的私人資料夾與暫存目錄，撤銷時清除。
-  - researcher 角色不能寫 GitHub。
+  - researcher 角色不能經由套件的寫入路徑寫 GitHub。
 - **報告**：可以從 Issue 報告關閉 Issue，合併後可以從 PR 報告刪除 head 分支。
 - **帳號與 session**：
   - Claude hook 橋接讓總覽顯示 working／waiting／ended。
