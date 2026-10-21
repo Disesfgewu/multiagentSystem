@@ -5,7 +5,8 @@ import { CANDIDATE_RESEARCH_TOOLS } from './catalog';
 import { requireInteractive } from '../shared/testMode';
 import { runSearchCommand } from './searchCommand';
 
-const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
+const { createMcpLifecycle, statusText, scanWorkspaceMcpConfig, describeRevoke, ENFORCEMENT_NOTICE } = require('./mcp-lifecycle') as {
+  describeRevoke(serverId: string, result: unknown): { level: 'info' | 'warning' | 'error'; text: string };
   createMcpLifecycle(deps: any): {
     enable(serverId: string, options: { confirmed: boolean; tools: string[] }): Promise<any>;
     stop(serverId: string): Promise<any>;
@@ -147,7 +148,7 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     if (interactive) {
       const answer = await vscode.window.showWarningMessage(
         `Revoke research MCP server '${serverId}'?`,
-        { modal: true, detail: 'The server is stopped, its tool grants are removed and it cannot start again until you consent again.' },
+        { modal: true, detail: 'The server is stopped, its tool grants are removed, its private folder in this extension\'s storage is deleted, and it cannot start again until you consent again.' },
         'Revoke'
       );
       if (answer !== 'Revoke') return { ok: false, code: 'cancelled' };
@@ -156,7 +157,10 @@ export function registerMcpCommands(context: vscode.ExtensionContext): vscode.Di
     if (result.ok) {
       try { revokeConsent(serverId, { store: currentStore }); } catch { /* the lifecycle revoke already blocks a restart */ }
     }
-    if (interactive) void vscode.window.showInformationMessage(result.ok ? `MCP server '${serverId}' revoked.` : `Revoke problem for '${serverId}': ${result.code}.`);
+    if (interactive) {
+      const shown = describeRevoke(serverId, result);
+      void (shown.level === 'info' ? vscode.window.showInformationMessage(shown.text) : shown.level === 'warning' ? vscode.window.showWarningMessage(shown.text) : vscode.window.showInformationMessage(shown.text));
+    }
     return result;
   };
 

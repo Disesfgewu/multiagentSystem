@@ -509,7 +509,20 @@ function statusText(s) {
   return lines.join('\n');
 }
 
+/**
+ * What to tell the person after a revoke. A revoke that went through but could not delete the tool's folder is a warning, not a
+ * plain success: the folder is named by its place inside the private storage, never by its full path.
+ * @returns {{ level: 'info' | 'warning' | 'error', text: string }}
+ */
+function describeRevoke(serverId, result) {
+  const id = typeof serverId === 'string' ? serverId.slice(0, 64) : '';
+  if (!result || result.ok !== true) return { level: 'error', text: `Revoke problem for '${id}': ${result && typeof result.code === 'string' ? result.code : 'unknown'}.` };
+  if (result.storageRemoved === false) return { level: 'warning', text: `MCP server '${id}' was revoked, but its folder could not be deleted: research-tools/${id}. Delete it by hand if you do not want to keep what it stored.` };
+  return { level: 'info', text: `MCP server '${id}' revoked.` };
+}
+
 module.exports = {
+  describeRevoke,
   createMcpLifecycle,
   createKillTree,
   scanWorkspaceMcpConfig,

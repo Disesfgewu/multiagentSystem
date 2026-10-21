@@ -54,3 +54,8 @@
 在角色群組預覽（`describeRoleGroup` 與 `formatPreview`）中：
 - 當角色為 `researcher` 時，自動展示已審查的 5 項 Research Skills 與 5 項 Academic Ethics 規範。
 - 使用者可在啟動 native terminal 前在虛擬唯讀文件內核對研究能力與倫理防護邊界。
+
+## 研究 MCP 工具的私人資料夾（#107）
+每個研究 MCP 工具在擴充套件的私人儲存區有自己的資料夾 `research-tools/<serverId>`（含 `tmp`，工具的 `TMPDIR`／`TEMP`／`TMP` 指向它），撤銷時在**確認程式已結束之後**刪除；刪不掉時會顯示警告（只寫 `research-tools/<serverId>`，不寫完整路徑），撤銷本身仍成立。
+
+已知邊界：在 POSIX 上程式以 `detached: true` 啟動，若先前擴充套件主機當掉，留下的孤兒程式不在 `revoke` 的追蹤範圍內，資料夾可能在它仍在執行時被刪掉。

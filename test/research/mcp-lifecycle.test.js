@@ -10,7 +10,7 @@ const childProcess = require('node:child_process');
 const { validateCatalogItem, CANDIDATE_RESEARCH_TOOLS } = require('../../src/research/catalog');
 const { grantConsent, revokeConsent } = require('../../src/research/installer');
 const {
-  createMcpLifecycle, createKillTree, scanWorkspaceMcpConfig, normalizeAllowlist, statusText, ENFORCEMENT
+  createMcpLifecycle, createKillTree, scanWorkspaceMcpConfig, normalizeAllowlist, statusText, describeRevoke, ENFORCEMENT
 } = require('../../src/research/mcp-lifecycle');
 
 const SECRET = 'synthetic-secret-value-0123456789';
@@ -706,4 +706,16 @@ it('when the program cannot be confirmed gone, the folder is left alone', async 
   const result = await lc.revoke('synthetic-papers');
   assert.equal(result.ok, false);
   assert.deepEqual(cleaned, [], 'nothing was removed while the program may still be running');
+});
+
+it('after a revoke the person is told if the folder could not be deleted: a warning that names the place, not the full path; a failed revoke is an error', () => {
+  assert.deepEqual(describeRevoke('synthetic-papers', { ok: true, storageRemoved: true }), { level: 'info', text: "MCP server 'synthetic-papers' revoked." });
+  assert.deepEqual(describeRevoke('synthetic-papers', { ok: true, storageRemoved: null }).level, 'info', 'no clean-up was attempted: nothing to warn about');
+  const warning = describeRevoke('synthetic-papers', { ok: true, storageRemoved: false, folder: '/Users/someone/private/research-tools/synthetic-papers' });
+  assert.equal(warning.level, 'warning');
+  assert.match(warning.text, /revoked, but its folder could not be deleted: research-tools\/synthetic-papers/);
+  assert.doesNotMatch(warning.text, /\/Users\//, 'no full path');
+  assert.deepEqual(describeRevoke('synthetic-papers', { ok: false, code: 'kill-unconfirmed' }), { level: 'error', text: "Revoke problem for 'synthetic-papers': kill-unconfirmed." });
+  for (const bad of [undefined, null, 'x', {}, { ok: false }]) assert.equal(describeRevoke('x', bad).level, 'error', String(bad));
+  assert.equal(describeRevoke('x'.repeat(100), { ok: true, storageRemoved: false }).text.includes('x'.repeat(65)), false, 'the id is cut short');
 });
