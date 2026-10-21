@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
-const { createFilterProxy, normalizeHost, parsePattern, matches, isPrivateAddress, DEFAULT_DENIED } = require('../../src/isolation/filter-proxy');
+const os = require('node:os');
+const { createFilterProxy, defaultConnect, normalizeHost, parsePattern, matches, isPrivateAddress, DEFAULT_DENIED } = require('../../src/isolation/filter-proxy');
 
 const PUBLIC = '93.184.216.34';
 
@@ -84,12 +85,13 @@ test('a subdomain matches a wildcard entry, the bare name does not, and case and
 });
 
 test('GitHub and the hosts it serves files from are refused even when they are on the allow list', async (t) => {
-  const { started, credential, connected, looked } = await proxyFor(t, { proxy: { allow: ['api.provider.test', 'github.com', '*.github.com', '*.githubusercontent.com', 'ghcr.io', 'raw.githubusercontent.com'] } });
+  const { started, credential, connected, looked } = await proxyFor(t, { proxy: { allow: ['api.provider.test', 'github.com', '*.github.com', '*.githubusercontent.com', 'ghcr.io', 'raw.githubusercontent.com', '*.ghe.com', 'githubcopilot.com', '*.githubcopilot.com'] } });
   for (const host of ['github.com', 'api.github.com', 'gist.github.com', 'raw.githubusercontent.com', 'objects.githubusercontent.com', 'ghcr.io', 'pkg.ghcr.io', 'user.github.io', 'GitHub.com.', 'a.b.github.com']) {
     assert.equal(statusOf(await connectThrough(started, `${host}:443`, { credential })), 403, host);
   }
   assert.deepEqual([connected.length, looked.length], [0, 0], 'refused before any lookup or connection');
   for (const entry of DEFAULT_DENIED) assert.ok(parsePattern(entry), entry);
+  for (const host of ['x.ghe.com', 'api.githubcopilot.com', 'githubcopilot.com']) assert.equal(statusOf(await connectThrough(started, `${host}:443`, { credential })), 403, host);
 });
 
 test('what is not on the allow list, a port that is not allowed, and a name that is not a name are refused before any lookup', async (t) => {
@@ -168,6 +170,67 @@ test('the counters hold numbers only: no host names and no addresses', async (t)
   assert.deepEqual(Object.keys(stats).sort(), ['active', 'allowed', 'denied', 'failed', 'unauthorized']);
   assert.deepEqual([stats.allowed, stats.denied, stats.unauthorized], [1, 1, 1]);
   assert.equal(JSON.stringify(stats).includes('provider'), false);
+});
+
+test('it listens on the loopback address only: the address it reports is 127.0.0.1, and no other address of this machine reaches it', async (t) => {
+  const { started } = await proxyFor(t);
+  assert.equal(started.address, '127.0.0.1');
+  const others = Object.values(os.networkInterfaces()).flat().filter((entry) => entry && entry.family === 'IPv4' && !entry.internal).map((entry) => entry.address);
+  for (const address of others.slice(0, 3)) {
+    const outcome = await new Promise((resolve) => {
+      const socket = net.connect({ host: address, port: started.port });
+      socket.on('connect', () => { socket.destroy(); resolve('connected'); });
+      socket.on('error', (error) => resolve(error.code));
+      setTimeout(() => { socket.destroy(); resolve('timeout'); }, 2000);
+    });
+    assert.notEqual(outcome, 'connected', `${address} reaches the proxy`);
+  }
+});
+
+test('an upstream that connects after the time limit is destroyed and its later error cannot crash anything; the slot is given back', async (t) => {
+  const late = new net.Socket();
+  let destroyed = false;
+  late.on('close', () => { destroyed = true; });
+  const { proxy, started, credential } = await proxyFor(t, { proxy: { connectMs: 100, connect: () => new Promise((resolve) => setTimeout(() => resolve(late), 400)) } });
+  const reply = await connectThrough(started, 'api.provider.test:443', { credential });
+  assert.equal(statusOf(reply), 502, 'the client was told at the time limit');
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(destroyed, true, 'the socket that arrived late was destroyed');
+  late.emit('error', new Error('read ECONNRESET')); // would have been an uncaught exception
+  reply.socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(proxy.stats().active, 0);
+  assert.equal(proxy.stats().failed, 1);
+});
+
+test('the real connect function: a reset after it connected, or a connect that never finishes, is an error value, never an unhandled error', async (t) => {
+  const resetting = net.createServer((socket) => { socket.on('error', () => {}); setTimeout(() => socket.resetAndDestroy(), 50); });
+  await new Promise((resolve) => resetting.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => resetting.close(resolve)));
+  const socket = await defaultConnect('127.0.0.1', resetting.address().port, 1000);
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  await closed; // the reset arrives; there must be no 'uncaughtException'
+  assert.equal(socket.destroyed, true);
+  // An address nothing answers on (TEST-NET, never routed): refused by time, not left waiting.
+  const started = Date.now();
+  await assert.rejects(defaultConnect('192.0.2.1', 9, 300), /connect-timeout|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|EADDRNOTAVAIL/);
+  assert.ok(Date.now() - started < 3000);
+});
+
+test('a name that takes too long to resolve is refused at the limit and the slot is given back', async (t) => {
+  const { proxy, started, credential } = await proxyFor(t, { proxy: { lookupMs: 100, lookup: () => new Promise(() => {}) } });
+  const reply = await connectThrough(started, 'api.provider.test:443', { credential });
+  assert.equal(statusOf(reply), 502);
+  reply.socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(proxy.stats().active, 0);
+});
+
+test('an IPv6 address is judged the same however it is written', () => {
+  for (const address of ['0:0:0:0:0:ffff:7f00:1', '0000:0000:0000:0000:0000:ffff:0a00:0001', '::FFFF:7F00:1', '::ffff:127.0.0.1', '0:0:0:0:0:0:0:1', '0:0:0:0:0:0:0:0', 'FE80:0:0:0:0:0:0:1', 'FD00::1', '::127.0.0.1', '0:0:0:0:0:ffff:c0a8:101', '64:ff9b::a00:1']) {
+    assert.equal(isPrivateAddress(address), true, address);
+  }
+  for (const address of ['2606:2800:0220:0001:0000:0000:0000:0001', '2001:4860:4860:0:0:0:0:8888', '0:0:0:0:0:ffff:808:808']) assert.equal(isPrivateAddress(address), false, address);
 });
 
 test('hosts and patterns: only plain DNS names are names; an address in any spelling is not', () => {

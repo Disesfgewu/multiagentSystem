@@ -33,7 +33,8 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 
 const DEFAULT_DENIED = Object.freeze([
   'github.com', '*.github.com', 'githubusercontent.com', '*.githubusercontent.com', 'githubassets.com', '*.githubassets.com',
-  'ghcr.io', '*.ghcr.io', 'github.io', '*.github.io', 'githubapp.com', '*.githubapp.com', 'github.dev', '*.github.dev'
+  'ghcr.io', '*.ghcr.io', 'github.io', '*.github.io', 'githubapp.com', '*.githubapp.com', 'github.dev', '*.github.dev',
+  'ghe.com', '*.ghe.com', 'githubcopilot.com', '*.githubcopilot.com'
 ]);
 const HOST_CHARS = /^[a-z0-9.-]+$/;
 const MAX_HOST = 253;
@@ -75,7 +76,10 @@ function isPrivateAddress(address) {
   const family = net.isIP(address);
   if (family === 4) return isPrivateV4(address);
   if (family === 6) {
-    const lower = address.toLowerCase();
+    // One spelling: `0:0:0:0:0:ffff:7f00:1`, `::FFFF:7F00:1` and `::ffff:127.0.0.1` are the same address, and the checks below
+    // read the compressed lower-case form. An address that cannot be written that way is refused.
+    let lower;
+    try { lower = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return true; }
     // IPv4 written inside IPv6 (::ffff:10.0.0.1, ::10.0.0.1): judged by the IPv4 part.
     const mapped = /^(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
     if (mapped) return isPrivateV4(mapped[1]);
@@ -84,7 +88,8 @@ function isPrivateAddress(address) {
       const high = parseInt(hexMapped[1], 16); const low = parseInt(hexMapped[2], 16);
       return isPrivateV4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
     }
-    if (lower === '::' || lower === '::1') return true;
+    // The deprecated IPv4-compatible form (::a.b.c.d, canonical ::xxxx:xxxx) and everything else in ::/96 starts with a zero byte: not public.
+    if (/^::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})?)?$/.test(lower)) return true;
     const first = parseInt(lower.split(':')[0] || '0', 16);
     if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
     if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link local
@@ -117,18 +122,34 @@ function isPrivateV4(address) {
 const defaultLookup = (host) => new Promise((resolve, reject) => {
   dns.lookup(host, { all: true, verbatim: true }, (error, addresses) => (error ? reject(error) : resolve(addresses.map((entry) => entry.address))));
 });
-const defaultConnect = (address, port) => new Promise((resolve, reject) => {
+const defaultConnect = (address, port, timeoutMs = 10_000) => new Promise((resolve, reject) => {
   const socket = net.connect({ host: address, port });
-  socket.once('connect', () => { socket.removeAllListeners('error'); resolve(socket); });
-  socket.once('error', (error) => { socket.destroy(); reject(error); });
+  // An error listener stays for the socket's whole life: a reset after it connected must never be an unhandled 'error'.
+  socket.on('error', (error) => { if (!socket.connecting) return; socket.destroy(); reject(error); });
+  socket.setTimeout(timeoutMs, () => { socket.destroy(); reject(new Error('connect-timeout')); });
+  socket.once('connect', () => { socket.setTimeout(0); resolve(socket); });
 });
+
+/** Runs `attempt` with a time limit. A socket that arrives after the limit is destroyed, never left running with nobody holding it. */
+function withTimeout(attempt, ms, onLate) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; reject(new Error('timeout')); }, ms);
+    if (typeof timer.unref === 'function') timer.unref();
+    Promise.resolve(attempt).then((value) => {
+      if (settled) { if (typeof onLate === 'function') onLate(value); return; }
+      settled = true; clearTimeout(timer); resolve(value);
+    }, (error) => { if (!settled) { settled = true; clearTimeout(timer); reject(error); } });
+  });
+}
+const destroyLate = (socket) => { if (socket && typeof socket.on === 'function') { socket.on('error', () => {}); if (typeof socket.destroy === 'function') socket.destroy(); } };
 
 /**
  * @param {{ allow: string[], deny?: string[], ports?: number[], maxConnections?: number, idleMs?: number, connectMs?: number,
  *   lookup?: (host: string) => Promise<string[]>, connect?: (address: string, port: number) => Promise<import('node:net').Socket> }} options
  *   `lookup` and `connect` exist so a test can use local stand-ins; their defaults are the real resolver and TCP connect.
  */
-function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxConnections = 32, idleMs = 120_000, connectMs = 10_000, lookup = defaultLookup, connect = defaultConnect } = {}) {
+function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxConnections = 32, idleMs = 120_000, connectMs = 10_000, lookupMs = 5_000, lookup = defaultLookup, connect = defaultConnect } = {}) {
   if (!Array.isArray(allow) || allow.length === 0 || allow.length > MAX_ALLOW_ENTRIES) throw new TypeError('allow must be a non-empty list');
   const allowed = allow.map(parsePattern);
   if (allowed.some((entry) => entry === null)) throw new TypeError('allow holds an entry that is not a host name or *.name');
@@ -158,7 +179,7 @@ function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxCon
     if (denied.some((pattern) => matches(host, pattern))) return { ok: false, status: 403 };
     if (!allowed.some((pattern) => matches(host, pattern))) return { ok: false, status: 403 };
     let addresses;
-    try { addresses = await lookup(host); } catch { return { ok: false, status: 502 }; }
+    try { addresses = await withTimeout(lookup(host), lookupMs); } catch { return { ok: false, status: 502 }; }
     if (!Array.isArray(addresses) || addresses.length === 0 || addresses.some(isPrivateAddress)) return { ok: false, status: 403 };
     return { ok: true, address: addresses[0] };
   }
@@ -181,7 +202,9 @@ function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxCon
       if (!decision.ok) { counters.denied += 1; refuse(clientSocket, decision.status, decision.status === 502 ? 'Bad Gateway' : 'Forbidden'); return; }
       let upstream;
       try {
-        upstream = await Promise.race([connect(decision.address, port), new Promise((_, reject) => setTimeout(() => reject(new Error('connect-timeout')), connectMs).unref())]);
+        upstream = await withTimeout(connect(decision.address, port, connectMs), connectMs, destroyLate);
+        // Whatever the connection is, an error on it from now on ends the tunnel and nothing else.
+        if (upstream && typeof upstream.on === 'function') upstream.on('error', () => {});
       } catch { counters.failed += 1; refuse(clientSocket, 502, 'Bad Gateway'); return; }
       if (clientSocket.destroyed) { upstream.destroy(); return; }
       counters.allowed += 1;
@@ -214,8 +237,8 @@ function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxCon
       server.on('clientError', (_error, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch { /* gone */ } });
       server.headersTimeout = 10_000;
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-      const { port } = server.address();
-      return { port, url: `http://managed:${credential}@127.0.0.1:${port}` };
+      const { address, port } = server.address();
+      return { address, port, url: `http://managed:${credential}@127.0.0.1:${port}` };
     },
     /** Counters only: no host names, no addresses. */
     stats: () => ({ ...counters, active }),
@@ -229,4 +252,4 @@ function createFilterProxy({ allow, deny = DEFAULT_DENIED, ports = [443], maxCon
   };
 }
 
-module.exports = { createFilterProxy, normalizeHost, parsePattern, matches, isPrivateAddress, DEFAULT_DENIED };
+module.exports = { createFilterProxy, defaultConnect, normalizeHost, parsePattern, matches, isPrivateAddress, DEFAULT_DENIED };
