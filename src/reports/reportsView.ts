@@ -280,6 +280,34 @@ export async function pullRequestSummary(number: number): Promise<PullRequestSum
   return value;
 }
 
+/** The open Issues (number and title) for choosing one to hand to an agent (issue #305). `null` means GitHub could not be read completely. */
+export async function openIssuesForDispatch(): Promise<Array<{ number: number; title: string }> | null> {
+  try {
+    const repository = await deps.repository();
+    const reader = repository ? deps.readerFor(repository) : null;
+    if (!reader) return null;
+    const result = await reader.listIssues({ state: 'open' });
+    if (result.kind === 'empty') return [];
+    if (result.kind !== 'ok' || !Array.isArray(result.data)) return null;
+    if (!result.data.every((entry: any) => entry && Number.isSafeInteger(entry.number) && entry.number > 0 && typeof entry.title === 'string')) return null;
+    return result.data.map((entry: any) => ({ number: entry.number, title: entry.title }));
+  } catch { return null; }
+}
+
+/** One Issue as GitHub has it right now, read again so a task is built from the current text, never a stale list. */
+export async function issueForDispatch(number: number): Promise<{ number: number; title: string; body: string; state: string } | null> {
+  if (!Number.isSafeInteger(number) || number < 1) return null;
+  try {
+    const repository = await deps.repository();
+    const reader = repository ? deps.readerFor(repository) : null;
+    if (!reader) return null;
+    const result = await reader.getIssue(number);
+    const data = result.kind === 'ok' ? result.data : null;
+    if (!data || data.number !== number || typeof data.title !== 'string') return null;
+    return { number, title: data.title, body: typeof data.body === 'string' ? data.body : '', state: String(data.state ?? '') };
+  } catch { return null; }
+}
+
 export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }

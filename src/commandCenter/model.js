@@ -72,13 +72,13 @@ function reportLines(pullRequest, summary) {
 const isPm = (role) => role === 'pm';
 
 /**
- * @param {{ sessions: object[], agents?: object[], accounts?: object[], roles?: Record<string, { name?: string, role?: string }>, reports?: Record<number, object|null> }} input
+ * @param {{ sessions: object[], agents?: object[], accounts?: object[], roles?: Record<string, { name?: string, role?: string }>, reports?: Record<number, object|null>, assignments?: Record<string, { issueNumber: number, at: string }> }} input
  *   `reports`: a summary of the pull request's report by pull request number (`null` could not be read, a missing key not loaded yet).
  *   `agents`: the overview's presented agents (same ids as the sessions); `accounts`: its presented accounts (id, label, usage lines, gate).
  * @returns {{ pm: object[], agents: object[], accounts: object[], counts: { agents: number, pm: number } }}
  */
 function buildCards(input) {
-  const { sessions, agents = [], accounts = [], roles = {}, reports = {} } = isPlain(input) ? input : {};
+  const { sessions, agents = [], accounts = [], roles = {}, reports = {}, assignments = {} } = isPlain(input) ? input : {};
   const presented = new Map((Array.isArray(agents) ? agents : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const accountById = new Map((Array.isArray(accounts) ? accounts : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const cards = [];
@@ -91,6 +91,7 @@ function buildCards(input) {
     const status = statusOf(session);
     const issue = shownAgent && Number.isSafeInteger(shownAgent.issueNumber) ? shownAgent.issueNumber : null;
     const pullRequest = shownAgent && Number.isSafeInteger(shownAgent.pullRequestNumber) ? shownAgent.pullRequestNumber : null;
+    const handed = isPlain(assignments) && Object.hasOwn(assignments, session.id) && isPlain(assignments[session.id]) && Number.isSafeInteger(assignments[session.id].issueNumber) ? assignments[session.id] : null;
     const gate = account && isPlain(account.gate) && typeof account.gate.action === 'string' ? account.gate.action : null;
     const details = shownAgent ? lines(shownAgent.tooltip).filter((entry) => !/^Fields marked unknown/.test(entry)) : [];
     // The one line on the card itself about the working folder: what Git says right now, or that it does not know.
@@ -111,6 +112,7 @@ function buildCards(input) {
         pullRequest,
         text: issue !== null || pullRequest !== null ? [issue !== null ? `Issue #${issue}` : null, pullRequest !== null ? `PR #${pullRequest}` : null].filter(Boolean).join(' · ') : 'no task is known (no branch or pull request is linked)'
       },
+      assigned: handed ? `Issue #${handed.issueNumber} was typed into this terminal${typeof handed.at === 'string' && Number.isFinite(Date.parse(handed.at)) ? ` at ${new Date(handed.at).toISOString()}` : ''} (not proof the agent read it)` : null,
       summary: shownAgent ? line(shownAgent.description, UNKNOWN, 200) : UNKNOWN,
       details,
       worktree: worktree ? worktree.replace(/^Git(?: \([^)]*\))?:\s*/, '') : 'unknown (no Git reading for this session)',
@@ -273,9 +275,9 @@ function toggled(list, id) {
 
 // ---- the only messages the page may send ----
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'accountAction']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'accountAction', 'assignIssue', 'sendTask']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id']
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], assignIssue: [], sendTask: []
 });
 
 /**
