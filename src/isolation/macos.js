@@ -5,9 +5,9 @@ const path = require('node:path');
 /**
  * The macOS building blocks for the managed-isolation interface (issue #25; the shared interface is
  * `capabilities.js`): the Seatbelt profile builder and the environment scrubber. The verification harness that tries
- * every bypass channel for real (with synthetic credentials and local stand-in endpoints) is test code:
- * `test/isolation/macos-harness.js`. It is not shipped in the extension package, because its fixtures are exactly
- * the shapes the publication scan must refuse to let through.
+ * every bypass channel for real (with synthetic markers and local stand-in endpoints) is `macos-harness.js`. It ships
+ * in the package, so its fixtures are deliberately not credential-shaped (no token, password or email shapes): the
+ * publication scan runs over it like any other shipped file.
  *
  * Mechanism: the Seatbelt sandbox through `/usr/bin/sandbox-exec`. Apple marks that command deprecated; it is what
  * the system offers for running one process under a profile, not a promise that it stays. Seatbelt can filter the
@@ -17,7 +17,7 @@ const path = require('node:path');
  * keychain, or a real remote.
  *
  * What counts as a result is observed, not inferred from an exit code: a bypass is "open" only when the stand-in
- * server saw a connection, or the synthetic secret came back, or the commit appeared. Each attempt is run twice,
+ * server saw a connection, or the synthetic marker came back, or the commit appeared. Each attempt is run twice,
  * the same way, once inside the sandbox and once outside as the control; a control that could not succeed (for
  * example `gh` is not installed) makes the channel unknown, never blocked.
  */

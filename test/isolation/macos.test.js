@@ -3,10 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const { seatbeltProfile, scrubEnvironment, safeProfilePath, credentialLocations, KEYCHAIN_SERVICES, HOME_CREDENTIAL_PATHS, SANDBOX_EXEC } = require('../../src/isolation/macos');
-const { createMacosModule } = require('./macos-harness');
+const { createMacosModule } = require('../../src/isolation/macos-harness');
 const { CHANNELS, collectProbes, assessIsolation, decideLaunch } = require('../../src/isolation/capabilities');
 
+const TMP = require('node:os').tmpdir();
 const real = process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC);
 const onlyMac = real ? {} : { skip: 'needs macOS and /usr/bin/sandbox-exec' };
 const BYPASS = Object.keys(CHANNELS).filter((channel) => CHANNELS[channel].kind === 'bypass');
@@ -37,7 +39,7 @@ test('the scrubbed environment has no GitHub credential, askpass program, agent 
 
 test('off macOS, or without the sandbox command, nothing is probed and every channel stays unknown', async () => {
   for (const options of [{ platform: 'linux' }, { platform: 'win32' }, { platform: 'darwin', sandboxExec: '/nonexistent/sandbox-exec' }]) {
-    const module = createMacosModule(options);
+    const module = createMacosModule({ tmpRoot: TMP, ...options });
     const { probes } = await collectProbes(module, { timeoutMs: 2000 });
     const assessment = assessIsolation({ platform: 'darwin', probes });
     assert.equal(assessment.mode, 'advisory');
@@ -45,12 +47,12 @@ test('off macOS, or without the sandbox command, nothing is probed and every cha
     assert.equal(decideLaunch({ assessment, requested: 'enforced' }).allowed, false, 'enforcement is refused, not downgraded');
     await module.dispose();
   }
-  const unknown = createMacosModule({ platform: 'linux' });
+  const unknown = createMacosModule({ tmpRoot: TMP, platform: 'linux' });
   assert.deepEqual(await unknown.probe('not-a-channel'), { control: false });
 });
 
 test('on this Mac every bypass is blocked and both interaction channels work, each against a control that got through', onlyMac, async () => {
-  const module = createMacosModule();
+  const module = createMacosModule({ tmpRoot: TMP });
   try {
     const { probes } = await collectProbes(module, { timeoutMs: 60000 });
     const assessment = assessIsolation({ platform: 'darwin', probes });
@@ -64,7 +66,7 @@ test('on this Mac every bypass is blocked and both interaction channels work, ea
 });
 
 test('with no sandbox at all, every bypass is reported open, never blocked; the probes can tell the difference', onlyMac, async () => {
-  const module = createMacosModule({ shapeSandbox: () => null, scrub: (env) => env });
+  const module = createMacosModule({ tmpRoot: TMP, shapeSandbox: () => null, scrub: (env) => env });
   try {
     const { probes } = await collectProbes(module, { timeoutMs: 60000 });
     for (const channel of BYPASS) {
@@ -78,7 +80,7 @@ test('with no sandbox at all, every bypass is reported open, never blocked; the 
 });
 
 test('each channel is judged on its own: without the file rule only the credential file and the credential helper are open', onlyMac, async () => {
-  const module = createMacosModule({ shapeSandbox: (spec) => ({ ...spec, denyRead: [] }) });
+  const module = createMacosModule({ tmpRoot: TMP, shapeSandbox: (spec) => ({ ...spec, denyRead: [] }) });
   try {
     const outcomes = {};
     for (const channel of ['file-credentials', 'credential-helper', 'direct-http', 'git-commit']) outcomes[channel] = (await module.probe(channel)).outcome;
@@ -87,7 +89,7 @@ test('each channel is judged on its own: without the file rule only the credenti
 });
 
 test('a sandbox that also cuts the CLI off from its own endpoint reads as broken, which is not enforced', onlyMac, async () => {
-  const module = createMacosModule({ shapeSandbox: (spec) => ({ ...spec, allowLocalPorts: [] }) });
+  const module = createMacosModule({ tmpRoot: TMP, shapeSandbox: (spec) => ({ ...spec, allowLocalPorts: [] }) });
   try {
     const result = await module.probe('cli-own-login');
     assert.deepEqual({ control: result.control, outcome: result.outcome }, { control: true, outcome: 'broken' });
@@ -98,7 +100,7 @@ test('a sandbox that also cuts the CLI off from its own endpoint reads as broken
 
 test('disposing removes the temporary folder with the synthetic credentials', onlyMac, async () => {
   const before = new Set(fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-')));
-  const module = createMacosModule();
+  const module = createMacosModule({ tmpRoot: TMP });
   await module.probe('file-credentials');
   const during = fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-') && !before.has(name));
   assert.equal(during.length, 1);
@@ -145,7 +147,7 @@ test('under a temporary home, every credential location is unreadable inside the
 });
 
 test('a control that could not run is never reported as blocked: without gh on the path the gh channel is unknown and enforcement is refused', onlyMac, async () => {
-  const module = createMacosModule({ parentEnv: { PATH: '/usr/bin:/bin' } });
+  const module = createMacosModule({ tmpRoot: TMP, parentEnv: { PATH: '/usr/bin:/bin' } });
   try {
     const probe = await module.probe('gh-cli');
     assert.deepEqual(probe, { control: false });
@@ -160,12 +162,74 @@ test('a control that could not run is never reported as blocked: without gh on t
 });
 
 test('a keychain item is out of reach inside the sandbox and in reach without the service rule: the rule is what closes it', onlyMac, async () => {
-  const closed = createMacosModule();
-  const open = createMacosModule({ shapeSandbox: (spec) => ({ ...spec, denyMachServices: [] }) });
+  const closed = createMacosModule({ tmpRoot: TMP });
+  const open = createMacosModule({ tmpRoot: TMP, shapeSandbox: (spec) => ({ ...spec, denyMachServices: [] }) });
   try {
     const withRule = await closed.probe('credential-helper');
     const without = await open.probe('credential-helper');
     assert.deepEqual(withRule, { control: true, outcome: 'blocked' });
     assert.deepEqual(without, { control: true, outcome: 'open' }, 'with the service reachable, the keychain item comes back');
   } finally { await closed.dispose(); await open.dispose(); }
+});
+
+test('the harness ships in the package, so the publication scan finds nothing in it', () => {
+  const { scanPublication } = require('../../src/publish/scan');
+  const name = 'src/isolation/macos-harness.js';
+  const lines = fs.readFileSync(require.resolve('../../src/isolation/macos-harness'), 'utf8').split('\n');
+  const diff = `diff --git a/${name} b/${name}\nnew file mode 100644\n--- /dev/null\n+++ b/${name}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+  const result = scanPublication([{ kind: 'diff', text: diff }]);
+  assert.equal(result.status, 'clear', JSON.stringify(result.findings));
+});
+
+test('the harness refuses to be created without a folder of its own to work in', () => {
+  for (const tmpRoot of [undefined, '', 'relative', 7]) assert.throws(() => createMacosModule({ tmpRoot }), /tmpRoot/);
+});
+
+test('the attempts run with the fixture folder as HOME and with no git credential helper, inside and outside the sandbox', onlyMac, async () => {
+  const module = createMacosModule({ tmpRoot: TMP });
+  try {
+    const result = await module.selfCheck();
+    assert.equal(result.homeIsFixture, true, 'HOME is the fixture folder in the control and in the sandbox, not the person\'s home');
+    assert.equal(result.helpers, 0, 'git lists no credential helper (Apple\'s git names the keychain helper in a system file)');
+    assert.equal(result.ok, true);
+  } finally { await module.dispose(); }
+});
+
+test('if HOME or a git credential helper would reach the person\'s own data, the probe does not run: control false', onlyMac, async () => {
+  const ownHome = createMacosModule({ tmpRoot: TMP, weakenEnv: (env) => ({ ...env, HOME: require('node:os').homedir() }) });
+  const systemConfig = createMacosModule({ tmpRoot: TMP, weakenEnv: (env) => { const { GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL, ...rest } = env; return rest; } });
+  try {
+    assert.equal((await ownHome.selfCheck()).ok, false);
+    assert.deepEqual(await ownHome.probe('credential-helper'), { control: false });
+    const weakened = await systemConfig.selfCheck();
+    // Only a machine whose git names a helper in a system or user file can show this; there the check must fail.
+    if (weakened.helpers > 0) {
+      assert.equal(weakened.ok, false);
+      assert.deepEqual(await systemConfig.probe('credential-helper'), { control: false });
+    }
+  } finally { await ownHome.dispose(); await systemConfig.dispose(); }
+});
+
+test('a fixture that could not be completed leaves nothing in the folder', onlyMac, async () => {
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(TMP), 'mas-parent-'));
+  let made = 0;
+  const makeServer = async () => { made += 1; if (made === 2) throw new Error('no second server'); return { port: 1, count: () => 0, reset() {}, close: async () => {} }; };
+  const module = createMacosModule({ tmpRoot: root, makeServer });
+  try {
+    await assert.rejects(() => module.selfCheck(), /no second server/);
+    assert.deepEqual(fs.readdirSync(root), [], 'the fixture folder and its test keychain are removed');
+    assert.deepEqual(await module.probe('direct-http').catch(() => ({ control: false })), { control: false });
+  } finally { await module.dispose(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('disposing removes everything even when a server will not close', onlyMac, async () => {
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(TMP), 'mas-parent-'));
+  const makeServer = async () => ({ port: 1, count: () => 0, reset() {}, close: async () => { throw new Error('stuck'); } });
+  const module = createMacosModule({ tmpRoot: root, makeServer });
+  try {
+    await module.selfCheck();
+    assert.equal(fs.readdirSync(root).length, 1);
+    await module.dispose();
+    assert.deepEqual(fs.readdirSync(root), []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
