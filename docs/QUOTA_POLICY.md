@@ -42,6 +42,20 @@
 
 - **額度列**：Accounts and Sessions 的每個帳號可以展開，內容是這個帳號的額度：使用者設定的上限（警示、阻擋、並行上限、額度未知時的處理）、目前讀數（已用、剩餘、時間窗與重設時間、讀取時間、來源與可信度，真實、估算或未知）、目前會不會被擋，最後一列「Token usage log」點擊後開啟該帳號的用量紀錄。讀不到時寫明原因，**不顯示 0**。
 - **Token 用量紀錄**：每次 provider 真正回報 token 用量（目前只有 Claude Code 經 status line，`docs/ACCOUNT_PROFILES.md`），就把一筆追加到擴充套件**私人儲存區**中該帳號的紀錄（`usageLog` 集合，每個帳號一筆記錄）：時間、session、provider、模型（有回報才記）、輸入／輸出／快取讀／快取寫 token、費用（有回報才記）、`actual` 或 `estimate` 標記、來源代碼。**不記錄 prompt、檔案路徑或憑證。**同一個 session 同一時間的讀數只記一次；每個帳號最多保留最近 150 筆且不超過 30 天，超過就輪替。紀錄無法讀取時顯示錯誤，不當成空的。
-- **沒有真實來源的 provider**（目前 Codex、agy）：讀數是未知，**不寫入**（不寫 0、不用估算冒充）；紀錄畫面說明這一點。本機估算的數字（例如 Claude 的費用估算）會標為「ESTIMATE」。
+- **沒有真實來源的 provider**（目前 agy；Codex 見下節）：讀數是未知，**不寫入**（不寫 0、不用估算冒充）；紀錄畫面說明這一點（Codex 的額度與最後一次請求的 token 見「Codex 的真實額度來源」，只在 Codex 的本機 session 紀錄有資料時才記）。本機估算的數字（例如 Claude 的費用估算）會標為「ESTIMATE」。
 - **指令**：**Show Token Usage Log**（唯讀文件，可選全部帳號或單一帳號）與 **Export Token Usage Log (masked)**（在未命名的編輯器開啟 CSV 或 JSON，帳號與 session 都被遮罩成 `account-1`、`s-xxxxxx`，不含標籤、id 或路徑；CSV 中會被試算表當成公式的儲存格以 `'` 開頭保持為文字；擴充套件不會自己寫檔，要不要儲存由使用者決定）。
 - **未驗證**：Claude Code 的 status line 讀數在真實帳號上是否持續回報、費用估算與真實帳單的差距、重啟後的紀錄行為都未經真機驗證（#135）。紀錄只涵蓋這個擴充套件啟動、而且有讀數來源的 session，不涵蓋使用者自己在別處開的 CLI。
+
+## Codex 的真實額度來源：本機 session 紀錄（#302）
+
+**來源**：Codex CLI 把每個 session 寫成 `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`；其中 `type: "event_msg"`、`payload.type: "token_count"` 的事件帶有 `payload.rate_limits`（`primary`／`secondary` 各有 `used_percent`、`window_minutes`、`resets_at`（epoch 秒））、`plan_type`，以及 `payload.info.last_token_usage`。這是**本機的唯讀檔案**，不連網、不需要憑證；每個 Codex 帳號用自己的 `CODEX_HOME`（帳號設定檔的資料夾），所以逐帳號讀取（`src/accounts/codex-rate-limits.js`）。macOS 與 Windows 的格式相同（查證是在 macOS 上做的，Windows 沒有實跑）。
+
+**怎麼讀（唯讀、有上限）**：只開 `sessions` 底下符合 `rollout-*.jsonl` 的檔案，**絕不開 `auth.json`** 或帳號資料夾裡的其他檔案（測試記錄實際被開啟的路徑）；每一層都用 `lstat` 檢查，連結與非一般檔案不跟隨、不讀；只看最新的幾個檔案、從檔尾往回最多讀 256 KB、超過 64 KB 的單行略過；只保留上面那幾個數字與短代碼（方案名稱要符合短代碼格式），**不保留 prompt、輸出文字、路徑或其他欄位**。
+
+**視窗怎麼命名**：依 `window_minutes`：300 是 5 小時窗（顯示為 `five_hour`）、10080 是一週窗（`seven_day`）；其他長度**不猜**，整筆視為「格式未認得」。與 Claude 共用同一套門檻判斷：`resets_at` 已過的視窗不能用來擋人、也不能判定額度充足；缺少或無效的 `resets_at`、超出 0–100 的百分比、型別錯誤、事件時間在未來，一律是未知，**不寫 0**；來源標為 `actual`、代碼 `codex session log rate_limits`。
+
+**時效**：這是「最後一次有活動時的快照」，不是現在的即時額度。讀數沿用一般的有效期限（10 分鐘，且不超過重設時間），之後畫面顯示「out of date (not used to block)」而不是當成目前的數字；Codex 沒有在跑時它就會是過期的，這是設計，不是壞掉。
+
+**畫面與用量紀錄**：Accounts 的額度列展開後顯示兩個視窗、重設時間、方案（`Plan: plus (reported by the Codex session log)`）與來源；讀不到時說明原因（`no Codex session log yet`、`no usage in the Codex log yet`、`Codex log format not recognized`、`last Codex reading is out of date`、檔案不可讀或不安全…）。每次讀取同時把**最後一次請求**的 `last_token_usage`（輸入、快取讀取＝`cached_input_tokens`、快取寫入、輸出；`reasoning_output_tokens` 已含在輸出內不另算）以 `actual` 追加到 token 用量紀錄，同一個事件只記一次；只涵蓋讀取當下的最後一個事件，中間的請求不會逐一補記。
+
+**限制（請勿過度宣稱）**：這個格式**不是 OpenAI 公開承諾的 API**，Codex 改版時可能改變，屆時欄位對不上就 fail closed 成未知，不會猜。真實帳號上的讀數是否與 Codex 自己顯示的額度一致、Windows 路徑，都未經驗證（#135）。

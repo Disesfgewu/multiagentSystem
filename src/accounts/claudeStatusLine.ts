@@ -482,6 +482,26 @@ export function readClaudeQuotaObservations(profileId: string, configDir: string
   return claudeQuotaReading(profileId, configDir, now).observations;
 }
 
+const { readCodexRateLimits } = require('./codex-rate-limits') as {
+  readCodexRateLimits(codexHome: string, options?: { profileId?: string; now?: Date }): { ok: true; observedAt: string; planType: string | null; observations: Array<{ field?: string; value?: unknown; reason?: unknown }>; usage: unknown; sessionKey: string } | { ok: false; reason: string; observedAt?: string; usage?: unknown; sessionKey?: string };
+};
+
+const CODEX_REASONS: Record<string, string> = {
+  'codex-home-invalid': 'file-unreadable', 'sessions-unsafe': 'file-unreadable', 'log-unreadable': 'file-unreadable',
+  'no-sessions-folder': 'codex-no-sessions', 'no-session-files': 'codex-no-sessions', 'no-token-count': 'codex-no-events',
+  'timestamp-invalid': 'timestamp-invalid', 'timestamp-future': 'timestamp-future', 'rate-limits-absent': 'rate-limits-absent', 'codex-format-changed': 'codex-format-changed'
+};
+
+/** What the Codex session log says about the account of one profile (its CODEX_HOME), with why it may not be usable. */
+export function codexQuotaReading(profileId: string, codexHome: string, now: Date = new Date()): { observations: unknown[]; reason: string | null; planType: string | null; reading: ReturnType<typeof readCodexRateLimits> } {
+  const reading = readCodexRateLimits(codexHome, { profileId, now });
+  if (!reading.ok) return { observations: [], reason: CODEX_REASONS[reading.reason] ?? 'file-unreadable', planType: null, reading };
+  const percents = reading.observations.filter((entry) => typeof entry.field === 'string' && entry.field.endsWith('.used_percent'));
+  if (percents.some((entry) => typeof entry.value === 'number' && isFresh(entry, now))) return { observations: reading.observations, reason: null, planType: reading.planType, reading };
+  if (percents.some((entry) => typeof entry.value === 'number')) return { observations: reading.observations, reason: 'codex-reading-expired', planType: reading.planType, reading };
+  return { observations: reading.observations, reason: percents.some((entry) => entry.reason === 'window-reset-passed') ? 'window-reset-passed' : 'rate-limits-absent', planType: reading.planType, reading };
+}
+
 const profileInfoCache = new Map<string, { provider: string; configDir: string }>();
 
 /** Caches profile provider and configDir for quota observation lookups. */
@@ -490,11 +510,12 @@ export function registerProfileForQuota(profile: { id: string; provider: string;
 }
 
 /**
- * Usage readings for an account. Connects to real Claude status line bridge when configured;
- * remains strictly unknown (empty array) for Codex and other providers (no official mechanism exists).
+ * Usage readings for an account: Claude through the status line bridge when configured, Codex through its own session log on
+ * this computer (read-only, bounded, see codex-rate-limits.js). Any other provider stays strictly unknown (empty array).
  */
 export function quotaObservations(accountProfileId: string, profile?: { provider: string; configDir: string }, now?: Date): unknown[] {
   const target = profile ?? profileInfoCache.get(accountProfileId);
+  if (target && target.provider === 'codex') return codexQuotaReading(accountProfileId, target.configDir, now ?? new Date()).observations;
   if (!target || target.provider !== 'claude') {
     return [];
   }
@@ -510,7 +531,7 @@ export function quotaUnknownReason(accountProfileId: string, profile?: { provide
   const target = profile ?? profileInfoCache.get(accountProfileId);
   if (!target) return null;
   if (target.provider === 'agy') return 'no-source-agy';
-  if (target.provider === 'codex') return 'no-source-codex';
+  if (target.provider === 'codex') return codexQuotaReading(accountProfileId, target.configDir, now).reason;
   if (target.provider !== 'claude') return 'no-source-provider';
   return claudeQuotaReading(accountProfileId, target.configDir, now).reason;
 }

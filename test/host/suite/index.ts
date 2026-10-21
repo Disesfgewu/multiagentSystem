@@ -11,6 +11,7 @@ import { runCustomProviderChecks } from './customProviders';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
+import { runCodexQuotaChecks } from './codexQuota';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
@@ -1037,6 +1038,7 @@ export async function run(): Promise<void> {
   await roleFlow(workspace);
   await researchFlow(workspace);
   await runBroadcastChecks(workspace);
+  await runCodexQuotaChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);
