@@ -26,6 +26,18 @@
 
 目前沒有任何內建能力標為 `verified`。agy 的啟動參數、登入、帳號隔離、狀態事件、用量來源、規則注入入口與續接，在引用官方文件並實機驗證前都不得寫入程式或文件。
 
+## 自動模式（#296）
+
+使用者層級設定 `multiagentSystem.agents.autoMode`（`on`／`off`，預設 `on`）與每個 provider 的覆寫 `multiagentSystem.agents.autoModeOverrides`；工作區的值一律忽略。`src/providers/auto-mode.js` 是唯一決定旗標的地方，每個旗標都是官方文件列出的（2026-10-21 查閱）：
+
+| provider | 帶入的參數 | 依據 | 沒有採用 |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode auto` | [CLI reference](https://code.claude.com/docs/en/cli-reference)、[permission modes](https://code.claude.com/docs/en/permission-modes)：`auto` 由 classifier 模型代替人審核；Claude Code v2.1.283 起是互動 session 的內建起始模式；**auto 不可用時 Claude Code 會改以 Manual 啟動**（所以這只是請求） | `--dangerously-skip-permissions`／`bypassPermissions`（文件：只適用於隔離的容器與 VM） |
+| `codex` | `--sandbox workspace-write --ask-for-approval never` | [Codex CLI reference](https://developers.openai.com/codex/cli/reference)（導向 learn.chatgpt.com；頁面沒有版本）：`-a never` 不暫停詢問、`-s workspace-write` 把指令限制在工作區 | `--yolo`／`--dangerously-bypass-approvals-and-sandbox`（文件：只在外部已加固的環境使用）；`--full-auto` 該頁沒有列出 |
+| `agy`、其他 | 無 | 沒有官方文件列出的自動模式旗標 | 不猜；畫面標為「未知」 |
+
+選擇的理由：目標是讓 agent 不用一直等人工核准，同時只用文件列出且不是「完全繞過」的旗標。想要更強的繞過，使用者可以在自訂 provider 自己指定。**未驗證**：真實 CLI 是否接受並遵守這些旗標（#135）。無法讀懂的設定值（例如打錯字）視為 `off`，並在畫面說明，不會讓 agent 變得更不謹慎。與隔離的關係：enforced 時 CLI 在沙箱內，`wrap` 收到的最終參數含這些旗標；advisory 時畫面提醒「沒有隔離保護，agent 可以直接執行指令與寫入檔案」。「套件自己的確認視窗不能被參數跳過」（#183）不受這個設定影響。自訂 provider 的啟動不經過這個設定。
+
 ## 署名（co-author）
 
 套件不讓自己啟動的 agent 在對外發佈的內容加上署名行（#293）。**Claude Code**：每次啟動（start、reopen、身份組啟動都走同一條路）帶 `--settings <路徑>`，路徑指向擴充套件**私人儲存區**裡每次啟動都重寫的設定檔（權限 0600，只含 `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`），不改使用者的任何檔案。用路徑而不是行內 JSON，是因為 Windows PowerShell／cmd 會弄壞行內 JSON 的引號。**設定檔準備不了（沒有私人儲存區）就不啟動 Claude Code**，不會在沒有這個開關的情況下啟動。`--settings` 接受路徑與 `attribution` 設定名稱依 Claude Code 官方文件，**尚未用真實 CLI 實測**（#135）。**Codex、agy、自訂 provider**：沒有已證實的等效設定，**狀態未知**，不宣稱已關閉；它們若自己加署名行，會在經過 Broker 時被拒絕，但直接用 `git`／`gh` 的路徑不受 Broker 管轄。只傳一個 `--settings`；之後若別的功能也要傳設定，必須合併成同一個值。

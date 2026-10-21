@@ -393,3 +393,9 @@ test('presentAccount shows the specific unknown-usage reason in one short phrase
     assert.ok(row.tooltip.some((line) => line.startsWith('Why: ')), 'details carry the full reason');
   }
 });
+
+test('the tooltip says what auto mode was requested for the session, and nothing when the session has no such field', () => {
+  const withMode = presentAgent(row({}), { name: 'Agent One', autoModeLabel: 'Auto mode: on (won\'t ask for each approval) — passed: --permission-mode auto' });
+  assert.ok(withMode.tooltip.some((line) => line.startsWith('Auto mode: on')));
+  assert.ok(!presentAgent(row({}), { name: 'Agent One' }).tooltip.some((line) => /^Auto mode/.test(line)));
+});

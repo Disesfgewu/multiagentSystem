@@ -89,6 +89,7 @@ function presentAgent(row, session) {
       `Provider: ${provider}`,
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
+      ...(session && typeof session.autoModeLabel === 'string' ? [shown(session.autoModeLabel)] : []),
       ...(session && 'gitEvidence' in session ? [describeEvidence(session.gitEvidence)] : []),
       ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,

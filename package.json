@@ -129,6 +129,20 @@
           "description": "Host names the enforced mode lets the CLI reach (user settings only), for example api.example.com or *.example.com. GitHub hosts are always refused, even if listed. Empty means enforced mode refuses to start.",
           "items": { "type": "string", "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$" }
         },
+        "multiagentSystem.agents.autoMode": {
+          "type": "string",
+          "enum": ["on", "off"],
+          "default": "on",
+          "scope": "application",
+          "description": "Start each agent CLI so that it does not stop to ask for approval of every action (user settings only; workspace values are ignored). on (default): Claude Code is started with --permission-mode auto and Codex with --sandbox workspace-write --ask-for-approval never; a provider with no documented flag gets none and is shown as unknown. off: the CLI asks as usual. This is a request to the CLI; whether it is honoured is not verified. With auto mode on, the agent can run commands and change files without asking: enforced isolation (macOS) is recommended."
+        },
+        "multiagentSystem.agents.autoModeOverrides": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "description": "Per-provider override of multiagentSystem.agents.autoMode (user settings only), for example { \"claude\": \"off\" }.",
+          "additionalProperties": { "type": "string", "enum": ["on", "off"] }
+        },
         "multiagentSystem.skills.autoInstall": {
           "type": "boolean",
           "default": true,
