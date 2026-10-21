@@ -3,6 +3,7 @@
 .agents/
 .claude/*
 !.claude/skills/
+!.claude/settings.json
 .codex/
 node_modules/
 .vscode-test/
