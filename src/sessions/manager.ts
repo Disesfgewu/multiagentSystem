@@ -568,6 +568,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       acknowledgeUnknown?: boolean;
       env?: Record<string, string | null>;
       instructions?: SessionInstructionsInput;
+      /** Enforced isolation: the same wrapping `start` takes. */
+      wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
     } = {}
   ): Promise<SessionView> {
     await this.ready();
@@ -596,7 +598,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

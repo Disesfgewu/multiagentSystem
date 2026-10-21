@@ -18,7 +18,7 @@ const okPrepared = (log: string[] = []) => async () => ({
   summary: ['Enforced isolation: proven.', 'Not verified (#135): the real CLI.'],
   dispose: async () => { log.push('disposed'); }
 });
-const base = (extra: Record<string, unknown> = {}) => ({ mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/synthetic/home', createHarness: () => ({}), ...extra });
+const base = (extra: Record<string, unknown> = {}) => ({ mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/synthetic/home', cwd: '/synthetic/work', createHarness: () => ({}), ...extra });
 
 test('without the setting, or in advisory mode, nothing is prepared and nothing is asked: the launch is unchanged', async () => {
   for (const mode of [undefined, 'advisory']) {
@@ -55,7 +55,7 @@ test('enforced mode with sufficient evidence asks the person, saying what is not
   assert.ok(seen.confirms[0].some((line) => line.includes('#135')));
   if (result.kind === 'enforced') {
     assert.deepEqual(result.wrap('claude', ['--x']), { executable: '/usr/bin/sandbox-exec', args: ['-f', '/p', 'claude', '--x'] });
-    assert.match(result.env.HTTPS_PROXY, /127\.0\.0\.1/);
+    assert.match(String(result.env.HTTPS_PROXY), /127\.0\.0\.1/);
   }
 });
 
@@ -84,4 +84,12 @@ test('only a test that answers for the person skips the confirmation (the caller
   const result = await prepareIsolationForStart({ ...base({ interactive: false }), ui: handle, prepare: okPrepared() as never } as never);
   assert.equal(result.kind, 'enforced');
   assert.equal(seen.confirms.length, 0);
+});
+
+test('every place that starts or reopens an agent CLI goes through the isolation decision and passes its wrapper on', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  const calls = [...source.matchAll(/manager\.(start|reopen)\(/g)].length;
+  assert.ok(calls >= 2, 'both entry points exist');
+  assert.equal([...source.matchAll(/await isolationForLaunch\(/g)].length, calls, 'each one asks for the isolation decision first');
+  assert.equal([...source.matchAll(/isolation\.kind === 'enforced' \? \{ wrap: isolation\.wrap \}/g)].length, calls, 'each one passes the wrapper to the manager');
 });

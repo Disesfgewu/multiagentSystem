@@ -78,6 +78,8 @@
 
 每次啟動（`src/isolation/enforcedStart.ts`、`enforced-launch.js`）依序：(1) 模式不是 `advisory`／`enforced`（例如打錯字）→ 拒絕，不當成 advisory 默默啟動；(2) 沒有擴充套件私人儲存區、不是 macOS、沒有允許網域 → 拒絕；(3) 在私人儲存區下建專屬目錄，**實際**跑 harness 的每一條通道（含 `selfCheck`），任何通道是 unknown、open、對照組失敗、探測丟錯或逾時 → 拒絕並列出原因（只有通道名稱與短代碼，不含路徑或帳號）；(4) 起這次啟動專用的代理（只聽 127.0.0.1、每次新的隨機憑證），沒起來或位址不是 127.0.0.1 → 拒絕；(5) 寫 `0600` 的 profile（拒絕讀取憑證位置與 keychain 服務，網路只放行代理埠）；(6) 畫面顯示「已證明什麼、**未驗證什麼**（真實 CLI 是否肯走代理、需要哪些網域，#135）」，使用者按「Start」才繼續；(7) 終端機輸入的指令是 `/usr/bin/sandbox-exec -f <profile> <CLI> <含模型與指示的最終參數>`，環境加上 `HTTPS_PROXY` 等。任何一步失敗都**不啟動**，也不退回無隔離的啟動；已建立的東西（代理、profile、夾具資料夾、測試鑰匙圈）在失敗、取消、工作階段結束或終端機關閉時都清掉。
 
+**探測用的設定就是啟動用的設定**：沙箱由同一個函式 `isolationSpec` 產生（harness 探測與實際啟動都呼叫它）；啟動時額外加上該資料夾的 git 目錄寫入拒絕（`gitDirectoriesFor`：`.git` 目錄，或 linked worktree 的 `.git` 檔案、它指向的 git 目錄與 common 目錄；讀不懂的 `.git` 檔案就不啟動）。實測：實際輸入的指令在一般資料夾與 linked worktree 都無法 commit。環境：終端機環境把 `scrubEnvironment` 會移除的變數設為 null，並在指令前加 `/usr/bin/env -u …`（連 shell 啟動檔匯出的 `GH_TOKEN` 等也移除）；已知限制：shell 啟動檔用**新的、未知名稱**匯出的 token 無法事先列舉，這一點未涵蓋（#135）。**reopen 與 start 走同一條路**（總覽的 Reopen 也會探測、包裝、確認，失敗就不開），有測試鎖住兩個入口都必須經過判斷並傳入包裝。
+
 只有 Extension Host 測試（`interactive: false`）能代替使用者跳過確認，一般安裝的擴充套件會強制互動。沒有啟動 CLI 的純 shell（`launch: false`）不探測、不包裝。沙箱只包住 CLI 程式，不包住使用者的 shell 本身。
 
 **未驗證**：真實 CLI 是否肯走 `HTTPS_PROXY`、各供應商需要哪些網域、沒有 `gh` 的機器上（gh-cli 對照組無法成功＝unknown）enforced 會一律拒絕、真實 keychain helper（#135 T25）。Windows 端尚未接上（#26）。

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { CHANNELS } = require('./capabilities');
-const { seatbeltProfile, scrubEnvironment, credentialLocations, KEYCHAIN_SERVICES, SANDBOX_EXEC } = require('./macos');
+const { seatbeltProfile, scrubEnvironment, credentialLocations, isolationSpec, gitDirectoriesFor, SANDBOX_EXEC } = require('./macos');
 
 /**
  * The macOS verification harness for the managed-isolation interface (issue #25). It tries every bypass channel for
@@ -134,13 +134,13 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   }
 
   // `protectRepoGit` is resolved per attempt, because each attempt works in its own repository.
-  const sandboxSpec = () => ({ denyRead: [fixture.creds, ...credentialLocations(fixture.root)], allowLocalPorts: [fixture.provider.port], denyMachServices: KEYCHAIN_SERVICES, protectRepoGit: true });
+  const sandboxSpec = () => ({ ...isolationSpec({ home: fixture.root, extraDenyRead: [fixture.creds], allowLocalPorts: [fixture.provider.port] }), protectRepoGit: true });
 
   // Each attempt answers one question: did the bypass get through? `spec` is the sandbox, or null for the control.
   const attempts = {
     async 'git-commit'(spec, ctx) {
       const repo = await newRepo();
-      const sandbox = spec === null ? null : { ...spec, denyWrite: spec.protectRepoGit ? [path.join(repo, '.git')] : [] };
+      const sandbox = spec === null ? null : { ...spec, denyWrite: spec.protectRepoGit ? gitDirectoriesFor(repo) : [] };
       await launch(sandbox, '/usr/bin/git', ['-C', repo, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'bypass'], { ...ctx, env: baseEnv() });
       const counted = await run('/usr/bin/git', ['-C', repo, 'rev-list', '--count', 'HEAD'], { env: baseEnv() });
       return counted.ok && Number(counted.stdout.trim()) > 1;

@@ -4,7 +4,7 @@
 
 const { prepareEnforcedLaunch } = require('./enforced-launch') as {
   prepareEnforcedLaunch(input: Record<string, unknown>): Promise<
-    | { ok: true; wrapCommand(executable: string, args: string[]): { executable: string; args: string[] }; env: Record<string, string>; summary: string[]; dispose(): Promise<void> }
+    | { ok: true; wrapCommand(executable: string, args: string[]): { executable: string; args: string[] }; env: Record<string, string | null>; summary: string[]; dispose(): Promise<void> }
     | { ok: false; code: string; reasons: string[]; notice: string }
   >;
 };
@@ -12,7 +12,7 @@ const { prepareEnforcedLaunch } = require('./enforced-launch') as {
 export type Wrap = (executable: string, args: string[]) => { executable: string; args: string[] };
 export type EnforcedStartResult =
   | { kind: 'advisory' }
-  | { kind: 'enforced'; wrap: Wrap; env: Record<string, string>; dispose(): Promise<void> }
+  | { kind: 'enforced'; wrap: Wrap; env: Record<string, string | null>; dispose(): Promise<void> }
   | { kind: 'refused'; code: string; message: string };
 
 export interface EnforcedStartUi {
@@ -32,6 +32,7 @@ const REFUSALS: Record<string, string> = {
  * @param input.mode the user-level value of `multiagentSystem.isolation.mode` (undefined when the person never set it)
  * @param input.allowedDomains the user-level value of `multiagentSystem.isolation.allowedDomains`
  * @param input.interactive false only when an Extension Host test answers for the person (the caller decides that with `requireInteractive`)
+ * @param input.cwd the folder the CLI will work in; its git directories are protected like the ones the harness probed
  * @param input.storageDir a folder inside the extension's private storage, or undefined when there is none
  */
 export async function prepareIsolationForStart(input: {
@@ -40,6 +41,7 @@ export async function prepareIsolationForStart(input: {
   interactive: boolean;
   storageDir: string | undefined;
   home: string;
+  cwd: string;
   platform?: string;
   createHarness: (options: { tmpRoot: string }) => unknown;
   ui: EnforcedStartUi;
@@ -53,6 +55,7 @@ export async function prepareIsolationForStart(input: {
     allowedDomains: input.allowedDomains,
     storageDir: input.storageDir,
     home: input.home,
+    cwd: input.cwd,
     createHarness: input.createHarness
   }));
   if (!prepared.ok) {

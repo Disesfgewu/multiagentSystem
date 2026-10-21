@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 /**
@@ -77,4 +78,45 @@ function credentialLocations(home) {
   return HOME_CREDENTIAL_PATHS.map((relative) => path.posix.join(home, relative));
 }
 
-module.exports = { KEYCHAIN_SERVICES, credentialLocations, HOME_CREDENTIAL_PATHS, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };
+/**
+ * The ONE description of the sandbox an agent program runs in. The verification harness probes it and the launch runs
+ * it, so what was proven is what is used: both call this. `extraDenyRead` is for a test's own fixture folders;
+ * `gitDirs` is what `gitDirectoriesFor` returns for the folder the program works in.
+ * @param {{ home: string, allowLocalPorts: number[], gitDirs?: string[], extraDenyRead?: string[] }} input
+ */
+function isolationSpec({ home, allowLocalPorts, gitDirs = [], extraDenyRead = [] }) {
+  return { denyRead: [...extraDenyRead, ...credentialLocations(home)], denyWrite: [...gitDirs], allowLocalPorts: [...allowLocalPorts], denyMachServices: [...KEYCHAIN_SERVICES] };
+}
+
+const refuseGitDir = () => Object.assign(new Error('isolation-git-dir-unreadable'), { code: 'isolation-git-dir-unreadable' });
+
+/**
+ * The paths a program working in `folder` must not be able to write so that it cannot commit: the folder's own `.git`
+ * (a directory, or the file a linked worktree has), the git directory that file names, and the common directory that one
+ * names. All as real paths, because the profile compares real paths. A folder with no `.git` has nothing to protect.
+ * Throws `isolation-git-dir-unreadable` when a `.git` file cannot be understood: the caller refuses to start.
+ */
+function gitDirectoriesFor(folder) {
+  if (!safeProfilePath(folder)) throw refuseGitDir();
+  const real = fs.realpathSync(folder);
+  const dotGit = path.join(real, '.git');
+  let stat;
+  try { stat = fs.lstatSync(dotGit); } catch (error) { if (error && error.code === 'ENOENT') return []; throw refuseGitDir(); }
+  const found = [dotGit];
+  if (stat.isFile()) {
+    try {
+      const match = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf8'));
+      if (!match) throw refuseGitDir();
+      const gitdir = fs.realpathSync(path.resolve(real, match[1]));
+      found.push(gitdir);
+      try {
+        const common = fs.readFileSync(path.join(gitdir, 'commondir'), 'utf8').trim();
+        if (common) found.push(fs.realpathSync(path.resolve(gitdir, common)));
+      } catch (error) { if (!error || error.code !== 'ENOENT') throw refuseGitDir(); }
+    } catch (error) { throw error && error.code === 'isolation-git-dir-unreadable' ? error : refuseGitDir(); }
+  } else if (!stat.isDirectory()) throw refuseGitDir();
+  if (!found.every(safeProfilePath)) throw Object.assign(new Error('isolation-profile-path-invalid'), { code: 'isolation-profile-path-invalid' });
+  return [...new Set(found)];
+}
+
+module.exports = { isolationSpec, gitDirectoriesFor, KEYCHAIN_SERVICES, credentialLocations, HOME_CREDENTIAL_PATHS, seatbeltProfile, scrubEnvironment, safeProfilePath, SANDBOX_EXEC };

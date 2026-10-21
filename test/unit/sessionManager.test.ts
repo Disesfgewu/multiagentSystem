@@ -86,6 +86,16 @@ test('an enforced launch types the wrapped command, built from the final argumen
   assert.deepEqual(r.terminals[0].sent, [{ text: '/usr/bin/sandbox-exec -f /synthetic/profile.sb claude --model sonnet', newline: true }]);
 });
 
+test('a reopened session types the wrapped command too: the wrapper reaches reopen as well as start', async () => {
+  const r = rig();
+  const first = await r.manager.start({ provider: 'claude', name: 'First', cwd: '/synthetic/project', launch: false });
+  r.manager.stop(first.id);
+  const seen: string[] = [];
+  await r.manager.reopen(first.id, { wrap: (executable, args) => { seen.push(executable); return { executable: '/usr/bin/sandbox-exec', args: ['-f', '/synthetic/profile.sb', executable, ...args] }; } });
+  assert.deepEqual(seen, ['claude']);
+  assert.deepEqual(r.terminals[r.terminals.length - 1].sent, [{ text: '/usr/bin/sandbox-exec -f /synthetic/profile.sb claude', newline: true }]);
+});
+
 test('a wrap that throws starts no terminal text and leaves no session recorded', async () => {
   const r = rig();
   await assert.rejects(r.manager.start({ provider: 'claude', name: 'Isolated', cwd: '/synthetic/project', wrap: () => { throw new Error('launch-invalid'); } }), /launch-invalid/);

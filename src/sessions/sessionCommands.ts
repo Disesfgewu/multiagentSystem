@@ -124,6 +124,29 @@ function workspaceFolder(): string | undefined {
   return folders.length === 1 ? folders[0].uri.fsPath : undefined;
 }
 
+/**
+ * Advice mode (the default) changes nothing. Enforced mode is the person's own user setting; every launch of an agent CLI
+ * (a new session and a reopened one alike) comes through here, and when enforced cannot be provided it is refused, never
+ * run without it.
+ */
+async function isolationForLaunch(interactive: boolean, launch: boolean | undefined, cwd: string, openedStorage: { ok?: boolean; store?: unknown } | undefined) {
+  const settings = vscode.workspace.getConfiguration('multiagentSystem');
+  return prepareIsolationForStart({
+    // A shell opened without launching a CLI has nothing to isolate (and types nothing).
+    mode: launch === false ? undefined : readUserLevel(settings.inspect('isolation.mode')).value,
+    allowedDomains: readUserLevel(settings.inspect('isolation.allowedDomains')).value,
+    interactive,
+    storageDir: openedStorage?.ok ? path.join((openedStorage.store as any).dir, 'isolation') : undefined,
+    home: os.homedir(),
+    cwd,
+    createHarness: (harnessOptions) => (require('../isolation/macos-harness') as { createMacosModule(options: object): unknown }).createMacosModule(harnessOptions),
+    ui: {
+      progress: (work) => Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Checking enforced isolation on this machine…' }, work)),
+      confirm: async (lines) => await vscode.window.showWarningMessage('Start with enforced isolation?', { modal: true, detail: lines.join('\n') }, 'Start') === 'Start'
+    }
+  });
+}
+
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
 const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice.';
 
@@ -326,22 +349,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       let instructions: any;
       targetSessionId = randomUUID();
       const openedStorage = await privateStorage()?.use();
-      // Advice mode (the default) changes nothing. Enforced mode is the person's own user setting; if it cannot be provided
-      // the launch is refused here, never run without it.
-      const settings = vscode.workspace.getConfiguration('multiagentSystem');
-      const isolation = await prepareIsolationForStart({
-        // A shell opened without launching a CLI has nothing to isolate (and types nothing).
-        mode: input.launch === false ? undefined : readUserLevel(settings.inspect('isolation.mode')).value,
-        allowedDomains: readUserLevel(settings.inspect('isolation.allowedDomains')).value,
-        interactive,
-        storageDir: openedStorage?.ok ? path.join((openedStorage.store as any).dir, 'isolation') : undefined,
-        home: os.homedir(),
-        createHarness: (harnessOptions) => (require('../isolation/macos-harness') as { createMacosModule(options: object): unknown }).createMacosModule(harnessOptions),
-        ui: {
-          progress: (work) => Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Checking enforced isolation on this machine…' }, work)),
-          confirm: async (lines) => await vscode.window.showWarningMessage('Start with enforced isolation?', { modal: true, detail: lines.join('\n') }, 'Start') === 'Start'
-        }
-      });
+      const isolation = await isolationForLaunch(interactive, input.launch, cwd, openedStorage);
       if (isolation.kind === 'refused') {
         if (interactive && isolation.code !== 'cancelled') void vscode.window.showErrorMessage(isolation.message);
         return { ok: false, code: isolation.code, message: isolation.message };
@@ -474,6 +482,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     const interactive = input.interactive !== false;
     // Set only on the 'reopen' path, exactly like startWithAccount's own reservation handling below.
     let release: (() => Promise<void>) | undefined;
+    let isolationDispose: (() => Promise<void>) | undefined;
     try {
       let id = input.id;
       // A caller that names the session skips the picker, so outside the extension's own tests the
@@ -594,6 +603,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         let instructions: any;
         const newSessionId = randomUUID();
         const openedStorage = await privateStorage()?.use();
+        const isolation = await isolationForLaunch(interactive, input.launch, prior.worktree, openedStorage);
+        if (isolation.kind === 'refused') {
+          if (release) { await release(); release = undefined; }
+          if (interactive && isolation.code !== 'cancelled') void vscode.window.showErrorMessage(isolation.message);
+          return { ok: false, code: isolation.code, message: isolation.message };
+        }
+        if (isolation.kind === 'enforced') { isolationDispose = isolation.dispose; env = { ...(env ?? {}), ...isolation.env }; }
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -669,11 +685,12 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           env
         });
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}) });
         } catch (error) {
           observations.release(newSessionId);
           throw error;
         }
+        if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
         if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       }
       changed.fire();
@@ -682,6 +699,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       return failure(error, interactive);
     } finally {
       await release?.();
+      // Not handed to a session (the reopen failed or was cancelled): nothing of it may outlive this call.
+      await isolationDispose?.();
     }
   }
 

@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { prepareEnforcedLaunch, launchSpec } = require('../../src/isolation/enforced-launch');
 const { CHANNELS } = require('../../src/isolation/capabilities');
-const { SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { execFileSync } = require('node:child_process');
+const { SANDBOX_EXEC, isolationSpec, gitDirectoriesFor } = require('../../src/isolation/macos');
 
 const GOOD = { bypass: 'blocked', interaction: 'works' };
 const BAD = { bypass: 'open', interaction: 'broken' };
@@ -35,7 +36,8 @@ function fakeProxy({ log = [], address = '127.0.0.1', fail = false } = {}) {
 
 const base = (extra = {}) => {
   const storageDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mas-enf-'));
-  return { platform: 'darwin', allowedDomains: ['api.provider.test'], storageDir, home: '/synthetic/home', createHarness: fakeHarness(), createProxy: fakeProxy(), ...extra };
+  const cwd = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mas-enf-work-'));
+  return { platform: 'darwin', cwd, parentEnv: { PATH: '/usr/bin:/bin' }, allowedDomains: ['api.provider.test'], storageDir, home: '/synthetic/home', createHarness: fakeHarness(), createProxy: fakeProxy(), ...extra };
 };
 const leftovers = (dir) => fs.readdirSync(dir);
 
@@ -44,17 +46,18 @@ test('with every channel proven, the command is the sandboxed one and the enviro
   const result = await prepareEnforcedLaunch(input);
   assert.equal(result.ok, true);
   const command = result.wrapCommand('claude', ['--model', 'x']);
-  assert.equal(command.executable, SANDBOX_EXEC);
-  assert.equal(command.args[0], '-f');
-  assert.deepEqual(command.args.slice(2), ['claude', '--model', 'x']);
+  assert.equal(command.executable, '/usr/bin/env');
+  const at = command.args.indexOf(SANDBOX_EXEC);
+  assert.equal(command.args[at + 1], '-f');
+  assert.deepEqual(command.args.slice(at + 3), ['claude', '--model', 'x']);
   assert.equal(result.env.HTTPS_PROXY, 'http://managed:abc123@127.0.0.1:45678');
-  const profile = fs.readFileSync(command.args[1], 'utf8');
+  const profile = fs.readFileSync(command.args[at + 2], 'utf8');
   assert.match(profile, /\(deny network\*\)/);
   assert.match(profile, /localhost:45678/);
   assert.match(profile, /deny file-read\* \(subpath "\/synthetic\/home\/\.config\/gh"\)/);
   assert.match(profile, /com\.apple\.SecurityServer/);
-  assert.equal(fs.statSync(command.args[1]).mode & 0o077, 0, 'the profile is readable only by the person');
-  assert.equal(fs.statSync(path.dirname(command.args[1])).mode & 0o077, 0, 'so is the folder it lives in');
+  assert.equal(fs.statSync(command.args[at + 2]).mode & 0o077, 0, 'the profile is readable only by the person');
+  assert.equal(fs.statSync(path.dirname(command.args[at + 2])).mode & 0o077, 0, 'so is the folder it lives in');
   assert.ok(result.summary.some((line) => line.includes('#135')), 'the screen says what is not verified');
   await result.dispose();
   assert.deepEqual(leftovers(input.storageDir), [], 'everything created is removed again');
@@ -131,4 +134,93 @@ test('a program name or arguments that are not plain are refused when the comman
   const result = await prepareEnforcedLaunch(base());
   for (const [name, args] of [['../claude', []], ['a b', []], ['/bin/sh', []], ['claude', [1]], ['claude', 'x']]) assert.throws(() => result.wrapCommand(name, args), /launch-invalid/, String(name));
   await result.dispose();
+});
+
+const git = (cwd, ...args) => execFileSync('/usr/bin/git', ['-C', cwd, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic.invalid', '-c', 'commit.gpgsign=false', ...args], { env: { PATH: '/usr/bin:/bin', HOME: os.tmpdir(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, stdio: 'pipe' });
+
+test('the profile denies writing to the folder\'s git directory, as the harness protected the one it probed', posixOnly, async () => {
+  const input = base();
+  git(input.cwd, 'init', '-q', '-b', 'main');
+  const result = await prepareEnforcedLaunch(input);
+  const command = result.wrapCommand('claude', []);
+  const profile = fs.readFileSync(command.args[command.args.indexOf(SANDBOX_EXEC) + 2], 'utf8');
+  assert.deepEqual(gitDirectoriesFor(input.cwd), [path.join(fs.realpathSync(input.cwd), '.git')]);
+  assert.match(profile, new RegExp(`deny file-write\\* \\(subpath "${path.join(fs.realpathSync(input.cwd), '.git').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\)`));
+  await result.dispose();
+});
+
+test('a linked worktree is protected too: its git directory and the common directory it names', posixOnly, async () => {
+  const main = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mas-enf-main-'));
+  git(main, 'init', '-q', '-b', 'main');
+  git(main, 'commit', '-q', '--allow-empty', '-m', 'initial');
+  const linked = path.join(main, 'linked');
+  git(main, 'worktree', 'add', '-q', '-b', 'topic', linked);
+  const dirs = gitDirectoriesFor(linked);
+  assert.ok(dirs.includes(path.join(fs.realpathSync(linked), '.git')));
+  assert.ok(dirs.includes(path.join(fs.realpathSync(main), '.git')), 'the common directory');
+  assert.ok(dirs.some((dir) => dir.includes(`${path.sep}worktrees${path.sep}`)), 'the worktree\'s own git directory');
+});
+
+test('a .git file that cannot be understood refuses to start', posixOnly, async () => {
+  const input = base();
+  fs.writeFileSync(path.join(input.cwd, '.git'), 'not a git file\n');
+  const result = await prepareEnforcedLaunch(input);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'git-dir-unreadable');
+  assert.deepEqual(leftovers(input.storageDir), []);
+});
+
+test('a folder that is not an absolute plain path refuses', posixOnly, async () => {
+  for (const cwd of [undefined, 'relative', '/tmp/a(b)']) assert.equal((await prepareEnforcedLaunch(base({ cwd }))).code, 'folder-invalid');
+});
+
+const real = process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC);
+const onlyMac = real ? {} : { skip: 'needs macOS and /usr/bin/sandbox-exec' };
+
+test('the command that is really typed cannot commit in the folder or in a linked worktree (the profile that is run, not the one that was probed)', onlyMac, async () => {
+  const main = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mas-enf-main-'));
+  git(main, 'init', '-q', '-b', 'main');
+  git(main, 'commit', '-q', '--allow-empty', '-m', 'initial');
+  const linked = path.join(main, 'linked');
+  git(main, 'worktree', 'add', '-q', '-b', 'topic', linked);
+  for (const folder of [main, linked]) {
+    const input = base({ cwd: folder });
+    const result = await prepareEnforcedLaunch(input);
+    const command = result.wrapCommand('git', ['-C', folder, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'bypass']);
+    const before = git(folder, 'rev-list', '--count', 'HEAD').toString().trim();
+    try { execFileSync(command.executable, command.args, { env: { PATH: '/usr/bin:/bin', HOME: os.tmpdir() }, stdio: 'pipe' }); } catch { /* expected: the commit is refused */ }
+    assert.equal(git(folder, 'rev-list', '--count', 'HEAD').toString().trim(), before, 'no commit was made');
+    await result.dispose();
+  }
+});
+
+test('GitHub credentials are removed from the terminal and from the program, also when a shell exported them', posixOnly, async () => {
+  const parentEnv = { PATH: '/usr/bin:/bin', GH_TOKEN: 'synthetic-value', GITHUB_TOKEN: 'synthetic-value', GH_CUSTOM_SECRET: 'synthetic-value', SSH_AUTH_SOCK: '/synthetic.sock', KEEP_ME: '1' };
+  const result = await prepareEnforcedLaunch(base({ parentEnv }));
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_CUSTOM_SECRET', 'SSH_AUTH_SOCK', 'GH_ENTERPRISE_TOKEN', 'GIT_ASKPASS']) assert.equal(result.env[name], null, `${name} is unset in the terminal`);
+  assert.equal(Object.hasOwn(result.env, 'KEEP_ME'), false, 'nothing else is touched');
+  const command = result.wrapCommand('claude', []);
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_CUSTOM_SECRET', 'SSH_AUTH_SOCK']) {
+    const index = command.args.indexOf(name);
+    assert.ok(index > 0 && command.args[index - 1] === '-u', `${name} is unset by env -u in the typed command`);
+  }
+  assert.ok(!command.args.includes('KEEP_ME'));
+  await result.dispose();
+});
+
+test('the program really does not see a credential variable that is in its environment when it starts', onlyMac, async () => {
+  const result = await prepareEnforcedLaunch(base({ parentEnv: { PATH: '/usr/bin:/bin', GH_TOKEN: 'synthetic-value' } }));
+  const command = result.wrapCommand('env', []);
+  const seen = execFileSync(command.executable, command.args, { env: { PATH: '/usr/bin:/bin', GH_TOKEN: 'synthetic-value', KEEP_ME: '1' }, stdio: 'pipe' }).toString();
+  assert.ok(!seen.includes('GH_TOKEN'), 'removed');
+  assert.ok(seen.includes('KEEP_ME=1'), 'the rest is kept');
+  assert.ok(seen.includes('HTTPS_PROXY') === false, 'the proxy variables travel in the terminal environment, not through env -u');
+  await result.dispose();
+});
+
+test('the harness and the launch describe the sandbox with the same function and the same shape', () => {
+  const spec = isolationSpec({ home: '/synthetic/home', allowLocalPorts: [1234], gitDirs: ['/synthetic/work/.git'] });
+  assert.deepEqual(launchSpec({ home: '/synthetic/home', proxyPort: 1234, gitDirs: ['/synthetic/work/.git'] }), spec);
+  assert.deepEqual(Object.keys(spec).sort(), ['allowLocalPorts', 'denyMachServices', 'denyRead', 'denyWrite']);
+  assert.deepEqual(spec.denyWrite, ['/synthetic/work/.git']);
 });
