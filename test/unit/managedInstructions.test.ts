@@ -325,13 +325,14 @@ test('SessionManager launches native terminal with safe injection arguments and 
     cwd: repoRoot,
     roleGroupId: 'worker-1',
     requestedModel: 'sonnet',
-    instructions: prep
+    instructions: prep,
+    attributionFile: '/synthetic/attribution.json'
   });
 
   // Verify terminal command line was safely quoted and passed --append-system-prompt-file
   assert.equal(terminals.length, 1);
   const sentCommand = terminals[0].sent[0].text;
-  assert.match(sentCommand, /^claude --settings '\{"attribution":\{"commit":"","pr":"","sessionUrl":false\}\}' --model sonnet --append-system-prompt-file /);
+  assert.match(sentCommand, /^claude --settings \/synthetic\/attribution\.json --model sonnet --append-system-prompt-file /);
   assert.equal(session.state, 'launch-requested');
   assert.equal(session.instructionState, 'launch-requested');
   assert.equal(session.instructionDigest, prep.digest);
@@ -421,7 +422,8 @@ test('SessionManager cliExited cleans up instruction file and confirm-unknown-re
     name: 'CLI Exited Session',
     cwd: repoRoot,
     roleGroupId: 'worker-1',
-    instructions: prep1
+    instructions: prep1,
+    attributionFile: '/synthetic/attribution.json'
   });
   const file1 = prep1.argv[1];
   assert.equal(fs.existsSync(file1), true);
@@ -454,7 +456,7 @@ test('SessionManager cliExited cleans up instruction file and confirm-unknown-re
 
   // Attempting reopen without acknowledgeUnknown throws confirm-unknown-reopen but MUST NOT delete prep2.plan
   await assert.rejects(
-    restoredManager.reopen(s1.id, { newId: 'session-reopen-87654321', instructions: prep2 }),
+    restoredManager.reopen(s1.id, { newId: 'session-reopen-87654321', instructions: prep2, attributionFile: '/synthetic/attribution.json' }),
     (err: { code?: string }) => err.code === 'confirm-unknown-reopen'
   );
   assert.equal(fs.existsSync(file2), true, 'prepared instruction file survives confirm-unknown-reopen so retry can use it');
@@ -463,7 +465,8 @@ test('SessionManager cliExited cleans up instruction file and confirm-unknown-re
   const reopened = await restoredManager.reopen(s1.id, {
     newId: 'session-reopen-87654321',
     acknowledgeUnknown: true,
-    instructions: prep2
+    instructions: prep2,
+    attributionFile: '/synthetic/attribution.json'
   });
   assert.equal(reopened.id, 'session-reopen-87654321');
   assert.equal(reopened.state, 'launch-requested');

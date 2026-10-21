@@ -373,6 +373,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     instructions?: SessionInstructionsInput;
     /** Enforced isolation: turns the provider's program and its final arguments (model, instructions included) into the command typed instead. */
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
+    /** Claude Code's settings file that switches off its own attribution (issue #293); required to launch Claude. */
+    attributionFile?: string;
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
     const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
@@ -397,7 +399,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -427,11 +429,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     env?: Record<string, string | null>,
     requestedModel: string | null = null,
     instructions?: SessionInstructionsInput,
-    wrap?: (executable: string, args: string[]) => { executable: string; args: string[] }
+    wrap?: (executable: string, args: string[]) => { executable: string; args: string[] },
+    attributionFile?: string
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
-    const allArgs = [...attributionArguments(identity.provider), ...modelArgs, ...instructionArgs];
+    // Decided before a terminal exists: Claude Code without its attribution switch is not started.
+    let attributionArgs: string[] = [];
+    try { attributionArgs = launch ? attributionArguments(identity.provider, attributionFile) : []; } catch { throw new SessionError('attribution-settings-unavailable'); }
+    const allArgs = [...attributionArgs, ...modelArgs, ...instructionArgs];
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
@@ -571,6 +577,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       instructions?: SessionInstructionsInput;
       /** Enforced isolation: the same wrapping `start` takes. */
       wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
+      /** The same attribution settings file `start` takes. */
+      attributionFile?: string;
     } = {}
   ): Promise<SessionView> {
     await this.ready();
@@ -599,7 +607,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

@@ -911,7 +911,7 @@ const FIELDS = [
 
 test('a Co-authored-by or Generated-with line in any text field is refused, whatever the case or leading space, and nothing is written', async () => {
   const variants = [TRAILER, 'co-authored-by: x', 'CO-AUTHORED-BY: x', '   Co-Authored-By: x', '\tco-authored-by : x', 'Co-authored-by:x',
-    '🤖 Generated with [Claude Code](https://claude.com/claude-code)', 'Generated with Claude Code', 'generated  with   claude code', 'Co-auth​ored-by: x'];
+    '🤖 Generated with [Claude Code](https://claude.com/claude-code)', 'Generated with Claude Code', 'generated  with   claude code', '> Generated with Claude Code', 'Co-auth​ored-by: x'];
   for (const [operation, actor, build, field] of FIELDS) {
     for (const variant of variants) {
       const value = field.endsWith('title') ? variant.split('\n')[0] : text(variant);
@@ -936,11 +936,16 @@ test('co-authored-by in the middle of a line, or an ordinary body, is not refuse
   }
 });
 
-test('the Claude Code footer is refused wherever it stands in a message, as the rule says', async () => {
-  const { broker, calls } = setup({ actor: PM });
-  const result = await broker.request({ operation: 'createIssue', requestId: id(), title: 'A title', body: 'Done. generated with claude code' });
-  assert.equal(result.reason, 'co-author-forbidden');
-  assert.equal(calls.length, 0);
+test('the Claude Code footer is refused as a line of its own, and a sentence that quotes it is not', async () => {
+  for (const [body, refused] of [
+    ['Done.\nGenerated with Claude Code', true], ['> Generated with Claude Code', true], ['*Generated with Claude Code*', true], ['- generated with claude code', true],
+    ['Done. The Generated with Claude Code footer is removed by hand.', false], ['we said "Generated with Claude Code" is forbidden', false]
+  ]) {
+    const { broker, calls } = setup({ actor: PM });
+    const result = await broker.request({ operation: 'createIssue', requestId: id(), title: 'A title', body });
+    assert.equal(result.ok, !refused, body);
+    if (refused) { assert.equal(result.reason, 'co-author-forbidden'); assert.equal(calls.length, 0); }
+  }
 });
 
 test('a diff that contains these words (a test of this rule, say) is not refused: only messages are read', async () => {

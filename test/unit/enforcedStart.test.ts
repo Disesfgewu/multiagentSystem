@@ -124,3 +124,10 @@ test('on Windows the refusal comes even when storage is missing, so no other pat
 test('advice mode is unchanged on Windows: nothing is refused and nothing is wrapped', async () => {
   for (const mode of [undefined, 'advisory']) assert.deepEqual(await prepareIsolationForStart({ ...base({ platform: 'win32', mode }), ui: ui().handle } as never), { kind: 'advisory' });
 });
+
+test('every place that starts or reopens an agent CLI prepares Claude Code\'s attribution settings and hands the file to the manager', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  const calls = [...source.matchAll(/manager\.(start|reopen)\(/g)].length;
+  assert.equal([...source.matchAll(/= attributionFileFor\(/g)].length, calls, 'each one prepares the file');
+  assert.equal([...source.matchAll(/\.\.\.\(attributionFile \? \{ attributionFile \} : \{\}\)/g)].length, calls, 'each one passes it on');
+});

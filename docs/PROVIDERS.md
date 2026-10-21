@@ -28,7 +28,7 @@
 
 ## 署名（co-author）
 
-套件不讓自己啟動的 agent 在對外發佈的內容加上署名行（#293）。**Claude Code**：每次啟動（start、reopen、身份組啟動都走同一條路）帶 `--settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}'`，不改使用者的任何檔案；這個旗標與設定名稱依 Claude Code 官方文件，**尚未用真實 CLI 實測**（#135）。**Codex、agy、自訂 provider**：沒有已證實的等效設定，**狀態未知**，不宣稱已關閉；它們若自己加署名行，會在經過 Broker 時被拒絕，但直接用 `git`／`gh` 的路徑不受 Broker 管轄。只傳一個 `--settings`；之後若別的功能也要傳設定，必須合併成同一個值。
+套件不讓自己啟動的 agent 在對外發佈的內容加上署名行（#293）。**Claude Code**：每次啟動（start、reopen、身份組啟動都走同一條路）帶 `--settings <路徑>`，路徑指向擴充套件**私人儲存區**裡每次啟動都重寫的設定檔（權限 0600，只含 `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`），不改使用者的任何檔案。用路徑而不是行內 JSON，是因為 Windows PowerShell／cmd 會弄壞行內 JSON 的引號。**設定檔準備不了（沒有私人儲存區）就不啟動 Claude Code**，不會在沒有這個開關的情況下啟動。`--settings` 接受路徑與 `attribution` 設定名稱依 Claude Code 官方文件，**尚未用真實 CLI 實測**（#135）。**Codex、agy、自訂 provider**：沒有已證實的等效設定，**狀態未知**，不宣稱已關閉；它們若自己加署名行，會在經過 Broker 時被拒絕，但直接用 `git`／`gh` 的路徑不受 Broker 管轄。只傳一個 `--settings`；之後若別的功能也要傳設定，必須合併成同一個值。
 
 ## 登錄整合進度
 

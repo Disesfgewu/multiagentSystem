@@ -32,6 +32,7 @@ import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { prepareIsolationForStart } from '../isolation/enforcedStart';
+import { writeAttributionSettings } from '../providers/attribution';
 const { readUserLevel } = require('../settings/user-level') as { readUserLevel(inspected: unknown): { value: unknown; ignoredScopes: string[] } };
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
 const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
@@ -64,6 +65,7 @@ const MESSAGES: Record<string, string> = {
   'worktree-outside-project': 'The saved folder is no longer part of this project (or is a link that now points elsewhere), so no terminal was started there. Start a new session instead.',
   'invalid-snapshot': 'Saved sessions could not be read. They were left untouched and nothing will be saved in this window.',
   'store-unavailable': 'Saved sessions could not be loaded. They were left untouched and nothing will be saved in this window.',
+  'attribution-settings-unavailable': 'Claude Code was not started: the settings that keep it from adding an author line to your commits could not be prepared (the extension\'s private storage is unavailable).',
   'confirm-unknown-reopen': 'This session\'s earlier terminal may still be running in that folder. Confirm to open a new one anyway.'
 };
 
@@ -145,6 +147,20 @@ async function isolationForLaunch(interactive: boolean, launch: boolean | undefi
       confirm: async (lines) => await vscode.window.showWarningMessage('Start with enforced isolation?', { modal: true, detail: lines.join('\n') }, 'Start') === 'Start'
     }
   });
+}
+
+/**
+ * Claude Code's settings file that switches off its own attribution (issue #293), written in the extension's private storage.
+ * Without it Claude Code is not started: the switch is not optional.
+ */
+function attributionFileFor(provider: string, launch: boolean | undefined, openedStorage: { ok?: boolean; store?: unknown } | undefined): string | undefined {
+  if (provider !== 'claude' || launch === false) return undefined;
+  try {
+    if (!openedStorage?.ok) throw new Error('no storage');
+    return writeAttributionSettings(path.join((openedStorage.store as { dir: string }).dir, 'attribution'));
+  } catch {
+    throw Object.assign(new Error('attribution-settings-unavailable'), { code: 'attribution-settings-unavailable' });
+  }
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
@@ -356,6 +372,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
       if (isolation.kind === 'enforced') isolationDispose = isolation.dispose;
       if (isolation.kind === 'enforced') env = { ...(env ?? {}), ...isolation.env };
+      const attributionFile = attributionFileFor(provider, input.launch, openedStorage);
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -441,7 +458,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }).env,
         launch: input.launch,
         instructions,
-        ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {})
+        ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}),
+        ...(attributionFile ? { attributionFile } : {})
       });
       if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
       if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
@@ -610,6 +628,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           return { ok: false, code: isolation.code, message: isolation.message };
         }
         if (isolation.kind === 'enforced') { isolationDispose = isolation.dispose; env = { ...(env ?? {}), ...isolation.env }; }
+        const attributionFile = attributionFileFor(prior.provider, input.launch, openedStorage);
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -685,7 +704,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           env
         });
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}) });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}) });
         } catch (error) {
           observations.release(newSessionId);
           throw error;

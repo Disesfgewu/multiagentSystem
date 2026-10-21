@@ -13,7 +13,8 @@
 // Lines git and GitHub read as attribution in a message: a body must not be able to add a co-author, sign-off or reviewer.
 const TRAILER_LINE = /^\s*(?:co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|helped-by|on-behalf-of|cc)\s*:/i;
 const CO_AUTHOR_LINE = /^\s*co-authored-by\s*:/i;
-const GENERATED_FOOTER = /generated\s+with\s+\[?\s*claude\s+code/i;
+// The footer is a line of its own, possibly after an emoji, a quote mark or emphasis; a sentence that quotes it is not one.
+const GENERATED_FOOTER = /^[\s\p{P}\p{S}]*generated\s+with\s+\[?\s*claude\s+code/iu;
 const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
 
 /** 1-based numbers of the lines of `value` that are attribution lines. */
