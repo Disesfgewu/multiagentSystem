@@ -1,5 +1,8 @@
 import { strict as assert } from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { outsideTestMode } from './nonInteractiveGate';
 import { CUSTOM_PROVIDER_COMMANDS } from '../../../src/providers/customProviderCommands';
 
 type Shown = { providers: string[]; rejected: Array<{ index: number; code: string }>; code: string | null; ignoredScopes: string[] };
@@ -8,6 +11,14 @@ type Shown = { providers: string[]; rejected: Array<{ index: number; code: strin
  * Custom provider settings are read from the user's own settings only. The test profile of the Extension Host is
  * isolated, so the user-level value can be written and removed here without touching anyone's real settings.
  */
+async function waitForFile(file: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (fs.existsSync(file)) { await new Promise((resolve) => setTimeout(resolve, 200)); return fs.readFileSync(file, 'utf8'); }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return undefined;
+}
+
 export async function runCustomProviderChecks(): Promise<string> {
   const section = vscode.workspace.getConfiguration('multiagentSystem');
   const show = async (): Promise<Shown> => (await vscode.commands.executeCommand<Shown>(CUSTOM_PROVIDER_COMMANDS.show)) as Shown;
@@ -29,9 +40,46 @@ export async function runCustomProviderChecks(): Promise<string> {
 
     await section.update('providers.custom', 'not a list', vscode.ConfigurationTarget.Global);
     assert.equal((await show()).code, 'custom-providers-not-a-list', 'a malformed setting is unusable as a whole, never partly used');
+
+    // Starting one in a native terminal.
+    const start = (arg: unknown) => vscode.commands.executeCommand<{ ok: boolean; code?: string }>(CUSTOM_PROVIDER_COMMANDS.start, arg);
+    const sentinel = process.env.MULTIAGENT_TEST_CUSTOM_SENTINEL as string;
+    const terminalsBefore = vscode.window.terminals.length;
+    await section.update('providers.custom', [{ id: 'synthetic-custom', label: 'Synthetic Custom', executable: 'synthetic-custom-cli', args: ['--plain'] }], vscode.ConfigurationTarget.Global);
+    // As an installed extension an argument cannot pick or confirm: the dialogs are asked (and dismissed here), nothing starts.
+    const dismissed = await outsideTestMode(() => Promise.resolve(start({ id: 'synthetic-custom', interactive: false })));
+    assert.deepEqual(dismissed.result, { ok: false, code: 'cancelled' });
+    assert.ok(dismissed.prompts.some((prompt) => prompt.includes('Which custom provider should start?')), dismissed.prompts.join(' | '));
+    assert.equal(vscode.window.terminals.length, terminalsBefore, 'no terminal was opened');
+    assert.equal(fs.existsSync(sentinel), false);
+    if (process.platform === 'win32') {
+      // Only the .cmd script exists on the test PATH: it is refused, not started through a command interpreter.
+      assert.deepEqual(await start({ id: 'synthetic-custom', interactive: false }), { ok: false, code: 'script-not-supported' });
+    } else {
+      assert.deepEqual(await start({ id: 'synthetic-custom', interactive: false }), { ok: true });
+      assert.ok(vscode.window.terminals.some((terminal) => terminal.name === 'Custom: Synthetic Custom'), 'a native terminal for the provider was opened');
+      assert.equal((await waitForFile(sentinel))?.trim(), '--plain', 'the program ran with exactly the listed arguments');
+      for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name === 'Custom: Synthetic Custom')) terminal.dispose();
+    }
+    // A program that exists only inside the workspace is not used, even when its folder is first on PATH.
+    const workspace = process.env.MULTIAGENT_TEST_WORKSPACE as string;
+    const shadow = path.join(workspace, 'shadow-bin');
+    fs.mkdirSync(shadow, { recursive: true });
+    const planted = path.join(shadow, process.platform === 'win32' ? 'only-in-workspace.exe' : 'only-in-workspace');
+    fs.writeFileSync(planted, process.platform === 'win32' ? 'MZ' : '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = `${shadow}${path.delimiter}${originalPath ?? ''}`;
+      await section.update('providers.custom', [{ id: 'shadowed', label: 'Shadowed', executable: 'only-in-workspace' }], vscode.ConfigurationTarget.Global);
+      assert.deepEqual(await start({ id: 'shadowed', interactive: false }), { ok: false, code: 'executable-only-in-workspace' });
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(shadow, { recursive: true, force: true });
+    }
+    assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Custom: Shadowed'), false);
   } finally {
     await section.update('providers.custom', original, vscode.ConfigurationTarget.Global);
   }
   assert.deepEqual((await show()).providers, [], 'the profile is back to how it was');
-  return 'host smoke: custom providers are read from user settings only (workspace values never become providers); built-in ids are reserved; nothing is started from them';
+  return 'host smoke: custom providers are read from user settings only (workspace values never become providers); built-in ids are reserved; a listed program starts in a native terminal only after the person picks and confirms it, never from a workspace folder, and on Windows never as a script';
 }
