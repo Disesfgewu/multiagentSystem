@@ -14,6 +14,7 @@ import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
 import { runCommandCenterChecks } from './commandCenter';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
+import { runDispatchTaskChecks } from './dispatchTask';
 import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
 import { ACCOUNT_COMMANDS, accountTreeForTests, openLoginTerminal } from '../../../src/accounts/accountCommands';
 import { accountService, launchEnvironment } from '../../../src/accounts/accountRuntime';
@@ -1042,6 +1043,7 @@ export async function run(): Promise<void> {
   await runCodexQuotaChecks(workspace);
   await runCommandCenterChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
+  await runDispatchTaskChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);
 
