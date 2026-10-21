@@ -63,7 +63,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 |---|---|
 | **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選。只讀；沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
 | **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
-| **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
+| **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。PR 報告裡的每個變更檔案與每則行內審查留言（`路徑:行號`）都能點開：若某個 agent 的工作資料夾剛好停在這個 PR 的 head 且沒有未提交的修改，就開啟那裡的檔案並跳到該行，否則開啟 GitHub 回傳的 patch 並跳到該行（該行不在 patch 內時會說明）。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
