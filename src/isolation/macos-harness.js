@@ -57,16 +57,30 @@ async function countingServer() {
 /**
  * `shapeSandbox` and `scrub` exist so a test can weaken the isolation on purpose and see every bypass reported as open;
  * the defaults are the real ones.
- * @param {{ platform?: string, sandboxExec?: string, tmpRoot?: string, parentEnv?: Record<string, string | undefined>, timeoutMs?: number, shapeSandbox?: (spec: object) => object, scrub?: (env: object) => object }} [options]
+ * @param {{ platform?: string, sandboxExec?: string, tmpRoot: string, parentEnv?: Record<string, string | undefined>, timeoutMs?: number, shapeSandbox?: (spec: object) => object, scrub?: (env: object) => object, makeServer?: () => Promise<object>, weakenEnv?: (env: object) => object }} [options]
  * @returns {{ platform: 'darwin', probe(channel: string, context?: { signal?: AbortSignal }): Promise<{ outcome?: string, control: boolean }>, dispose(): Promise<void> }}
  */
-function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_EXEC, tmpRoot = os.tmpdir(), parentEnv = process.env, timeoutMs = ATTEMPT_TIMEOUT_MS, shapeSandbox = (spec) => spec, scrub = scrubEnvironment } = {}) {
+function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_EXEC, tmpRoot, parentEnv = process.env, timeoutMs = ATTEMPT_TIMEOUT_MS, shapeSandbox = (spec) => spec, scrub = scrubEnvironment, makeServer = countingServer, weakenEnv = (env) => env } = {}) {
+  // Where the fixture lives is the caller's decision (the extension's private storage); there is no default, so a caller
+  // that forgets it gets an error rather than a folder in the shared temporary directory.
+  if (typeof tmpRoot !== 'string' || !path.isAbsolute(tmpRoot)) throw new TypeError('tmpRoot must be an absolute folder');
   let fixture;
   const supported = platform === 'darwin' && (() => { try { fs.accessSync(sandboxExec, fs.constants.X_OK); return true; } catch { return false; } })();
 
   async function prepare() {
     if (fixture) return fixture;
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpRoot, 'mas-iso-')));
+    const servers = [];
+    try {
+      return await build(root, servers);
+    } catch (error) {
+      // A fixture that could not be completed is removed again, servers and test keychain included, before the failure goes on.
+      await removeFixture(root, servers);
+      throw error;
+    }
+  }
+
+  async function build(root, servers) {
     const marker = `synthetic-${randomBytes(8).toString('hex')}`;
     const creds = path.join(root, 'credentials');
     fs.mkdirSync(path.join(creds, 'home', '.config', 'gh'), { recursive: true });
@@ -87,11 +101,22 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       const added = await run('/usr/bin/security', ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', marker, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
       keychainReady = unlocked.ok && added.ok;
     }
-    fixture = { root, marker, creds, cliHome, keychain: keychainReady ? keychain : null, github: await countingServer(), provider: await countingServer(), repos: 0 };
+    const github = await makeServer(); servers.push(github);
+    const provider = await makeServer(); servers.push(provider);
+    fixture = { root, marker, creds, cliHome, keychain: keychainReady ? keychain : null, github, provider, repos: 0 };
     return fixture;
   }
 
-  const baseEnv = (extra = {}) => ({ PATH: parentEnv.PATH ?? '/usr/bin:/bin', HOME: fixture.root, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', ...extra });
+  /** Every step runs whatever the one before it did: a server that will not close must not keep the folder or the keychain. */
+  async function removeFixture(root, servers) {
+    for (const server of servers) { try { await server.close(); } catch { /* the rest still runs */ } }
+    try { await run('/usr/bin/security', ['delete-keychain', path.join(root, 'test.keychain-db')], { env: { PATH: '/usr/bin:/bin' } }); } catch { /* none was made */ }
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* nothing more can be done here */ }
+  }
+
+  // The system's and the person's git settings are switched off: Apple's git lists a keychain helper in a system file, and
+  // that helper would ask the person's real keychain. HOME is the fixture folder, so nothing of theirs is reached.
+  const baseEnv = (extra = {}) => weakenEnv({ PATH: parentEnv.PATH ?? '/usr/bin:/bin', HOME: fixture.root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', ...extra });
 
   function newRepo() {
     const dir = path.join(fixture.root, `repo-${fixture.repos += 1}`);
@@ -136,7 +161,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       return fixture.github.count() > 0;
     },
     async 'credential-helper'(spec, ctx) {
-      const filled = await launch(spec, '/usr/bin/git', ['-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials')}`, 'credential', 'fill'], { ...ctx, env: baseEnv(), input: 'protocol=https\nhost=github.com\n\n' });
+      const filled = await launch(spec, '/usr/bin/git', ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials')}`, 'credential', 'fill'], { ...ctx, env: baseEnv(), input: 'protocol=https\nhost=github.com\n\n' });
       // The keychain: the system service answers `security` and `git-credential-osxkeychain`, whatever files are readable.
       let fromKeychain = false;
       if (fixture.keychain) {
@@ -181,12 +206,13 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     return profilePath;
   }
 
-  return {
+  const api = {
     platform: 'darwin',
     async probe(channel, { signal } = {}) {
       const kind = Object.hasOwn(CHANNELS, channel) ? CHANNELS[channel].kind : undefined;
       if (!kind || !supported || !Object.hasOwn(attempts, channel)) return { control: false };
       await prepare();
+      if (!(await api.selfCheck()).ok) return { control: false };
       const ctx = { signal };
       const control = await attempts[channel](null, ctx);
       // The control must achieve the thing the sandbox is supposed to stop (or, for interaction, must work).
@@ -200,11 +226,27 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       if (!fixture) return;
       const { root, github, provider } = fixture;
       fixture = undefined;
-      await Promise.all([github.close(), provider.close()]);
-      if (fixture === undefined && root) await run('/usr/bin/security', ['delete-keychain', path.join(root, 'test.keychain-db')], { env: { PATH: '/usr/bin:/bin' } });
-      fs.rmSync(root, { recursive: true, force: true });
+      await removeFixture(root, [github, provider]);
+    },
+    /**
+     * What the attempts really run with, checked the way they run: HOME must be the fixture folder both outside and
+     * inside the sandbox, and git must list no credential helper at all. A probe refuses to run when this is not so.
+     */
+    async selfCheck() {
+      if (!supported) return { ok: false };
+      await prepare();
+      const home = async (spec) => {
+        const seen = await launch(spec, '/usr/bin/env', [], { env: baseEnv() });
+        return seen.stdout.split('\n').find((line) => line.startsWith('HOME='))?.slice(5);
+      };
+      const helpers = await run('/usr/bin/git', ['config', '--get-all', 'credential.helper'], { env: baseEnv() });
+      const control = await home(null);
+      const sandbox = await home(sandboxSpec());
+      const ok = control === fixture.root && sandbox === fixture.root && helpers.stdout.trim() === '';
+      return { ok, homeIsFixture: control === fixture.root && sandbox === fixture.root, helpers: helpers.stdout.split('\n').filter(Boolean).length };
     }
   };
+  return api;
 }
 
 const PTY_DRIVER = [
