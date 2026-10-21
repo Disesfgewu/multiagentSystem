@@ -41,6 +41,17 @@ export async function runCustomProviderChecks(): Promise<string> {
     await section.update('providers.custom', 'not a list', vscode.ConfigurationTarget.Global);
     assert.equal((await show()).code, 'custom-providers-not-a-list', 'a malformed setting is unusable as a whole, never partly used');
 
+    // Nothing the person put in a custom provider is repeated in a diagnostic or a storage report.
+    const sentinels = ['zz-host-secret-id', 'zz-host-secret-exe', '--zz-host-secret-arg'];
+    await section.update('providers.custom', [{ id: sentinels[0], label: 'Zz Host', executable: sentinels[1], args: [sentinels[2]] }], vscode.ConfigurationTarget.Global);
+    const diagnostic = JSON.stringify(await vscode.commands.executeCommand('multiagentSystem.setup.diagnose', { interactive: false }));
+    const storage = JSON.stringify(await vscode.commands.executeCommand('multiagentSystem.storage.status', { interactive: false }));
+    for (const sentinel of sentinels) {
+      assert.equal(diagnostic.includes(sentinel), false, `the diagnostic report repeats ${sentinel}`);
+      assert.equal(storage.includes(sentinel), false, `the storage report repeats ${sentinel}`);
+    }
+    assert.ok(diagnostic.length > 100, 'the diagnostic report really was produced');
+
     // Starting one in a native terminal.
     const start = (arg: unknown) => vscode.commands.executeCommand<{ ok: boolean; code?: string }>(CUSTOM_PROVIDER_COMMANDS.start, arg);
     const sentinel = process.env.MULTIAGENT_TEST_CUSTOM_SENTINEL as string;

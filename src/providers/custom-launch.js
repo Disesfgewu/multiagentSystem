@@ -10,6 +10,9 @@ const { scrubEnvironment } = require('../isolation/environment');
  * trust the repository: the program NAME comes from the person's own user settings (`custom-providers.js`), the name is
  * turned into an absolute path here, and the person confirms that exact path and its arguments the first time.
  *
+ * The real path comes from the operating system's own canonical form (`realpathSync.native`), which on Windows also expands
+ * short 8.3 names and fixes the case of the drive letter and folders.
+ *
  * Resolving the name:
  *   - only absolute PATH entries count (an empty or relative entry can mean the current folder);
  *   - a PATH entry, or a resolved file, inside an open workspace folder or the working folder is never used, so a
@@ -44,7 +47,7 @@ function isInside(target, folder, platform) {
  *   `forbiddenFolders`: absolute folders no program may come from (the open workspace folders and the working folder).
  * @returns {{ ok: true, executable: string } | { ok: false, reason: string }}
  */
-function resolveCustomExecutable(name, { env = process.env, platform = process.platform, forbiddenFolders = [], realpath = fs.realpathSync, stat = fs.statSync, access = fs.accessSync } = {}) {
+function resolveCustomExecutable(name, { env = process.env, platform = process.platform, forbiddenFolders = [], realpath = fs.realpathSync.native, stat = fs.statSync, access = fs.accessSync } = {}) {
   if (typeof name !== 'string' || !NAME.test(name)) return refuse('executable-name-invalid');
   const flavour = platform === 'win32' ? path.win32 : path.posix;
   const pathKey = env && typeof env === 'object' ? Object.keys(env).find((key) => key.toLowerCase() === 'path') : undefined;

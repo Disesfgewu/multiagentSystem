@@ -245,11 +245,14 @@ async function accountFlow(workspace: string): Promise<void> {
     const arrived = nextOverviewChange(10_000);
     writeRecord(24_000);
     assert.equal(await arrived, true, 'the Overview refreshed itself when the observation file appeared');
-    assert.match(await agentTooltip(), /Actual model: claude-sonnet-4-5/);
-    assert.match(await agentTooltip(), /Session cost: .*0\.25/);
+    // On a failure the whole summary text is shown, so a slow refresh can be told from a changed format (#262).
+    const shown = await agentTooltip();
+    assert.match(shown, /Actual model: claude-sonnet-4-5/, `Overview summary was: ${JSON.stringify(shown)}`);
+    assert.match(shown, /Session cost: .*0\.25/, `Overview summary was: ${JSON.stringify(shown)}`);
     const agedOut = nextOverviewChange(20_000);
     assert.equal(await agedOut, true, 'the Overview refreshed itself when the evidence aged out');
-    assert.match(await agentTooltip(), /Actual model: unknown/);
+    const aged = await agentTooltip();
+    assert.match(aged, /Actual model: unknown/, `Overview summary after the evidence aged out was: ${JSON.stringify(aged)}`);
     assert.equal(fs.existsSync(observationFile), true);
     await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: sessionId });
     assert.equal(fs.existsSync(observationFile), false, 'stopping the session removes its observation file');
