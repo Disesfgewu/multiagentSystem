@@ -99,6 +99,103 @@ function buildCards(input) {
   };
 }
 
+// ---- accounts and their quota (issue #304) ----
+
+const { UNKNOWN_REASONS } = require('../accounts/quota-gate');
+const WINDOW_LABELS = Object.freeze({ five_hour: '5-hour', seven_day: 'Weekly' });
+const ACCOUNT_ACTIONS = Object.freeze(['create', 'login', 'check', 'limits', 'usageLog', 'configureStatusLine', 'details']);
+// What a person can do about a missing reading, where there is something to click. Codes not listed have only the explanation.
+const NEXT_STEP = Object.freeze({
+  'bridge-not-enabled': { action: 'configureStatusLine', label: 'Enable the Claude status line bridge' },
+  'bridge-other-statusline': { action: 'configureStatusLine', label: 'Review the status line setting' },
+  'bridge-state-unknown': { action: 'configureStatusLine', label: 'Review the status line setting' },
+  'file-unreadable': { action: 'details', label: 'Open the account details' },
+  'codex-format-changed': { action: 'details', label: 'Open the account details' },
+  'timestamp-future': { action: 'details', label: 'Open the account details' },
+  'timestamp-invalid': { action: 'details', label: 'Open the account details' }
+});
+const NEXT_HINT = Object.freeze({
+  'bridge-no-data': 'Readings arrive only while a Claude session runs on this account: start one.',
+  'codex-no-sessions': 'Run Codex once with this account; its session log is what is read.',
+  'codex-no-events': 'Run Codex once more with this account; no usage has been logged yet.',
+  'reading-expired': 'Run the CLI again with this account to refresh the reading.',
+  'codex-reading-expired': 'Run Codex again with this account to refresh the reading.'
+});
+const GATE_TEXT = Object.freeze({ block: 'new agents on this account are held back', confirm: 'a new agent on this account needs confirmation', warn: 'this account is near its limit' });
+
+/** "in 2h 5m" / "5m ago" for a time and now, or null when the time is not a time. */
+function relative(iso, nowMs) {
+  const at = typeof iso === 'string' ? Date.parse(iso) : Number.NaN;
+  if (!Number.isFinite(at) || !Number.isFinite(nowMs)) return null;
+  const diff = at - nowMs;
+  const total = Math.floor(Math.abs(diff) / 60000);
+  const text = total < 1 ? 'under a minute' : total < 60 ? `${total}m` : total < 1440 ? `${Math.floor(total / 60)}h${total % 60 ? ` ${total % 60}m` : ''}` : `${Math.floor(total / 1440)}d${Math.floor((total % 1440) / 60) ? ` ${Math.floor((total % 1440) / 60)}h` : ''}`;
+  return diff >= 0 ? `in ${text}` : `${text} ago`;
+}
+
+function windowRow(entry, nowMs) {
+  const confidence = entry && (entry.confidence === 'actual' || entry.confidence === 'estimated') && Number.isFinite(entry.usedPercent) ? entry.confidence : 'unknown';
+  const trust = confidence === 'unknown' ? 'unknown' : entry.gateEligible ? 'verified and current' : entry.fresh && confidence === 'estimated' ? 'estimate (not used to block)' : entry.fresh ? 'source unverified (not used to block)' : 'out of date (not used to block)';
+  const resetsIn = relative(entry && entry.resetsAt, nowMs);
+  return {
+    window: line(entry && entry.window, UNKNOWN, 40),
+    label: Object.hasOwn(WINDOW_LABELS, entry && entry.window) ? WINDOW_LABELS[entry.window] : line(entry && entry.window, 'Window', 40),
+    usedPercent: confidence === 'unknown' ? null : entry.usedPercent,
+    text: confidence === 'unknown' ? 'unknown' : `${entry.usedPercent}% used`,
+    kind: confidence,
+    trust,
+    resets: resetsIn === null ? 'reset time unknown' : resetsIn.startsWith('in ') ? `resets ${resetsIn}` : 'reset time has passed',
+    resetsAt: typeof (entry && entry.resetsAt) === 'string' && Number.isFinite(Date.parse(entry.resetsAt)) ? new Date(entry.resetsAt).toISOString() : null,
+    read: relative(entry && entry.observedAt, nowMs) === null ? 'read time unknown' : `read ${relative(entry.observedAt, nowMs)}`,
+    source: line(entry && entry.source, 'unknown source', 60)
+  };
+}
+
+/**
+ * One row per account for the Command Center. `accounts` are the profiles with what the sign-in checks said (`health`, `identity`,
+ * `issues`, `label`, `provider`); `details` the quota detail of each by id (`quotaDetail`); `sessions` the running agents.
+ * Everything unread is unknown, with why, and a next step the person can click when there is one.
+ * @returns {{ rows: object[], alerts: string[] }}
+ */
+function buildAccountRows(input) {
+  const { accounts, details, sessions, now } = isPlain(input) ? input : {};
+  const nowMs = now instanceof Date ? now.getTime() : Number.NaN;
+  const list = Array.isArray(accounts) ? accounts.filter((entry) => isPlain(entry) && typeof entry.id === 'string' && ID.test(entry.id)).slice(0, 50) : [];
+  const byId = isPlain(details) ? details : {};
+  const live = Array.isArray(sessions) ? sessions.filter((entry) => isPlain(entry) && typeof entry.id === 'string') : [];
+  const alerts = [];
+  const rows = list.map((account) => {
+    const detail = Object.hasOwn(byId, account.id) && isPlain(byId[account.id]) ? byId[account.id] : null;
+    const windows = detail && Array.isArray(detail.windows) ? detail.windows.filter(isPlain).slice(0, 6).map((entry) => windowRow(entry, nowMs)) : [];
+    const reasonCode = detail && typeof detail.unknownReason === 'string' ? detail.unknownReason : null;
+    const reason = reasonCode && Object.hasOwn(UNKNOWN_REASONS, reasonCode) ? UNKNOWN_REASONS[reasonCode] : null;
+    const showReason = reason !== null && windows.every((entry) => entry.kind === 'unknown' || entry.trust.startsWith('out of date'));
+    const next = showReason && Object.hasOwn(NEXT_STEP, reasonCode) ? { ...NEXT_STEP[reasonCode] } : null;
+    const gate = detail && typeof detail.gate === 'string' && Object.hasOwn(GATE_TEXT, detail.gate) ? detail.gate : null;
+    const identity = isPlain(account.identity) && account.identity.state === 'verified' ? `identity verified (${line(account.identity.fingerprint, '', 12)})` : `identity unknown${isPlain(account.identity) && account.identity.reason ? ` (${line(account.identity.reason, '', 60)})` : ''}`;
+    const assigned = live.filter((entry) => entry.accountProfileId === account.id);
+    if (gate) alerts.push(`${line(account.label, 'Account')}: ${GATE_TEXT[gate]}`);
+    return {
+      id: account.id,
+      label: line(account.label, 'Account'),
+      provider: line(account.provider),
+      signIn: account.health === 'ready' ? 'sign-in checked' : account.health === 'attention' ? 'sign-in needs attention' : 'sign-in not checked in this window',
+      identity,
+      issues: lines(account.issues, 160).slice(0, 3),
+      plan: detail && typeof detail.plan === 'string' ? line(detail.plan, '', 32) || null : null,
+      windows,
+      usageKnown: windows.some((entry) => entry.kind !== 'unknown'),
+      reason: showReason ? { short: line(reason.short, '', 120), detail: line(reason.detail, '', 400), hint: Object.hasOwn(NEXT_HINT, reasonCode) ? NEXT_HINT[reasonCode] : null, next } : (detail === null || detail.ok === false) && windows.length === 0 ? { short: 'usage could not be read', detail: 'The usage readings of this account could not be read, so nothing is shown. This is not zero.', hint: null, next: { action: 'details', label: 'Open the account details' } } : null,
+      policy: detail ? line(detail.policy, 'Limits: could not be read.', 200) : 'Limits: could not be read.',
+      gate,
+      alert: gate ? GATE_TEXT[gate] : null,
+      agents: assigned.slice(0, 6).map((entry) => line(entry.name, 'Session', 60)),
+      agentCount: assigned.length
+    };
+  });
+  return { rows, alerts };
+}
+
 /** The decisions waiting for the person, from what the report views have already read; unknown until they have. */
 function describeDecisions(counts) {
   const read = (entry, noun) => (isPlain(entry) && Number.isSafeInteger(entry.count) && entry.count >= 0 && typeof entry.at === 'string'
@@ -147,9 +244,9 @@ function toggled(list, id) {
 
 // ---- the only messages the page may send ----
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'accountAction']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind']
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id']
 });
 
 /**
@@ -157,13 +254,23 @@ const SHAPES = Object.freeze({
  * screen. Anything else (an unknown command, an extra field, a wrong type, a long list) is refused, never partly obeyed.
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
-function parseMessage(raw, knownIds) {
+function parseMessage(raw, knownIds, accountIds) {
   if (!isPlain(raw) || typeof raw.type !== 'string' || !COMMANDS.includes(raw.type)) return { ok: false, reason: 'unknown-command' };
   const allowed = SHAPES[raw.type];
   const extra = Object.keys(raw).filter((key) => key !== 'type' && !allowed.includes(key));
   if (extra.length > 0) return { ok: false, reason: 'unexpected-field' };
   const known = knownIds instanceof Set ? knownIds : new Set(Array.isArray(knownIds) ? knownIds : []);
+  const accounts = accountIds instanceof Set ? accountIds : new Set(Array.isArray(accountIds) ? accountIds : []);
   const message = { type: raw.type };
+  if (raw.type === 'accountAction') {
+    // Creating an account names no account; every other action names one that is on the screen.
+    if (typeof raw.action !== 'string' || !ACCOUNT_ACTIONS.includes(raw.action)) return { ok: false, reason: 'invalid-field' };
+    message.action = raw.action;
+    if (raw.action === 'create') return raw.id === undefined ? { ok: true, message } : { ok: false, reason: 'unexpected-field' };
+    if (typeof raw.id !== 'string' || !ID.test(raw.id) || !accounts.has(raw.id)) return { ok: false, reason: 'unknown-id' };
+    message.id = raw.id;
+    return { ok: true, message };
+  }
   for (const key of allowed) {
     const value = raw[key];
     if (key === 'id') {
@@ -190,4 +297,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { buildCards, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES };
+module.exports = { buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES };

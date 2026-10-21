@@ -80,9 +80,27 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   assert.equal(JSON.stringify(posted), JSON.stringify([{ type: 'ready' }]), 'the page announces itself and nothing else');
   const hostile = '<img src=x onerror=alert(1)>';
   const card = (id, over = {}) => ({ id, name: hostile, role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested, not confirmed', status: { state: 'working', text: 'working', source: 'from the CLI\'s own hooks' }, terminalOpen: true, task: { issue: 1, pullRequest: 7, text: 'Issue #1 · PR #7' }, summary: 's', details: ['Branch: x'], quota: { lines: ['Usage (five_hour): 42% used'], policy: '', gate: 'warn' }, autoMode: 'Auto mode: on', alert: 'quota: near the limit', pinned: false, collapsed: false, ...over });
-  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [card('pm-1', { role: 'pm' })], agents: [card('a-1'), card('a-2', { collapsed: true, task: { issue: null, pullRequest: null, text: 'no task is known' } })], accounts: [{ id: 'acct', label: 'Main', provider: 'Claude Code', lines: [], gate: 'block' }], decisions: { issues: { known: false, text: 'issues: unknown (open the report list to load it)' }, pullRequests: { known: true, text: '2 pull requests need a decision' } }, notes: ['a note'] } } });
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [card('pm-1', { role: 'pm' })], agents: [card('a-1'), card('a-2', { collapsed: true, task: { issue: null, pullRequest: null, text: 'no task is known' } })], accounts: [
+      { id: 'acct', label: 'Main', provider: 'Claude Code', signIn: 'sign-in checked', identity: 'identity verified (abcd1234)', issues: ['Another profile logs in to the same real account.'], plan: null, windows: [{ window: 'five_hour', label: '5-hour', usedPercent: 42, text: '42% used', kind: 'actual', trust: 'verified and current', resets: 'resets in 2h', resetsAt: '2026-10-22T12:00:00.000Z', read: 'read 1m ago', source: 'claude status line rate_limits' }], usageKnown: true, reason: null, policy: 'Limits: warn at 80% used.', gate: 'block', alert: 'new agents on this account are held back', agents: ['Worker One'], agentCount: 3 },
+      { id: 'acct-2', label: `Codex <b>${hostile}`, provider: 'Codex CLI', signIn: 'sign-in not checked in this window', identity: 'identity unknown', issues: [], plan: 'plus', windows: [], usageKnown: false, reason: { short: 'no Codex session log yet', detail: 'This account has no session log yet.', hint: 'Run Codex once with this account.', next: { action: 'details', label: 'Open the account details' } }, policy: 'Limits: none set.', gate: null, alert: null, agents: [], agentCount: 0 }
+    ],
+    alerts: ['Main: new agents on this account are held back'], decisions: { issues: { known: false, text: 'issues: unknown (open the report list to load it)' }, pullRequests: { known: true, text: '2 pull requests need a decision' } }, notes: ['a note'] } } });
   const text = app.textContent;
-  for (const expected of ['Command Center', 'PM', 'Agents (2)', 'Accounts (1)', 'quota: near the limit', 'Usage: unknown', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Read-only view']) assert.ok(text.includes(expected), expected);
+  for (const expected of ['Command Center', 'PM', 'Agents (2)', 'Accounts (2)', 'quota: near the limit', 'Usage: unknown (no Codex session log yet)', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Read-only view']) assert.ok(text.includes(expected), expected);
+  for (const expected of ['5-hour: 42% used · verified and current · resets in 2h · read 1m ago · from claude status line rate_limits', 'identity verified (abcd1234)', 'sign-in not checked in this window', 'plan plus', 'Limits: warn at 80% used.', 'Agents: Worker One (+2 more)', 'No running agent uses this account.', 'Quota alerts', 'Main: new agents on this account are held back', 'Quota: new agents on this account are held back', 'This account has no session log yet.', 'Run Codex once with this account.']) assert.ok(text.includes(expected), `the account panel draws: ${expected}`);
+  const press = (label) => nodes.filter((entry) => entry.tag === 'button' && entry.textContent === label).forEach((entry) => entry.listeners.click());
+  const beforeAccounts = posted.length;
+  press('Add account');
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'create' }), 'creating an account names no account');
+  assert.equal(posted.length, beforeAccounts + 1);
+  const second = nodes.find((entry) => entry.tag === 'div' && entry.attrs['data-account'] === 'acct-2');
+  const clickIn = (container, label) => { const found = []; const walk = (n) => { if (n.tag === 'button' && n.textContent === label) found.push(n); n.children.forEach(walk); }; walk(container); found[0].listeners.click(); };
+  clickIn(second, 'Open the account details');
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'details', id: 'acct-2' }), 'the next step is a click');
+  for (const [label, action] of [['Sign in', 'login'], ['Check sign-in', 'check'], ['Set limits', 'limits'], ['Token usage log', 'usageLog']]) {
+    clickIn(second, label);
+    assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action, id: 'acct-2' }), label);
+  }
   assert.ok(text.includes(hostile), 'hostile text is drawn as text');
   assert.equal(nodes.some((entry) => entry.tag === 'img' || entry.tag === 'script'), false, 'no element was created from the text');
   // a click on "Focus terminal" posts exactly the whitelisted message
