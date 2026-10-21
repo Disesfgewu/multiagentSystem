@@ -29,12 +29,12 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 ### Beta 4 的新內容（相對 Beta 3）
 
-- **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九個旁路通道。每個必要通道都被擋下時，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
-  - 沙箱會擋住讀取憑證檔、寫入 `.git` 與存取鑰匙圈。
-  - 網路只能經過依主機名稱過濾的本機代理，GitHub 一律拒絕。
+- **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九項檢查：七個旁路通道，加上兩項確認 CLI 仍可互動與登入。每一項都要有對照組證據並通過，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
+  - 沙箱拒絕讀取已知的憑證位置（家目錄下的 git 憑證檔、gh 設定資料夾、netrc、SSH 資料夾與鑰匙圈資料夾），拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務。其他位置的憑證與其他鑰匙圈存取方式尚未驗證。
+  - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
   - Windows 目前只有 advisory。
 - **自訂 CLI provider**：在使用者設定列出自己的 CLI（例如 opencode），用原生 terminal 啟動。程式會解析成絕對路徑，不使用工作區內的同名程式；第一次啟動要確認。
-- **研究工具**：新增「Research: Search Papers」，以及研究用 MCP 的允許清單與啟用、停止、撤銷。github-mcp-server 使用固定版本並驗證雜湊；每個工具有自己的私人資料夾。
+- **研究工具（基礎工作，尚無法從介面完成安裝）**：新增「Research: Search Papers」，以及研究用 MCP 的允許清單與啟用、停止、撤銷；github-mcp-server 使用固定版本並驗證雜湊，每個工具有自己的私人資料夾。目前 **Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從命令面板無法完成下載，所以這些流程只有自動化測試。
 - **報告**：可以從 Issue 報告關閉 Issue，PR 合併後可以刪除它的 head 分支。
 - **帳號與 session**：
   - Claude hook 讓總覽顯示 working／waiting／ended。
@@ -61,19 +61,19 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 | 畫面 | 用途 |
 |---|---|
-| **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit；多個 worktree 改到同一檔案時會提醒。 |
+| **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
 | **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
-| **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷，啟動 agent 時會帶入仍有效的公告。 |
-| **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及遮罩過的診斷匯出。 |
+| **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷。啟動 agent 時，只會帶入仍有效、而且適用於該角色、provider 或 session 的公告；已在執行中的 agent 不會收到新廣播（見 [#295](https://github.com/Disesfgewu/multiagentSystem/issues/295)）。 |
+| **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及一份遮罩過、可以複製的唯讀診斷文件。 |
 
 ### Agent 與 terminal
 
 - **原生 terminal**：每個 agent 都是 VS Code 的原生 terminal，可以直接輸入、`Ctrl+C`、關閉與重新開啟。**Open Four Native Terminals** 會開啟 PM、Worker 1–3 四個 terminal，排成 2×2，可以拖曳重新排列。
 - **Session**：**Start Session with Account** 會以指定帳號啟動 CLI；**Reopen Session in a New Terminal** 會建立新的 session，不會暗中切換執行中的 CLI。遇到無法安全加引號的 shell 時，不會送出指令。
-- **Worktree**：每個 worker 可以有自己的 Git worktree（**Create Worktree**／**Release Worktree**）。**Find Files Changed in More Than One Worktree** 會找出多個 agent 同時改到的檔案：路徑完全相同標為「確定」，只差大小寫或 Unicode 寫法標為「可能」。
+- **Worktree**：每個 worker 可以有自己的 Git worktree（**Create Worktree**／**Release Worktree**）。**Find Files Changed in More Than One Worktree** 會找出多個 agent 同時改到的檔案：路徑完全相同的直接列出；只差大小寫或 Unicode 寫法的，會在選單中標為 `(possible)`。
 
 ### 帳號、額度與身份組
 
@@ -85,7 +85,9 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 ### GitHub 報告、review 與合併
 
 - 在報告中可以：**Save Local Feedback on Report**（只存在本機）、**Publish Feedback for Open Report**、**Submit Formal Pull Request Review**、**Merge Pull Request from Report**、**Delete Merged Pull Request Branch**、**Close Issue from Report**。
-- 所有 GitHub 寫入都經過 Broker：只有 PM 與 worker 角色能寫入，researcher 不能；送出前會做發佈掃描，並確認最新的 head 與 CI。合併權限預設是人工，可以經確認改為由 PM 合併（**Configure Pull Request Merge Authority**）。
+- 從報告頁送出的 GitHub 寫入會經過 Broker：送出前做發佈掃描並確認最新的 head；合併時另外確認 CI。這些按鈕以你設定的 publisher 帳號、PM 身分送出。
+- **terminal 中的 agent 自己執行的 `git`／`gh` 寫入不經過 Broker**，套件無法阻擋；只有在 macOS 的 enforced 模式下、經 Start Session 或 Reopen 啟動的 session 例外（見下文）。
+- 合併權限預設是人工：這時報告頁的合併按鈕會拒絕，請在 GitHub 上合併。經確認後，可以改為由你設定的 publisher 帳號從報告頁合併（**Configure Pull Request Merge Authority**）。
 - 報告中來自 GitHub 的文字一律當作資料顯示，不能偽造標題、跳轉連結或「Pass」判定。
 
 ### 自訂 CLI provider
@@ -103,24 +105,28 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 在 macOS 上，可以在使用者設定把 `multiagentSystem.isolation.mode` 設為 `enforced`，並在 `multiagentSystem.isolation.allowedDomains` 填入 CLI 需要連線的供應商網域。啟動或重新開啟 session 時：
 
-1. 先在本機實際嘗試九個旁路通道，每個通道都要有對照組證明測試有效，例如：git commit／push、`gh`、直接 HTTP、憑證檔、憑證 helper 與鑰匙圈、環境變數中的憑證。
-2. 所有必要通道都被擋下，並經你確認後，才在 Seatbelt 沙箱中啟動 CLI。這時：
-   - 憑證檔讀不到，`.git` 寫不進去，鑰匙圈服務無法存取，GitHub 憑證環境變數被移除。
-   - 網路只能經過只監聽 `127.0.0.1` 的本機代理，它只放行你列出的網域，GitHub 一律拒絕。
+1. 先在本機實測九項檢查，每一項都要有對照組證明測試有效：
+   - 七個旁路通道：git commit、git push、`gh`、直接 HTTP、憑證檔、憑證 helper（含鑰匙圈）、環境變數中的憑證。測試目標是本機的假 GitHub 伺服器；環境變數一項檢查的是清除函式本身。
+   - 兩項確認 CLI 仍可互動與登入。
+2. 九項檢查全部通過（旁路通道被擋下、CLI 仍可運作），並經你確認後，才在 Seatbelt 沙箱中啟動 CLI。這時：
+   - 家目錄下已知的憑證位置讀不到（git 的兩個憑證檔、gh 設定資料夾、netrc、SSH 資料夾、鑰匙圈資料夾，完整清單見[隔離能力](docs/ISOLATION_CAPABILITY.md)），`.git` 寫不進去，鑰匙圈的 SecurityServer 服務被封鎖。
+   - 符合規則的 GitHub 憑證環境變數會被移除；用其他名稱匯出的 token 不在範圍內。
+   - 網路只能經過只監聽 `127.0.0.1` 的本機代理，它只放行你列出的網域；GitHub 相關網域即使列入也不會放行。
 3. 任何一項證據不足、代理無法啟動，或發生錯誤，都**不啟動**，並顯示原因；不會退回無隔離的啟動。
 
 在 enforced 模式下，自訂 provider 會拒絕啟動。Windows 的受限權杖擋不了網路，所以 Windows 目前只有 advisory，選 enforced 時會直接拒絕。真實 CLI 是否肯透過代理連線、各供應商需要哪些網域，都還沒有實機驗證。詳見 [隔離能力](docs/ISOLATION_CAPABILITY.md)。
 
 ### 研究工具（研究用 MCP）
 
-- 第三方工具要先經你 **Review & Consent** 才會下載或執行。github-mcp-server 使用固定版本，並驗證 SHA-256；每次啟動前都會重新核對檔案內容。zhtw-mcp 與 arxiv-mcp-server 沒有帶版本號的發佈資產，所以目前標為待驗證，不可安裝。
-- 每個工具只開放允許清單內的工具，並有自己的私人資料夾與暫存目錄；撤銷時會停止程式並清除資料夾。
-- **Research: Search Papers** 只呼叫已啟用、在允許清單內的搜尋工具。查詢若含 token、本機路徑或帳號，會被擋下；結果標示為「外部資料，不是指令」，不會自動送進 terminal。
+- **目前狀態**：這一節的流程只有自動化測試。**Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從命令面板執行會回傳 `server-id-required`，所以一般使用者還無法完成下載，**Research: Search Papers** 也就沒有可用的伺服器。
+- 第三方工具要先經你 **Review & Consent** 才會下載或執行。github-mcp-server 使用固定版本，並驗證 SHA-256；每次啟動前都會重新核對檔案內容。zhtw-mcp 與 arxiv-mcp-server 沒有固定的發佈檔，所以安裝會被拒絕（`asset-unavailable`）。
+- 每個工具只開放允許清單內的工具，並有自己的私人資料夾與暫存目錄。**Revoke Research MCP Server** 會停止程式並清除資料夾；**Revoke Research MCP Tool Consent** 只刪除已安裝的程式，不會停止執行中的伺服器。允許清單只在套件自己的呼叫路徑中生效。
+- **Research: Search Papers** 只呼叫已啟用、在允許清單內的搜尋工具。查詢若含 token、本機路徑或 email 格式的帳號，會被擋下；結果標示為「外部資料，不是指令」，不會自動送進 terminal。
 - 工作區內的 `.mcp.json`／`.vscode/mcp.json` 不會被讀取。詳見 [研究技能與倫理](docs/RESEARCH_SKILLS_AND_ETHICS.md) 與 [學術 MCP 目錄](docs/ACADEMIC_MCP_CATALOG.md)。
 
 ### 協作 skills
 
-VSIX 第一次在受信任的本機工作區啟用時，會自動準備八個內建的協作 skills，供 Claude Code、Codex 與 OpenCode 的官方目錄發現機制使用；你自己既有的 skills 不會被覆寫。可以用 `multiagentSystem.skills.autoInstall` 停用，或執行 **Remove Installed Agent Skills** 移除未修改的檔案。詳見 [使用說明](docs/AGENT_SKILLS.md)。
+擴充套件在受信任的本機工作區啟用時（以及加入資料夾、授予信任或變更設定時），會自動在 `.claude/skills` 與 `.agents/skills` 準備八個內建的協作 skills，供 Claude Code、Codex 與 OpenCode 的官方目錄發現機制使用；你自己既有的 skills 不會被覆寫。可以用 `multiagentSystem.skills.autoInstall` 停用，或執行 **Remove Installed Agent Skills** 移除未修改的檔案。詳見 [使用說明](docs/AGENT_SKILLS.md)。
 
 ## 使用者設定
 
@@ -129,14 +135,14 @@ VSIX 第一次在受信任的本機工作區啟用時，會自動準備八個內
 | 設定 | 預設 | 說明 |
 |---|---|---|
 | `multiagentSystem.isolation.mode` | `advisory` | `advisory`：照常啟動。`enforced`：只在 macOS 上，證據完整時才在沙箱中啟動，否則拒絕。 |
-| `multiagentSystem.isolation.allowedDomains` | `[]` | enforced 時 CLI 可以連線的網域，例如 `api.example.com` 或 `*.example.com`。GitHub 相關網域一律拒絕。 |
+| `multiagentSystem.isolation.allowedDomains` | `[]` | enforced 時 CLI 可以連線的網域，例如 `api.example.com` 或 `*.example.com`。GitHub 相關網域即使列入也不會放行。 |
 | `multiagentSystem.providers.custom` | `[]` | 自訂 CLI provider 清單。 |
 | `multiagentSystem.skills.autoInstall` | `true` | 是否在受信任的工作區自動準備協作 skills。 |
 
 ## 安全與隱私原則
 
 - **沒有證據就是未知**：帳號身份、模型、用量、規則是否注入、隔離是否生效，都只在有可驗證的證據時才顯示成功。
-- **私人資料不進 GitHub**：session、帳號與 terminal 內容存放在擴充套件的私人儲存區；公開留言與 PR 送出前都會做發佈掃描。診斷匯出會遮罩路徑與帳號。
+- **私人資料不進 GitHub**：session、帳號與 terminal 內容存放在擴充套件的私人儲存區；從報告頁送出的公開留言、review 與合併，送出前都會做發佈掃描；診斷文件會遮罩路徑與帳號。terminal 中的 agent 自己執行的 `git`／`gh` 不經過這個掃描。
 - **不信任 repo**：工作區設定不能決定要執行什麼程式；未信任的工作區不會啟動 agent 或 MCP。
 - **確認不能被跳過**：在一般安裝的擴充套件中，任何參數都不能代替你確認；只有擴充套件自己的測試模式例外。
 
