@@ -32,7 +32,8 @@ const RULES = Object.freeze({
   network: { rules: ['WebFetch', 'WebSearch'], kind: 'tool', alsoCommands: ['Bash(curl *)', 'Bash(wget *)'] },
   githubRead: { rules: ['Bash(gh pr view *)', 'Bash(gh pr list *)', 'Bash(gh pr diff *)', 'Bash(gh pr checks *)', 'Bash(gh issue view *)', 'Bash(gh issue list *)'], kind: 'command' },
   githubWrite: { rules: ['Bash(gh issue create *)', 'Bash(gh issue edit *)', 'Bash(gh issue close *)', 'Bash(gh issue reopen *)', 'Bash(gh pr edit *)', 'Bash(gh pr close *)', 'Bash(gh pr reopen *)', 'Bash(gh pr ready *)', 'Bash(gh api *)'], kind: 'command' },
-  merge: { rules: ['Bash(gh pr merge *)', 'Bash(git merge *)'], kind: 'command' },
+  // `gh api` can merge too (a PUT to .../pulls/N/merge), so its merge form is refused with the rest; `*` may stand anywhere in a rule.
+  merge: { rules: ['Bash(gh pr merge *)', 'Bash(git merge *)', 'Bash(gh api *merge*)'], kind: 'command' },
   gitCommit: { rules: ['Bash(git commit *)'], kind: 'command' },
   gitPush: { rules: ['Bash(git push *)'], kind: 'command' },
   prCreate: { rules: ['Bash(gh pr create *)'], kind: 'command' },

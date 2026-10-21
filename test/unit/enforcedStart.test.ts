@@ -164,7 +164,8 @@ test('the broadcast delivery command takes no argument, asks for the confirmatio
 });
 
 test('every start and reopen writes the role group\'s permissions into the session\'s settings file after the instructions are prepared, removes the file with the session, and passes Codex\'s sandbox on (issue #310)', () => {
-  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  // A checkout may use CRLF line ends (Windows): the patterns below span lines, so they read the source with LF.
+  const source = (require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string).replace(/\r\n/g, '\n');
   const calls = [...source.matchAll(/manager\.(start|reopen)\(/g)].length;
   const writes = [...source.matchAll(/attributionFile = attributionFileFor\([^)]*instructions\?\.toolPermissions\)/g)];
   assert.equal(writes.length, calls, 'each one writes the file from the prepared instructions\' permissions');

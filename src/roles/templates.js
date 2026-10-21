@@ -19,7 +19,8 @@ const TEMPLATES = Object.freeze({
     summary: 'Defines the work, reviews and comments on pull requests and decides what is ready. Cannot edit files, commit, push, open or merge pull requests.',
     defaultName: 'PM',
     // The PM gives instructions, reads files, reviews and comments; it does not edit files, commit, push or open or merge pull requests.
-    toolPermissions: Object.freeze({ shell: 'allow', fileWrite: 'deny', network: 'ask', githubRead: 'allow', githubWrite: 'allow', merge: 'deny', gitCommit: 'deny', gitPush: 'deny', prCreate: 'deny', prReview: 'allow', comment: 'allow', mcp: 'deny' }),
+    // Writing Issues stays `ask`: `gh api` can write anything GitHub offers, merging included, so it is asked about, never allowed silently.
+    toolPermissions: Object.freeze({ shell: 'allow', fileWrite: 'deny', network: 'ask', githubRead: 'allow', githubWrite: 'ask', merge: 'deny', gitCommit: 'deny', gitPush: 'deny', prCreate: 'deny', prReview: 'allow', comment: 'allow', mcp: 'deny' }),
     instruction: 'Define work as clear GitHub Issues and review pull requests. Do not implement features yourself, and do not merge.'
   }),
   worker: Object.freeze({

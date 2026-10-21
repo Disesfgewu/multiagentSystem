@@ -66,7 +66,7 @@
 - **強度逐項標示，不誇大**：`ENFORCED`＝CLI 自己移除或擋下該工具（`shell`、`mcp`、檔案編輯工具、網路工具）；`PARTLY enforced`＝擋的是「通常的寫法」，另一種做同一件事的路徑仍在：官方文件明說 `Bash(git push *)` 這類規則**不是安全邊界**（`/usr/bin/curl`、`sh -c '…'`、`git -C . push` 不會被比對到），所以 `gitCommit`／`gitPush`／`prCreate`／`prReview`／`comment`／`merge`／`githubWrite`／`githubRead` 只有 PARTLY；`fileWrite` 與 `network` 在 shell 沒有同時被禁止時也只是 PARTLY（shell 還能 `sed -i`、`curl`）；`advice only`＝這個 CLI 沒有擴充套件能傳的設定，只是告知 agent。要真正擋住，要靠 shell 一併禁止，或沙箱／隔離（#25）。
 - **Codex**（官方旗標：[CLI reference](https://developers.openai.com/codex/cli/reference) 的 `--sandbox`）：Codex 沒有逐指令的允許／拒絕旗標，所以只有 `fileWrite: deny` 會變成 `--sandbox read-only`（也因此無法經由 shell 改檔；是否同時擋網路未驗證）；從不使用 `danger-full-access`。與自動模式（#296）的 `--sandbox workspace-write` 並用時，**身份組的沙箱取代自動模式的**（較嚴格者不會被便利功能蓋過），其餘自動模式參數照舊。
 - **agy、自訂 provider**：沒有已證實的設定，全部是 advice only，畫面這樣寫。
-- **預設範本**：PM（不能編輯檔案、commit、push、開或合併 PR、用 MCP；可下指令、讀、review、留言、寫 Issue）；Developer／worker（可編輯、跑測試、commit、push、開 PR、留言；不能 merge、review、用 MCP；改 Issue 與用網路先問）；Researcher（沒有 shell、不能改檔、不能寫 GitHub 或用 git；可用網路與 MCP 研究工具）；Blank 全部禁止。
+- **預設範本**：PM（不能編輯檔案、commit、push、開或合併 PR、用 MCP；可下指令、讀、review、留言；寫 Issue 與 gh api 要先問）；Developer／worker（可編輯、跑測試、commit、push、開 PR、留言；不能 merge、review、用 MCP；改 Issue 與用網路先問）；Researcher（沒有 shell、不能改檔、不能寫 GitHub 或用 git；可用網路與 MCP 研究工具）；Blank 全部禁止。
 - **Broker 角色一致**：PM 身份組對應 Broker 的 `pm`、worker 對應 `worker`，其他角色沒有 Broker 寫入操作；PM 身份組若允許 commit／push／開 PR／改檔，或 worker 身份組若允許 review／merge，預覽會標出「DISAGREES」。Broker 本身目前仍是注入式身份（沒有真實 transport），這一版只做一致性檢查。
 - **未驗證**：真實 Claude Code 是否照這些規則運作（#135）；Claude Code 對特定版本的規則語法差異；Codex 的 sandbox 對網路的行為；擴充套件**沒有**驗證 shell 啟動檔或使用者自己的設定是否放寬（使用者自己的 allow 規則不會被 deny 取代，但 deny 優先）。
 

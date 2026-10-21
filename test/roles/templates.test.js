@@ -36,7 +36,7 @@ test('templates fail closed: every tool is listed explicitly, merge is denied, a
     if (id === 'researcher') {
       assert.equal(group.toolPermissions.githubWrite, 'deny', 'a researcher cannot write to github');
     } else if (id === 'pm') {
-      assert.equal(group.toolPermissions.githubWrite, 'allow', 'a PM writes Issues');
+      assert.equal(group.toolPermissions.githubWrite, 'ask', 'a PM asks before writing to GitHub: gh api can write anything, merging included');
     } else {
       assert.equal(group.toolPermissions.githubWrite, 'ask', `${id} asks before changing GitHub`);
     }

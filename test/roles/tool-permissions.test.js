@@ -18,7 +18,9 @@ test('every tool has a rule table entry, so no tool can be added without decidin
 test('PM: cannot edit files, commit, push, open or merge a pull request or use MCP; can review, comment and give commands', () => {
   const { deny, ask } = rulesOf('pm');
   for (const rule of ['Edit', 'Write', 'NotebookEdit', 'MultiEdit', 'Bash(git commit *)', 'Bash(git push *)', 'Bash(gh pr create *)', 'Bash(gh pr merge *)', 'Bash(git merge *)', 'mcp__*']) assert.ok(deny.includes(rule), `PM: ${rule} is denied`);
-  for (const rule of ['Bash', 'Bash(gh pr review *)', 'Bash(gh pr comment *)', 'Bash(gh issue comment *)', 'Bash(gh issue create *)', 'Bash(gh pr view *)']) assert.equal(deny.includes(rule) || ask.includes(rule), false, `PM: ${rule} is neither denied nor asked`);
+  for (const rule of ['Bash', 'Bash(gh pr review *)', 'Bash(gh pr comment *)', 'Bash(gh issue comment *)', 'Bash(gh pr view *)']) assert.equal(deny.includes(rule) || ask.includes(rule), false, `PM: ${rule} is neither denied nor asked`);
+  // `gh api` can write anything GitHub offers, merging included: for the PM it is asked about, never allowed silently.
+  for (const rule of ['Bash(gh api *)', 'Bash(gh issue create *)', 'Bash(gh issue edit *)']) assert.ok(ask.includes(rule), `PM: ${rule} is asked`);
   assert.ok(ask.includes('WebFetch') && ask.includes('WebSearch'), 'the PM asks before using the web');
 });
 
@@ -172,4 +174,17 @@ test('the preview shows what a launch gives the CLI, and a stronger layer\'s ban
   assert.match(formatPreview(pm), /Broker role: pm; DISAGREES with this role's permissions \(gitCommit-must-be-denied-for-pm\)/);
   const researcher = previewEffectiveRules({ roleGroup: group('researcher', { ...TEMPLATES.researcher.toolPermissions }), layers: {} });
   assert.match(formatPreview(researcher), /Broker role: none/);
+});
+
+test('no role group that denies merging leaves the `gh api` way of merging open, and the PM is never silently allowed to write through `gh api`', () => {
+  for (const id of ['pm', 'worker', 'researcher', 'blank']) {
+    assert.equal(TEMPLATES[id].toolPermissions.merge === undefined || TEMPLATES[id].toolPermissions.merge === 'deny', true, `${id} denies merging`);
+    const { deny } = rulesOf(id);
+    for (const rule of ['Bash(gh pr merge *)', 'Bash(git merge *)', 'Bash(gh api *merge*)']) assert.ok(deny.includes(rule) || deny.includes('Bash'), `${id}: ${rule} is denied`);
+  }
+  assert.ok(RULES.merge.rules.includes('Bash(gh api *merge*)'));
+  assert.equal(TEMPLATES.pm.toolPermissions.githubWrite, 'ask', 'the PM template asks before GitHub writes');
+  const pm = rulesOf('pm');
+  assert.equal(pm.deny.includes('Bash(gh api *)') || pm.ask.includes('Bash(gh api *)'), true, 'the PM has a rule for gh api');
+  assert.equal(claudePermissions({ ...TEMPLATES.pm.toolPermissions, githubWrite: 'allow' }).deny.includes('Bash(gh api *merge*)'), true, 'even when the person allows GitHub writes, merging through gh api stays denied');
 });
