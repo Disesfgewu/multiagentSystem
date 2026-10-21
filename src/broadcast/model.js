@@ -158,7 +158,7 @@ function liveBroadcastRules(broadcasts, context, now) {
   return rules;
 }
 
-function formatBroadcast(broadcast, now) {
+function formatBroadcast(broadcast, now, deliverySummary) {
   return [
     'PRIVATE — local administrator broadcast notice. Do not publish this document.',
     `ID: ${broadcast.id}`,
@@ -170,8 +170,8 @@ function formatBroadcast(broadcast, now) {
     `Expires: ${broadcast.expiresAt ?? 'until revoked'}`,
     `Revoked: ${broadcast.revokedAt ?? 'not revoked'}`,
     'Rule layer: user (below platform; cannot grant permissions).',
-    'Delivery: unknown. Saved locally and included in matching role previews only.',
-    'Session launch, CLI delivery and acknowledgement are not connected.',
+    `Delivery: ${deliverySummary ?? 'unknown (not sent to any CLI)'}. "Typed into" means written to that session's terminal; it is not proof that the CLI read it or will act on it.`,
+    'Included in the effective instructions of sessions started after it was saved, and in matching role previews.',
     '',
     'Full notice:',
     broadcast.text,

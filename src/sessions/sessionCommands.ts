@@ -101,6 +101,8 @@ export interface SessionCommands {
   launch(options: SessionCommandOptions): Promise<SessionOutcome>;
   launchWithAccount(options: SessionCommandOptions): Promise<SessionOutcome>;
   list(): SessionView[];
+  /** Types one prompt line into a running session's terminal (administrator broadcast delivery). Not a VS Code command: only code in this extension can call it. */
+  sendPrompt(id: string, prompt: string): void;
   onDidChange(listener: () => void): vscode.Disposable;
 }
 
@@ -846,5 +848,5 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   );
 
   void manager.initialize().then(() => changed.fire()).catch((error) => failure(error, true));
-  return { launch, launchWithAccount: startWithAccount, list: () => observations.enrich(manager.list()), onDidChange: (listener) => changed.event(listener) };
+  return { launch, launchWithAccount: startWithAccount, list: () => observations.enrich(manager.list()), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), onDidChange: (listener) => changed.event(listener) };
 }

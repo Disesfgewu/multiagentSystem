@@ -20,6 +20,7 @@ export async function runBroadcastChecks(workspace: string): Promise<void> {
   const original = { pick: vscode.window.showQuickPick, input: vscode.window.showInputBox, warning: vscode.window.showWarningMessage };
   let scope: 'all' | 'roleGroup' | 'provider' | 'agent' | 'cancel' = 'all';
   let revokeId: string | undefined;
+  let deliverId: string | undefined;
   const ui = vscode.window as { showQuickPick: typeof vscode.window.showQuickPick; showInputBox: typeof vscode.window.showInputBox; showWarningMessage: typeof vscode.window.showWarningMessage };
   ui.showQuickPick = (async (items: any[], options: vscode.QuickPickOptions) => {
     switch (options.placeHolder) {
@@ -28,6 +29,7 @@ export async function runBroadcastChecks(workspace: string): Promise<void> {
       case 'Which session should this local notice target?': return items.find((item) => item.id === session.session!.id);
       case 'How long should this broadcast stay in effect?': return items.find((item) => item.hours === 1);
       case 'Which broadcast should be revoked?': return items.find((item) => item.id === revokeId);
+      case 'Which broadcast should be typed into the running agents?': return items.find((item) => item.id === deliverId);
       default: throw new Error('Unexpected broadcast choice');
     }
   }) as unknown as typeof vscode.window.showQuickPick;
@@ -49,6 +51,21 @@ export async function runBroadcastChecks(workspace: string): Promise<void> {
     assert.deepEqual(notices.map((item) => item.target.scope).sort(), ['agent', 'all', 'provider', 'roleGroup']);
     assert.equal(notices.find((item) => item.target.scope === 'agent')?.target.agentId, session.session!.id);
     for (const item of notices) { assert.equal(item.text, text); assert.ok(item.expiresAt); }
+    // Delivery to running agents (issue #295). The session here is a shell with no CLI, so there is nobody to type into: the
+    // command must say so, ask nothing it cannot act on, record no delivery and type nothing. A payload cannot change that.
+    {
+      const agentNotice = notices.find((item) => item.target.scope === 'agent')!;
+      deliverId = agentNotice.id;
+      const seen: Array<{ message: string; detail?: string }> = [];
+      const realInfo = vscode.window.showInformationMessage;
+      (vscode.window as any).showInformationMessage = async (message: string, options?: { detail?: string }) => { seen.push({ message, detail: options?.detail }); return undefined; };
+      const deliveriesBefore = (records.listDeliveries() as { items: unknown[] }).items.length;
+      try {
+        await vscode.commands.executeCommand(BROADCAST_COMMANDS.deliver, { broadcastId: agentNotice.id, sessions: [session.session!.id], interactive: false, confirm: true });
+      } finally { (vscode.window as any).showInformationMessage = realInfo; }
+      assert.ok(seen.some((entry) => entry.message === 'No session can receive this broadcast now.' && /Broadcast target/.test(String(entry.detail)) && /not recorded as running/.test(String(entry.detail)) && String(entry.detail).includes('[Administrator broadcast')), `the person is told who was skipped and why: ${JSON.stringify(seen)}`);
+      assert.equal((records.listDeliveries() as { items: unknown[] }).items.length, deliveriesBefore, 'nothing was sent, so no delivery was recorded');
+    }
     scope = 'cancel';
     await vscode.commands.executeCommand(BROADCAST_COMMANDS.send, { target: { scope: 'all' }, text: 'Payload must not authorize a notice.' });
     assert.equal(list().length, initialIds.size + 4, 'a command payload cannot bypass the interactive confirmation path');
@@ -67,7 +84,7 @@ export async function runBroadcastChecks(workspace: string): Promise<void> {
     assert.match(contents, /Version: 1/);
     assert.match(contents, /Expires: \d{4}-/);
     assert.match(contents, /Delivery: unknown/);
-    assert.match(contents, /Session launch, CLI delivery and acknowledgement are not connected/);
+    assert.match(contents, /not proof that the CLI read it/);
     assert.equal(await document.save(), false);
     const edit = new vscode.WorkspaceEdit();
     edit.replace(document.uri, new vscode.Range(0, 0, 0, 0), 'must not write');

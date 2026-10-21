@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { SessionObservationCore, DEFAULT_TTL_MS, USAGE_FIELDS } = require('./session');
 const { unknown } = require('../accounts/observation');
-const { createClaudeSessionEvidenceAdapter, createClaudeHookEvidenceAdapter } = require('./claude');
+const { createClaudeSessionEvidenceAdapter, createClaudeHookEvidenceAdapter, deriveClaudeHookState } = require('./claude');
 
 const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
@@ -19,6 +19,9 @@ const STATUS_KEYS = new Set(['model', 'cost']);
 // A record holds an id, a time and two short fields: a few hundred bytes. Anything larger is not one.
 const MAX_RECORD_BYTES = 8 * 1024;
 const POLL_MS = 2000;
+// How long the CLI's last hook event still tells what the CLI is doing when a broadcast is delivered. A CLI that is waiting for
+// the person sends no further event, so the display lifetime (30 seconds) would make every idle agent look unknown.
+const DELIVERY_STATE_MAX_MS = 12 * 60 * 60 * 1000;
 // A live session rewrites its file on every status line refresh, so a file untouched for a day belongs
 // to a session that is long gone (a crash or a closed window never ran its cleanup).
 const STALE_MS = 24 * 60 * 60 * 1000;
@@ -253,6 +256,31 @@ class SessionObservationRuntime {
     return { env: { ...env, [SESSION_ID_ENV]: sessionId }, active: true };
   }
 
+  /**
+   * What the CLI itself last said it was doing, for deciding whether a broadcast can be typed into it (issue #295). The LAST
+   * hook event of the session counts until the next one replaces it (`Stop` and `Notification` mean waiting, `UserPromptSubmit`
+   * and the tool events mean working, `SessionEnd` means ended), the terminal closes, or DELIVERY_STATE_MAX_MS passes: unlike
+   * the display lifetime, silence from an idle CLI does not turn it into "unknown". Nothing but the hook record is read, never
+   * terminal text. A session without a hook source (Codex, agy, a Claude without the hook bridge), a record that is not bound to
+   * this session's CLI, or one that is too old is `unknown` with the reason.
+   * @returns {{ state: 'waiting'|'working'|'ended'|'unknown', reason: string, since: string|null }}
+   */
+  deliveryState(sessionId, nowMs = this.nowMs()) {
+    const unknownState = (reason) => ({ state: 'unknown', reason, since: null });
+    if (this.unobservable.has(sessionId)) return unknownState('no-verified-event-source');
+    const binding = this.bindings.get(sessionId);
+    if (!binding) return unknownState('no-hook-bridge');
+    const record = readRecord(binding.watches.hook.file, 'hook');
+    if (!record) return unknownState('no-hook-event');
+    this.#judgeProvider(sessionId, binding, record);
+    if (binding.providerSession === 'mismatch') return unknownState('provider-session-mismatch');
+    const state = deriveClaudeHookState(record.hook.hookEventName);
+    const observed = Date.parse(record.observedAt);
+    if (state === null || !Number.isFinite(observed) || observed > nowMs + 60_000) return unknownState('hook-event-unusable');
+    if (nowMs - observed > DELIVERY_STATE_MAX_MS) return unknownState('hook-event-too-old');
+    return { state, reason: 'last-hook-event', since: new Date(observed).toISOString() };
+  }
+
   snapshot(sessionId, at = new Date().toISOString()) {
     const unobservable = this.unobservable.get(sessionId);
     if (unobservable) {
@@ -292,7 +320,7 @@ class SessionObservationRuntime {
   }
 
   enrich(sessions, at = new Date().toISOString()) {
-    return sessions.map(session => ({ ...session, providerObservation: this.snapshot(session.id, at) }));
+    return sessions.map(session => ({ ...session, providerObservation: this.snapshot(session.id, at), deliveryState: this.deliveryState(session.id, Date.parse(at)) }));
   }
 
   release(sessionId) {
@@ -307,4 +335,4 @@ class SessionObservationRuntime {
   }
 }
 
-module.exports = { SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS };
+module.exports = { DELIVERY_STATE_MAX_MS, SessionObservationRuntime, SESSION_ID_ENV, MAX_RECORD_BYTES, observationPath, readRecord, sweepStale, STALE_MS };

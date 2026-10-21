@@ -265,3 +265,81 @@ test('release and prepare remove stale hook files, and the sweep removes old hoo
     assert.deepEqual(fs.readdirSync(dir).sort(), ['unrelated.hook.json']);
   } finally { ctx.cleanup(); }
 });
+
+// ---- delivery state: what the CLI last said, for typing a broadcast into it (issue #295) ----
+const { DELIVERY_STATE_MAX_MS } = require('../../src/observations/runtime');
+const delivery = (setup) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-delivery-state-'));
+  const t0 = Date.parse('2026-01-01T00:00:00.000Z');
+  let now = t0;
+  const runtime = new SessionObservationRuntime({ nowMs: () => now, now: () => new Date(now).toISOString() });
+  runtime.prepare({ sessionId: 'session-a', provider: 'claude', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
+  const file = observationPath(root, 'session-a', 'hook');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let sequence = 0;
+  const hook = (hookEventName, { at = now, providerSessionId = 'claude-session-1' } = {}) => {
+    sequence += 1;
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, eventId: `e${sequence}`, observedAt: new Date(at).toISOString(), sequence, providerSessionId, hook: { hookEventName } }));
+  };
+  try { return setup({ runtime, hook, advance: (ms) => { now += ms; }, t0, root, clock: () => now }); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+};
+
+test('an idle agent stays waiting after the 30-second display lifetime, until the next hook event', () => {
+  delivery(({ runtime, hook, advance }) => {
+    assert.deepEqual(runtime.deliveryState('session-a'), { state: 'unknown', reason: 'no-hook-event', since: null }, 'before any hook event');
+    hook('Stop');
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting');
+    advance(31_000);
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting', 'still waiting after the 30 seconds the display lifetime allows');
+    assert.equal(runtime.snapshot('session-a', new Date(Date.parse('2026-01-01T00:00:00.000Z') + 31_000).toISOString()).status.confidence, 'unknown', 'the display lifetime is unchanged');
+    advance(3 * 60 * 60 * 1000);
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting', 'hours later, still waiting');
+    hook('UserPromptSubmit');
+    assert.equal(runtime.deliveryState('session-a').state, 'working', 'the next hook event replaces it');
+    hook('Notification');
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting');
+    hook('PreToolUse');
+    assert.equal(runtime.deliveryState('session-a').state, 'working');
+    hook('SessionEnd');
+    assert.equal(runtime.deliveryState('session-a').state, 'ended');
+  });
+});
+
+test('after twelve hours the last hook event no longer says anything, and a time in the future is not believed', () => {
+  delivery(({ runtime, hook, advance, clock }) => {
+    hook('Stop');
+    advance(DELIVERY_STATE_MAX_MS - 1000);
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting');
+    advance(2000);
+    assert.deepEqual(runtime.deliveryState('session-a'), { state: 'unknown', reason: 'hook-event-too-old', since: null });
+    hook('Stop', { at: clock() + 10 * 60 * 1000 });
+    assert.equal(runtime.deliveryState('session-a').reason, 'hook-event-unusable');
+  });
+});
+
+test('a hook record of another CLI session, a released terminal and a provider with no hook source give no state', () => {
+  delivery(({ runtime, hook }) => {
+    hook('Stop', { providerSessionId: 'claude-session-1' });
+    assert.equal(runtime.deliveryState('session-a').state, 'waiting');
+    hook('Stop', { providerSessionId: 'claude-session-2' });
+    assert.equal(runtime.deliveryState('session-a').reason, 'provider-session-mismatch', 'the same terminal now running another session is not trusted');
+    runtime.release('session-a');
+    assert.deepEqual(runtime.deliveryState('session-a'), { state: 'unknown', reason: 'no-hook-bridge', since: null }, 'a closed terminal has no state');
+  });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-delivery-codex-'));
+  try {
+    const runtime = new SessionObservationRuntime({});
+    runtime.prepare({ sessionId: 'codex-a', provider: 'codex', accountProfileId: 'account-a', env: { CLAUDE_CONFIG_DIR: root } });
+    assert.equal(runtime.deliveryState('codex-a').reason, 'no-verified-event-source');
+    assert.equal(runtime.deliveryState('never-seen').reason, 'no-hook-bridge');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('enrich carries the delivery state next to the observation, for every session', () => {
+  delivery(({ runtime, hook, clock }) => {
+    hook('Stop');
+    const [enriched] = runtime.enrich([{ id: 'session-a', accountProfileId: 'account-a' }], new Date(clock()).toISOString());
+    assert.equal(enriched.deliveryState.state, 'waiting');
+    assert.ok('providerObservation' in enriched);
+  });
+});

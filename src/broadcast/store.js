@@ -1,6 +1,7 @@
 'use strict';
 
 const { validateBroadcast, scanBroadcastText } = require('./model');
+const { validateDelivery } = require('./deliver');
 
 // Persists broadcasts through the same generic `PrivateStore` interface role groups and accounts
 // already use. A broadcast is created once and never rewritten except to set `revokedAt`: it is an
@@ -9,6 +10,9 @@ const { validateBroadcast, scanBroadcastText } = require('./model');
 // other store in this project already follows).
 
 const COLLECTION = 'broadcasts';
+// What was typed into which session's terminal, one immutable record per delivery. Separate from the broadcast, which is
+// never rewritten except to revoke it.
+const DELIVERIES = 'broadcastDeliveries';
 const fail = (reason) => ({ ok: false, reason });
 
 class BroadcastStore {
@@ -60,6 +64,34 @@ class BroadcastStore {
     if (!result.ok) return fail(result.reason || 'storage-unavailable');
     if (result.value.rejected) return result.value.rejected;
     return { ok: true, broadcast: result.value.saved };
+  }
+
+  /** Every delivery record. A record that fails to validate is an error, as with broadcasts. */
+  listDeliveries() {
+    const listed = this.store.list(DELIVERIES);
+    if (!listed.ok) return fail(listed.reason || 'storage-unavailable');
+    if (!Array.isArray(listed.items)) return fail('invalid-delivery-record');
+    const items = [];
+    for (const item of listed.items) {
+      const checked = validateDelivery(item.value);
+      if (!checked.ok) return fail('invalid-delivery-record');
+      items.push(checked.record);
+    }
+    return { ok: true, items };
+  }
+
+  /** Records one delivery. Its id must be new: a record is never overwritten. */
+  recordDelivery(raw) {
+    const checked = validateDelivery(raw);
+    if (!checked.ok) return { ok: false, reason: 'invalid-delivery', problems: checked.problems };
+    const result = this.store.transact((tx) => {
+      if (tx.get(DELIVERIES, checked.record.id) !== null) return { rejected: fail('duplicate-id') };
+      tx.put(DELIVERIES, checked.record.id, checked.record);
+      return { saved: checked.record };
+    });
+    if (!result.ok) return fail(result.reason || 'storage-unavailable');
+    if (result.value.rejected) return result.value.rejected;
+    return { ok: true, record: result.value.saved };
   }
 
   /** The first revocation stands: revoking an already-revoked broadcast again changes nothing, whatever time is given. */

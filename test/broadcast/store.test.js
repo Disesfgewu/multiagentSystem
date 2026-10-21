@@ -13,7 +13,7 @@ const broadcast = (over = {}) => ({
 
 function setup(t) {
   const box = sandbox(t);
-  const privateStore = () => new PrivateStore({ dir: box.dir, repoRoot: box.repoRoot, collections: [...COLLECTIONS, 'broadcasts'] });
+  const privateStore = () => new PrivateStore({ dir: box.dir, repoRoot: box.repoRoot, collections: [...COLLECTIONS, 'broadcasts', 'broadcastDeliveries'] });
   const broadcasts = () => new BroadcastStore(privateStore());
   return { privateStore, broadcasts };
 }
@@ -80,4 +80,24 @@ test('a storage failure (unreadable store) is reported as unavailable, not as em
   assert.deepEqual(broadcasts.create({}), { ok: false, reason: 'invalid-broadcast', problems: ['invalid-id', 'invalid-version', 'invalid-target', 'invalid-text', 'invalid-created-at'] });
   assert.deepEqual(broadcasts.create(broadcast()), { ok: false, reason: 'store-unavailable' }, 'a valid broadcast still fails closed when the transaction itself cannot run');
   assert.deepEqual(broadcasts.revoke('bc-1', '2026-10-17T13:00:00.000Z'), { ok: false, reason: 'store-unavailable' });
+});
+
+const delivery = (over = {}) => ({ id: 'dl-1', broadcastId: 'bc-1', version: 1, at: '2026-10-21T10:00:00.000Z', results: [{ sessionId: 'session-1', provider: 'claude', outcome: 'sent', reason: 'waiting-for-input' }], ...over });
+
+test('a delivery record is saved once, read back, and never overwritten; a malformed one is refused before anything is written', (t) => {
+  const s = setup(t);
+  const saved = s.broadcasts().recordDelivery(delivery());
+  assert.equal(saved.ok, true);
+  assert.deepEqual(s.broadcasts().listDeliveries().items.map((entry) => [entry.id, entry.results.length]), [['dl-1', 1]]);
+  assert.deepEqual(s.broadcasts().recordDelivery(delivery()), { ok: false, reason: 'duplicate-id' });
+  assert.deepEqual(s.broadcasts().recordDelivery(delivery({ id: 'dl-2', results: [{ sessionId: 'a b', provider: 'claude', outcome: 'sent', reason: 'waiting-for-input' }] })), { ok: false, reason: 'invalid-delivery', problems: ['invalid-result'] });
+  assert.equal(s.broadcasts().listDeliveries().items.length, 1);
+});
+
+test('a delivery log that cannot be read is an error, not an empty log', () => {
+  const broken = { get: () => ({ ok: false }), list: () => ({ ok: false, reason: 'store-unavailable' }), transact: () => ({ ok: false, reason: 'store-unavailable' }) };
+  assert.deepEqual(new BroadcastStore(broken).listDeliveries(), { ok: false, reason: 'store-unavailable' });
+  assert.deepEqual(new BroadcastStore(broken).recordDelivery(delivery()), { ok: false, reason: 'store-unavailable' });
+  const garbled = { get: () => ({ ok: true, found: false }), list: () => ({ ok: true, items: [{ id: 'dl-1', value: { id: 'dl-1' } }] }), transact: () => ({ ok: false }) };
+  assert.deepEqual(new BroadcastStore(garbled).listDeliveries(), { ok: false, reason: 'invalid-delivery-record' });
 });

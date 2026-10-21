@@ -2,20 +2,29 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { SessionCommands } from '../sessions/sessionCommands';
+import { isExtensionTestMode } from '../shared/testMode';
 
 const { BroadcastStore } = require('./store') as {
   BroadcastStore: new (store: Store) => {
     list(): { ok: boolean; items?: Broadcast[]; reason?: string };
+    get(id: string): { ok: boolean; broadcast?: Broadcast; reason?: string };
+    listDeliveries(): { ok: boolean; items?: Array<{ broadcastId: string }>; reason?: string };
+    recordDelivery(raw: unknown): { ok: boolean; reason?: string };
     create(raw: unknown): { ok: boolean; broadcast?: Broadcast; reason?: string; problems?: string[]; scan?: unknown };
     revoke(id: string, revokedAt: string): { ok: boolean; broadcast?: Broadcast; reason?: string };
   };
+};
+const { planDelivery, describePlan, summarizeDeliveries } = require('./deliver') as {
+  planDelivery(input: { broadcast: Broadcast; sessions: unknown[]; roleOf: (session: any) => string | undefined; now: Date }): { ok: true; prompt: string; recipients: Array<{ id: string; name: string; provider: string; decision: 'send' | 'unknown' | 'skip'; reason: string }> } | { ok: false; reason: string };
+  describePlan(plan: unknown): string[];
+  summarizeDeliveries(records: unknown[], broadcastId: string): string;
 };
 const { scanBroadcastText, isLive, targetLabel, broadcastStatus, formatBroadcast } = require('./model') as {
   scanBroadcastText(text: string): { status: string };
   isLive(broadcast: Broadcast, now: Date): boolean;
   targetLabel(target: Target): string;
   broadcastStatus(broadcast: Broadcast, now: Date): string;
-  formatBroadcast(broadcast: Broadcast, now: Date): string;
+  formatBroadcast(broadcast: Broadcast, now: Date, deliverySummary?: string): string;
 };
 const { roleProviderChoices } = require('../roles/provider-choices') as {
   roleProviderChoices(): Array<{ id: string; label: string; detail: string }>;
@@ -30,13 +39,14 @@ export const BROADCAST_SCHEME = 'multiagent-broadcast';
 export const BROADCAST_COMMANDS = {
   refresh: 'multiagentSystem.broadcasts.refresh',
   send: 'multiagentSystem.broadcasts.send',
+  deliver: 'multiagentSystem.broadcasts.deliver',
   revoke: 'multiagentSystem.broadcasts.revoke',
   details: 'multiagentSystem.broadcasts.details'
 } as const;
 
 const ROLE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const EXPIRY_CHOICES: Array<{ label: string; detail: string; hours: number | null }> = [
-  { label: 'Until revoked', detail: 'Remains a local notice until revoked; CLI delivery is unknown.', hours: null },
+  { label: 'Until revoked', detail: 'Remains a local notice until revoked.', hours: null },
   { label: '1 hour', detail: '', hours: 1 },
   { label: '4 hours', detail: '', hours: 4 },
   { label: '24 hours', detail: '', hours: 24 }
@@ -53,10 +63,10 @@ async function store(showError = true): Promise<Store | undefined> {
 }
 
 class BroadcastItem extends vscode.TreeItem {
-  constructor(readonly broadcast: Broadcast, now: Date) {
+  constructor(readonly broadcast: Broadcast, now: Date, delivery: string) {
     super(broadcast.text.length > 60 ? `${broadcast.text.slice(0, 60)}…` : broadcast.text, vscode.TreeItemCollapsibleState.None);
     const status = broadcastStatus(broadcast, now);
-    this.description = `${targetLabel(broadcast.target)} · ${status} · delivery unknown`;
+    this.description = `${targetLabel(broadcast.target)} · ${status} · delivery: ${delivery}`;
     this.tooltip = [
       `Sent: ${broadcast.createdAt}`,
       `Target: ${targetLabel(broadcast.target)}`,
@@ -65,7 +75,7 @@ class BroadcastItem extends vscode.TreeItem {
       broadcast.revokedAt ? `Revoked: ${broadcast.revokedAt}` : null,
       '',
       `Version: ${broadcast.version}`,
-      'Saved locally and included in matching role previews only. Session launch and CLI delivery are not connected.',
+      `Delivery: ${delivery}. Included in the effective instructions of sessions started after it was saved. "Typed into" is not proof that the CLI read it.`,
       '',
       broadcast.text
     ].filter((line): line is string => line !== null).join('\n');
@@ -93,13 +103,21 @@ class BroadcastTree implements vscode.TreeDataProvider<vscode.TreeItem> {
     const listed = new BroadcastStore(opened).list();
     if (!listed.ok) return [new MessageItem(`Broadcasts could not be read (${listed.reason ?? 'unknown'}).`)];
     const items = listed.items ?? [];
-    if (items.length === 0) return [new MessageItem('No local broadcast notices yet. Use "Create Broadcast Notice" to add one; CLI delivery is not connected.')];
+    if (items.length === 0) return [new MessageItem('No local broadcast notices yet. Use "Create Broadcast Notice" to add one, then "Send Broadcast to Agents" to type it into running agents.')];
     const now = new Date();
-    return [...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)).map((broadcast) => new BroadcastItem(broadcast, now));
+    const deliveries = new BroadcastStore(opened).listDeliveries();
+    const records = deliveries.ok ? deliveries.items ?? [] : null;
+    return [...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)).map((broadcast) => new BroadcastItem(broadcast, now, records === null ? 'unknown (the log could not be read)' : summarizeDeliveries(records, broadcast.id)));
   }
 }
 
 let testTree: BroadcastTree | undefined;
+/** The delivery command, run against the given sessions: only in the extension's own host tests (a real terminal with a synthetic CLI). */
+export function deliverBroadcastForTests(sessions: SessionCommands): Promise<void> {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  return deliver(sessions);
+}
+
 export function broadcastTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
   if (!testTree) throw new Error('The broadcast list is only exposed in Extension Host tests.');
   return testTree;
@@ -145,7 +163,7 @@ async function send(sessions: SessionCommands): Promise<void> {
   }
 
   const text = await vscode.window.showInputBox({
-    prompt: `Local notice for ${targetLabel(target)}. Saved and previewed only; CLI delivery is not connected.`,
+    prompt: `Local notice for ${targetLabel(target)}. It is saved locally; run "Send Broadcast to Agents" to type it into running agents.`,
     ignoreFocusOut: true,
     validateInput: (value) => {
       const trimmed = value.trim();
@@ -164,7 +182,7 @@ async function send(sessions: SessionCommands): Promise<void> {
   const expiresAt = expiry.hours === null ? null : new Date(now.getTime() + expiry.hours * 60 * 60 * 1000).toISOString();
   const confirmed = await vscode.window.showWarningMessage(
     'Save this local broadcast notice?',
-    { modal: true, detail: `Target: ${targetLabel(target)}\nExpires: ${expiresAt ?? 'until revoked'}\n\n${text.trim()}\n\nSaved locally and shown in matching role previews. No session launch or CLI delivery is connected; delivery remains unknown.` },
+    { modal: true, detail: `Target: ${targetLabel(target)}\nExpires: ${expiresAt ?? 'until revoked'}\n\n${text.trim()}\n\nSaved locally. Agents started after it is saved receive it in their instructions; "Send Broadcast to Agents" types it into running agent CLIs. Nothing is typed by saving.` },
     'Save Notice'
   );
   if (confirmed !== 'Save Notice') return;
@@ -179,7 +197,7 @@ async function send(sessions: SessionCommands): Promise<void> {
     return;
   }
   currentTree?.refresh();
-  void vscode.window.showInformationMessage(`Local notice saved for ${targetLabel(target)}. CLI delivery is unknown.`);
+  void vscode.window.showInformationMessage(`Local notice saved for ${targetLabel(target)}. Nothing was typed into any CLI yet.`);
 }
 
 /**
@@ -214,6 +232,94 @@ async function revoke(): Promise<void> {
   void vscode.window.showInformationMessage('Broadcast revoked.');
 }
 
+/**
+ * "Send Broadcast to Agents": types one stored, live broadcast into the running agent CLIs it targets (issue #295). Like `send`
+ * and `revoke` it takes NO argument: the broadcast is chosen from a list shown here, the recipients are worked out here from
+ * the broadcast's own target and the sessions' evidence, and the person confirms the complete prompt and the list in a modal
+ * every time. It sends only to sessions whose CLI the extension has fresh evidence is waiting for input; every other session
+ * is skipped with a reason and the outcome of each is recorded.
+ */
+async function deliver(sessions: SessionCommands): Promise<void> {
+  const opened = await store();
+  if (!opened) return;
+  const broadcasts = new BroadcastStore(opened);
+  const listed = broadcasts.list();
+  if (!listed.ok) { void vscode.window.showErrorMessage(`Broadcasts could not be read (${listed.reason ?? 'unknown'}).`); return; }
+  const now = new Date();
+  const active = (listed.items ?? []).filter((broadcast) => isLive(broadcast, now));
+  if (active.length === 0) { void vscode.window.showInformationMessage('There are no active broadcasts to send.'); return; }
+  const picked = await vscode.window.showQuickPick(
+    active.map((broadcast) => ({ label: broadcast.text.length > 60 ? `${broadcast.text.slice(0, 60)}…` : broadcast.text, description: targetLabel(broadcast.target), id: broadcast.id })),
+    { placeHolder: 'Which broadcast should be typed into the running agents?', ignoreFocusOut: true }
+  );
+  if (!picked) return;
+  const selected = active.find((broadcast) => broadcast.id === picked.id);
+  if (!selected) return;
+
+  // The role of a session is read from its role group right now (the broadcast names a role, a session names a role group).
+  const roleOf = (session: { roleGroupId?: string }): string | undefined => {
+    if (!session.roleGroupId || session.roleGroupId === 'unassigned') return undefined;
+    try {
+      const loaded = opened.get('roleGroups', session.roleGroupId);
+      return loaded?.ok && loaded.found ? loaded.value?.group?.role : undefined;
+    } catch { return undefined; }
+  };
+  const plan = planDelivery({ broadcast: selected, sessions: sessions.list(), roleOf, now });
+  if (!plan.ok) { void vscode.window.showErrorMessage(`This broadcast cannot be sent (${plan.reason}).`); return; }
+  if (plan.recipients.length === 0) { void vscode.window.showInformationMessage("No open session matches this broadcast's target."); return; }
+  const waitingIds = new Set(plan.recipients.filter((entry) => entry.decision === 'send').map((entry) => entry.id));
+  const unknownIds = new Set(plan.recipients.filter((entry) => entry.decision === 'unknown').map((entry) => entry.id));
+  if (waitingIds.size === 0 && unknownIds.size === 0) {
+    void vscode.window.showInformationMessage('No session can receive this broadcast now.', { modal: true, detail: describePlan(plan).join('\n') });
+    return;
+  }
+  // Sessions that are waiting are the default. Sessions whose state is unknown (no hook evidence: Codex, agy, a custom provider, a
+  // Claude without the hook bridge) are only included when the person presses the second, explicit button.
+  const sendWaiting = 'Send Now';
+  const sendUnknown = waitingIds.size > 0 ? 'Also Send to Unknown' : 'Send to Unknown Anyway';
+  const buttons = [...(waitingIds.size > 0 ? [sendWaiting] : []), ...(unknownIds.size > 0 ? [sendUnknown] : [])];
+  const confirmed = await vscode.window.showWarningMessage(
+    'Type this broadcast into the running agents?',
+    { modal: true, detail: describePlan(plan).join('\n') },
+    ...buttons
+  );
+  if (confirmed !== sendWaiting && confirmed !== sendUnknown) return;
+  const includeUnknown = confirmed === sendUnknown;
+  const allowedIds = new Set([...(confirmed === sendWaiting || includeUnknown ? waitingIds : []), ...(includeUnknown ? unknownIds : [])]);
+
+  // The broadcast is read again from the store: if it was revoked or changed while the window was open, nothing is typed.
+  const again = new BroadcastStore(await store() ?? opened).get(selected.id);
+  const stillTheSame = again.ok && (again as { broadcast?: Broadcast }).broadcast !== undefined && isLive((again as { broadcast: Broadcast }).broadcast, new Date())
+    && (again as { broadcast: Broadcast }).broadcast.text === selected.text && (again as { broadcast: Broadcast }).broadcast.version === selected.version;
+  // Sessions change while a dialog is open: decide again from fresh evidence, and type only into a session that was shown to the
+  // person as a recipient they allowed, and whose state is still what they agreed to.
+  const fresh = stillTheSame ? planDelivery({ broadcast: selected, sessions: sessions.list(), roleOf, now: new Date() }) : { ok: false as const, reason: 'broadcast-changed' };
+  if (!fresh.ok) { void vscode.window.showErrorMessage(`This broadcast can no longer be sent (${fresh.reason}).`); return; }
+  const results: Array<{ sessionId: string; provider: string; outcome: 'sent' | 'skipped'; reason: string }> = [];
+  for (const entry of fresh.recipients) {
+    const allowed = allowedIds.has(entry.id) && (entry.decision === 'send' || (entry.decision === 'unknown' && includeUnknown));
+    if (allowed) {
+      try {
+        sessions.sendPrompt(entry.id, fresh.prompt);
+        results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'sent', reason: entry.decision === 'unknown' ? 'sent-unknown-state' : entry.reason });
+      } catch {
+        results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'skipped', reason: 'send-failed' });
+      }
+    } else {
+      // Not allowed by the person, not shown, or no longer in the state they agreed to: not typed, and the record says why.
+      results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'skipped', reason: entry.decision === 'send' ? 'state-unknown' : entry.reason });
+    }
+  }
+  const latest = await store();
+  if (latest) {
+    const recorded = new BroadcastStore(latest).recordDelivery({ id: randomUUID(), broadcastId: selected.id, version: selected.version, at: new Date().toISOString(), results });
+    if (!recorded.ok) void vscode.window.showWarningMessage(`The delivery was done but its record could not be saved (${recorded.reason ?? 'unknown'}).`);
+  }
+  currentTree?.refresh();
+  const sent = results.filter((entry) => entry.outcome === 'sent').length;
+  void vscode.window.showInformationMessage(`Typed into ${sent} of ${results.length} session${results.length === 1 ? '' : 's'}. "Typed" is not proof that the CLI read it; see Administrator Broadcasts for the log.`);
+}
+
 let currentTree: BroadcastTree | undefined;
 let detailsProvider: BroadcastDetails | undefined;
 
@@ -231,7 +337,9 @@ class BroadcastDetails implements vscode.TextDocumentContentProvider {
     const listed = new BroadcastStore(opened).list();
     if (!listed.ok) return 'Local notices could not be read.\n';
     const broadcast = listed.items?.find((item) => item.id === match);
-    return broadcast ? formatBroadcast(broadcast, new Date()) : 'This local notice is unavailable.\n';
+    if (!broadcast) return 'This local notice is unavailable.\n';
+    const deliveries = new BroadcastStore(opened).listDeliveries();
+    return formatBroadcast(broadcast, new Date(), deliveries.ok ? summarizeDeliveries(deliveries.items ?? [], broadcast.id) : 'unknown (the log could not be read)');
   }
 }
 
@@ -252,6 +360,8 @@ export function registerBroadcastCommands(context: vscode.ExtensionContext, sess
     }),
     vscode.commands.registerCommand(BROADCAST_COMMANDS.refresh, () => tree.refresh()),
     vscode.commands.registerCommand(BROADCAST_COMMANDS.send, () => send(sessions)),
+    // Takes no argument at all, like `send` and `revoke`: nothing a caller passes can pick the broadcast, the recipients or skip the confirmation.
+    vscode.commands.registerCommand(BROADCAST_COMMANDS.deliver, () => deliver(sessions)),
     vscode.commands.registerCommand(BROADCAST_COMMANDS.revoke, revoke)
   );
 }

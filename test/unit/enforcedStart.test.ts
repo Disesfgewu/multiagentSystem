@@ -141,3 +141,24 @@ test('every place that starts or reopens an agent CLI resolves auto mode from th
   assert.match(source, /readUserLevel\(settings\.inspect\('agents\.autoMode'\)\)\.value/, 'the setting is read from the user level only');
   assert.match(source, /readUserLevel\(settings\.inspect\('agents\.autoModeOverrides'\)\)\.value/);
 });
+
+test('the broadcast delivery command takes no argument, asks for the confirmation every time and is not reachable as a session command', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const commands = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'broadcast', 'commands.ts'), 'utf8') as string;
+  assert.match(commands, /registerCommand\(BROADCAST_COMMANDS\.deliver, \(\) => deliver\(sessions\)\)/, 'the command ignores whatever it is called with');
+  const body = commands.slice(commands.indexOf('async function deliver('), commands.indexOf('let currentTree'));
+  assert.match(body, /showWarningMessage\(\s*'Type this broadcast into the running agents\?',\s*\{ modal: true, detail: describePlan\(plan\)\.join\('\\n'\) \},\s*\.\.\.buttons/, 'a modal with the full prompt');
+  assert.match(body, /if \(confirmed !== sendWaiting && confirmed !== sendUnknown\) return;/, 'nothing is typed without pressing a button');
+  assert.ok(body.indexOf('confirmed !== sendWaiting') < body.indexOf('sendPrompt('), 'the confirmation comes before any typing');
+  assert.match(body, /const sendUnknown = waitingIds\.size > 0 \? 'Also Send to Unknown' : 'Send to Unknown Anyway';/, 'sessions of unknown state need their own explicit button');
+  assert.match(body, /const includeUnknown = confirmed === sendUnknown;/, 'unknown ones are included only by that button');
+  assert.match(body, /allowedIds\.has\(entry\.id\)/, 'only sessions the person was shown and allowed are typed into');
+  assert.match(body, /\.get\(selected\.id\)/, 'the broadcast is read again before typing');
+  assert.match(body, /isLive\(\(again as/, 'a revoked broadcast is not typed');
+  assert.equal([...body.matchAll(/sendPrompt\(/g)].length, 1, 'one place types');
+  const sessionCommands = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  assert.doesNotMatch(sessionCommands, /registerCommand\([^)]*sendPrompt/, 'typing into a terminal is not a VS Code command');
+  const manager = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sessions', 'manager.ts'), 'utf8') as string;
+  assert.equal([...manager.matchAll(/terminal\.sendText\(/g)].length, 2, 'the manager types in two places only: the launch command and sendPrompt');
+});
