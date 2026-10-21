@@ -14,7 +14,7 @@ import {
   cleanName,
   describeState
 } from '../../src/sessions/manager';
-import { CLAUDE_ATTRIBUTION_SETTINGS, attributionArguments, writeAttributionSettings } from '../../src/providers/attribution';
+import { CLAUDE_ATTRIBUTION_SETTINGS, attributionArguments, writeClaudeSettings, removeClaudeSettings } from '../../src/providers/attribution';
 
 // What every Claude Code launch carries so that the CLI adds no author line of its own (issue #293).
 const ATTRIBUTION_FILE = '/synthetic/attribution.json';
@@ -851,14 +851,28 @@ test('the settings file is private, holds only the attribution switch and is rew
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-attr-'));
   try {
     const target = path.join(dir, 'attribution');
-    const file = writeAttributionSettings(target);
-    assert.equal(file, path.join(target, 'claude-attribution-settings.json'));
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { attribution: { commit: '', pr: '', sessionUrl: false } });
+    const file = writeClaudeSettings(target, 'session-aaaa1111');
+    assert.equal(file, path.join(target, 'claude-settings-session-aaaa1111.json'));
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { attribution: { commit: '', pr: '', sessionUrl: false } }, 'without a role group: the attribution switch only, no permissions key');
     if (process.platform !== 'win32') { assert.equal(fs.statSync(file).mode & 0o077, 0); assert.equal(fs.statSync(target).mode & 0o077, 0); }
     fs.writeFileSync(file, '{"attribution":{"commit":"x"}}');
-    assert.equal(writeAttributionSettings(target), file);
+    assert.equal(writeClaudeSettings(target, 'session-aaaa1111'), file);
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).attribution.commit, '', 'an edited copy does not survive a launch');
-    for (const bad of ['relative', '', undefined as unknown as string]) assert.throws(() => writeAttributionSettings(bad), /attribution-settings-unavailable/);
+    for (const bad of ['relative', '', undefined as unknown as string]) assert.throws(() => writeClaudeSettings(bad, 'session-aaaa1111'), /attribution-settings-unavailable/);
+    for (const bad of ['', 'short', '../../escape1', 'has space 1234', undefined as unknown as string]) assert.throws(() => writeClaudeSettings(target, bad), /attribution-settings-unavailable/, String(bad));
+    // With a role group the same one document also carries its permissions: deny and ask rules, never allow.
+    const pmFile = writeClaudeSettings(target, 'session-pm-00001', { shell: 'allow', fileWrite: 'deny', network: 'ask', gitPush: 'deny' });
+    const pmDocument = JSON.parse(fs.readFileSync(pmFile, 'utf8'));
+    assert.deepEqual(pmDocument.attribution, { commit: '', pr: '', sessionUrl: false });
+    assert.ok(pmDocument.permissions.deny.includes('Edit') && pmDocument.permissions.deny.includes('Bash(git push *)'));
+    assert.ok(pmDocument.permissions.ask.includes('WebFetch'));
+    assert.equal(Object.hasOwn(pmDocument.permissions, 'allow'), false);
+    assert.notEqual(pmFile, file, 'one file per session');
+    removeClaudeSettings(pmFile);
+    removeClaudeSettings(file);
+    assert.equal(fs.existsSync(file), false, 'the file goes when the session ends');
+    removeClaudeSettings(file);
+    removeClaudeSettings(path.join(dir, 'precious.json'));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -913,4 +927,22 @@ test('a prompt is not typed into a shell without a CLI, a stopped session or an 
   r.manager.stop(running.id);
   assert.throws(() => r.manager.sendPrompt(running.id, '[ok] hello'), { code: 'terminal-not-open' });
   assert.throws(() => r.manager.sendPrompt('no-such-session', '[ok] hello'), { code: 'session-not-found' });
+});
+
+test('a role group\'s sandbox arguments replace the auto mode\'s sandbox and keep the rest, in start and reopen (issue #310)', async () => {
+  const r = rig({ providers: { claude: 'claude', codex: 'codex' } });
+  const auto = { args: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'], label: 'Auto mode: on (codex)' };
+  await r.manager.start({ provider: 'codex', name: 'PM', cwd: '/synthetic/project', autoMode: auto, permissionArgs: ['--sandbox', 'read-only'] });
+  assert.equal(r.terminals[0].sent[0].text, 'codex --ask-for-approval never --sandbox read-only');
+  await r.manager.start({ provider: 'codex', name: 'Worker', cwd: '/synthetic/project', autoMode: auto, permissionArgs: [] });
+  assert.equal(r.terminals[1].sent[0].text, 'codex --sandbox workspace-write --ask-for-approval never');
+  await r.manager.start({ provider: 'codex', name: 'No auto', cwd: '/synthetic/project', permissionArgs: ['--sandbox', 'read-only'] });
+  assert.equal(r.terminals[2].sent[0].text, 'codex --sandbox read-only');
+  const shell = await r.manager.start({ provider: 'codex', name: 'Shell', cwd: '/synthetic/project', launch: false, permissionArgs: ['--sandbox', 'read-only'] });
+  assert.deepEqual(r.terminals[3].sent, [], 'a shell with no CLI types nothing');
+  r.manager.stop(shell.id);
+  const first = r.manager.list()[0];
+  r.manager.stop(first.id);
+  await r.manager.reopen(first.id, { autoMode: auto, permissionArgs: ['--sandbox', 'read-only'] });
+  assert.equal(r.terminals[r.terminals.length - 1].sent[0].text, 'codex --ask-for-approval never --sandbox read-only');
 });

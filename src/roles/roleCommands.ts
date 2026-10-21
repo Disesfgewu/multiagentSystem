@@ -22,6 +22,7 @@ const { previewEffectiveRules, formatPreview } = require('./preview') as {
   previewEffectiveRules(value: { roleGroup: RoleGroup; layers: RuleLayers }): { ok: boolean; digest?: string; problems: Array<{ code: string; path: string }> };
   formatPreview(value: unknown, options?: { injection?: unknown; catalog?: unknown[]; allowlist?: Record<string, string[]>; includeResearchSkills?: boolean; workspaceRoot?: string; consentedServerIds?: string[] }): string;
 };
+const { TOOLS: TOOL_NAMES } = require('./role-group') as { TOOLS: readonly string[] };
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
 const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 const { BroadcastStore } = require('../broadcast/store') as { BroadcastStore: new (store: Store) => { list(): { ok: boolean; items?: unknown[]; reason?: string } } };
@@ -34,8 +35,8 @@ const { TEMPLATES, buildFromTemplate, describeRoleGroup } = require('./templates
   TEMPLATES: Record<string, { id: string; title: string; summary: string; defaultName: string; role: string | null; toolPermissions: Record<string, string> }>;
   buildFromTemplate(input: { templateId: string; provider: string; name: string; role?: string; newId: string }): { ok: boolean; record?: RoleRecord; problems?: Array<{ code: string; path: string }> };
 };
-const { toolHelp, levelHelp, fieldHelp, ENFORCEMENT_NOTE } = require('./field-help') as {
-  toolHelp(tool: string): string | null; levelHelp(level: string): string | null; fieldHelp(field: string): string | null; ENFORCEMENT_NOTE: string;
+const { toolHelp, levelHelp, fieldHelp, ENFORCEMENT_NOTE, TOOL_ENFORCEMENT_NOTE } = require('./field-help') as {
+  toolHelp(tool: string): string | null; levelHelp(level: string): string | null; fieldHelp(field: string): string | null; ENFORCEMENT_NOTE: string; TOOL_ENFORCEMENT_NOTE: string;
 };
 const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
   checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
@@ -231,7 +232,7 @@ async function edit(value: unknown): Promise<void> {
     { label: 'Edit instruction', detail: help('instructions'), value: 'edit' },
     { label: 'Remove instruction', detail: help('instructions'), value: 'remove' },
     { label: 'Use bundled PM system prompt', detail: 'Add the bundled PM instructions to this private role group.', value: 'pm-template' },
-    { label: 'Set tool permission', detail: `${fieldHelp('tools')} ${ENFORCEMENT_NOTE}`, value: 'tool' },
+    { label: 'Set tool permission', detail: `${fieldHelp('tools')} ${TOOL_ENFORCEMENT_NOTE}`, value: 'tool' },
     { label: 'Set default account profile', detail: help('defaultAccount'), value: 'account' },
     { label: 'Set allowed repositories', detail: help('repositories'), value: 'repositories' },
     { label: 'Set allowed paths', detail: help('paths'), value: 'paths' },
@@ -244,13 +245,13 @@ async function edit(value: unknown): Promise<void> {
     if (!name) return;
     change = { kind: 'rename', name };
   } else if (action.value === 'tool') {
-    const tool = await vscode.window.showQuickPick(['shell', 'fileWrite', 'network', 'githubRead', 'githubWrite', 'merge'].map((name) => ({
+    const tool = await vscode.window.showQuickPick(TOOL_NAMES.map((name) => ({
       label: name, description: record.group.toolPermissions[name] ?? 'deny', detail: toolHelp(name) ?? undefined
     })), { placeHolder: fieldHelp('tools') ?? 'Choose a tool', ignoreFocusOut: true });
     if (!tool) return;
     const level = await vscode.window.showQuickPick(['deny', 'ask', 'allow'].map((name) => ({
       label: name, detail: levelHelp(name) ?? undefined
-    })), { placeHolder: `What may this role do with ${tool.label}? ${ENFORCEMENT_NOTE}`, ignoreFocusOut: true });
+    })), { placeHolder: `What may this role do with ${tool.label}? ${TOOL_ENFORCEMENT_NOTE}`, ignoreFocusOut: true });
     if (!level) return;
     change = { kind: 'tool', tool: tool.label, level: level.label };
   } else if (action.value === 'account') {

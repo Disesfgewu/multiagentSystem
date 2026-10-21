@@ -35,6 +35,8 @@ test('templates fail closed: every tool is listed explicitly, merge is denied, a
     assert.equal(group.toolPermissions.merge, 'deny', `${id} cannot merge`);
     if (id === 'researcher') {
       assert.equal(group.toolPermissions.githubWrite, 'deny', 'a researcher cannot write to github');
+    } else if (id === 'pm') {
+      assert.equal(group.toolPermissions.githubWrite, 'allow', 'a PM writes Issues');
     } else {
       assert.equal(group.toolPermissions.githubWrite, 'ask', `${id} asks before changing GitHub`);
     }
@@ -42,7 +44,7 @@ test('templates fail closed: every tool is listed explicitly, merge is denied, a
   }
   assert.ok(Object.values(build('blank').record.group.toolPermissions).every((level) => level === 'deny'));
   assert.equal(build('worker').record.group.toolPermissions.network, 'ask');
-  assert.equal(build('pm').record.group.toolPermissions.fileWrite, 'ask', 'a PM does not write code by default');
+  assert.equal(build('pm').record.group.toolPermissions.fileWrite, 'deny', 'a PM cannot edit files');
   assert.equal(build('worker').record.group.toolPermissions.fileWrite, 'allow');
   assert.equal(build('researcher').record.group.toolPermissions.shell, 'deny');
   assert.equal(build('researcher').record.group.toolPermissions.fileWrite, 'deny');
@@ -161,8 +163,8 @@ test('the preview tags every rule and every tool permission with what happened t
   const ruleLines = text.split('\n').filter((line) => /^  - (forbid|require|instruction)/.test(line));
   assert.ok(ruleLines.length >= 2);
   for (const line of ruleLines) assert.match(line, /<NOT sent to the CLI>$/);
-  const toolLines = text.split('\n').filter((line) => /^  - (shell|fileWrite|network|githubRead|githubWrite|merge):/.test(line));
-  assert.equal(toolLines.length, 6);
+  const toolLines = text.split('\n').filter((line) => /^  - [A-Za-z]+: (deny|ask|allow) -> /.test(line));
+  assert.equal(toolLines.length, TOOLS.length, 'every tool, including the finer git and GitHub steps');
   for (const line of toolLines) assert.match(line, /<told to the agent only, not enforced>$/);
   const manual = formatPreview(preview, { injection: injectionStatus({ provider: 'agy' }) });
   for (const line of manual.split('\n').filter((entry) => /^  - (forbid|require|instruction)/.test(entry))) assert.match(line, /<not supported: give by hand>$/);

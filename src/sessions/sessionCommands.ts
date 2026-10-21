@@ -35,7 +35,8 @@ const { recordReading } = require('../accounts/usage-log') as {
   recordReading(input: { snapshot: unknown; openStore: () => Promise<unknown> }): Promise<{ recorded: boolean; reason: string }>;
 };
 import { prepareIsolationForStart } from '../isolation/enforcedStart';
-import { writeAttributionSettings } from '../providers/attribution';
+import { writeClaudeSettings, removeClaudeSettings } from '../providers/attribution';
+const { codexArguments } = require('../roles/tool-permissions') as { codexArguments(toolPermissions: Record<string, string> | null | undefined): { args: string[] } };
 const { resolveAutoMode, describeAutoMode } = require('../providers/auto-mode') as {
   resolveAutoMode(input: { provider: string; setting?: unknown; overrides?: unknown }): { state: 'on' | 'off' | 'unknown'; args: string[]; label: string };
   describeAutoMode(auto: { state: string; args: string[]; label: string }, isolation: 'enforced' | 'advisory'): string[];
@@ -159,14 +160,15 @@ async function isolationForLaunch(interactive: boolean, launch: boolean | undefi
 }
 
 /**
- * Claude Code's settings file that switches off its own attribution (issue #293), written in the extension's private storage.
- * Without it Claude Code is not started: the switch is not optional.
+ * Claude Code's settings file for this session, written in the extension's private storage: the switch that turns off its own
+ * attribution (issue #293) and the role group's permission rules (issue #310), in one document. Without it Claude Code is not
+ * started: neither the switch nor the permissions are optional.
  */
-function attributionFileFor(provider: string, launch: boolean | undefined, openedStorage: { ok?: boolean; store?: unknown } | undefined): string | undefined {
+function attributionFileFor(provider: string, launch: boolean | undefined, openedStorage: { ok?: boolean; store?: unknown } | undefined, sessionId: string, toolPermissions: Record<string, string> | null | undefined): string | undefined {
   if (provider !== 'claude' || launch === false) return undefined;
   try {
     if (!openedStorage?.ok) throw new Error('no storage');
-    return writeAttributionSettings(path.join((openedStorage.store as { dir: string }).dir, 'attribution'));
+    return writeClaudeSettings(path.join((openedStorage.store as { dir: string }).dir, 'attribution'), sessionId, toolPermissions ?? null);
   } catch {
     throw Object.assign(new Error('attribution-settings-unavailable'), { code: 'attribution-settings-unavailable' });
   }
@@ -403,7 +405,6 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       }
       if (isolation.kind === 'enforced') isolationDispose = isolation.dispose;
       if (isolation.kind === 'enforced') env = { ...(env ?? {}), ...isolation.env };
-      const attributionFile = attributionFileFor(provider, input.launch, openedStorage);
       const autoMode = autoModeFor(provider, input.launch, isolation.kind);
       let autoModeShown = false;
       if (!openedStorage?.ok) {
@@ -476,6 +477,16 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
         instructions = prep;
       }
+      // The settings file needs the role group's permissions, so it is written once the instructions are prepared. If it cannot be,
+      // nothing starts and the prepared instruction files are removed again.
+      let attributionFile: string | undefined;
+      try {
+        attributionFile = attributionFileFor(provider, input.launch, openedStorage, targetSessionId, instructions?.toolPermissions);
+      } catch (error) {
+        if (instructions?.plan) cleanupSessionPlan(instructions.plan);
+        throw error;
+      }
+      if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
       const session = await manager.start({
         id: targetSessionId,
         provider,
@@ -494,6 +505,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         instructions,
         ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}),
         ...(attributionFile ? { attributionFile } : {}),
+        ...(provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}),
         ...(autoMode.auto ? { autoMode: autoMode.auto } : {})
       });
       // No confirmation window was shown for this launch: say it on screen anyway, so nobody is surprised that the agent does not stop to ask.
@@ -665,7 +677,6 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           return { ok: false, code: isolation.code, message: isolation.message };
         }
         if (isolation.kind === 'enforced') { isolationDispose = isolation.dispose; env = { ...(env ?? {}), ...isolation.env }; }
-        const attributionFile = attributionFileFor(prior.provider, input.launch, openedStorage);
         const autoMode = autoModeFor(prior.provider, input.launch, isolation.kind);
         let autoModeShown = false;
         if (!openedStorage?.ok) {
@@ -743,8 +754,17 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           accountProfileId: prior.accountProfileId,
           env
         });
+        let attributionFile: string | undefined;
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}) });
+          attributionFile = attributionFileFor(prior.provider, input.launch, openedStorage, newSessionId, instructions?.toolPermissions);
+        } catch (error) {
+          if (instructions?.plan) cleanupSessionPlan(instructions.plan);
+          observations.release(newSessionId);
+          throw error;
+        }
+        if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
+        try {
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}) });
           if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
         } catch (error) {
           observations.release(newSessionId);
