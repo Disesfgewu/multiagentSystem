@@ -6,8 +6,19 @@ Multiagent 側欄的 **Administrator Broadcasts** 可建立、閱讀與撤回本
 
 生效中的公告可出現在符合身份組／provider 的有效指令預覽，屬 `user` 層，弱於 `platform`，不會授予工具權限。預覽另列公告來源、版本與到期。公告目前位於擴充套件的本機私人儲存，未增加 repository 範圍；單一 session 目標保存的是當次 session ID，重開所建立的新 session 不會自動繼承它。尚無單一 session 的有效指令預覽入口。
 
-**實際 session 啟動、reopen、CLI 輸入、確認回條都未接入公告。** 保存成功只表示本機記錄存在；不能稱已排入、已收到、已套用或 CLI 會遵守。角色與 provider 的預覽也不是送達證據。撤回及到期只影響之後讀取的本機預覽，不會撤回正在運行的 CLI 內容。
+**送達的三種情況，各自的證據不同**：(1) 之後新啟動的 session 會在有效指令中帶入適用的公告（寫進指示檔，不重複送）；(2) 已在執行的 session，用 **Send Broadcast to Agents** 把公告當成一行 prompt 輸入到它的 terminal（見下節）；(3) 確認回條、CLI 是否讀到或遵守仍未接入。保存成功只表示本機記錄存在；「已輸入」只表示文字寫進了該 terminal，不是已收到、已套用或 CLI 會遵守。撤回及到期只影響之後讀取的本機預覽與之後的啟動，**不會撤回已輸入的 prompt 或正在運行的 CLI 內容**。
 
 目前的確認流程不接受 agent 自我宣告 Admin 角色，也不會向 GitHub 發布公告。它不能阻止與使用者有相同 OS 權限的程式直接修改私人檔案；強制隔離仍由 #25／#26 追蹤。公告不能放寬較高層規則；真實 CLI 的接收與權限強制仍未驗證。
 
 Host 測試使用真正指令、私人儲存、列表與文件，加上合成的對話框答案，驗證四種目標、取消不保存、全文閱讀、Save 不寫檔、重新整理及撤回。人工視覺與雙平台實機仍待驗收。#92／#106 保持開啟，下一階段須交付實際啟動接線及逐 session 的準備／送達證據。
+
+## Send Broadcast to Agents（#295）
+
+指令 **Send Broadcast to Agents**（Administrator Broadcasts 標題列）把一則**生效中**的公告輸入到它所針對、正在執行的 agent CLI。和建立、撤回一樣，它**不接受任何命令參數**：公告從畫面上的清單選擇，收件者由公告自己的目標（全部、身份組、provider、單一 session）與各 session 的證據推算，每次都要在視窗中確認「完整 prompt」與名單，不能被參數跳過；也**不是**一般的 VS Code session 指令，只有擴充套件自己的程式能呼叫輸入功能。廣播權限邊界不變：只有使用者在本機互動操作能建立、撤回或送出，agent、PM、MCP 結果或任何 agent 可設定的值都不能。
+
+- **只送給「確實在等輸入」的 session**：terminal 開著、CLI 記錄為執行中，**且**有 CLI 自己的 hook 事件（新鮮、`actual`）證明它在等待輸入。忙碌、已結束、只有 shell 提示字元、狀態未知（沒有新鮮證據）都不送，並寫明原因（例如「not sent: state unknown」）；不會硬塞進 shell 或忙碌中的 CLI。
+- **prompt 長什麼樣**：一行，以 `[Administrator broadcast, created <時間>] <內容>` 開頭（第一個字元是 `[`，不會被當成 slash 指令、shell 逃逸或記憶備註）。公告文字本來就是單行、已移除控制字元；輸入前再檢查一次，含換行、escape 序列、零寬或雙向字元、過長的一律拒絕，不經 shell 字串拼接。多行輸入各 CLI 的接受方式未驗證（#135），所以只送單行。
+- **確認之後才輸入，且再確認一次狀態**：只送給「名單上看過、且送出當下仍在等輸入」的 session；其餘記為略過。
+- **記錄**：每次送出在私人儲存區新增一筆不可改寫的紀錄（只含 session id、provider、已送出／略過與原因，沒有名稱、路徑或帳號），顯示在 Administrator Broadcasts 的列與全文文件（「typed into N sessions, not sent to M」）。
+
+**未驗證**：各 CLI 是否真的把這行當成使用者輸入並開始處理（尤其是 Claude Code 與 Codex 在「等待輸入」時的行為）、host 測試目前只能證明沒有可送對象時不送也不記錄（沒有能產生 hook 證據的合成 CLI），真實的輸入路徑由單元測試以假 terminal 證明；實機項在 #135。

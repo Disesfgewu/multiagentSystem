@@ -164,7 +164,7 @@ test('private details keep the complete notice and separate local state from unk
   assert.match(rendered, /Status: active/);
   assert.match(rendered, /Expires: 2026-10-17T13:00:00.000Z/);
   assert.match(rendered, /Delivery: unknown/);
-  assert.match(rendered, /Session launch, CLI delivery and acknowledgement are not connected/);
+  assert.match(rendered, /not proof that the CLI read it/);
 });
 
 test('role preview provenance only lists currently live matching notices with version and expiry', () => {

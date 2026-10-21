@@ -1,0 +1,132 @@
+'use strict';
+
+const { isLive, appliesTo } = require('./model');
+
+/**
+ * Delivering a stored administrator broadcast to running agent CLIs as a prompt typed into their terminal (issue #295).
+ * This module is pure logic: it builds the prompt, decides per session whether to send it, and checks the delivery record.
+ * It sends nothing and decides nothing about WHO may broadcast: that stays with the interactive command that calls it,
+ * which takes no argument at all (see `commands.ts`). A prompt is only ever built from a broadcast that command read from
+ * the private store after the person confirmed it.
+ *
+ * "Sent" means the text was typed into that session's terminal. It is not proof that the CLI read it or will act on it.
+ */
+
+const PREFIX = '[Administrator broadcast';
+const MAX_PROMPT_CHARS = 2200;
+// Anything that could end the line, start an escape sequence or hide text. The broadcast text is already one clean line
+// (`model.js`); this is the second guard, at the last step before a terminal.
+const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * One line, starting with `[`: the first character cannot make a CLI read the prompt as a slash command, a shell escape or a
+ * memory note. Throws on text a terminal must not receive.
+ */
+function buildPrompt(broadcast) {
+  if (!isPlain(broadcast) || typeof broadcast.text !== 'string' || typeof broadcast.createdAt !== 'string') throw Object.assign(new Error('prompt-invalid'), { code: 'prompt-invalid' });
+  const prompt = `${PREFIX}, created ${broadcast.createdAt}] ${broadcast.text}`;
+  if (UNSAFE.test(prompt) || prompt.length > MAX_PROMPT_CHARS) throw Object.assign(new Error('prompt-invalid'), { code: 'prompt-invalid' });
+  return prompt;
+}
+
+/** The same check for the manager, which types whatever it is given: one line, bounded, nothing a terminal would interpret. */
+function promptIsSafe(prompt) {
+  return typeof prompt === 'string' && prompt.length > 0 && prompt.length <= MAX_PROMPT_CHARS && !UNSAFE.test(prompt) && prompt.startsWith('[');
+}
+
+const RUNNING = new Set(['launch-requested', 'cli-observed']);
+
+/**
+ * Per targeted session: send, or skip with a reason. A session is only sent to when its terminal is open, its CLI is
+ * recorded as running, AND the CLI's own hook evidence (fresh, `actual`) says it is waiting for input. No evidence, a busy
+ * CLI or a finished one is a skip with the reason: the prompt is never forced into a shell prompt or a busy CLI.
+ *
+ * @param {{ broadcast: object, sessions: Array<object>, roleOf?: (session: object) => (string|undefined), now: Date }} input
+ * @returns {{ ok: true, prompt: string, recipients: Array<{ id: string, name: string, provider: string, decision: 'send'|'skip', reason: string }> } | { ok: false, reason: string }}
+ */
+function planDelivery({ broadcast, sessions, roleOf = () => undefined, now }) {
+  if (!isPlain(broadcast) || !isLive(broadcast, now)) return { ok: false, reason: 'broadcast-not-live' };
+  let prompt;
+  try { prompt = buildPrompt(broadcast); } catch { return { ok: false, reason: 'prompt-invalid' }; }
+  const recipients = [];
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    if (!isPlain(session) || typeof session.id !== 'string') continue;
+    const context = { role: roleOf(session), agentId: session.id, provider: session.provider };
+    if (!appliesTo(broadcast, context)) continue;
+    const entry = { id: session.id, name: typeof session.name === 'string' ? session.name : 'Session', provider: String(session.provider ?? ''), decision: 'skip', reason: '' };
+    const status = session.providerObservation && session.providerObservation.status;
+    const observed = isPlain(status) && status.confidence === 'actual' ? status.value : null;
+    if (session.terminalOpen !== true) entry.reason = 'terminal-not-open';
+    else if (!RUNNING.has(session.state)) entry.reason = 'cli-not-running';
+    else if (observed === 'waiting') { entry.decision = 'send'; entry.reason = 'waiting-for-input'; }
+    else if (observed === 'working') entry.reason = 'cli-busy';
+    else if (observed === 'completed' || observed === 'ended') entry.reason = 'cli-not-waiting';
+    else entry.reason = 'state-unknown';
+    recipients.push(entry);
+  }
+  return { ok: true, prompt, recipients };
+}
+
+const REASON_TEXT = Object.freeze({
+  'waiting-for-input': 'waiting for input',
+  'terminal-not-open': 'its terminal is not open',
+  'cli-not-running': 'the CLI is not recorded as running (a shell prompt, or it exited)',
+  'cli-busy': 'the CLI is busy working',
+  'cli-not-waiting': 'the CLI has finished or ended',
+  'state-unknown': 'not sent: state unknown (no fresh evidence from the CLI)',
+  'send-failed': 'not sent: the terminal could not be written to'
+});
+const reasonText = (reason) => (Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT[reason] : 'unknown');
+
+/** The lines of the confirmation window: who gets it, who does not and why, and the complete prompt. */
+function describePlan(plan) {
+  const send = plan.recipients.filter((entry) => entry.decision === 'send');
+  const skip = plan.recipients.filter((entry) => entry.decision === 'skip');
+  return [
+    send.length > 0 ? `Will be typed into ${send.length} session${send.length === 1 ? '' : 's'}:` : 'No session can receive it now.',
+    ...send.map((entry) => `  • ${entry.name} (${entry.provider})`),
+    ...(skip.length > 0 ? [`Will NOT be sent to ${skip.length}:`, ...skip.map((entry) => `  • ${entry.name} (${entry.provider}): ${reasonText(entry.reason)}`)] : []),
+    '',
+    'The complete prompt:',
+    plan.prompt,
+    '',
+    '"Sent" means typed into the terminal. It is not proof that the CLI read it or will act on it.'
+  ];
+}
+
+const RECORD_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const OUTCOMES = new Set(['sent', 'skipped']);
+const REASONS = new Set([...Object.keys(REASON_TEXT)]);
+
+/**
+ * A delivery record: what happened for each session, by session id and provider only (no names, paths or accounts).
+ * @returns {{ ok: true, record: object } | { ok: false, problems: string[] }}
+ */
+function validateDelivery(raw) {
+  if (!isPlain(raw)) return { ok: false, problems: ['invalid-delivery'] };
+  const problems = [];
+  if (typeof raw.id !== 'string' || !RECORD_ID.test(raw.id)) problems.push('invalid-id');
+  if (typeof raw.broadcastId !== 'string' || !RECORD_ID.test(raw.broadcastId)) problems.push('invalid-broadcast-id');
+  if (!Number.isSafeInteger(raw.version) || raw.version < 1) problems.push('invalid-version');
+  if (typeof raw.at !== 'string' || !Number.isFinite(Date.parse(raw.at))) problems.push('invalid-time');
+  if (!Array.isArray(raw.results) || raw.results.length > 200) problems.push('invalid-results');
+  else for (const entry of raw.results) {
+    if (!isPlain(entry) || typeof entry.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(entry.sessionId) || !OUTCOMES.has(entry.outcome) || !REASONS.has(entry.reason) || typeof entry.provider !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.provider)) { problems.push('invalid-result'); break; }
+  }
+  if (problems.length > 0) return { ok: false, problems };
+  return { ok: true, record: Object.freeze({ id: raw.id, broadcastId: raw.broadcastId, version: raw.version, at: new Date(raw.at).toISOString(), results: raw.results.map((entry) => Object.freeze({ sessionId: entry.sessionId, provider: entry.provider, outcome: entry.outcome, reason: entry.reason })) }) };
+}
+
+/** `Delivery: 2 typed in, 1 not sent` for the list and the notice document. */
+function summarizeDeliveries(records, broadcastId) {
+  const mine = (Array.isArray(records) ? records : []).filter((entry) => entry && entry.broadcastId === broadcastId);
+  if (mine.length === 0) return 'unknown (not sent to any CLI)';
+  let sent = 0;
+  let skipped = 0;
+  for (const record of mine) for (const entry of record.results) { if (entry.outcome === 'sent') sent += 1; else skipped += 1; }
+  return `typed into ${sent} session${sent === 1 ? '' : 's'}, not sent to ${skipped}`;
+}
+
+module.exports = { buildPrompt, promptIsSafe, planDelivery, describePlan, validateDelivery, summarizeDeliveries, reasonText, MAX_PROMPT_CHARS };

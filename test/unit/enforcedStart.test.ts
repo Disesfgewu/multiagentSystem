@@ -131,3 +131,20 @@ test('every place that starts or reopens an agent CLI prepares Claude Code\'s at
   assert.equal([...source.matchAll(/= attributionFileFor\(/g)].length, calls, 'each one prepares the file');
   assert.equal([...source.matchAll(/\.\.\.\(attributionFile \? \{ attributionFile \} : \{\}\)/g)].length, calls, 'each one passes it on');
 });
+
+test('the broadcast delivery command takes no argument, asks for the confirmation every time and is not reachable as a session command', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const commands = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'broadcast', 'commands.ts'), 'utf8') as string;
+  assert.match(commands, /registerCommand\(BROADCAST_COMMANDS\.deliver, \(\) => deliver\(sessions\)\)/, 'the command ignores whatever it is called with');
+  const body = commands.slice(commands.indexOf('async function deliver('), commands.indexOf('let currentTree'));
+  assert.match(body, /showWarningMessage\(\s*'Type this broadcast into the running agents\?',\s*\{ modal: true, detail: describePlan\(plan\)\.join\('\\n'\) \},\s*'Send Now'/, 'a modal with the full prompt');
+  assert.match(body, /if \(confirmed !== 'Send Now'\) return;/, 'nothing is typed without it');
+  assert.ok(body.indexOf("confirmed !== 'Send Now'") < body.indexOf('sendPrompt('), 'the confirmation comes before any typing');
+  assert.match(body, /confirmedIds\.has\(entry\.id\)/, 'only sessions the person was shown are typed into');
+  assert.equal([...body.matchAll(/sendPrompt\(/g)].length, 1, 'one place types');
+  const sessionCommands = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  assert.doesNotMatch(sessionCommands, /registerCommand\([^)]*sendPrompt/, 'typing into a terminal is not a VS Code command');
+  const manager = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sessions', 'manager.ts'), 'utf8') as string;
+  assert.equal([...manager.matchAll(/terminal\.sendText\(/g)].length, 2, 'the manager types in two places only: the launch command and sendPrompt');
+});

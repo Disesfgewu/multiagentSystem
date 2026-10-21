@@ -66,7 +66,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
-| **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷。啟動 agent 時，只會帶入仍有效、而且適用於該角色、provider 或 session 的公告；已在執行中的 agent 不會收到新廣播（見 [#295](https://github.com/Disesfgewu/multiagentSystem/issues/295)）。 |
+| **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷、**Send Broadcast to Agents**。之後新啟動的 agent 會在指令中帶入仍有效、適用於它的公告；已在執行的 agent 要用 Send Broadcast to Agents，把公告當成一行 prompt 輸入到「確實在等輸入」的 CLI（每次都要確認完整 prompt 與名單，狀態未知就不送，並記錄結果）。「已輸入」不等於 CLI 已讀到或會遵守。詳見 [管理者廣播](docs/BROADCASTS.md)。 |
 | **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及一份遮罩過、可以複製的唯讀診斷文件。 |
 
 ### Agent 與 terminal

@@ -64,6 +64,7 @@
     "onView:multiagentSystem.rolesView",
     "onCommand:multiagentSystem.broadcasts.refresh",
     "onCommand:multiagentSystem.broadcasts.send",
+    "onCommand:multiagentSystem.broadcasts.deliver",
     "onCommand:multiagentSystem.broadcasts.revoke",
     "onView:multiagentSystem.broadcastsView",
     "onView:multiagentSystem.toolsSetupView",
@@ -181,7 +182,7 @@
       },
       {
         "view": "multiagentSystem.broadcastsView",
-        "contents": "Local broadcast notices are stored on this computer and shown in matching role previews. Session launch and CLI delivery are not connected.\n[Create Broadcast Notice](command:multiagentSystem.broadcasts.send)"
+        "contents": "Local broadcast notices are stored on this computer. A new notice reaches agents started after it was saved; Send Broadcast to Agents types it into the running agent CLIs that are waiting for input.\n[Create Broadcast Notice](command:multiagentSystem.broadcasts.send)"
       },
       {
         "view": "multiagentSystem.toolsSetupView",
@@ -323,6 +324,7 @@
       { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
       { "command": "multiagentSystem.broadcasts.refresh", "title": "Multiagent: Refresh Broadcasts", "icon": "$(refresh)" },
       { "command": "multiagentSystem.broadcasts.send", "title": "Multiagent: Create Broadcast Notice", "icon": "$(megaphone)" },
+      { "command": "multiagentSystem.broadcasts.deliver", "title": "Multiagent: Send Broadcast to Agents", "icon": "$(send)" },
       { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
       {
@@ -378,6 +380,7 @@
         { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.send", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
+        { "command": "multiagentSystem.broadcasts.deliver", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.refresh", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.setup.diagnose", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@1" },
         { "command": "multiagentSystem.setup.refresh", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@2" },

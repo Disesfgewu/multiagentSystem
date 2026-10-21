@@ -861,3 +861,25 @@ test('the settings file is private, holds only the attribution switch and is rew
     for (const bad of ['relative', '', undefined as unknown as string]) assert.throws(() => writeAttributionSettings(bad), /attribution-settings-unavailable/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a prompt is typed into a running session\'s terminal as one line and Enter; nothing else can be typed', async () => {
+  const r = rig();
+  const started = await r.manager.start({ provider: 'claude', name: 'Worker', cwd: '/synthetic/project' });
+  r.manager.sendPrompt(started.id, '[Administrator broadcast, created 2026-10-21T09:00:00.000Z] Run the tests first.');
+  assert.deepEqual(r.terminals[0].sent.slice(1), [{ text: '[Administrator broadcast, created 2026-10-21T09:00:00.000Z] Run the tests first.', newline: true }]);
+  for (const prompt of ['', 'no bracket', '/clear', '[a\nb]', '[a\u001b[31m]', '[a\rb]', `[${'x'.repeat(3000)}]`, 5 as unknown as string]) {
+    assert.throws(() => r.manager.sendPrompt(started.id, prompt), { code: 'prompt-invalid' }, JSON.stringify(prompt).slice(0, 20));
+  }
+  assert.equal(r.terminals[0].sent.length, 2, 'only the one good prompt was typed');
+});
+
+test('a prompt is not typed into a shell without a CLI, a stopped session or an unknown one', async () => {
+  const r = rig();
+  const shell = await r.manager.start({ provider: 'claude', name: 'Shell', cwd: '/synthetic/project', launch: false });
+  assert.throws(() => r.manager.sendPrompt(shell.id, '[ok] hello'), { code: 'cli-not-running' });
+  assert.deepEqual(r.terminals[0].sent, [], 'nothing was typed into the shell');
+  const running = await r.manager.start({ provider: 'claude', name: 'Running', cwd: '/synthetic/project' });
+  r.manager.stop(running.id);
+  assert.throws(() => r.manager.sendPrompt(running.id, '[ok] hello'), { code: 'terminal-not-open' });
+  assert.throws(() => r.manager.sendPrompt('no-such-session', '[ok] hello'), { code: 'session-not-found' });
+});

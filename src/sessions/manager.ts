@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SessionError, SessionRegistry } from './registry';
 import { modelArguments, normalizeRequestedModel } from '../providers/modelSelection';
 import { attributionArguments } from '../providers/attribution';
+const { promptIsSafe } = require('../broadcast/deliver') as { promptIsSafe(prompt: unknown): boolean };
 import { formatShellCommandLine } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
 
@@ -519,6 +520,21 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     const terminal = this.handles.get(id);
     if (!terminal) throw new SessionError('terminal-not-open');
     return terminal;
+  }
+
+  /**
+   * Types one line into a running session's terminal and presses Enter (issue #295: an administrator broadcast delivered as a
+   * prompt). Only for a session whose terminal is open and whose CLI is recorded as running, and only one clean line that
+   * starts with `[`: nothing that could end the line, start an escape sequence or be read as a command. Whether the CLI is
+   * waiting for input is the caller's decision (it needs evidence this class does not have). Typed is not read: the CLI's
+   * reaction is not observed.
+   */
+  sendPrompt(id: string, prompt: string): void {
+    if (!promptIsSafe(prompt)) throw new SessionError('prompt-invalid');
+    const terminal = this.liveTerminal(id);
+    const state = this.registry.get(id)?.state;
+    if (state !== 'launch-requested' && state !== 'cli-observed') throw new SessionError('cli-not-running');
+    terminal.sendText(prompt, true);
   }
 
   focus(id: string): SessionView {
