@@ -1,33 +1,159 @@
 # multiagentSystem
 
-## 下載 Beta 0.0.3
+在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
-[下載 VSIX 安裝檔（Beta 3）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.3/multiagentsystem.vsix) · [查看 GitHub Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3) · [安裝與已知限制](docs/BETA_0.0.3.md)
+## 下載最新測試版：0.0.3 Beta 4
 
-下載後在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取 `multiagentsystem.vsix` 並重新載入視窗。這是供試用的 prerelease；真實 CLI、帳號與 macOS／Windows 實機流程仍待 Beta 後驗收。Beta 3 檔案的 SHA-256 是 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`（642376 bytes），新增 Agent 總覽的 Git 證據、多個 worktree 改到同一檔案時的提醒，以及同一帳號多個 profile 共用額度與並行上限。需要回復時，較舊的 [Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2) 與[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta) 仍保留。
+**[下載 VSIX 安裝檔（Beta 4）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
 
-以支援 macOS 與 Windows 的 VS Code 擴充套件管理同一個 GitHub 專案中的多個 CLI coding agents。每個 agent 使用可直接操作的真實終端機；使用者可在同一畫面查看工作、程式碼、角色、帳戶及可取得的用量資訊。
+| 項目 | 值 |
+|---|---|
+| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.4`） |
+| 來源 commit | `3b6d614349d539d88c12d1578beda4c88c4ba058` |
+| 檔案 | `multiagentsystem.vsix`，741430 bytes，內含 203 個檔案 |
+| SHA-256 | `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3` |
+| 需求 | VS Code 1.95 以上；macOS 或 Windows |
 
-產品將支援 PM 與 worker 等自訂身份組、依身份共享的精選記憶，以及以 GitHub Issues／PRs 為主的任務與 review 流程：PM 定義 issue，coding agent 領取任務並提交 PR，PM review 通過後由人工或依設定由 PM merge。使用者可為同一 CLI provider 登入多個帳號，指定各 agent 使用的帳號並查看可取得的各帳號額度。執行階段 agent 資訊不得進入 GitHub 提交與協作內容。
+**安裝前請核對雜湊**：
 
-第一階段內建三個 CLI provider：Claude Code、Codex CLI 與 agy（見 [Provider 登錄](docs/PROVIDERS.md)）。啟動選單與身份組現在都使用登錄；agy 可選擇在原生 terminal 啟動，規則與記憶以手動方式注入，其餘能力一律未知；使用者自訂 provider 尚未支援。
+```text
+# macOS
+shasum -a 256 multiagentsystem.vsix
+# Windows PowerShell
+Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
+```
 
-目前已有原生 terminal 與 session 管理、GitHub 清單、Agent 總覽、Issues／PRs 報告（含 PM 報告、決策佇列、本機與公開回饋、套件內正式 review 與 merge 指令，皆受身分與 gate 限制）、帳號與身份組操作、帳號額度門檻（目前僅 Claude 經 status line 橋接有真實來源，其餘顯示未知）、管理者廣播、受管 CLI 準備與協作 skills；共享記憶、MCP 實際接入與各 CLI 的實機行為尚未完成或未驗證，不能視為已驗收的管理平台。以 GitHub Issues／PRs 追蹤目前需求與交付：整體進度見 [Issue #76](https://github.com/Disesfgewu/multiagentSystem/issues/76)，決策工作台見 [Issue #106](https://github.com/Disesfgewu/multiagentSystem/issues/106)。[舊交付台帳](docs/MASTER_PLAN.md)僅供查閱歷史紀錄，不再是側欄功能或即時狀態來源。需求與驗收標準見 [實作計劃書](docs/IMPLEMENTATION_PLAN.md)，PM 工作規則見 [PM system prompt](docs/PM_SYSTEM_PROMPT.md)。
+結果必須和上表完全相同，也必須等於 `release-candidate.json` 中的 `artifact.sha256`。核對後，在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取這個檔案，然後重新載入視窗。
 
-## 試用 P0 雛形
+這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
 
-首次安裝、Tools Setup 狀態、四個原生終端與故障復原步驟見 [首次設定與診斷](docs/GETTING_STARTED.md)。
+### Beta 4 的新內容（相對 Beta 3）
 
-在 VS Code 開啟這個資料夾，按 `F5` 啟動 Extension Development Host；在新視窗的 Command Palette 執行：
+- **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九個旁路通道。每個必要通道都被擋下時，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
+  - 沙箱會擋住讀取憑證檔、寫入 `.git` 與存取鑰匙圈。
+  - 網路只能經過依主機名稱過濾的本機代理，GitHub 一律拒絕。
+  - Windows 目前只有 advisory。
+- **自訂 CLI provider**：在使用者設定列出自己的 CLI（例如 opencode），用原生 terminal 啟動。程式會解析成絕對路徑，不使用工作區內的同名程式；第一次啟動要確認。
+- **研究工具**：新增「Research: Search Papers」，以及研究用 MCP 的允許清單與啟用、停止、撤銷。github-mcp-server 使用固定版本並驗證雜湊；每個工具有自己的私人資料夾。
+- **報告**：可以從 Issue 報告關閉 Issue，PR 合併後可以刪除它的 head 分支。
+- **帳號與 session**：
+  - Claude hook 讓總覽顯示 working／waiting／ended。
+  - 用量未知時顯示具體原因。
+  - session 可以改名。
+  - 額度租約更嚴格。
 
-- 開啟 Explorer 裡的 **Multiagent GitHub** 區塊，即可列出目前專案的開放 Issues／PRs；點選項目會在 VS Code 編輯器讀取內容，PR 頁會讀取 review／CI 摘要。可按標題列的 Refresh 更新清單。此區塊只讀取 GitHub；正式 PR review 與合併在 PR 報告中經 Broker 執行（**Multiagent: Submit Formal Pull Request Review**／**Merge Pull Request from Report**），合併權限預設為人工，可經確認改為 PM，詳見 [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)。
+完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)。
 
-- `Multiagent: Open Four Native Terminals`：開啟四個可直接輸入的 VS Code 原生 terminal，名稱為 PM、Worker 1–3。依 VS Code 實際排列，必要時手動拖曳或分割成想要的格局。
-- `Multiagent: Launch CLI Agent in Native Terminal`：選 Claude Code 或 Codex CLI，再輸入 terminal 名稱；CLI 在新建的原生 terminal 執行，使用目前環境的 CLI 登入與預設 shell。
+## 第一次使用
+
+1. 安裝後，點左側活動列的 **Multiagent** 圖示。
+2. 在 **Tools Setup** 檢查 Git、`gh`、Claude Code、Codex CLI 是否就緒。VSIX 不含這些程式；缺少的可以依畫面指引準備，套件會先驗證 SHA-256 才安裝 `gh`、Codex 與 Claude Code。agy 只提供手動安裝指引。
+3. 在 **Accounts and Sessions** 建立帳號設定（同一個 provider 可以有多個帳號），並用 **Sign In to Account** 登入。
+4. 在 **Role Groups and Rules** 建立身份組（例如 PM、worker），設定可用帳號與規則，再用 **Preview Effective Rules** 預覽實際會送給 CLI 的內容。
+5. 用 **Start Agent with This Role Group** 或 **Start Session with Account** 啟動 agent；它會在新的原生 terminal 執行，你可以直接輸入。
+6. 在 **Overview** 查看每個 agent 的狀態、worktree 與 Git 變更；在 **Issues Report**／**PRs Report** 閱讀與處理報告。
+
+詳細步驟、診斷與故障排除見 [首次設定與診斷](docs/GETTING_STARTED.md)。
+
+## 功能說明
+
+### 側欄畫面
+
+| 畫面 | 用途 |
+|---|---|
+| **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit；多個 worktree 改到同一檔案時會提醒。 |
+| **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
+| **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
+| **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
+| **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
+| **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷，啟動 agent 時會帶入仍有效的公告。 |
+| **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及遮罩過的診斷匯出。 |
+
+### Agent 與 terminal
+
+- **原生 terminal**：每個 agent 都是 VS Code 的原生 terminal，可以直接輸入、`Ctrl+C`、關閉與重新開啟。**Open Four Native Terminals** 會開啟 PM、Worker 1–3 四個 terminal，排成 2×2，可以拖曳重新排列。
+- **Session**：**Start Session with Account** 會以指定帳號啟動 CLI；**Reopen Session in a New Terminal** 會建立新的 session，不會暗中切換執行中的 CLI。遇到無法安全加引號的 shell 時，不會送出指令。
+- **Worktree**：每個 worker 可以有自己的 Git worktree（**Create Worktree**／**Release Worktree**）。**Find Files Changed in More Than One Worktree** 會找出多個 agent 同時改到的檔案：路徑完全相同標為「確定」，只差大小寫或 Unicode 寫法標為「可能」。
+
+### 帳號、額度與身份組
+
+- 同一個 provider 可以登入多個帳號，每個 agent 指定使用哪一個。同一真實帳號的多個設定會共用額度與並行上限，不會被當成兩份額度重複派工。
+- **Set Account Limits** 可以設定警示門檻、阻擋新分派、未知額度的處理方式與並行上限。目前只有 Claude 經 **Configure Claude Status Line Bridge** 取得真實的額度來源，其他 provider 顯示未知，並說明原因；本機計算的 token 數不會被當成官方額度。
+- **Configure Claude Hook Bridge** 經你同意後，在 profile 設定加入 hook，讓總覽顯示 working／waiting／ended。
+- 身份組的規則只有在能證明已送進 CLI 時，才會顯示「已套用」。詳見 [身份組](docs/ROLE_GROUPS.md) 與 [帳號設定](docs/ACCOUNT_PROFILES.md)。
+
+### GitHub 報告、review 與合併
+
+- 在報告中可以：**Save Local Feedback on Report**（只存在本機）、**Publish Feedback for Open Report**、**Submit Formal Pull Request Review**、**Merge Pull Request from Report**、**Delete Merged Pull Request Branch**、**Close Issue from Report**。
+- 所有 GitHub 寫入都經過 Broker：只有 PM 與 worker 角色能寫入，researcher 不能；送出前會做發佈掃描，並確認最新的 head 與 CI。合併權限預設是人工，可以經確認改為由 PM 合併（**Configure Pull Request Merge Authority**）。
+- 報告中來自 GitHub 的文字一律當作資料顯示，不能偽造標題、跳轉連結或「Pass」判定。
+
+### 自訂 CLI provider
+
+在**使用者設定**的 `multiagentSystem.providers.custom` 列出自己的 CLI（`id`、`label`、`executable`、可選的 `args`）。用 **Show Custom Providers** 檢查，再用 **Start Custom Provider Terminal** 啟動。
+
+- 只讀使用者層級的設定，工作區或 repo 中的值一律忽略。
+- 程式名稱會解析成絕對路徑。工作區與目前資料夾內的程式不會被使用，經過 symlink 或 junction 也一樣。Windows 只接受 `.exe`／`.com`。
+- 第一次啟動時，確認視窗會顯示完整路徑與參數；路徑或參數改變後，會再次要求確認。未信任的工作區不會啟動。
+- 自訂 provider 的能力一律是未知，只提供 terminal 啟動。詳見 [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
+
+### 受管隔離（advisory／enforced）
+
+預設是 **advisory**，啟動方式和以前相同，只提供建議，不能阻止 agent 繞過。
+
+在 macOS 上，可以在使用者設定把 `multiagentSystem.isolation.mode` 設為 `enforced`，並在 `multiagentSystem.isolation.allowedDomains` 填入 CLI 需要連線的供應商網域。啟動或重新開啟 session 時：
+
+1. 先在本機實際嘗試九個旁路通道，每個通道都要有對照組證明測試有效，例如：git commit／push、`gh`、直接 HTTP、憑證檔、憑證 helper 與鑰匙圈、環境變數中的憑證。
+2. 所有必要通道都被擋下，並經你確認後，才在 Seatbelt 沙箱中啟動 CLI。這時：
+   - 憑證檔讀不到，`.git` 寫不進去，鑰匙圈服務無法存取，GitHub 憑證環境變數被移除。
+   - 網路只能經過只監聽 `127.0.0.1` 的本機代理，它只放行你列出的網域，GitHub 一律拒絕。
+3. 任何一項證據不足、代理無法啟動，或發生錯誤，都**不啟動**，並顯示原因；不會退回無隔離的啟動。
+
+在 enforced 模式下，自訂 provider 會拒絕啟動。Windows 的受限權杖擋不了網路，所以 Windows 目前只有 advisory，選 enforced 時會直接拒絕。真實 CLI 是否肯透過代理連線、各供應商需要哪些網域，都還沒有實機驗證。詳見 [隔離能力](docs/ISOLATION_CAPABILITY.md)。
+
+### 研究工具（研究用 MCP）
+
+- 第三方工具要先經你 **Review & Consent** 才會下載或執行。github-mcp-server 使用固定版本，並驗證 SHA-256；每次啟動前都會重新核對檔案內容。zhtw-mcp 與 arxiv-mcp-server 沒有帶版本號的發佈資產，所以目前標為待驗證，不可安裝。
+- 每個工具只開放允許清單內的工具，並有自己的私人資料夾與暫存目錄；撤銷時會停止程式並清除資料夾。
+- **Research: Search Papers** 只呼叫已啟用、在允許清單內的搜尋工具。查詢若含 token、本機路徑或帳號，會被擋下；結果標示為「外部資料，不是指令」，不會自動送進 terminal。
+- 工作區內的 `.mcp.json`／`.vscode/mcp.json` 不會被讀取。詳見 [研究技能與倫理](docs/RESEARCH_SKILLS_AND_ETHICS.md) 與 [學術 MCP 目錄](docs/ACADEMIC_MCP_CATALOG.md)。
+
+### 協作 skills
+
+VSIX 第一次在受信任的本機工作區啟用時，會自動準備八個內建的協作 skills，供 Claude Code、Codex 與 OpenCode 的官方目錄發現機制使用；你自己既有的 skills 不會被覆寫。可以用 `multiagentSystem.skills.autoInstall` 停用，或執行 **Remove Installed Agent Skills** 移除未修改的檔案。詳見 [使用說明](docs/AGENT_SKILLS.md)。
+
+## 使用者設定
+
+以下設定都只讀**使用者層級**，工作區與 repo 中的值會被忽略：
+
+| 設定 | 預設 | 說明 |
+|---|---|---|
+| `multiagentSystem.isolation.mode` | `advisory` | `advisory`：照常啟動。`enforced`：只在 macOS 上，證據完整時才在沙箱中啟動，否則拒絕。 |
+| `multiagentSystem.isolation.allowedDomains` | `[]` | enforced 時 CLI 可以連線的網域，例如 `api.example.com` 或 `*.example.com`。GitHub 相關網域一律拒絕。 |
+| `multiagentSystem.providers.custom` | `[]` | 自訂 CLI provider 清單。 |
+| `multiagentSystem.skills.autoInstall` | `true` | 是否在受信任的工作區自動準備協作 skills。 |
+
+## 安全與隱私原則
+
+- **沒有證據就是未知**：帳號身份、模型、用量、規則是否注入、隔離是否生效，都只在有可驗證的證據時才顯示成功。
+- **私人資料不進 GitHub**：session、帳號與 terminal 內容存放在擴充套件的私人儲存區；公開留言與 PR 送出前都會做發佈掃描。診斷匯出會遮罩路徑與帳號。
+- **不信任 repo**：工作區設定不能決定要執行什麼程式；未信任的工作區不會啟動 agent 或 MCP。
+- **確認不能被跳過**：在一般安裝的擴充套件中，任何參數都不能代替你確認；只有擴充套件自己的測試模式例外。
+
+## 已知限制
+
+- CI 在 macOS 與 Windows 上只證明建置、封裝檢查與合成的 Extension Host 測試；乾淨實機的安裝、升級、移除、terminal 輸入、中斷與重開，仍待 Beta 後驗收（[#135](https://github.com/Disesfgewu/multiagentSystem/issues/135)）。
+- 真實的 Claude Code、Codex CLI、agy、GitHub 帳號與多帳號隔離，都還沒有完成端到端實測；畫面中的未知值不能解讀為成功。
+- Codex 與 agy 沒有接上官方額度來源，所以顯示未知；Codex session 也缺少可驗證的 terminal 事件來源。
+- agy 沒有可核實的官方固定資產，只提供手動安裝指引。
+- 受管隔離只支援 macOS，而且只涵蓋 session 的 start 與 reopen；你在空白 shell 或四格 terminal 中自己輸入的指令不在受管範圍內。Windows 的網路封鎖見 [#289](https://github.com/Disesfgewu/multiagentSystem/issues/289)。
+- 封裝檢查沒有發現憑證、帳號或工作區內容，但掃描無法證明不存在格式或編碼未知的秘密。
+
+回復到舊版與移除的步驟見 [Beta 文件](docs/BETA_0.0.3.md#回復與移除)。
 
 ## 開發與驗證
 
-需求：Node.js 24 以上與 VS Code 1.95 以上。
+需求：Node.js 24 以上（擴充套件主機最低支援 Node 20）與 VS Code 1.95 以上。
 
 ```text
 npm ci               # 依 package-lock.json 安裝（鎖定相依版本）
@@ -35,15 +161,17 @@ npm run check        # TypeScript 型別檢查，不輸出檔案
 npm run build        # 編譯到 out/
 npm test             # 型別檢查 + 建置 + 單元測試
 npm run test:host    # 在隔離的 Extension Host 載入建置結果並執行命令
+npm run vsix:package # 打包 VSIX、做內容與發佈掃描、寫出 release-candidate.json
 ```
 
-- 按 `F5` 會先執行 `npm: build`，再啟動 Extension Development Host。建置輸出位於 `out/`，不納入版本控制。
-- `npm run test:host` 會下載 VS Code（預設 1.95.0，可用環境變數 `VSCODE_VERSION` 指定，例如 `stable`）到 `.vscode-test/`，使用暫存的使用者資料與工作區，執行時會短暫開啟一個視窗，不讀取或修改你的 VS Code 設定。
-- CI 在 macOS 與 Windows 分開回報兩類結果：**型別檢查與單元測試**，以及 **Extension Host 冒煙測試**（只證明建置結果可載入、命令可執行且建立四個原生 terminal）。輸入、互動提示、`Ctrl+C`、重啟與分格排列等**實機驗收不在 CI 內**，仍須在真實視窗中人工驗證。
-- 既有的 `test/**/*.test.js`（純 Node 的 P0 模組測試）與編譯後的 TypeScript 測試一起由 `npm run test:unit` 執行；新增 JavaScript 模組時放在 `src/`，會隨 `allowJs` 原樣輸出到 `out/`。
+- 在 VS Code 開啟這個資料夾並按 `F5`，會先執行 `npm: build`，再啟動 Extension Development Host。建置輸出在 `out/`，不納入版本控制。
+- `npm run test:host` 會下載 VS Code 到 `.vscode-test/`（預設 1.95.0，可用環境變數 `VSCODE_VERSION` 指定，例如 `stable`），使用暫存的使用者資料與工作區，不會讀取或修改你的 VS Code 設定。
+- CI 在 macOS 與 Windows 上分別執行：型別檢查與單元測試、VSIX 封裝與檢查，以及 Extension Host 冒煙測試。各模組另有自己的 workflow，例如研究工具在 Node 20／24 × macOS／Windows 上執行。
+- 發行第 N 個 Beta 時用 `RELEASE_TAG=v0.0.3-beta.N npm run vsix:package`，詳見 [VSIX 打包](docs/VSIX_PACKAGING.md)。
 
-尚未完成的部分：真實 CLI／真實帳號下的帳號隔離與身份規則注入驗證、Codex／agy 的額度來源、防外洩的強制（非預覽）控制，以及 macOS／原生 Windows 的四格與整體實機驗收；這些集中記錄於 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)，沒有證據的能力一律維持未知。給 Claude Code worker 的持續實作指令與 PM 工作方式見 [Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
+## 專案進度與文件
 
-### 協作 skills
-
-VSIX 首次啟用受信任的本機工作區時，會自動準備八個內建協作 skills，供 Claude Code、Codex 與 OpenCode 的官方目錄發現機制使用；既有自訂 skills 不覆寫。可透過 `multiagentSystem.skills.autoInstall` 停用，或執行 **Remove Installed Agent Skills** 移除未修改的檔案並停止該工作區自動重裝。agy 載入協定仍未驗證；OpenRouter／DeepSeek 透過承載它們的 CLI 使用 skills。實際 CLI 載入與 token 節省仍須驗證，詳見 [使用說明](docs/AGENT_SKILLS.md)。
+- 進度追蹤：[Issue #90](https://github.com/Disesfgewu/multiagentSystem/issues/90)；實機驗收清單：[Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)。
+- 需求與驗收標準：[實作計劃書](docs/IMPLEMENTATION_PLAN.md)；PM 工作規則：[PM system prompt](docs/PM_SYSTEM_PROMPT.md)；worker 指令：[Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
+- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
+- [舊交付台帳](docs/MASTER_PLAN.md)只供查閱歷史紀錄，不是即時狀態。
