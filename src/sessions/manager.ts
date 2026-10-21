@@ -437,6 +437,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     // Decided before a terminal exists: an unrecognized shell gets no terminal, no text and no state.
     const shellType = launch ? this.deps.detectShellType?.() : undefined;
     if (shellType === null) throw new SessionError('unsupported-shell');
+    // Decided before a terminal exists too: a refusal to wrap leaves no terminal, no text and no state.
+    const wrapped = launch ? (wrap ? wrap(executable, allArgs) : { executable, args: allArgs }) : { executable, args: allArgs };
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
     const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();
@@ -473,7 +475,6 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const wrapped = wrap ? wrap(executable, allArgs) : { executable, args: allArgs };
       const commandLine = formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);

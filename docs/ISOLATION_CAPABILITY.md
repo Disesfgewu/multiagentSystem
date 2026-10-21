@@ -71,3 +71,13 @@
 每個請求依序檢查，任何一步失敗就拒絕（只回短狀態碼，不解釋規則）：(1) 必須帶這個代理自己的隨機憑證（每個代理不同，`http://managed:<憑證>@127.0.0.1:<埠>`）；(2) 只服務 `CONNECT`，一般 HTTP 一律 405；(3) 主機必須是純 DNS 名稱（IP 字面值與各種數字寫法都不是名稱），埠必須在允許清單（預設只有 443）；(4) **拒絕清單優先**：GitHub 與它供應檔案的網域（`github.com`、`githubusercontent.com`、`ghcr.io`、`github.io`…）即使也在允許清單內也拒絕；(5) 必須符合允許清單（完全相符或 `*.example.com` 的子網域，不含本身）；(6) 代理自己解析名稱，所有位址都必須是公開位址（拒絕 loopback、私有、link-local／雲端 metadata、共享位址空間、多播、保留、文件用位址與包在 IPv6 內的私有 IPv4），**並且連到檢查過的那個位址**，不再做第二次解析。之後只複製位元組；不看隧道內容（TLS）；不記錄主機名稱，只有計數。
 
 邊界：代理不知道 CLI 對允許的主機送了什麼；不能阻止忽略代理設定的程式（那是沙箱 profile 只放行代理埠要做的事）；允許清單決定它有多好，而各供應商需要哪些網域、真 CLI 是否肯走代理屬 #135 實機。預設的真實 DNS 解析與 TCP 連線沒有自動化測試（私有位址檢查使得無法在測試中連到本機）；測試以可注入的 `lookup`／`connect` 取代。
+
+## 啟動路徑：enforced 模式（macOS，#25，使用者明確選用）
+
+預設永遠是 **advisory**：啟動行為與以前完全相同。只有使用者在**自己的使用者設定**（不是工作區設定，工作區的值一律忽略）把 `multiagentSystem.isolation.mode` 設為 `enforced`，才會走這條路，且需要 `multiagentSystem.isolation.allowedDomains`（允許 CLI 連線的主機名稱；空的就拒絕啟動；GitHub 主機一律在拒絕清單且優先，即使寫進去也不通）。
+
+每次啟動（`src/isolation/enforcedStart.ts`、`enforced-launch.js`）依序：(1) 模式不是 `advisory`／`enforced`（例如打錯字）→ 拒絕，不當成 advisory 默默啟動；(2) 沒有擴充套件私人儲存區、不是 macOS、沒有允許網域 → 拒絕；(3) 在私人儲存區下建專屬目錄，**實際**跑 harness 的每一條通道（含 `selfCheck`），任何通道是 unknown、open、對照組失敗、探測丟錯或逾時 → 拒絕並列出原因（只有通道名稱與短代碼，不含路徑或帳號）；(4) 起這次啟動專用的代理（只聽 127.0.0.1、每次新的隨機憑證），沒起來或位址不是 127.0.0.1 → 拒絕；(5) 寫 `0600` 的 profile（拒絕讀取憑證位置與 keychain 服務，網路只放行代理埠）；(6) 畫面顯示「已證明什麼、**未驗證什麼**（真實 CLI 是否肯走代理、需要哪些網域，#135）」，使用者按「Start」才繼續；(7) 終端機輸入的指令是 `/usr/bin/sandbox-exec -f <profile> <CLI> <含模型與指示的最終參數>`，環境加上 `HTTPS_PROXY` 等。任何一步失敗都**不啟動**，也不退回無隔離的啟動；已建立的東西（代理、profile、夾具資料夾、測試鑰匙圈）在失敗、取消、工作階段結束或終端機關閉時都清掉。
+
+只有 Extension Host 測試（`interactive: false`）能代替使用者跳過確認，一般安裝的擴充套件會強制互動。沒有啟動 CLI 的純 shell（`launch: false`）不探測、不包裝。沙箱只包住 CLI 程式，不包住使用者的 shell 本身。
+
+**未驗證**：真實 CLI 是否肯走 `HTTPS_PROXY`、各供應商需要哪些網域、沒有 `gh` 的機器上（gh-cli 對照組無法成功＝unknown）enforced 會一律拒絕、真實 keychain helper（#135 T25）。Windows 端尚未接上（#26）。

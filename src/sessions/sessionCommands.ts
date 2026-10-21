@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
@@ -30,6 +31,8 @@ import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
+import { prepareIsolationForStart } from '../isolation/enforcedStart';
+const { readUserLevel } = require('../settings/user-level') as { readUserLevel(inspected: unknown): { value: unknown; ignoredScopes: string[] } };
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
 const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
 
@@ -150,10 +153,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   // exactly once when that session stops or its terminal closes. A session this map has no entry for
   // either has no account assigned, is still awaiting handoff, or was already released.
   const reservations = new Map<string, () => Promise<void>>();
+  // Enforced isolation is per session: its proxy, profile and fixture folder go when the session stops or its terminal closes.
+  const isolations = new Map<string, () => Promise<void>>();
   const releaseReservation = async (id: string): Promise<void> => {
     const release = reservations.get(id);
     reservations.delete(id);
-    await release?.();
+    const dispose = isolations.get(id);
+    isolations.delete(id);
+    try { await dispose?.(); } finally { await release?.(); }
   };
   const observations = new SessionObservationRuntime();
   // New or aged-out provider evidence refreshes the same views a session change does (the Overview reads
@@ -242,6 +249,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     // Set once a quota-gate reservation is taken; released on every exit path below except the one
     // success path, which instead hands it off to this new session's own lifetime.
     let release: (() => Promise<void>) | undefined;
+    let isolationDispose: (() => Promise<void>) | undefined;
     let targetSessionId: string | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
@@ -318,6 +326,28 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       let instructions: any;
       targetSessionId = randomUUID();
       const openedStorage = await privateStorage()?.use();
+      // Advice mode (the default) changes nothing. Enforced mode is the person's own user setting; if it cannot be provided
+      // the launch is refused here, never run without it.
+      const settings = vscode.workspace.getConfiguration('multiagentSystem');
+      const isolation = await prepareIsolationForStart({
+        // A shell opened without launching a CLI has nothing to isolate (and types nothing).
+        mode: input.launch === false ? undefined : readUserLevel(settings.inspect('isolation.mode')).value,
+        allowedDomains: readUserLevel(settings.inspect('isolation.allowedDomains')).value,
+        interactive,
+        storageDir: openedStorage?.ok ? path.join((openedStorage.store as any).dir, 'isolation') : undefined,
+        home: os.homedir(),
+        createHarness: (harnessOptions) => (require('../isolation/macos-harness') as { createMacosModule(options: object): unknown }).createMacosModule(harnessOptions),
+        ui: {
+          progress: (work) => Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Checking enforced isolation on this machine…' }, work)),
+          confirm: async (lines) => await vscode.window.showWarningMessage('Start with enforced isolation?', { modal: true, detail: lines.join('\n') }, 'Start') === 'Start'
+        }
+      });
+      if (isolation.kind === 'refused') {
+        if (interactive && isolation.code !== 'cancelled') void vscode.window.showErrorMessage(isolation.message);
+        return { ok: false, code: isolation.code, message: isolation.message };
+      }
+      if (isolation.kind === 'enforced') isolationDispose = isolation.dispose;
+      if (isolation.kind === 'enforced') env = { ...(env ?? {}), ...isolation.env };
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -402,8 +432,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           env
         }).env,
         launch: input.launch,
-        instructions
+        instructions,
+        ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {})
       });
+      if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
       if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       changed.fire();
       return { ok: true, session };
@@ -414,6 +446,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
       // finished and the reservation could be handed off. A successful handoff clears release.
       await release?.();
+      // Not handed to a session (the start failed or was cancelled): nothing of it may outlive this call.
+      await isolationDispose?.();
     }
   }
 

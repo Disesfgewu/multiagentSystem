@@ -75,6 +75,25 @@ test('an invalid saved model blocks restoration without overwriting private reco
   assert.equal(store.saved[0].requestedModel, 'bad;echo');
 });
 
+test('an enforced launch types the wrapped command, built from the final arguments (the model included), and no other', async () => {
+  const r = rig();
+  const wrapped: Array<{ executable: string; args: string[] }> = [];
+  await r.manager.start({
+    provider: 'claude', name: 'Isolated', cwd: '/synthetic/project', requestedModel: 'sonnet',
+    wrap: (executable, args) => { wrapped.push({ executable, args }); return { executable: '/usr/bin/sandbox-exec', args: ['-f', '/synthetic/profile.sb', executable, ...args] }; }
+  });
+  assert.deepEqual(wrapped, [{ executable: 'claude', args: ['--model', 'sonnet'] }]);
+  assert.deepEqual(r.terminals[0].sent, [{ text: '/usr/bin/sandbox-exec -f /synthetic/profile.sb claude --model sonnet', newline: true }]);
+});
+
+test('a wrap that throws starts no terminal text and leaves no session recorded', async () => {
+  const r = rig();
+  await assert.rejects(r.manager.start({ provider: 'claude', name: 'Isolated', cwd: '/synthetic/project', wrap: () => { throw new Error('launch-invalid'); } }), /launch-invalid/);
+  assert.equal(r.terminals.every((terminal) => terminal.sent.length === 0), true, 'nothing was typed');
+  assert.equal(r.terminals.every((terminal) => terminal.disposed > 0), true, 'the terminal was released');
+  assert.deepEqual(r.manager.list(), []);
+});
+
 class FakeTerminal implements TerminalHandle {
   sent: Array<{ text: string; newline: boolean | undefined }> = [];
   shown: Array<boolean | undefined> = [];
