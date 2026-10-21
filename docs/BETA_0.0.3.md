@@ -25,7 +25,7 @@
   - 新增 **Research: Search Papers**。
   - 研究用 MCP 有允許清單，以及受控的啟用、停止、撤銷。
   - github-mcp-server 使用固定版本並驗證雜湊，啟動前一律重新核對。
-  - 每個工具有自己的私人資料夾與暫存目錄，撤銷時清除。
+  - 每個工具有自己的私人資料夾與暫存目錄。**Revoke Research MCP Server** 會停止程式並清除資料夾；**Revoke Research MCP Tool Consent** 只刪除已安裝的程式。
   - researcher 角色不能經由套件的寫入路徑寫 GitHub。
 - **報告**：可以從 Issue 報告關閉 Issue，合併後可以從 PR 報告刪除 head 分支。
 - **帳號與 session**：

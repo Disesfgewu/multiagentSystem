@@ -30,7 +30,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 ### Beta 4 的新內容（相對 Beta 3）
 
 - **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九項檢查：七個旁路通道，加上兩項確認 CLI 仍可互動與登入。每一項都要有對照組證據並通過，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
-  - 沙箱拒絕讀取已知的憑證位置（如 `~/.git-credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、鑰匙圈資料夾），拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務。其他位置的憑證與其他鑰匙圈存取方式尚未驗證。
+  - 沙箱拒絕讀取已知的憑證位置（家目錄下的 git 憑證檔、gh 設定資料夾、netrc、SSH 資料夾與鑰匙圈資料夾），拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務。其他位置的憑證與其他鑰匙圈存取方式尚未驗證。
   - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
   - Windows 目前只有 advisory。
 - **自訂 CLI provider**：在使用者設定列出自己的 CLI（例如 opencode），用原生 terminal 啟動。程式會解析成絕對路徑，不使用工作區內的同名程式；第一次啟動要確認。
@@ -86,7 +86,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 - 在報告中可以：**Save Local Feedback on Report**（只存在本機）、**Publish Feedback for Open Report**、**Submit Formal Pull Request Review**、**Merge Pull Request from Report**、**Delete Merged Pull Request Branch**、**Close Issue from Report**。
 - 從報告頁送出的 GitHub 寫入會經過 Broker：送出前做發佈掃描並確認最新的 head；合併時另外確認 CI。這些按鈕以你設定的 publisher 帳號、PM 身分送出。
-- **terminal 中的 agent 自己執行的 `git`／`gh` 寫入不經過 Broker**，套件無法阻擋（受管隔離的 enforced 模式除外，見下文）。
+- **terminal 中的 agent 自己執行的 `git`／`gh` 寫入不經過 Broker**，套件無法阻擋；只有在 macOS 的 enforced 模式下、經 Start Session 或 Reopen 啟動的 session 例外（見下文）。
 - 合併權限預設是人工：這時報告頁的合併按鈕會拒絕，請在 GitHub 上合併。經確認後，可以改為由你設定的 publisher 帳號從報告頁合併（**Configure Pull Request Merge Authority**）。
 - 報告中來自 GitHub 的文字一律當作資料顯示，不能偽造標題、跳轉連結或「Pass」判定。
 
@@ -108,8 +108,8 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 1. 先在本機實測九項檢查，每一項都要有對照組證明測試有效：
    - 七個旁路通道：git commit、git push、`gh`、直接 HTTP、憑證檔、憑證 helper（含鑰匙圈）、環境變數中的憑證。測試目標是本機的假 GitHub 伺服器；環境變數一項檢查的是清除函式本身。
    - 兩項確認 CLI 仍可互動與登入。
-2. 所有必要通道都被擋下，並經你確認後，才在 Seatbelt 沙箱中啟動 CLI。這時：
-   - 已知的憑證位置讀不到（`~/.git-credentials`、`~/.config/git/credentials`、`~/.config/gh`、`~/.netrc`、`~/.ssh`、`~/Library/Keychains`），`.git` 寫不進去，鑰匙圈的 SecurityServer 服務被封鎖。
+2. 九項檢查全部通過（旁路通道被擋下、CLI 仍可運作），並經你確認後，才在 Seatbelt 沙箱中啟動 CLI。這時：
+   - 家目錄下已知的憑證位置讀不到（git 的兩個憑證檔、gh 設定資料夾、netrc、SSH 資料夾、鑰匙圈資料夾，完整清單見[隔離能力](docs/ISOLATION_CAPABILITY.md)），`.git` 寫不進去，鑰匙圈的 SecurityServer 服務被封鎖。
    - 符合規則的 GitHub 憑證環境變數會被移除；用其他名稱匯出的 token 不在範圍內。
    - 網路只能經過只監聽 `127.0.0.1` 的本機代理，它只放行你列出的網域；GitHub 相關網域即使列入也不會放行。
 3. 任何一項證據不足、代理無法啟動，或發生錯誤，都**不啟動**，並顯示原因；不會退回無隔離的啟動。
