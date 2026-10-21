@@ -8,6 +8,7 @@ export { quotaObservations, registerProfileForQuota };
 const { UsageLog } = require('./usage-log') as { UsageLog: new (store: unknown) => { append(entry: unknown, now?: Date): { ok: boolean } } };
 const { codexUsageEntry } = require('./codex-rate-limits') as { codexUsageEntry(reading: unknown, options: { accountProfileId: string }): unknown };
 
+const { summarizeQuota } = require('./quota-policy') as { summarizeQuota(observations: unknown[], now: Date): Array<{ window: string; usedPercent: number | null; source: string | null; observedAt: string | null; confidence: string; fresh: boolean; gateEligible: boolean; resetsAt: string | null }> };
 const { loadPolicy, savePolicy } = require('./quota-policy') as {
   loadPolicy(store: unknown, id: string): { ok: boolean; policy?: Record<string, unknown>; stored?: boolean };
   savePolicy(store: unknown, id: string, input: unknown): { ok: boolean; reason?: string; problems?: string[] };
@@ -332,6 +333,46 @@ function codexExtras(accounts: AccountsOk, accountProfileId: string, now: Date):
   } catch {
     return [];
   }
+}
+
+export interface QuotaDetail {
+  ok: boolean;
+  windows: ReturnType<typeof summarizeQuota>;
+  /** Why this account has no current usage number, as a code the wording table knows, or null. */
+  unknownReason: string | null;
+  policy: string;
+  gate: 'allow' | 'warn' | 'confirm' | 'block' | null;
+  gateReason: string | null;
+  plan: string | null;
+}
+
+/**
+ * The same facts `limitLines` words, as values (issue #304): each usage window with its percent, reset time, source and read time, why
+ * there is no current number, the limits the person set and what a new agent would meet right now. Read-only; nothing here starts
+ * anything or changes a limit. A part that cannot be read is unknown, never empty or zero.
+ */
+export async function quotaDetail(accountProfileId: string, sessions: () => SessionUse[]): Promise<QuotaDetail> {
+  const unknownDetail: QuotaDetail = { ok: false, windows: [], unknownReason: null, policy: 'Limits: could not be read.', gate: null, gateReason: null, plan: null };
+  const accounts = await accountService(sessions);
+  if (!accounts.ok) return unknownDetail;
+  const now = new Date();
+  const state = loadGroupState(accounts as any, accountProfileId, now);
+  if (!state.ok) return { ...unknownDetail, policy: 'Limits: which profiles share this account could not be established safely.' };
+  const current = await currentGateState(accountProfileId, sessions);
+  let plan: string | null = null;
+  try {
+    const own = (accounts as any).service.get(accountProfileId);
+    if (own.ok && own.profile?.provider === 'codex') plan = codexQuotaReading(accountProfileId, own.profile.configDir, now).planType;
+  } catch { plan = null; }
+  return {
+    ok: true,
+    windows: summarizeQuota(state.observations, now),
+    unknownReason: state.unknownReason ?? null,
+    policy: describePolicy(state.policyRead),
+    gate: current ? current.action : null,
+    gateReason: current?.reason ?? null,
+    plan
+  };
 }
 
 /** Lets the person set the limits for one account. `input` is used instead of asking when given (tests). */

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildCards, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, MAX_IDS } = require('../../src/commandCenter/model');
+const { buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, MAX_IDS } = require('../../src/commandCenter/model');
 
 const hook = (state, since = '2026-10-22T08:00:00.000Z') => ({ state, reason: 'last-hook-event', since });
 const session = (over = {}) => ({ id: 'worker-1', name: 'Worker One', provider: 'claude', providerLabel: 'Claude Code', roleGroupId: 'g-worker', accountProfileId: 'acct-1', requestedModel: 'sonnet', terminalOpen: true, state: 'cli-observed', deliveryState: hook('working'), autoModeLabel: 'Auto mode: on (synthetic)', ...over });
@@ -135,7 +135,117 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; editTeamRules only opens the command\'s own windows and carries no rule text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['editTeamRules', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'setLayout', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'editTeamRules', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'setLayout', 'toggleCollapse', 'togglePin']);
+});
+
+// ---- accounts and quota (issue #304) ----
+const NOW = new Date('2026-10-22T10:00:00.000Z');
+const iso = (minutes) => new Date(NOW.getTime() + minutes * 60_000).toISOString();
+const win = (over = {}) => ({ window: 'five_hour', usedPercent: 42, source: 'claude status line rate_limits', observedAt: iso(-1), confidence: 'actual', fresh: true, gateEligible: true, resetsAt: iso(125), ...over });
+const acct = (over = {}) => ({ id: 'acct-1', label: 'Main', provider: 'Claude Code', health: 'ready', identity: { state: 'verified', fingerprint: 'abcd1234' }, issues: [], ...over });
+const detail = (over = {}) => ({ ok: true, windows: [win(), win({ window: 'seven_day', usedPercent: 10, resetsAt: iso(60 * 24 * 3) })], unknownReason: null, policy: 'Limits: warn at 80% used.', gate: 'allow', gateReason: null, plan: null, ...over });
+const rows = (accounts, details, sessions = []) => buildAccountRows({ accounts, details, sessions, now: NOW });
+
+test('an account row has its sign-in, identity, both usage windows with percent, reset, read time and source, and the agents using it', () => {
+  const { rows: [row], alerts } = rows([acct()], { 'acct-1': detail() }, [session({ id: 'w-1', name: 'Worker One', accountProfileId: 'acct-1' }), session({ id: 'w-2', accountProfileId: 'other' })]);
+  assert.deepEqual([row.label, row.provider, row.signIn, row.identity], ['Main', 'Claude Code', 'sign-in checked', 'identity verified (abcd1234)']);
+  assert.deepEqual(row.windows.map((entry) => [entry.label, entry.text, entry.kind, entry.trust, entry.resets, entry.read, entry.source]), [
+    ['5-hour', '42% used', 'actual', 'verified and current', 'resets in 2h 5m', 'read 1m ago', 'claude status line rate_limits'],
+    ['Weekly', '10% used', 'actual', 'verified and current', 'resets in 3d', 'read 1m ago', 'claude status line rate_limits']
+  ]);
+  assert.equal(row.usageKnown, true);
+  assert.equal(row.reason, null);
+  assert.deepEqual([row.agents, row.agentCount], [['Worker One'], 1]);
+  assert.equal(row.policy, 'Limits: warn at 80% used.');
+  assert.deepEqual(alerts, []);
+});
+
+test('an estimate, an old reading and an unknown one are each said so, and a window past its reset says that instead of a percent', () => {
+  const [row] = rows([acct()], { 'acct-1': detail({ windows: [win({ confidence: 'estimated', gateEligible: false }), win({ window: 'seven_day', fresh: false, gateEligible: false, observedAt: iso(-120) }), win({ window: 'month', usedPercent: null, confidence: 'unknown', fresh: false, gateEligible: false, resetsAt: null, observedAt: null, source: null }), win({ window: 'five_hour2', resetsAt: iso(-5) })] }) }).rows;
+  assert.equal(row.windows[0].trust, 'estimate (not used to block)');
+  assert.equal(row.windows[1].trust, 'out of date (not used to block)');
+  assert.deepEqual([row.windows[1].read], ['read 2h ago']);
+  assert.deepEqual([row.windows[2].text, row.windows[2].kind, row.windows[2].resets, row.windows[2].read, row.windows[2].source], ['unknown', 'unknown', 'reset time unknown', 'read time unknown', 'unknown source']);
+  assert.equal(row.windows[3].resets, 'reset time has passed');
+  assert.equal(row.windows[2].label, 'month');
+});
+
+test('with no usable reading the row says why, in the words of the quota table, and offers the next step when there is one to click', () => {
+  const cases = [
+    ['bridge-not-enabled', { action: 'configureStatusLine', label: 'Enable the Claude status line bridge' }, null],
+    ['bridge-other-statusline', { action: 'configureStatusLine', label: 'Review the status line setting' }, null],
+    ['codex-no-sessions', null, 'Run Codex once with this account; its session log is what is read.'],
+    ['bridge-no-data', null, 'Readings arrive only while a Claude session runs on this account: start one.'],
+    ['file-unreadable', { action: 'details', label: 'Open the account details' }, null]
+  ];
+  for (const [code, next, hint] of cases) {
+    const [row] = rows([acct()], { 'acct-1': detail({ windows: [], unknownReason: code }) }).rows;
+    assert.equal(row.usageKnown, false, code);
+    assert.ok(row.reason.short.length > 0 && row.reason.detail.length > 0, code);
+    assert.deepEqual(row.reason.next, next, code);
+    assert.equal(row.reason.hint, hint, code);
+  }
+  const [unreadable] = rows([acct()], { 'acct-1': detail({ ok: false, windows: [], unknownReason: null }) }).rows;
+  assert.equal(unreadable.reason.short, 'usage could not be read');
+  assert.match(unreadable.reason.detail, /This is not zero\./);
+  const [missing] = rows([acct()], {}).rows;
+  assert.equal(missing.reason.short, 'usage could not be read', 'no detail at all is unknown, never zero');
+  assert.equal(missing.policy, 'Limits: could not be read.');
+  const [stale] = rows([acct()], { 'acct-1': detail({ windows: [win({ fresh: false, gateEligible: false })], unknownReason: 'reading-expired' }) }).rows;
+  assert.ok(stale.reason, 'an out-of-date reading is listed with why it is not used');
+  const [current] = rows([acct()], { 'acct-1': detail({ unknownReason: 'bridge-not-enabled' }) }).rows;
+  assert.equal(current.reason, null, 'a stale reason never sits beside a current number');
+});
+
+test('near a limit, held back or needing confirmation raises an alert on the account and in the list for the PM panel', () => {
+  const out = rows([acct({ id: 'a-1', label: 'Near' }), acct({ id: 'a-2', label: 'Held' }), acct({ id: 'a-3', label: 'Ask' }), acct({ id: 'a-4', label: 'Fine' })], { 'a-1': detail({ gate: 'warn' }), 'a-2': detail({ gate: 'block' }), 'a-3': detail({ gate: 'confirm' }), 'a-4': detail({ gate: 'allow' }) });
+  assert.deepEqual(out.alerts, ['Near: this account is near its limit', 'Held: new agents on this account are held back', 'Ask: a new agent on this account needs confirmation']);
+  assert.deepEqual(out.rows.map((row) => row.alert), ['this account is near its limit', 'new agents on this account are held back', 'a new agent on this account needs confirmation', null]);
+});
+
+test('sign-in and identity are what the checks said, never more: unchecked, needing attention, verified or unknown with the reason', () => {
+  const state = (account) => rows([account], { 'acct-1': detail() }).rows[0];
+  assert.equal(state(acct({ health: 'unknown', identity: { state: 'unknown', reason: 'not-inspected' } })).signIn, 'sign-in not checked in this window');
+  assert.equal(state(acct({ health: 'unknown', identity: { state: 'unknown', reason: 'not-inspected' } })).identity, 'identity unknown (not-inspected)');
+  assert.equal(state(acct({ health: 'attention', issues: ['Not logged in.', 'Another profile uses the same folder.'] })).signIn, 'sign-in needs attention');
+  assert.deepEqual(state(acct({ health: 'attention', issues: ['Not logged in.', 'x', 'y', 'z'] })).issues, ['Not logged in.', 'x', 'y'], 'three hints at most');
+  assert.equal(state(acct({ identity: undefined })).identity, 'identity unknown');
+  assert.equal(state(acct({ plan: 'x' })).plan, null, 'a plan comes only from the quota detail');
+  assert.equal(rows([acct()], { 'acct-1': detail({ plan: 'plus' }) }).rows[0].plan, 'plus');
+});
+
+test('bad inputs, hostile text and too many accounts give bounded, clean rows', () => {
+  for (const bad of [undefined, null, {}, { accounts: 'x' }, { accounts: [null, 5, {}, { id: 'bad id!' }] }]) assert.deepEqual(buildAccountRows(bad), { rows: [], alerts: [] });
+  const nasty = '<img src=x onerror=1>\u202e\nline';
+  const { rows: [row] } = rows([acct({ label: nasty, provider: nasty, issues: [nasty] })], { 'acct-1': detail({ windows: [win({ source: nasty, window: nasty })], plan: nasty }) }, [session({ accountProfileId: 'acct-1', name: nasty })]);
+  assert.equal(/[\u202e\n]/.test(JSON.stringify(row)), false);
+  const many = Array.from({ length: 80 }, (_, index) => acct({ id: `a-${index}` }));
+  assert.equal(rows(many, {}).rows.length, 50);
+  const crowded = rows([acct()], { 'acct-1': detail() }, Array.from({ length: 20 }, (_, index) => session({ id: `s-${index}`, accountProfileId: 'acct-1' })));
+  assert.deepEqual([crowded.rows[0].agents.length, crowded.rows[0].agentCount], [6, 20]);
+});
+
+test('relative times read as in the future or in the past, and anything that is not a time is null', () => {
+  const at = (minutes) => new Date(NOW.getTime() + minutes * 60_000).toISOString();
+  assert.deepEqual([relative(at(0), NOW.getTime()), relative(at(30), NOW.getTime()), relative(at(-30), NOW.getTime()), relative(at(90), NOW.getTime()), relative(at(60 * 24 * 2 + 180), NOW.getTime())], ['in under a minute', 'in 30m', '30m ago', 'in 1h 30m', 'in 2d 3h']);
+  for (const bad of [undefined, null, 'soon', 5, {}]) assert.equal(relative(bad, NOW.getTime()), null);
+  assert.equal(relative(at(5), Number.NaN), null);
+});
+
+test('an account action is one of the known ones, names an account that is on the screen, and creating an account names none', () => {
+  const cards = new Set(['a']);
+  const accounts = new Set(['acct-1']);
+  for (const action of ACCOUNT_ACTIONS.filter((name) => name !== 'create')) assert.deepEqual(parseMessage({ type: 'accountAction', action, id: 'acct-1' }, cards, accounts), { ok: true, message: { type: 'accountAction', action, id: 'acct-1' } }, action);
+  assert.deepEqual(parseMessage({ type: 'accountAction', action: 'create' }, cards, accounts), { ok: true, message: { type: 'accountAction', action: 'create' } });
+  for (const [message, reason] of [
+    [{ type: 'accountAction', action: 'create', id: 'acct-1' }, 'unexpected-field'],
+    [{ type: 'accountAction', action: 'remove', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: 'delete', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: 5, id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: '__proto__', id: 'acct-1' }, 'invalid-field'],
+    [{ type: 'accountAction', action: 'login' }, 'unknown-id'], [{ type: 'accountAction', action: 'login', id: 'someone-else' }, 'unknown-id'], [{ type: 'accountAction', action: 'login', id: 'a' }, 'unknown-id'], [{ type: 'accountAction', action: 'login', id: '../x' }, 'unknown-id'],
+    [{ type: 'accountAction', action: 'login', id: 'acct-1', command: 'multiagentSystem.accounts.remove' }, 'unexpected-field']
+  ]) assert.deepEqual(parseMessage(message, cards, accounts), { ok: false, reason }, JSON.stringify(message));
+  assert.deepEqual(parseMessage({ type: 'accountAction', action: 'login', id: 'acct-1' }, cards), { ok: false, reason: 'unknown-id' }, 'with no account on the screen none is known');
+  assert.deepEqual(parseMessage({ type: 'accountAction', action: 'login', id: 'acct-1' }, cards, ['acct-1']), { ok: true, message: { type: 'accountAction', action: 'login', id: 'acct-1' } }, 'a list works as well as a set');
+  assert.deepEqual(ACCOUNT_ACTIONS.slice().sort(), ['check', 'configureStatusLine', 'create', 'details', 'limits', 'login', 'usageLog'], 'no action removes an account, changes a login credential or sends anything');
 });
 
 const review = (over = {}) => ({ pm: 'current', userCan: 'Open it', next: 'Merge', approval: 'approved', ci: 'passing', unresolved: 1, ...over });

@@ -4,6 +4,9 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } from '../overview/overviewView';
 import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
+import { accountService } from '../accounts/accountRuntime';
+import { observationsFor, ACCOUNT_COMMANDS } from '../accounts/accountCommands';
+import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
 
@@ -12,7 +15,8 @@ const model = require('./model') as {
   describeDecisions(counts: unknown): { issues: unknown; pullRequests: unknown };
   normalizeLayout(raw: unknown): Layout;
   arrange(cards: any[], layout: Layout): any[];
-  parseMessage(raw: unknown, known: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
   applyLayoutMessage(layout: Layout, message: Message): Layout;
 };
 const { renderPage } = require('./page') as { renderPage(input: { nonce: string }): string };
@@ -22,7 +26,7 @@ export const COMMAND_CENTER_VIEW_TYPE = 'multiagentSystem.commandCenter';
 const LAYOUT_KEY = 'commandCenter.layout';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest' };
+type Message = { type: string; action?: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest' };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -48,17 +52,39 @@ async function roleGroups(): Promise<Record<string, { name?: string; role?: stri
   return out;
 }
 
+const { describeAccounts } = require('../accounts/profile-view') as { describeAccounts(input: { profiles: any[]; observations?: Map<string, unknown>; context: { repoRoot: string } }): any[] };
+
+/** Every account with what its sign-in checks said and its quota in detail (issue #304). A part that cannot be read is unknown. */
+async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ rows: any[]; alerts: string[] }> {
+  try {
+    const sessionUse = () => live as never;
+    const accounts = await accountService(sessionUse);
+    if (!accounts.ok) return { rows: [], alerts: [] };
+    const loaded = accounts.service.list();
+    if (!loaded.ok) return { rows: [], alerts: [] };
+    const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: (accounts.store as { repoRoot: string }).repoRoot } });
+    const details: Record<string, unknown> = {};
+    await Promise.all(loaded.profiles.slice(0, 50).map(async (profile: { id: string }) => { try { details[profile.id] = await quotaDetail(profile.id, sessionUse); } catch { details[profile.id] = null; } }));
+    const profiles = loaded.profiles.map((profile: { id: string; label: string; provider: string }, index: number) => ({
+      id: profile.id, label: profile.label, provider: builtIn.get(profile.provider)?.label ?? profile.provider,
+      health: described[index]?.health, identity: described[index]?.verifiedIdentity, issues: (described[index]?.issues ?? []).map((issue: { hint: string }) => issue.hint)
+    }));
+    return model.buildAccountRows({ accounts: profiles, details, sessions: live, now: new Date() });
+  } catch { return { rows: [], alerts: [] }; }
+}
+
 /** The Command Center: a read-only team screen in the editor area (issue #309). Everything it shows comes from the existing services. */
 export function registerCommandCenter(context: vscode.ExtensionContext, sessions: SessionCommands): void {
-  let cached: { pm: any[]; agents: any[]; accounts: any[]; decisions: unknown; notes: string[] } | undefined;
+  let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[] } | undefined;
   let layout: Layout = model.normalizeLayout(context.workspaceState.get(LAYOUT_KEY));
   let timer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
 
   const knownIds = (): Set<string> => new Set([...(cached?.pm ?? []), ...(cached?.agents ?? [])].map((card) => card.id as string));
+  const knownAccountIds = (): Set<string> => new Set((cached?.accounts ?? []).map((row) => row.id as string));
   const payload = () => {
     if (!cached) return null;
-    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, decisions: cached.decisions, notes: cached.notes };
+    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes };
   };
   const post = (): void => { const state = payload(); if (panel && state) void panel.webview.postMessage({ type: 'state', state }); };
 
@@ -74,9 +100,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     await Promise.all(numbers.map(async (number) => { reports[String(number)] = await pullRequestSummary(number); }));
     if (mine !== generation) return;
     const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports });
+    const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
     if (mine !== generation) return;
-    cached = { pm: built.pm, agents: built.agents, accounts: built.accounts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: [teamRules, ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240)) };
+    cached = { pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: [teamRules, ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240)) };
     post();
   };
   const scheduleRefresh = (): void => {
@@ -86,7 +113,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
 
   const handle = async (raw: unknown): Promise<CommandCenterResult> => {
-    const parsed = model.parseMessage(raw, knownIds());
+    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds());
     if (!parsed.ok) return { ok: false, reason: parsed.reason };
     const message = parsed.message;
     switch (message.type) {
@@ -115,6 +142,22 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'editTeamRules':
         void vscode.commands.executeCommand(TEAM_RULES_COMMANDS.edit);
         return { ok: true, command: message.type };
+      case 'accountAction': {
+        // Each action is an existing account command with the account's id and nothing else, so each keeps its own confirmation.
+        const id = message.id;
+        switch (message.action) {
+          case 'create': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.create); break;
+          case 'login': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.login, id); break;
+          case 'check': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.check, id); break;
+          case 'limits': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.limits, { id }); break;
+          case 'usageLog': await vscode.commands.executeCommand('multiagentSystem.usage.showLog', { id }); break;
+          case 'configureStatusLine': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.configureStatusLine, { id }); break;
+          case 'details': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, id); break;
+          default: return { ok: false, reason: 'unknown-command' };
+        }
+        scheduleRefresh();
+        return { ok: true, command: `accountAction:${message.action}` };
+      }
       case 'openReports':
         await vscode.commands.executeCommand(message.kind === 'issue' ? 'multiagentSystem.issuesReportView.focus' : 'multiagentSystem.prsReportView.focus');
         return { ok: true, command: message.type };
