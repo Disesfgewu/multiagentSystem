@@ -1,0 +1,76 @@
+import { strict as assert } from 'node:assert';
+import * as vscode from 'vscode';
+import { commandCenterForTests, commandCenterHtmlForTests, commandCenterOpenForTests, COMMAND_CENTER_COMMAND, COMMAND_CENTER_VIEW_TYPE } from '../../../src/commandCenter/commandCenter';
+
+type Session = { id: string; name: string };
+
+/**
+ * The Command Center in a real editor (issue #309): the command opens one webview tab in the editor area, the page carries a
+ * strict content security policy, the screen shows a card for a real session with unknown where nothing is known, the person's
+ * layout is kept, and the messages a page may send are checked. The webview's own script is not run here (no browser is driven);
+ * its messages go through the same handler the real page's messages do.
+ */
+export async function runCommandCenterChecks(workspace: string): Promise<void> {
+  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: Session }>('multiagentSystem.sessions.start', { provider: 'claude', name: 'Command Center Subject', cwd: workspace, interactive: false, launch: false });
+  assert.ok(started.ok && started.session);
+  const subject = started.session!;
+  try {
+    await vscode.commands.executeCommand(COMMAND_CENTER_COMMAND);
+    assert.equal(commandCenterOpenForTests(), true, 'the command opened the panel');
+    const mineTabs = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith(COMMAND_CENTER_VIEW_TYPE));
+    const deadline = Date.now() + 10000;
+    while (mineTabs().length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(mineTabs().length, 1, `one Command Center tab, in the editor area (tabs: ${JSON.stringify(vscode.window.tabGroups.all.flatMap((group) => group.tabs).map((tab) => [tab.label, (tab.input as { viewType?: string } | undefined)?.viewType]))})`);
+    await vscode.commands.executeCommand(COMMAND_CENTER_COMMAND);
+    assert.equal(mineTabs().length, 1, 'opening it again shows the same tab');
+
+    const html = commandCenterHtmlForTests() ?? '';
+    assert.match(html, /Content-Security-Policy/);
+    assert.match(html, /default-src 'none'/);
+    assert.doesNotMatch(html, /unsafe-inline|https?:\/\//);
+
+    const center = commandCenterForTests();
+    // The page announces itself too, which starts a refresh of its own; the newest read is the one that is kept.
+    await center.refresh();
+    const readyBy = Date.now() + 15000;
+    while (!center.state() && Date.now() < readyBy) await new Promise((resolve) => setTimeout(resolve, 100));
+    const state = center.state() as { pm: Array<{ id: string }>; agents: Array<{ id: string; name: string; status: { state: string }; task: { text: string }; model: string; account: string }>; layout: { mode: string }; decisions: { issues: { known: boolean }; pullRequests: { known: boolean } } };
+    const card = state.agents.find((entry) => entry.id === subject.id);
+    assert.ok(card, 'a card for the real session');
+    assert.equal(card!.name, 'Command Center Subject');
+    assert.equal(card!.status.state, 'unknown', 'a terminal that exists is not "working" without hook evidence');
+    assert.match(card!.task.text, /no task is known/);
+    assert.equal(card!.model, 'CLI default');
+    assert.equal(state.layout.mode, 'grid');
+    assert.equal(typeof state.decisions.issues.known, 'boolean');
+
+    // The person's layout is kept, and only whitelisted messages for cards on screen are obeyed.
+    assert.deepEqual(await center.handle({ type: 'setLayout', mode: 'list' }), { ok: true, command: 'setLayout' });
+    assert.deepEqual(await center.handle({ type: 'togglePin', id: subject.id }), { ok: true, command: 'togglePin' });
+    assert.deepEqual(await center.handle({ type: 'toggleCollapse', id: subject.id }), { ok: true, command: 'toggleCollapse' });
+    const after = center.state() as { layout: { mode: string; pinned: string[]; collapsed: string[] }; agents: Array<{ id: string; pinned: boolean; collapsed: boolean }> };
+    assert.equal(after.layout.mode, 'list');
+    assert.deepEqual([after.layout.pinned, after.layout.collapsed], [[subject.id], [subject.id]]);
+    assert.deepEqual(after.agents.find((entry) => entry.id === subject.id) && [after.agents.find((entry) => entry.id === subject.id)!.pinned, after.agents.find((entry) => entry.id === subject.id)!.collapsed], [true, true]);
+    for (const [message, reason] of [
+      [{ type: 'executeCommand', command: 'multiagentSystem.sessions.stop' }, 'unknown-command'],
+      [{ type: 'stop', id: subject.id }, 'unknown-command'],
+      [{ type: 'focus', id: 'not-a-card' }, 'unknown-id'],
+      [{ type: 'focus', id: subject.id, command: 'multiagentSystem.sessions.stop' }, 'unexpected-field'],
+      [{ type: 'setLayout', mode: 'tiles' }, 'invalid-field'],
+      [{ type: 'reorder', order: [subject.id, subject.id] }, 'invalid-field'],
+      [null, 'unknown-command']
+    ] as Array<[unknown, string]>) assert.deepEqual(await center.handle(message), { ok: false, reason }, JSON.stringify(message));
+    assert.equal((await vscode.commands.executeCommand<{ sessions?: Session[] }>('multiagentSystem.sessions.list', { interactive: false })).sessions?.some((entry) => entry.id === subject.id), true, 'a refused message stopped nothing');
+    assert.deepEqual(await center.handle({ type: 'focus', id: subject.id }), { ok: true, command: 'focus' });
+    // back to the defaults for the other checks
+    await center.handle({ type: 'setLayout', mode: 'grid' });
+    await center.handle({ type: 'togglePin', id: subject.id });
+    await center.handle({ type: 'toggleCollapse', id: subject.id });
+  } finally {
+    for (const group of vscode.window.tabGroups.all) for (const tab of group.tabs) if (tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith(COMMAND_CENTER_VIEW_TYPE)) await vscode.window.tabGroups.close(tab);
+    await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: subject.id, interactive: false });
+  }
+  assert.equal(commandCenterOpenForTests(), false, 'closing the tab disposes the panel');
+  console.log('host smoke: the Command Center opens as one editor tab with a strict content security policy, shows a card with unknown where nothing is known, keeps the layout, and refuses every message that is not on the whitelist');
+}

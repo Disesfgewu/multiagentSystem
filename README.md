@@ -61,6 +61,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 | 畫面 | 用途 |
 |---|---|
+| **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選。只讀；沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
 | **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
 | **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
@@ -185,5 +186,5 @@ npm run vsix:package # 打包 VSIX、做內容與發佈掃描、寫出 release-c
 
 - 進度追蹤：[Issue #90](https://github.com/Disesfgewu/multiagentSystem/issues/90)；實機驗收清單：[Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)。
 - 需求與驗收標準：[實作計劃書](docs/IMPLEMENTATION_PLAN.md)；PM 工作規則：[PM system prompt](docs/PM_SYSTEM_PROMPT.md)；worker 指令：[Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
-- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
+- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - [舊交付台帳](docs/MASTER_PLAN.md)只供查閱歷史紀錄，不是即時狀態。
