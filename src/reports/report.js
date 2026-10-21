@@ -293,6 +293,31 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   return { title: `Pull request #${pr.number}`, lines, files: shownFiles };
 }
 
+/**
+ * A few plain facts about one pull request's report, for a screen that shows many of them (the Command Center, issue #309): the PM
+ * report's state and its first two fields, the formal approval on the latest head, CI for that head and unresolved threads. Built from
+ * the same inputs and the same checks as the full report, so it can never say more than the report does; anything not read or not
+ * for the latest head is "unknown".
+ * @returns {{ pm: 'current'|'stale'|'missing'|'unknown', userCan: string|null, next: string|null, approval: string, ci: string, unresolved: number|null }}
+ */
+function summarizePullRequest({ repository, pullRequest, snapshot, comments }) {
+  const head = pullRequest && typeof pullRequest.headSha === 'string' ? pullRequest.headSha : null;
+  const pm = pmReport(comments, repository, head);
+  const complete = snapshot && typeof snapshot === 'object' && snapshot.status === 'complete';
+  const approval = complete && snapshot.approval && typeof snapshot.approval.status === 'string' ? line(snapshot.approval.status, 40) : 'unknown';
+  const checks = complete ? snapshot.checksSummary : null;
+  const ci = checks && typeof checks.state === 'string' && checks.headSha && head && String(checks.headSha).toLowerCase() === head.toLowerCase() ? line(checks.state, 20) : 'unknown';
+  return {
+    // Without a known head nothing can be called current or stale.
+    pm: head && (pm.state === 'current' || pm.state === 'stale' || pm.state === 'missing') ? pm.state : 'unknown',
+    userCan: pm.fields ? line(pm.fields.operableResult, 160) || null : null,
+    next: pm.fields ? line(pm.fields.recommendedAction, 160) || null : null,
+    approval,
+    ci,
+    unresolved: complete && Number.isSafeInteger(snapshot.unresolvedThreads) ? snapshot.unresolvedThreads : null
+  };
+}
+
 /** The report as one text. A report for one item never mentions another. */
 const render = (report) => `${report.lines.join('\n')}\n`;
 
@@ -319,4 +344,4 @@ function neighbour(numbers, current, step) {
   return numbers[(at + step + numbers.length) % numbers.length];
 }
 
-module.exports = { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, APPLIES, fileBulletLines };
+module.exports = { buildIssueReport, buildPullRequestReport, summarizePullRequest, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, APPLIES, fileBulletLines };

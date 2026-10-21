@@ -75,6 +75,10 @@ const SCRIPT = String.raw`
       body.appendChild(el('div', null, card.provider + ' · ' + card.account));
       body.appendChild(el('div', 'muted', 'Model: ' + card.model + ' (' + card.modelNote + ')'));
       body.appendChild(el('div', null, 'Working on: ' + card.task.text));
+      body.appendChild(el('div', null, 'Worktree: ' + card.worktree));
+      var report = el('div', 'report');
+      card.report.lines.forEach(function (text, index) { report.appendChild(el('div', index === 0 ? 'report-head' : 'report-line', text)); });
+      body.appendChild(report);
       body.appendChild(el('div', 'muted', 'State: ' + card.status.source));
       if (card.autoMode) body.appendChild(el('div', 'muted', card.autoMode));
       body.appendChild(quotaBlock(card));
@@ -185,6 +189,7 @@ const STYLE = `
   .card-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   .muted { color: var(--vscode-descriptionForeground); } .alert { color: var(--vscode-errorForeground); margin-top: 4px; }
   .note { padding: 6px 8px; margin-bottom: 8px; border: 1px solid var(--vscode-panel-border); }
+  .report { margin-top: 4px; padding-left: 6px; border-left: 2px solid var(--vscode-panel-border); } .report-head { font-weight: 600; } .report-line { font-size: 0.92em; overflow-wrap: anywhere; }
   .quota { margin-top: 4px; } .quota-line, .detail { font-size: 0.92em; overflow-wrap: anywhere; }
   .accounts { margin-top: 16px; } .account { padding: 6px 8px; margin-bottom: 6px; border: 1px solid var(--vscode-panel-border); }
   .btn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 0; padding: 3px 8px; cursor: pointer; border-radius: 2px; }

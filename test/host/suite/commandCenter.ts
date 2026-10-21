@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
+import { pullRequestSummary, setReportDepsForTests } from '../../../src/reports/reportsView';
 import { commandCenterForTests, commandCenterHtmlForTests, commandCenterOpenForTests, COMMAND_CENTER_COMMAND, COMMAND_CENTER_VIEW_TYPE } from '../../../src/commandCenter/commandCenter';
 
 type Session = { id: string; name: string };
@@ -41,6 +42,8 @@ export async function runCommandCenterChecks(workspace: string): Promise<void> {
     assert.equal(card!.status.state, 'unknown', 'a terminal that exists is not "working" without hook evidence');
     assert.match(card!.task.text, /no task is known/);
     assert.equal(card!.model, 'CLI default');
+    assert.match((card as any).worktree, /^(unknown|no uncommitted changes|\d+ changed)/, 'one line about the working folder is on the card');
+    assert.deepEqual((card as any).report.lines, ['Latest report: none (no pull request is linked to this agent)'], 'an agent with no pull request has no report');
     assert.equal(state.layout.mode, 'grid');
     assert.equal(typeof state.decisions.issues.known, 'boolean');
 
@@ -72,5 +75,26 @@ export async function runCommandCenterChecks(workspace: string): Promise<void> {
     await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: subject.id, interactive: false });
   }
   assert.equal(commandCenterOpenForTests(), false, 'closing the tab disposes the panel');
+
+  // The latest report of a pull request: read the way the full report is, kept for a minute, and unknown when it cannot be read.
+  const HEAD = 'a'.repeat(40);
+  let reads = 0;
+  let broken = false;
+  const reader: any = {
+    getPullRequest: async () => { reads += 1; if (broken) throw new Error('offline'); return { kind: 'ok', data: { number: 7, headSha: HEAD, title: 't', state: 'open' } }; },
+    getPullRequestSnapshot: async () => ({ status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'approved', headSha: HEAD }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD, failing: [] }, unresolvedThreads: 0 }),
+    getIssueComments: async () => ({ kind: 'ok', data: [] })
+  };
+  setReportDepsForTests({ repository: async () => 'o/r', readerFor: () => reader });
+  try {
+    const first = await pullRequestSummary(7);
+    assert.deepEqual(first, { pm: 'missing', userCan: null, next: null, approval: 'approved', ci: 'passing', unresolved: 0 });
+    await pullRequestSummary(7);
+    assert.equal(reads, 1, 'the second look is answered from the minute-long keep, not read again');
+    broken = true;
+    setReportDepsForTests({ repository: async () => 'o/r', readerFor: () => reader });
+    assert.equal(await pullRequestSummary(8), null, 'a report that cannot be read is null: the screen says unknown');
+    for (const bad of [0, -1, 1.5, Number.NaN, '7' as unknown as number]) assert.equal(await pullRequestSummary(bad), null, String(bad));
+  } finally { setReportDepsForTests(undefined); }
   console.log('host smoke: the Command Center opens as one editor tab with a strict content security policy, shows a card with unknown where nothing is known, keeps the layout, and refuses every message that is not on the whitelist');
 }
