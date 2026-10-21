@@ -100,7 +100,7 @@ test('an export is masked: accounts and sessions are not named, and no path or l
   const rows = exportRows([entry({ accountProfileId: 'profile-secret-label', sessionId: 'session-private-id' }), entry({ accountProfileId: 'profile-b', sessionId: 'session-2' }), entry({ accountProfileId: 'profile-secret-label', sessionId: 'session-3' })]);
   assert.deepEqual(rows.map((row) => row.account), ['account-1', 'account-2', 'account-1']);
   for (const text of [toCsv(rows), toJson(rows)]) {
-    for (const secret of ['profile-secret-label', 'session-private-id', 'profile-b', '/Users', 'Account']) assert.equal(text.includes(secret), false, secret);
+    for (const secret of ['profile-secret-label', 'session-private-id', 'profile-b', '/home', 'Account']) assert.equal(text.includes(secret), false, secret);
   }
   const csv = toCsv(rows).split('\n');
   assert.equal(csv[0], 'time,account,session,provider,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,measurement,source');
