@@ -370,6 +370,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     launch?: boolean;
     requestedModel?: string | null;
     instructions?: SessionInstructionsInput;
+    /** Enforced isolation: turns the provider's program and its final arguments (model, instructions included) into the command typed instead. */
+    wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
     const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
@@ -394,7 +396,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -423,7 +425,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     launch: boolean,
     env?: Record<string, string | null>,
     requestedModel: string | null = null,
-    instructions?: SessionInstructionsInput
+    instructions?: SessionInstructionsInput,
+    wrap?: (executable: string, args: string[]) => { executable: string; args: string[] }
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
@@ -434,6 +437,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     // Decided before a terminal exists: an unrecognized shell gets no terminal, no text and no state.
     const shellType = launch ? this.deps.detectShellType?.() : undefined;
     if (shellType === null) throw new SessionError('unsupported-shell');
+    // Decided before a terminal exists too: a refusal to wrap leaves no terminal, no text and no state.
+    const wrapped = launch ? (wrap ? wrap(executable, allArgs) : { executable, args: allArgs }) : { executable, args: allArgs };
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
     const terminal = this.deps.terminals.create({ name: title, cwd: identity.worktree, ...(env ? { env } : {}) });
     const token = (this.deps.newToken ?? randomId)();
@@ -470,7 +475,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const commandLine = formatShellCommandLine(executable, allArgs, { shellType });
+      const commandLine = formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
     }
@@ -563,6 +568,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       acknowledgeUnknown?: boolean;
       env?: Record<string, string | null>;
       instructions?: SessionInstructionsInput;
+      /** Enforced isolation: the same wrapping `start` takes. */
+      wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
     } = {}
   ): Promise<SessionView> {
     await this.ready();
@@ -591,7 +598,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

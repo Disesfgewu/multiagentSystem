@@ -34,11 +34,17 @@ export async function runCustomStart(input: {
   state: CustomStartState;
   env?: NodeJS.ProcessEnv;
   platform?: string;
+  /** The user-level value of `multiagentSystem.isolation.mode` (undefined when never set). */
+  isolationMode?: unknown;
 }): Promise<{ ok: boolean; code?: string }> {
   const { arg, providers, ui, state } = input;
   if (providers.length === 0) return { ok: false, code: 'no-custom-providers' };
   // Before anything is asked: a workspace that is not trusted starts nothing.
   if (input.trusted !== true) return { ok: false, code: 'workspace-untrusted' };
+  // A custom provider has no managed isolation (no sandbox, no proxy, nothing probed for it). Whoever chose enforced mode in their
+  // settings must never get an unisolated agent from here, so anything but advice mode starts nothing.
+  if (input.isolationMode === 'enforced') return { ok: false, code: 'isolation-enforced-unsupported' };
+  if (input.isolationMode !== undefined && input.isolationMode !== 'advisory') return { ok: false, code: 'isolation-mode-invalid' };
   // Only the Extension Host tests may answer for the person (the #183 rule).
   const interactive = requireInteractive(arg ?? {}).interactive !== false;
   const id = interactive ? await ui.pick(providers.map((provider) => ({ id: provider.id, label: provider.label }))) : arg?.id;

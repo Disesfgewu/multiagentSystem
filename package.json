@@ -114,6 +114,21 @@
             }
           }
         },
+        "multiagentSystem.isolation.mode": {
+          "type": "string",
+          "enum": ["advisory", "enforced"],
+          "default": "advisory",
+          "scope": "application",
+          "description": "How agent terminals are started (user settings only; workspace values are ignored). advisory: the current behavior, GitHub writes are checked and advised but nothing prevents an agent from bypassing the checks. enforced (macOS only for now): each start first tries every GitHub bypass on this machine, and starts the CLI in a sandbox whose only network route is a local proxy that allows just the domains below. If any proof is missing the CLI is NOT started. Whether a real CLI works through the proxy and which domains it needs are not verified."
+        },
+        "multiagentSystem.isolation.allowedDomains": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "maxItems": 32,
+          "description": "Host names the enforced mode lets the CLI reach (user settings only), for example api.example.com or *.example.com. GitHub hosts are always refused, even if listed. Empty means enforced mode refuses to start.",
+          "items": { "type": "string", "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$" }
+        },
         "multiagentSystem.skills.autoInstall": {
           "type": "boolean",
           "default": true,

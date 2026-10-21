@@ -86,3 +86,19 @@ test('only the most recent confirmations are kept, without duplicates', () => {
   assert.equal(list[0], 'k10');
   assert.deepEqual(rememberKey(['a', 'b'], 'a'), ['b', 'a']);
 });
+
+test('while enforced isolation is chosen, or the mode is not understood, a custom provider starts nothing and asks nothing', { skip: !posix }, async (t) => {
+  const { seen, ui, base } = setup(t);
+  setExtensionTestMode(false);
+  for (const [mode, code] of [['enforced', 'isolation-enforced-unsupported'], ['enforce', 'isolation-mode-invalid'], ['', 'isolation-mode-invalid'], [null, 'isolation-mode-invalid']] as Array<[unknown, string]>) {
+    assert.deepEqual(await runCustomStart({ ...base, isolationMode: mode, arg: undefined, ui: ui() }), { ok: false, code });
+  }
+  assert.deepEqual([seen.picks, seen.confirms, seen.launches.length], [0, 0, 0], 'nothing was picked, asked or launched');
+  assert.equal((await runCustomStart({ ...base, isolationMode: 'advisory', arg: undefined, ui: ui() })).ok, true, 'advice mode is unchanged');
+  assert.equal((await runCustomStart({ ...base, arg: undefined, ui: ui() })).ok, true, 'so is a mode that was never set');
+});
+
+test('the command reads the isolation mode from the user\'s settings and hands it to the start', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'providers', 'customProviderCommands.ts'), 'utf8');
+  assert.match(source, /isolationMode: readUserLevel\(vscode\.workspace\.getConfiguration\('multiagentSystem'\)\.inspect\('isolation\.mode'\)\)\.value/);
+});
