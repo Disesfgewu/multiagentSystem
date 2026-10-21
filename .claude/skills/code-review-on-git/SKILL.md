@@ -23,6 +23,7 @@ Run in order. This is a checklist, not a prompt for open-ended exploration — d
 4. **Check scope**: read the linked issue's acceptance criteria (`fetch-comments <issue>`), confirm the PR doesn't silently expand scope, and doesn't contradict the project's documented product direction.
 
    Also check attribution: any `Co-authored-by:` trailer in the PR's commits, or a co-author / "Generated with Claude Code" line in the PR body, is a Needs changes item (this project forbids co-authors; the **No co-author** CI check enforces it).
+
 5. **Check CI**: `gh pr checks "$N"`. A Pass requires CI green; if CI is still running, say so and don't guess the outcome.
 
 6. **Post the verdict** — first line is load-bearing, exact format:
