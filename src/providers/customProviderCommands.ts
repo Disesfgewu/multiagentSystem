@@ -37,7 +37,9 @@ const START_MESSAGES: Record<string, string> = {
   'executable-only-in-workspace': 'The only program with that name is inside this workspace, so it was not used. Install it somewhere else on your PATH.',
   'script-not-supported': 'On Windows only .exe and .com programs can be started (not .cmd or .bat).',
   'path-unavailable': 'PATH could not be read.',
-  'executable-name-invalid': 'The program name is not valid.'
+  'executable-name-invalid': 'The program name is not valid.',
+  'isolation-enforced-unsupported': 'Custom providers do not support managed isolation yet, so nothing was started while enforced isolation is on. Set multiagentSystem.isolation.mode back to advisory in your user settings to start one.',
+  'isolation-mode-invalid': 'The isolation mode setting is not "advisory" or "enforced", so nothing was started. Fix multiagentSystem.isolation.mode in your user settings.'
 };
 
 export function registerCustomProviderCommands(context: vscode.ExtensionContext): void {
@@ -47,6 +49,7 @@ export function registerCustomProviderCommands(context: vscode.ExtensionContext)
       arg,
       providers: readCustomProviders().providers as Array<{ id: string; label: string; executable: string; args: string[] }>,
       trusted: vscode.workspace.isTrusted,
+      isolationMode: readUserLevel(vscode.workspace.getConfiguration('multiagentSystem').inspect('isolation.mode')).value,
       cwd: folders.length === 1 ? folders[0] : undefined,
       folders,
       ui: {

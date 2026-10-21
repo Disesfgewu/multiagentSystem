@@ -14,3 +14,7 @@
 - 環境清除只移除已知的憑證變數；其他變數仍會傳給程式。
 - 沒有受管隔離：這只是「用你列的程式開一個原生 terminal」，不擋網路、不擋檔案（受管隔離見 `ISOLATION_CAPABILITY.md`）。
 - 真的 CLI、Windows 實際 `.exe` 啟動、各 shell 設定下 `shellPath` 的行為：未驗證（#135）。
+
+## 與受管隔離的關係
+
+自訂 provider 還沒有受管隔離（沒有沙箱、沒有代理、沒有為它探測）。因此只要使用者設定 `multiagentSystem.isolation.mode` 是 `enforced`（或不是 `advisory` 的其他值），「Start Custom Provider Terminal」**不會啟動**並說明原因，不會退回無隔離的啟動；改回 `advisory`（預設）才能啟動。

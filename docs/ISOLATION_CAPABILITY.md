@@ -80,6 +80,6 @@
 
 **探測用的設定就是啟動用的設定**：沙箱由同一個函式 `isolationSpec` 產生（harness 探測與實際啟動都呼叫它）；啟動時額外加上該資料夾的 git 目錄寫入拒絕（`gitDirectoriesFor`：`.git` 目錄，或 linked worktree 的 `.git` 檔案、它指向的 git 目錄與 common 目錄；讀不懂的 `.git` 檔案就不啟動）。實測：實際輸入的指令在一般資料夾與 linked worktree 都無法 commit。環境：終端機環境把 `scrubEnvironment` 會移除的變數設為 null，並在指令前加 `/usr/bin/env -u …`（連 shell 啟動檔匯出的 `GH_TOKEN` 等也移除）；已知限制：shell 啟動檔用**新的、未知名稱**匯出的 token 無法事先列舉，這一點未涵蓋（#135）。**reopen 與 start 走同一條路**（總覽的 Reopen 也會探測、包裝、確認，失敗就不開），有測試鎖住兩個入口都必須經過判斷並傳入包裝。
 
-只有 Extension Host 測試（`interactive: false`）能代替使用者跳過確認，一般安裝的擴充套件會強制互動。沒有啟動 CLI 的純 shell（`launch: false`）不探測、不包裝。沙箱只包住 CLI 程式，不包住使用者的 shell 本身。
+只有 Extension Host 測試（`interactive: false`）能代替使用者跳過確認，一般安裝的擴充套件會強制互動。沒有啟動 CLI 的純 shell（`launch: false`）不探測、不包裝。**範圍**：enforced 只涵蓋 session 的 start 與 reopen。「Start Custom Provider Terminal」在 enforced（或模式值不是 advisory／enforced）時**拒絕啟動**（`isolation-enforced-unsupported`／`isolation-mode-invalid`），因為自訂 provider 還沒有受管隔離；要使用請先把模式改回 advisory。空白 shell、四格 terminal 與登入用 terminal 不啟動 agent CLI，使用者自己在裡面輸入的指令**不在受管範圍內**。沙箱只包住 CLI 程式，不包住使用者的 shell 本身。
 
 **未驗證**：真實 CLI 是否肯走 `HTTPS_PROXY`、各供應商需要哪些網域、沒有 `gh` 的機器上（gh-cli 對照組無法成功＝unknown）enforced 會一律拒絕、真實 keychain helper（#135 T25）。Windows 端尚未接上（#26）。
