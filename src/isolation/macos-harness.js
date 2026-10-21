@@ -57,10 +57,10 @@ async function countingServer() {
 /**
  * `shapeSandbox` and `scrub` exist so a test can weaken the isolation on purpose and see every bypass reported as open;
  * the defaults are the real ones.
- * @param {{ platform?: string, sandboxExec?: string, tmpRoot: string, parentEnv?: Record<string, string | undefined>, timeoutMs?: number, shapeSandbox?: (spec: object) => object, scrub?: (env: object) => object, makeServer?: () => Promise<object>, weakenEnv?: (env: object) => object }} [options]
+ * @param {{ platform?: string, sandboxExec?: string, tmpRoot: string, parentEnv?: Record<string, string | undefined>, timeoutMs?: number, shapeSandbox?: (spec: object) => object, scrub?: (env: object) => object, makeServer?: () => Promise<object>, weakenEnv?: (env: object) => object, securityTool?: string }} [options]
  * @returns {{ platform: 'darwin', probe(channel: string, context?: { signal?: AbortSignal }): Promise<{ outcome?: string, control: boolean }>, dispose(): Promise<void> }}
  */
-function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_EXEC, tmpRoot, parentEnv = process.env, timeoutMs = ATTEMPT_TIMEOUT_MS, shapeSandbox = (spec) => spec, scrub = scrubEnvironment, makeServer = countingServer, weakenEnv = (env) => env } = {}) {
+function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_EXEC, tmpRoot, parentEnv = process.env, timeoutMs = ATTEMPT_TIMEOUT_MS, shapeSandbox = (spec) => spec, scrub = scrubEnvironment, makeServer = countingServer, weakenEnv = (env) => env, securityTool = '/usr/bin/security' } = {}) {
   // Where the fixture lives is the caller's decision (the extension's private storage); there is no default, so a caller
   // that forgets it gets an error rather than a folder in the shared temporary directory.
   if (typeof tmpRoot !== 'string' || !path.isAbsolute(tmpRoot)) throw new TypeError('tmpRoot must be an absolute folder');
@@ -92,13 +92,13 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     fs.mkdirSync(cliHome);
     fs.writeFileSync(path.join(cliHome, 'auth.json'), '{"synthetic":true}\n');
     // A keychain of its own (never the person's): one synthetic internet password, readable by the `security` tool.
-    // Without it (no `security` command) the keychain half of the credential-helper channel is simply not tried.
+    // Without it the credential-helper channel cannot be judged (its control cannot run), so it is unknown, never blocked.
     const keychain = path.join(root, 'test.keychain-db');
-    const made = await run('/usr/bin/security', ['create-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
+    const made = await run(securityTool, ['create-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
     let keychainReady = false;
     if (made.ok) {
-      const unlocked = await run('/usr/bin/security', ['unlock-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
-      const added = await run('/usr/bin/security', ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', marker, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
+      const unlocked = await run(securityTool, ['unlock-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
+      const added = await run(securityTool, ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', marker, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
       keychainReady = unlocked.ok && added.ok;
     }
     const github = await makeServer(); servers.push(github);
@@ -110,7 +110,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   /** Every step runs whatever the one before it did: a server that will not close must not keep the folder or the keychain. */
   async function removeFixture(root, servers) {
     for (const server of servers) { try { await server.close(); } catch { /* the rest still runs */ } }
-    try { await run('/usr/bin/security', ['delete-keychain', path.join(root, 'test.keychain-db')], { env: { PATH: '/usr/bin:/bin' } }); } catch { /* none was made */ }
+    try { await run(securityTool, ['delete-keychain', path.join(root, 'test.keychain-db')], { env: { PATH: '/usr/bin:/bin' } }); } catch { /* none was made */ }
     try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* nothing more can be done here */ }
   }
 
@@ -161,11 +161,14 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       return fixture.github.count() > 0;
     },
     async 'credential-helper'(spec, ctx) {
+      // No test keychain means the keychain half of this channel was never tried: with a file-only result the channel could be
+      // reported blocked while the keychain is still reachable. The control does not run, so the channel is unknown.
+      if (!fixture.keychain) return spec === null ? false : null;
       const filled = await launch(spec, '/usr/bin/git', ['-c', 'credential.helper=', '-c', `credential.helper=store --file=${path.join(fixture.creds, 'git-credentials')}`, 'credential', 'fill'], { ...ctx, env: baseEnv(), input: 'protocol=https\nhost=github.com\n\n' });
       // The keychain: the system service answers `security` and `git-credential-osxkeychain`, whatever files are readable.
       let fromKeychain = false;
       if (fixture.keychain) {
-        const found = await launch(spec, '/usr/bin/security', ['find-internet-password', '-s', 'example.test', '-w', fixture.keychain], { ...ctx, env: baseEnv() });
+        const found = await launch(spec, securityTool, ['find-internet-password', '-s', 'example.test', '-w', fixture.keychain], { ...ctx, env: baseEnv() });
         fromKeychain = found.stdout.includes(fixture.marker);
       }
       return filled.stdout.includes(fixture.marker) || fromKeychain;

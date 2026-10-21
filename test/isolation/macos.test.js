@@ -233,3 +233,30 @@ test('disposing removes everything even when a server will not close', onlyMac, 
     assert.deepEqual(fs.readdirSync(root), []);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// A `security` that behaves like the real one except that one subcommand fails: the test keychain cannot be made, unlocked or filled.
+function securityFailingAt(subcommand) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(TMP), 'mas-sec-'));
+  const script = path.join(dir, 'security');
+  fs.writeFileSync(script, `#!/bin/sh\n[ "$1" = "${subcommand}" ] && exit 1\nexec /usr/bin/security "$@"\n`, { mode: 0o755 });
+  return { script, dir };
+}
+
+test('when the test keychain cannot be made, unlocked or filled, credential-helper is unknown and enforced mode refuses', onlyMac, async () => {
+  for (const subcommand of ['create-keychain', 'unlock-keychain', 'add-internet-password']) {
+    const { script, dir } = securityFailingAt(subcommand);
+    const module = createMacosModule({ tmpRoot: TMP, securityTool: script });
+    try {
+      assert.deepEqual(await module.probe('credential-helper'), { control: false }, `${subcommand}: not judged from the file half alone`);
+      const collected = await collectProbes({ platform: 'darwin', probe: (channel) => module.probe(channel) }, { timeoutMs: 30_000 });
+      const assessment = assessIsolation({ platform: 'darwin', probes: collected.probes });
+      assert.ok(assessment.reasons.includes('credential-helper:control-did-not-run'), JSON.stringify(assessment.reasons));
+      assert.equal(decideLaunch({ assessment, requested: 'enforced' }).allowed, false, 'nothing starts on this evidence');
+    } finally { await module.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('with a working test keychain credential-helper is still judged: blocked inside the sandbox', onlyMac, async () => {
+  const module = createMacosModule({ tmpRoot: TMP });
+  try { assert.deepEqual(await module.probe('credential-helper'), { control: true, outcome: 'blocked' }); } finally { await module.dispose(); }
+});
