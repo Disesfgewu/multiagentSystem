@@ -132,6 +132,16 @@ test('every place that starts or reopens an agent CLI prepares Claude Code\'s at
   assert.equal([...source.matchAll(/\.\.\.\(attributionFile \? \{ attributionFile \} : \{\}\)/g)].length, calls, 'each one passes it on');
 });
 
+test('every place that starts or reopens an agent CLI resolves auto mode from the user\'s own settings, tells the person, and hands it to the manager', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', '..', 'src', 'sessions', 'sessionCommands.ts'), 'utf8') as string;
+  const calls = [...source.matchAll(/manager\.(start|reopen)\(/g)].length;
+  assert.equal([...source.matchAll(/= autoModeFor\(/g)].length, calls, 'each one resolves it');
+  assert.equal([...source.matchAll(/\.\.\.\(autoMode\.auto \? \{ autoMode: autoMode\.auto \} : \{\}\)/g)].length, calls, 'each one passes it on');
+  assert.equal([...source.matchAll(/\$\{autoMode\.lines\.length > 0/g)].length, calls, 'each confirmation window carries the lines');
+  assert.match(source, /readUserLevel\(settings\.inspect\('agents\.autoMode'\)\)\.value/, 'the setting is read from the user level only');
+  assert.match(source, /readUserLevel\(settings\.inspect\('agents\.autoModeOverrides'\)\)\.value/);
+});
+
 test('the broadcast delivery command takes no argument, asks for the confirmation every time and is not reachable as a session command', () => {
   const fs = require('node:fs');
   const path = require('node:path');

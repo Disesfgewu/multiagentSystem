@@ -6,6 +6,7 @@ import { registerStorageCommands } from './storage/storageCommands';
 import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { registerRoleCommands } from './roles/roleCommands';
 import { registerBroadcastCommands } from './broadcast/commands';
+import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerOverview } from './overview/overviewView';
 import { registerReports } from './reports/reportsView';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
@@ -87,6 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   sessions = registerSessionCommands(context);
   registerAccountCommands(context, sessions);
+  registerUsageLogCommands(context, sessions);
   registerOverview(context, sessions);
   registerReports(context);
   registerRoleCommands(context, sessions);

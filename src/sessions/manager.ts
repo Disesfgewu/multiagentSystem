@@ -73,6 +73,8 @@ export interface SessionView extends SessionIdentity {
   observedAt: string | null;
   instructionState?: SessionInstructionState;
   instructionStatusLabel?: string;
+  /** What auto mode was requested for this window's launch of the CLI; a request, not proof of how the CLI runs. */
+  autoModeLabel?: string;
   instructionDigest?: string | null;
   instructionMethod?: string | null;
   /** Fresh, verified provider evidence only. It is never persisted with the session record. */
@@ -174,6 +176,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly models = new Map<string, string>();
   private readonly instructionStates = new Map<string, SessionInstructionState>();
   private readonly instructionLabels = new Map<string, string>();
+  private readonly autoModeLabels = new Map<string, string>();
   private readonly instructionDigests = new Map<string, string>();
   private readonly instructionMethods = new Map<string, string>();
   private readonly activePlans = new Map<string, any>();
@@ -299,6 +302,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       observedAt: entry.observedAt,
       instructionState: this.instructionStates.get(entry.id) ?? 'none',
       instructionStatusLabel: this.instructionLabels.get(entry.id) ?? 'No instructions configured',
+      autoModeLabel: this.autoModeLabels.get(entry.id) ?? 'Auto mode: unknown (not started in this window)',
       instructionDigest: this.instructionDigests.get(entry.id) ?? null,
       instructionMethod: this.instructionMethods.get(entry.id) ?? null
     };
@@ -376,6 +380,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
     /** Claude Code's settings file that switches off its own attribution (issue #293); required to launch Claude. */
     attributionFile?: string;
+    /** Auto mode for the CLI (issue #296): the arguments to pass and the label to show. Resolved by the caller from the person's settings. */
+    autoMode?: { args: string[]; label: string };
   }): Promise<SessionView> {
     const executable = this.executableFor(input.provider);
     const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
@@ -400,7 +406,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -431,14 +437,16 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     requestedModel: string | null = null,
     instructions?: SessionInstructionsInput,
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] },
-    attributionFile?: string
+    attributionFile?: string,
+    autoMode?: { args: string[]; label: string }
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
     // Decided before a terminal exists: Claude Code without its attribution switch is not started.
     let attributionArgs: string[] = [];
     try { attributionArgs = launch ? attributionArguments(identity.provider, attributionFile) : []; } catch { throw new SessionError('attribution-settings-unavailable'); }
-    const allArgs = [...attributionArgs, ...modelArgs, ...instructionArgs];
+    const autoArgs = launch && autoMode ? autoMode.args : [];
+    const allArgs = [...attributionArgs, ...autoArgs, ...modelArgs, ...instructionArgs];
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
@@ -458,6 +466,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       throw error;
     }
     this.names.set(identity.id, name);
+    if (autoMode) this.autoModeLabels.set(identity.id, launch ? autoMode.label : 'Auto mode: not applicable (a shell only: no CLI was started)');
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
     if (instructions?.method && instructions.method !== 'none') this.instructionMethods.set(identity.id, instructions.method);
@@ -595,6 +604,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
       /** The same attribution settings file `start` takes. */
       attributionFile?: string;
+      /** The same auto mode `start` takes. */
+      autoMode?: { args: string[]; label: string };
     } = {}
   ): Promise<SessionView> {
     await this.ready();
@@ -623,7 +634,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
