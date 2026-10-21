@@ -24,6 +24,8 @@ export interface EnforcedStartUi {
 
 const REFUSALS: Record<string, string> = {
   'isolation-mode-invalid': 'The isolation mode setting is not "advisory" or "enforced", so nothing was started. Fix multiagentSystem.isolation.mode in your user settings.',
+  'platform-not-supported-win32': 'Windows does not support managed isolation yet (a restricted token cannot block the network), so nothing was started. Set multiagentSystem.isolation.mode back to advisory in your user settings to start.',
+  'platform-not-supported': 'Managed isolation is only available on macOS for now, so nothing was started. Set multiagentSystem.isolation.mode back to advisory in your user settings to start.',
   'storage-unavailable': 'Enforced isolation needs the extension\'s private storage, which is unavailable, so nothing was started.',
   'cancelled': 'Cancelled.'
 };
@@ -49,6 +51,10 @@ export async function prepareIsolationForStart(input: {
 }): Promise<EnforcedStartResult> {
   if (input.mode === undefined || input.mode === 'advisory') return { kind: 'advisory' };
   if (input.mode !== 'enforced') return { kind: 'refused', code: 'isolation-mode-invalid', message: REFUSALS['isolation-mode-invalid'] };
+  // Before anything else: no storage lookup, no progress indicator, no probe, no script. Windows is advisory only (#26): its
+  // restricted token keeps credential files and variables out of reach but cannot stop network use, so enforced can never be proven.
+  const platform = input.platform ?? process.platform;
+  if (platform !== 'darwin') return { kind: 'refused', code: 'platform-not-supported', message: REFUSALS[platform === 'win32' ? 'platform-not-supported-win32' : 'platform-not-supported'] };
   if (!input.storageDir) return { kind: 'refused', code: 'storage-unavailable', message: REFUSALS['storage-unavailable'] };
   const prepared = await input.ui.progress(() => (input.prepare ?? prepareEnforcedLaunch)({
     ...(input.platform ? { platform: input.platform } : {}),

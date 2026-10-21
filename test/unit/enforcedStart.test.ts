@@ -18,7 +18,7 @@ const okPrepared = (log: string[] = []) => async () => ({
   summary: ['Enforced isolation: proven.', 'Not verified (#135): the real CLI.'],
   dispose: async () => { log.push('disposed'); }
 });
-const base = (extra: Record<string, unknown> = {}) => ({ mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/synthetic/home', cwd: '/synthetic/work', createHarness: () => ({}), ...extra });
+const base = (extra: Record<string, unknown> = {}) => ({ platform: 'darwin', mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/synthetic/home', cwd: '/synthetic/work', createHarness: () => ({}), ...extra });
 
 test('without the setting, or in advisory mode, nothing is prepared and nothing is asked: the launch is unchanged', async () => {
   for (const mode of [undefined, 'advisory']) {
@@ -92,4 +92,35 @@ test('every place that starts or reopens an agent CLI goes through the isolation
   assert.ok(calls >= 2, 'both entry points exist');
   assert.equal([...source.matchAll(/await isolationForLaunch\(/g)].length, calls, 'each one asks for the isolation decision first');
   assert.equal([...source.matchAll(/isolation\.kind === 'enforced' \? \{ wrap: isolation\.wrap \}/g)].length, calls, 'each one passes the wrapper to the manager');
+});
+
+test('on Windows (and any platform but macOS) enforced mode refuses first: nothing is probed, asked, prepared or wrapped', async () => {
+  for (const platform of ['win32', 'linux', 'freebsd']) {
+    for (const interactive of [true, false]) {
+      const { seen, handle } = ui();
+      let prepared = 0;
+      let harnesses = 0;
+      const result = await prepareIsolationForStart({
+        ...base({ platform, interactive, createHarness: () => { harnesses += 1; return {}; } }),
+        ui: handle,
+        prepare: (async () => { prepared += 1; return okPrepared()(); }) as never
+      } as never);
+      assert.equal(result.kind, 'refused', platform);
+      if (result.kind === 'refused') {
+        assert.equal(result.code, 'platform-not-supported');
+        if (platform === 'win32') assert.match(result.message, /Windows does not support managed isolation yet/);
+        assert.match(result.message, /advisory/);
+      }
+      assert.deepEqual([prepared, harnesses, seen.progress, seen.confirms.length], [0, 0, 0, 0], `${platform}: no probe, no progress, no confirmation`);
+    }
+  }
+});
+
+test('on Windows the refusal comes even when storage is missing, so no other path can be taken first', async () => {
+  const result = await prepareIsolationForStart({ ...base({ platform: 'win32', storageDir: undefined }), ui: ui().handle } as never);
+  assert.equal(result.kind === 'refused' && result.code, 'platform-not-supported');
+});
+
+test('advice mode is unchanged on Windows: nothing is refused and nothing is wrapped', async () => {
+  for (const mode of [undefined, 'advisory']) assert.deepEqual(await prepareIsolationForStart({ ...base({ platform: 'win32', mode }), ui: ui().handle } as never), { kind: 'advisory' });
 });
