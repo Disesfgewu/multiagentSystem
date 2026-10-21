@@ -121,6 +121,7 @@ const SCRIPT = String.raw`
     bar.appendChild(el('h1', null, 'Command Center'));
     var tools = el('div', 'row');
     tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
+    tools.appendChild(button('Team rules…', function () { post({ type: 'editTeamRules' }); }));
     tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));
     bar.appendChild(tools);
     root.appendChild(bar);

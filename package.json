@@ -69,6 +69,7 @@
     "onCommand:multiagentSystem.broadcasts.send",
     "onCommand:multiagentSystem.broadcasts.deliver",
     "onCommand:multiagentSystem.broadcasts.revoke",
+    "onCommand:multiagentSystem.teamRules.edit",
     "onView:multiagentSystem.broadcastsView",
     "onView:multiagentSystem.toolsSetupView",
     "onCommand:multiagentSystem.setup.refresh",
@@ -347,6 +348,7 @@
       { "command": "multiagentSystem.broadcasts.deliver", "title": "Multiagent: Send Broadcast to Agents", "icon": "$(send)" },
       { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
+      { "command": "multiagentSystem.teamRules.edit", "title": "Multiagent: Edit Team Rules", "icon": "$(law)" },
       {
         "command": "multiagentSystem.storage.status",
         "title": "Multiagent: Show Private Storage Status"

@@ -5,6 +5,7 @@ import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } fro
 import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
 import { builtIn } from '../providers/registry';
+import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
 
 const model = require('./model') as {
   buildCards(input: Record<string, unknown>): { pm: any[]; agents: any[]; accounts: any[]; counts: { agents: number; pm: number } };
@@ -73,7 +74,9 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     await Promise.all(numbers.map(async (number) => { reports[String(number)] = await pullRequestSummary(number); }));
     if (mine !== generation) return;
     const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports });
-    cached = { pm: built.pm, agents: built.agents, accounts: built.accounts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: snapshot.notes.slice(0, 5).map((note) => String(note).slice(0, 200)) };
+    const teamRules = await teamRulesSummary();
+    if (mine !== generation) return;
+    cached = { pm: built.pm, agents: built.agents, accounts: built.accounts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: [teamRules, ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240)) };
     post();
   };
   const scheduleRefresh = (): void => {
@@ -107,6 +110,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         return { ok: true, command: message.type };
       case 'openPullRequest':
         await vscode.commands.executeCommand(OVERVIEW_OPEN_PULL_REQUEST, { id: message.id });
+        return { ok: true, command: message.type };
+      // Takes no content: the rule text and the confirmation come from the command's own windows.
+      case 'editTeamRules':
+        void vscode.commands.executeCommand(TEAM_RULES_COMMANDS.edit);
         return { ok: true, command: message.type };
       case 'openReports':
         await vscode.commands.executeCommand(message.kind === 'issue' ? 'multiagentSystem.issuesReportView.focus' : 'multiagentSystem.prsReportView.focus');

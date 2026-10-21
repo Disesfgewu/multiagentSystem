@@ -176,9 +176,9 @@ function toggled(list, id) {
 
 // ---- the only messages the page may send ----
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'editTeamRules']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind']
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], editTeamRules: []
 });
 
 /**
