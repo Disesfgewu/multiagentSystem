@@ -14,19 +14,24 @@ import {
   cleanName,
   describeState
 } from '../../src/sessions/manager';
+import { CLAUDE_ATTRIBUTION_SETTINGS, attributionArguments, writeAttributionSettings } from '../../src/providers/attribution';
+
+// What every Claude Code launch carries so that the CLI adds no author line of its own (issue #293).
+const ATTRIBUTION_FILE = '/synthetic/attribution.json';
+const ATTRIBUTION = `--settings ${ATTRIBUTION_FILE}`;
 
 test('a requested model is launched, kept on reopen and stored as a request rather than an observation', async () => {
   const r = rig();
   await r.manager.initialize();
   const session = await r.manager.start({ provider: 'claude', name: 'Model choice', cwd: '/synthetic/project', requestedModel: 'sonnet' });
-  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude --model sonnet', newline: true }]);
+  assert.deepEqual(r.terminals[0].sent, [{ text: `claude ${ATTRIBUTION} --model sonnet`, newline: true }]);
   assert.equal(session.requestedModel, 'sonnet');
   assert.equal(session.state, 'launch-requested');
   assert.equal(session.observedAt, null, 'a model request is not evidence that the CLI used it');
   r.manager.stop(session.id);
   const reopened = await r.manager.reopen(session.id);
   assert.equal(reopened.requestedModel, 'sonnet');
-  assert.deepEqual(r.terminals[1].sent, [{ text: 'claude --model sonnet', newline: true }]);
+  assert.deepEqual(r.terminals[1].sent, [{ text: `claude ${ATTRIBUTION} --model sonnet`, newline: true }]);
   const restored = rig({}, r.store);
   await restored.manager.initialize();
   assert.equal(restored.manager.get(reopened.id)?.requestedModel, 'sonnet');
@@ -38,7 +43,7 @@ test('an unrecognized shell refuses start and reopen: no terminal, no text, no r
   const r = rig({ detectShellType: () => shell });
   await r.manager.initialize();
   const first = await start(r, {});
-  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude', newline: true }]);
+  assert.deepEqual(r.terminals[0].sent, [{ text: `claude ${ATTRIBUTION}`, newline: true }]);
   r.manager.stop(first.id);
   const terminalsBefore = r.terminals.length;
   const sessionsBefore = r.manager.list().length;
@@ -82,8 +87,8 @@ test('an enforced launch types the wrapped command, built from the final argumen
     provider: 'claude', name: 'Isolated', cwd: '/synthetic/project', requestedModel: 'sonnet',
     wrap: (executable, args) => { wrapped.push({ executable, args }); return { executable: '/usr/bin/sandbox-exec', args: ['-f', '/synthetic/profile.sb', executable, ...args] }; }
   });
-  assert.deepEqual(wrapped, [{ executable: 'claude', args: ['--model', 'sonnet'] }]);
-  assert.deepEqual(r.terminals[0].sent, [{ text: '/usr/bin/sandbox-exec -f /synthetic/profile.sb claude --model sonnet', newline: true }]);
+  assert.deepEqual(wrapped, [{ executable: 'claude', args: ['--settings', ATTRIBUTION_FILE, '--model', 'sonnet'] }]);
+  assert.deepEqual(r.terminals[0].sent, [{ text: `/usr/bin/sandbox-exec -f /synthetic/profile.sb claude ${ATTRIBUTION} --model sonnet`, newline: true }]);
 });
 
 test('a reopened session types the wrapped command too: the wrapper reaches reopen as well as start', async () => {
@@ -93,7 +98,7 @@ test('a reopened session types the wrapped command too: the wrapper reaches reop
   const seen: string[] = [];
   await r.manager.reopen(first.id, { wrap: (executable, args) => { seen.push(executable); return { executable: '/usr/bin/sandbox-exec', args: ['-f', '/synthetic/profile.sb', executable, ...args] }; } });
   assert.deepEqual(seen, ['claude']);
-  assert.deepEqual(r.terminals[r.terminals.length - 1].sent, [{ text: '/usr/bin/sandbox-exec -f /synthetic/profile.sb claude', newline: true }]);
+  assert.deepEqual(r.terminals[r.terminals.length - 1].sent, [{ text: `/usr/bin/sandbox-exec -f /synthetic/profile.sb claude ${ATTRIBUTION}`, newline: true }]);
 });
 
 test('a wrap that throws starts no terminal text and leaves no session recorded', async () => {
@@ -170,6 +175,11 @@ function rig(overrides: Partial<ManagerDeps<FakeTerminal>> = {}, store = new Mem
     ...overrides
   };
   const manager = new SessionManager<FakeTerminal>(deps);
+  // Every launch of Claude Code carries the settings file (the caller prepares it); a test that wants none says `attributionFile: undefined`.
+  const start = manager.start.bind(manager);
+  manager.start = (input) => start({ attributionFile: ATTRIBUTION_FILE, ...input });
+  const reopen = manager.reopen.bind(manager);
+  manager.reopen = (id, options) => reopen(id, { attributionFile: ATTRIBUTION_FILE, ...options });
   return {
     manager,
     terminals,
@@ -195,7 +205,7 @@ test('start creates a native terminal in the project directory and records only 
   assert.equal(r.terminals.length, 1);
   assert.equal(r.terminals[0].name, 'Multiagent: Worker 1');
   assert.equal(r.terminals[0].cwd, '/synthetic/project');
-  assert.deepEqual(r.terminals[0].sent, [{ text: 'claude', newline: true }]);
+  assert.deepEqual(r.terminals[0].sent, [{ text: `claude ${ATTRIBUTION}`, newline: true }]);
   assert.equal(session.state, 'launch-requested');
   assert.equal(session.stateLabel, 'CLI launch requested, not confirmed');
   assert.equal(session.terminalOpen, true);
@@ -328,7 +338,7 @@ test('reopen creates a NEW session with the same fixed account and leaves the ol
   assert.equal(r.manager.get(first.id)?.state, 'terminal-closed', 'the old session is not revived');
   assert.equal(r.terminals.length, 2);
   assert.notEqual(r.terminals[1], r.terminals[0]);
-  assert.deepEqual(r.terminals[1].sent, [{ text: 'claude', newline: true }]);
+  assert.deepEqual(r.terminals[1].sent, [{ text: `claude ${ATTRIBUTION}`, newline: true }]);
   assert.equal(r.manager.reopen.length <= 2, true);
 });
 
@@ -809,4 +819,45 @@ test('a failed start reports its own error, not the cleanup failure', { skip: ca
     { message: 'terminal-creation-failed' }
   );
   assert.deepEqual(r.manager.list(), [], 'nothing is left behind');
+});
+
+test('Claude Code is started with its own attribution switched off, in start and reopen; no other provider is claimed to have a switch', async () => {
+  assert.deepEqual(JSON.parse(CLAUDE_ATTRIBUTION_SETTINGS), { attribution: { commit: '', pr: '', sessionUrl: false } });
+  assert.deepEqual(attributionArguments('claude', ATTRIBUTION_FILE), ['--settings', ATTRIBUTION_FILE]);
+  for (const provider of ['codex', 'agy', 'opencode', 'custom-x', '']) assert.deepEqual(attributionArguments(provider), [], provider);
+  const r = rig();
+  await r.manager.start({ provider: 'claude', name: 'C', cwd: '/synthetic/project' });
+  await r.manager.start({ provider: 'codex', name: 'X', cwd: '/synthetic/project' });
+  assert.deepEqual(r.terminals.map((terminal) => terminal.sent[0]?.text), [`claude ${ATTRIBUTION}`, 'codex']);
+});
+
+test('Claude Code is not started without its attribution settings: no terminal, no text, no session', async () => {
+  for (const attributionFile of [undefined, '', 'relative.json']) {
+    const r = rig();
+    await assert.rejects(r.manager.start({ provider: 'claude', name: 'C', cwd: '/synthetic/project', attributionFile }), { code: 'attribution-settings-unavailable' });
+    assert.equal(r.terminals.length, 0, 'no terminal was created');
+    assert.deepEqual(r.manager.list(), []);
+  }
+  assert.throws(() => attributionArguments('claude'), /attribution-settings-unavailable/);
+  const r = rig();
+  const first = await r.manager.start({ provider: 'claude', name: 'First', cwd: '/synthetic/project', launch: false });
+  r.manager.stop(first.id);
+  await assert.rejects(r.manager.reopen(first.id, { attributionFile: undefined }), { code: 'attribution-settings-unavailable' });
+  // A shell opened without launching a CLI types nothing, so it needs no switch.
+  await r.manager.start({ provider: 'claude', name: 'Shell only', cwd: '/synthetic/project', launch: false, attributionFile: undefined });
+});
+
+test('the settings file is private, holds only the attribution switch and is rewritten on every launch', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-attr-'));
+  try {
+    const target = path.join(dir, 'attribution');
+    const file = writeAttributionSettings(target);
+    assert.equal(file, path.join(target, 'claude-attribution-settings.json'));
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { attribution: { commit: '', pr: '', sessionUrl: false } });
+    if (process.platform !== 'win32') { assert.equal(fs.statSync(file).mode & 0o077, 0); assert.equal(fs.statSync(target).mode & 0o077, 0); }
+    fs.writeFileSync(file, '{"attribution":{"commit":"x"}}');
+    assert.equal(writeAttributionSettings(target), file);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).attribution.commit, '', 'an edited copy does not survive a launch');
+    for (const bad of ['relative', '', undefined as unknown as string]) assert.throws(() => writeAttributionSettings(bad), /attribution-settings-unavailable/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

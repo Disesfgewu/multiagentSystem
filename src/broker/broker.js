@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { evaluatePublishRequest } = require('../publish-policy');
 const { scanPublication } = require('../publish/scan');
 const { mergePullRequest } = require('../delivery/merge');
+const { findAttribution } = require('../publish/attribution');
 
 // The write broker core. Every GitHub write goes through one call that, in this order:
 // checks the request shape, takes the caller's identity from a trusted source (never from the
@@ -322,6 +323,37 @@ class Broker {
     return null;
   }
 
+  /**
+   * No attribution line (`Co-authored-by:`, "Generated with Claude Code") leaves through the broker (issue #293). The text is
+   * refused, never rewritten, and the answer says which field and which line numbers, not the text. Only message-like text is
+   * read: a diff may legitimately contain these words (for example the tests of this very rule).
+   */
+  #attribution(units) {
+    const MESSAGE_KINDS = new Set(['issue-title', 'issue-body', 'pr-title', 'pr-body', 'comment', 'review', 'commit-message']);
+    const problems = findAttribution(units.filter((unit) => MESSAGE_KINDS.has(unit.kind)).map((unit) => ({ field: unit.kind, text: unit.text })));
+    return problems.length > 0 ? deny('co-author-forbidden', { problems }) : null;
+  }
+
+  /**
+   * Every commit message in the range that is about to be published, not only the head's. A range that cannot be read, or is
+   * not complete, refuses: unknown is never read as "no co-author".
+   */
+  async #rangeMessages(headSha, baseBranch) {
+    let range;
+    try {
+      range = typeof this.d.content.getRangeMessages === 'function' ? await this.d.content.getRangeMessages({ headSha, ...(baseBranch ? { baseBranch } : {}) }) : null;
+    } catch {
+      return deny('content-unverified');
+    }
+    if (!isPlain(range) || range.complete !== true || range.headSha !== headSha || !Array.isArray(range.messages) || range.messages.length === 0 || range.messages.length > 1000) return deny('content-unverified');
+    const bad = [];
+    for (const entry of range.messages) {
+      if (!isPlain(entry) || typeof entry.sha !== 'string' || !SHA.test(entry.sha) || typeof entry.message !== 'string') return deny('content-unverified');
+      if (findAttribution([{ field: 'commit-message', text: entry.message }]).length > 0) bad.push(entry.sha.slice(0, 7));
+    }
+    return bad.length > 0 ? deny('co-author-forbidden', { problems: [{ field: 'commit-message', commits: bad }] }) : null;
+  }
+
   async #trustedContent(headSha) {
     let content;
     try {
@@ -431,13 +463,19 @@ class Broker {
       if (!content) return deny('content-unverified');
       if (content.tooLarge) return deny('content-blocked', { scanStatus: 'error' });
       units = [{ kind: 'pr-title', text: payload.title }, { kind: 'pr-body', text: payload.body }, { kind: 'branch-name', text: payload.headBranch }, { kind: 'branch-name', text: payload.baseBranch }, { kind: 'commit-message', text: content.message }, { kind: 'diff', text: content.diff }];
+      const ranged = await this.#rangeMessages(payload.headSha, payload.baseBranch);
+      if (ranged) return ranged;
       send = () => this.d.transport.createPullRequest({ repository, title: payload.title, body: payload.body, headBranch: payload.headBranch, headSha: payload.headSha, baseBranch: payload.baseBranch });
     } else if (operation === 'commit' || operation === 'push') {
       const content = await this.#trustedContent(payload.headSha);
       if (!content) return deny('content-unverified');
       if (content.tooLarge) return deny('content-blocked', { scanStatus: 'error' });
       units = [{ kind: 'commit-message', text: content.message }, { kind: 'diff', text: content.diff }];
-      if (operation === 'push') units.push({ kind: 'branch-name', text: payload.branch });
+      if (operation === 'push') {
+        units.push({ kind: 'branch-name', text: payload.branch });
+        const ranged = await this.#rangeMessages(payload.headSha, undefined);
+        if (ranged) return ranged;
+      }
       send = () => this.d.transport[operation]({ repository, ...(operation === 'push' ? { branch: payload.branch } : {}), headSha: payload.headSha });
     } else if (operation === 'reviewPr') {
       const state = await this.#readPullRequest(payload.number);
@@ -452,6 +490,8 @@ class Broker {
     }
 
     if (units.length > 0) {
+      const attribution = this.#attribution(units);
+      if (attribution) return attribution;
       const scanned = await this.#scan(units);
       if (scanned) return scanned;
     }
