@@ -119,4 +119,16 @@ function describeEvidence(evidence) {
   return `Git (local, read just now): ${work}; ${remote}${evidence.head ? `; at ${evidence.head}` : ''}`;
 }
 
-module.exports = { inspectWorktree, describeEvidence, parseStatus, parseDivergence, TIMEOUT_MS };
+/**
+ * The commit `origin/main` points at in this folder's repository, as LAST FETCHED (this does not contact the remote). A short id only.
+ * @returns {Promise<{ state: 'known', head: string } | { state: 'unknown', reason: 'no-folder'|'not-readable' }>}
+ */
+async function readMainHead(folder, { git = runGit } = {}) {
+  if (typeof folder !== 'string' || !path.isAbsolute(folder)) return unknown('no-folder');
+  try {
+    const head = String(await git(folder, ['rev-parse', '--verify', '--quiet', '--short=12', 'refs/remotes/origin/main^{commit}'])).trim();
+    return SHA.test(head) ? { state: 'known', head } : unknown('not-readable');
+  } catch { return unknown('not-readable'); }
+}
+
+module.exports = { inspectWorktree, describeEvidence, readMainHead, parseStatus, parseDivergence, TIMEOUT_MS };

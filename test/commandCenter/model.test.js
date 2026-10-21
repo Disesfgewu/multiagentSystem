@@ -119,22 +119,22 @@ test('layout messages change only the layout: mode, order, collapse and pin togg
 test('only the known commands with exactly their fields are accepted, and an id must be a card on screen', () => {
   const known = new Set(['a', 'b']);
   const ok = (message) => parseMessage(message, known);
-  for (const message of [{ type: 'ready' }, { type: 'refresh' }, { type: 'setLayout', mode: 'list' }, { type: 'reorder', order: ['b', 'a'] }, { type: 'toggleCollapse', id: 'a' }, { type: 'togglePin', id: 'b' }, { type: 'focus', id: 'a' }, { type: 'openReport', id: 'a' }, { type: 'openPullRequest', id: 'a' }, { type: 'openReports', kind: 'issue' }, { type: 'openReports', kind: 'pullRequest' }]) {
+  for (const message of [{ type: 'ready' }, { type: 'refresh' }, { type: 'setLayout', mode: 'list' }, { type: 'reorder', order: ['b', 'a'] }, { type: 'toggleCollapse', id: 'a' }, { type: 'togglePin', id: 'b' }, { type: 'focus', id: 'a' }, { type: 'openReport', id: 'a' }, { type: 'openPullRequest', id: 'a' }, { type: 'openReports', kind: 'issue' }, { type: 'openReports', kind: 'pullRequest' }, { type: 'exportReport' }]) {
     assert.deepEqual(ok(message), { ok: true, message }, JSON.stringify(message));
   }
   const refused = [
     [{ type: 'delete' }, 'unknown-command'], [{ type: 'stop', id: 'a' }, 'unknown-command'], [{ type: 'executeCommand', command: 'x' }, 'unknown-command'], [{}, 'unknown-command'], [null, 'unknown-command'], ['focus', 'unknown-command'], [[], 'unknown-command'], [{ type: 5 }, 'unknown-command'], [{ type: '__proto__' }, 'unknown-command'],
     [{ type: 'focus', id: 'a', extra: 1 }, 'unexpected-field'], [{ type: 'ready', id: 'a' }, 'unexpected-field'], [{ type: 'focus', id: 'a', command: 'multiagentSystem.sessions.stop' }, 'unexpected-field'],
     [{ type: 'focus', id: 'zzz' }, 'unknown-id'], [{ type: 'focus' }, 'unknown-id'], [{ type: 'focus', id: 5 }, 'unknown-id'], [{ type: 'focus', id: '../a' }, 'unknown-id'], [{ type: 'togglePin', id: 'constructor' }, 'unknown-id'],
-    [{ type: 'setLayout', mode: 'tiles' }, 'invalid-field'], [{ type: 'setLayout' }, 'invalid-field'], [{ type: 'reorder', order: 'a' }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'a'] }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'x'] }, 'invalid-field'], [{ type: 'reorder', order: Array(201).fill('a') }, 'invalid-field'], [{ type: 'openReports', kind: 'repo' }, 'invalid-field']
+    [{ type: 'setLayout', mode: 'tiles' }, 'invalid-field'], [{ type: 'setLayout' }, 'invalid-field'], [{ type: 'reorder', order: 'a' }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'a'] }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'x'] }, 'invalid-field'], [{ type: 'reorder', order: Array(201).fill('a') }, 'invalid-field'], [{ type: 'openReports', kind: 'repo' }, 'invalid-field'], [{ type: 'exportReport', path: '/tmp/x.md' }, 'unexpected-field'], [{ type: 'exportReport', text: 'x' }, 'unexpected-field']
   ];
   for (const [message, reason] of refused) assert.deepEqual(ok(message), { ok: false, reason }, JSON.stringify(message));
   assert.deepEqual(parseMessage({ type: 'focus', id: 'a' }, undefined), { ok: false, reason: 'unknown-id' }, 'with no cards on screen no id is known');
   assert.deepEqual(parseMessage({ type: 'focus', id: 'a' }, ['a']), { ok: true, message: { type: 'focus', id: 'a' } }, 'a list works as well as a set');
 });
 
-test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'setLayout', 'toggleCollapse', 'togglePin']);
+test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; exportReport only opens the command and carries no path or text', () => {
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'exportReport', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'setLayout', 'toggleCollapse', 'togglePin']);
 });
 
 // ---- accounts and quota (issue #304) ----

@@ -280,6 +280,30 @@ export async function pullRequestSummary(number: number): Promise<PullRequestSum
   return value;
 }
 
+const EXPORT_PULL_REQUEST_LIMIT = 30;
+/**
+ * What the Markdown project report needs from GitHub (issue #307), read-only: the open Issues and pull requests, and for each open pull
+ * request (up to a limit) its report summary and which decision list it is in. A list that could not be read completely is `null`, a
+ * pull request whose details could not be read has no entry: the report says unknown for both, never a guess.
+ */
+export async function readProjectSnapshot(): Promise<{ repository: string | null; issues: Result | null; pullRequests: Result | null; details: Record<string, { summary: PullRequestSummary | null; category: string | null }> }> {
+  const empty = { repository: null as string | null, issues: null as Result | null, pullRequests: null as Result | null, details: {} as Record<string, { summary: PullRequestSummary | null; category: string | null }> };
+  try {
+    const repository = await deps.repository();
+    const reader = repository ? deps.readerFor(repository) : null;
+    if (!repository || !reader) return empty;
+    const [issues, pullRequests] = await Promise.all([reader.listIssues({ state: 'open' }), reader.listPullRequests({ state: 'open' })]);
+    const details: Record<string, { summary: PullRequestSummary | null; category: string | null }> = {};
+    const open = (pullRequests.kind === 'ok' && Array.isArray(pullRequests.data) ? pullRequests.data : []).filter((entry: any) => entry && Number.isSafeInteger(entry.number)).slice(0, EXPORT_PULL_REQUEST_LIMIT);
+    await Promise.all(open.map(async (entry: any) => {
+      let category: string | null = null;
+      try { category = classifyPullRequest(entry, await reader.getPullRequestSnapshot(entry.number)); } catch { category = null; }
+      details[String(entry.number)] = { summary: await pullRequestSummary(entry.number), category };
+    }));
+    return { repository, issues, pullRequests, details };
+  } catch { return empty; }
+}
+
 export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }

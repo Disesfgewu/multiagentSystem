@@ -6,6 +6,7 @@ import { registerStorageCommands } from './storage/storageCommands';
 import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { registerRoleCommands } from './roles/roleCommands';
 import { registerBroadcastCommands } from './broadcast/commands';
+import { registerExportCommands } from './export/commands';
 import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerCommandCenter } from './commandCenter/commandCenter';
 import { registerOverview } from './overview/overviewView';
@@ -95,6 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerReports(context);
   registerRoleCommands(context, sessions);
   registerBroadcastCommands(context, sessions);
+  registerExportCommands(context);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
 }
