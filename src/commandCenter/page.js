@@ -75,6 +75,7 @@ const SCRIPT = String.raw`
       body.appendChild(el('div', null, card.provider + ' · ' + card.account));
       body.appendChild(el('div', 'muted', 'Model: ' + card.model + ' (' + card.modelNote + ')'));
       body.appendChild(el('div', null, 'Working on: ' + card.task.text));
+      if (card.assigned) body.appendChild(el('div', 'muted', 'Handed: ' + card.assigned));
       body.appendChild(el('div', null, 'Worktree: ' + card.worktree));
       var report = el('div', 'report');
       card.report.lines.forEach(function (text, index) { report.appendChild(el('div', index === 0 ? 'report-head' : 'report-line', text)); });
@@ -166,6 +167,8 @@ const SCRIPT = String.raw`
     var tools = el('div', 'row');
     tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
     tools.appendChild(button('Team rules…', function () { post({ type: 'editTeamRules' }); }));
+    tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));
+    tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
     tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));
     bar.appendChild(tools);
     root.appendChild(bar);

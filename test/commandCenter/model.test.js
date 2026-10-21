@@ -119,7 +119,7 @@ test('layout messages change only the layout: mode, order, collapse and pin togg
 test('only the known commands with exactly their fields are accepted, and an id must be a card on screen', () => {
   const known = new Set(['a', 'b']);
   const ok = (message) => parseMessage(message, known);
-  for (const message of [{ type: 'ready' }, { type: 'refresh' }, { type: 'setLayout', mode: 'list' }, { type: 'reorder', order: ['b', 'a'] }, { type: 'toggleCollapse', id: 'a' }, { type: 'togglePin', id: 'b' }, { type: 'focus', id: 'a' }, { type: 'openReport', id: 'a' }, { type: 'openPullRequest', id: 'a' }, { type: 'openReports', kind: 'issue' }, { type: 'openReports', kind: 'pullRequest' }, { type: 'editTeamRules' }]) {
+  for (const message of [{ type: 'ready' }, { type: 'refresh' }, { type: 'setLayout', mode: 'list' }, { type: 'reorder', order: ['b', 'a'] }, { type: 'toggleCollapse', id: 'a' }, { type: 'togglePin', id: 'b' }, { type: 'focus', id: 'a' }, { type: 'openReport', id: 'a' }, { type: 'openPullRequest', id: 'a' }, { type: 'openReports', kind: 'issue' }, { type: 'openReports', kind: 'pullRequest' }, { type: 'editTeamRules' }, { type: 'assignIssue' }, { type: 'sendTask' }]) {
     assert.deepEqual(ok(message), { ok: true, message }, JSON.stringify(message));
   }
   const refused = [
@@ -127,15 +127,16 @@ test('only the known commands with exactly their fields are accepted, and an id 
     [{ type: 'focus', id: 'a', extra: 1 }, 'unexpected-field'], [{ type: 'ready', id: 'a' }, 'unexpected-field'], [{ type: 'focus', id: 'a', command: 'multiagentSystem.sessions.stop' }, 'unexpected-field'],
     [{ type: 'focus', id: 'zzz' }, 'unknown-id'], [{ type: 'focus' }, 'unknown-id'], [{ type: 'focus', id: 5 }, 'unknown-id'], [{ type: 'focus', id: '../a' }, 'unknown-id'], [{ type: 'togglePin', id: 'constructor' }, 'unknown-id'],
     [{ type: 'setLayout', mode: 'tiles' }, 'invalid-field'], [{ type: 'setLayout' }, 'invalid-field'], [{ type: 'reorder', order: 'a' }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'a'] }, 'invalid-field'], [{ type: 'reorder', order: ['a', 'x'] }, 'invalid-field'], [{ type: 'reorder', order: Array(201).fill('a') }, 'invalid-field'], [{ type: 'openReports', kind: 'repo' }, 'invalid-field'],
-    [{ type: 'editTeamRules', text: 'be nice' }, 'unexpected-field'], [{ type: 'editTeamRules', rules: [] }, 'unexpected-field']
+    [{ type: 'editTeamRules', text: 'be nice' }, 'unexpected-field'], [{ type: 'editTeamRules', rules: [] }, 'unexpected-field'],
+    [{ type: 'assignIssue', issue: 5 }, 'unexpected-field'], [{ type: 'sendTask', text: 'do it' }, 'unexpected-field'], [{ type: 'sendTask', id: 'a' }, 'unexpected-field']
   ];
   for (const [message, reason] of refused) assert.deepEqual(ok(message), { ok: false, reason }, JSON.stringify(message));
   assert.deepEqual(parseMessage({ type: 'focus', id: 'a' }, undefined), { ok: false, reason: 'unknown-id' }, 'with no cards on screen no id is known');
   assert.deepEqual(parseMessage({ type: 'focus', id: 'a' }, ['a']), { ok: true, message: { type: 'focus', id: 'a' } }, 'a list works as well as a set');
 });
 
-test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; editTeamRules only opens the command\'s own windows and carries no rule text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'editTeamRules', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'setLayout', 'toggleCollapse', 'togglePin']);
+test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; editTeamRules, assignIssue and sendTask only open the command\'s own windows and carry no content', () => {
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'toggleCollapse', 'togglePin']);
 });
 
 // ---- accounts and quota (issue #304) ----
@@ -283,4 +284,13 @@ test('the state text of every state is what the person reads: working, waiting f
   for (const [state, text] of [['working', 'working'], ['waiting', 'waiting for input'], ['ended', 'ended']]) assert.equal(statusOf(session({ deliveryState: hook(state) })).text, text, state);
   assert.equal(statusOf(session({ deliveryState: undefined })).text, 'state unknown');
   assert.deepEqual(buildCards({ sessions: ['working', 'waiting', 'ended'].map((state) => session({ id: `s-${state}`, deliveryState: hook(state) })) }).agents.map((card) => card.status.text).sort(), ['ended', 'waiting for input', 'working']);
+});
+
+test('a card says which Issue was typed into its terminal, from the dispatch log only', () => {
+  const session = { id: 'a', name: 'A', provider: 'claude', roleGroupId: 'g', terminalOpen: true };
+  const at = '2026-10-21T10:00:00.000Z';
+  const card = (assignments) => buildCards({ sessions: [session], assignments }).agents[0];
+  assert.match(card({ a: { issueNumber: 305, at } }).assigned, /^Issue #305 was typed into this terminal at 2026-10-21T10:00:00.000Z \(not proof the agent read it\)$/);
+  assert.equal(card({}).assigned, null);
+  for (const bad of [undefined, null, 5, { a: null }, { a: { issueNumber: 'x', at } }, { b: { issueNumber: 1, at } }, JSON.parse('{"__proto__": {"issueNumber": 1}}')]) assert.equal(card(bad).assigned, null, JSON.stringify(bad));
 });

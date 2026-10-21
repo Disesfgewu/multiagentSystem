@@ -9,6 +9,7 @@ import { observationsFor, ACCOUNT_COMMANDS } from '../accounts/accountCommands';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
+import { DISPATCH_COMMANDS, readAssignments } from '../dispatch/commands';
 
 const model = require('./model') as {
   buildCards(input: Record<string, unknown>): { pm: any[]; agents: any[]; accounts: any[]; counts: { agents: number; pm: number } };
@@ -99,7 +100,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const reports: Record<string, unknown> = {};
     await Promise.all(numbers.map(async (number) => { reports[String(number)] = await pullRequestSummary(number); }));
     if (mine !== generation) return;
-    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports });
+    const assignments = Object.fromEntries(await readAssignments());
+    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments });
     const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
     if (mine !== generation) return;
@@ -141,6 +143,13 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       // Takes no content: the rule text and the confirmation come from the command's own windows.
       case 'editTeamRules':
         void vscode.commands.executeCommand(TEAM_RULES_COMMANDS.edit);
+        return { ok: true, command: message.type };
+      // The two commands take no argument and ask for everything in their own windows; the page only presses the button.
+      case 'assignIssue':
+        void vscode.commands.executeCommand(DISPATCH_COMMANDS.assignIssue);
+        return { ok: true, command: message.type };
+      case 'sendTask':
+        void vscode.commands.executeCommand(DISPATCH_COMMANDS.sendTask);
         return { ok: true, command: message.type };
       case 'accountAction': {
         // Each action is an existing account command with the account's id and nothing else, so each keeps its own confirmation.

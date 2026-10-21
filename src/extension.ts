@@ -7,6 +7,7 @@ import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accou
 import { registerRoleCommands } from './roles/roleCommands';
 import { registerBroadcastCommands } from './broadcast/commands';
 import { registerTeamRulesCommands } from './teamRules/commands';
+import { registerDispatchCommands } from './dispatch/commands';
 import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerCommandCenter } from './commandCenter/commandCenter';
 import { registerOverview } from './overview/overviewView';
@@ -97,6 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerRoleCommands(context, sessions);
   registerBroadcastCommands(context, sessions);
   registerTeamRulesCommands(context);
+  registerDispatchCommands(context, sessions);
   registerWorktreeCommands(context);
   registerGitHubCommands(context);
 }
