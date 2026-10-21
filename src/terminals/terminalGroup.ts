@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GROUP_NAMES, terminalTitle } from '../agents';
+import { findGroupTerminals } from './groupLookup';
 
 // The root is split left-to-right; each root child is split top-to-bottom. ViewColumn order
 // follows the grid order (top-left, bottom-left, top-right, bottom-right).
@@ -18,10 +19,13 @@ const FOUR_TERMINAL_COLUMNS = [
   vscode.ViewColumn.Four
 ] as const;
 
+// What this window created for each title: found by reference, not by `terminal.name` (see `groupLookup.ts`).
+const owned = new Map<string, vscode.Terminal>();
+
 /** Opens the four native shells in an editor-area 2×2 grid. */
 export async function openTerminalGroup(cwd: vscode.Uri): Promise<void> {
   const titles = GROUP_NAMES.map(terminalTitle);
-  const existing = titles.map((title) => vscode.window.terminals.find((terminal) => terminal.name === title));
+  const existing = findGroupTerminals(titles, vscode.window.terminals, owned);
   const found = existing.filter((terminal): terminal is vscode.Terminal => terminal !== undefined);
 
   if (found.length > 0) {
@@ -39,6 +43,7 @@ export async function openTerminalGroup(cwd: vscode.Uri): Promise<void> {
       cwd,
       location: { viewColumn: FOUR_TERMINAL_COLUMNS[index] }
     });
+    owned.set(titles[index], terminal);
     terminal.show();
   }
   // The 2×2 grid is only a starting arrangement, not a lock: VS Code's own tab drag-and-drop already
