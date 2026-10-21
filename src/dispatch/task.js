@@ -140,15 +140,15 @@ function planTask({ prompt, target, sessions, roleOf }) {
 const RECORD_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * A dispatch record: when, whether for an Issue (its number) or a typed sentence (never stored), and per session what happened.
- * The text of a typed task is not kept.
+ * A dispatch record: when, whether for an Issue (its number), a typed sentence or a code discussion (neither text is ever stored), and
+ * per session what happened.
  * @returns {{ ok: true, record: object } | { ok: false, problems: string[] }}
  */
 function validateDispatch(raw) {
   if (!isPlain(raw)) return { ok: false, problems: ['invalid-dispatch'] };
   const problems = [];
   if (typeof raw.id !== 'string' || !RECORD_ID.test(raw.id)) problems.push('invalid-id');
-  if (raw.kind !== 'issue' && raw.kind !== 'free') problems.push('invalid-kind');
+  if (raw.kind !== 'issue' && raw.kind !== 'free' && raw.kind !== 'discussion') problems.push('invalid-kind');
   if (raw.kind === 'issue' ? !(Number.isSafeInteger(raw.issueNumber) && raw.issueNumber > 0) : raw.issueNumber !== null) problems.push('invalid-issue-number');
   if (typeof raw.at !== 'string' || !Number.isFinite(Date.parse(raw.at))) problems.push('invalid-time');
   const results = validateDeliveryResults(raw.results);

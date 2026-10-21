@@ -92,6 +92,8 @@ test('a dispatch record keeps ids and outcomes only, and refuses anything malfor
   assert.equal(ok.ok, true);
   assert.deepEqual(Object.keys(ok.record).sort(), ['at', 'id', 'issueNumber', 'kind', 'results']);
   assert.equal(validateDispatch(record({ kind: 'free', issueNumber: null })).ok, true);
+  assert.equal(validateDispatch(record({ kind: 'discussion', issueNumber: null })).ok, true);
+  assert.equal(validateDispatch(record({ kind: 'discussion', issueNumber: 5 })).ok, false, 'a discussion names no Issue');
   for (const bad of [null, [], record({ id: 'A B' }), record({ kind: 'x' }), record({ kind: 'issue', issueNumber: null }), record({ kind: 'free', issueNumber: 5 }), record({ at: 'never' }),
     record({ results: 'x' }), record({ results: [{ sessionId: 's1', provider: 'claude', outcome: 'maybe', reason: 'waiting-for-input' }] }), record({ results: [{ sessionId: 's1', provider: 'claude', outcome: 'sent', reason: 'because' }] })]) assert.equal(validateDispatch(bad).ok, false, JSON.stringify(bad));
 });

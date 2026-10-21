@@ -14,14 +14,16 @@ test('both dispatch commands take no argument, so nothing a caller passes can ch
 });
 
 test('the confirmation is a modal with explicit buttons, and nothing is typed without one of them', () => {
-  assert.match(source, /showWarningMessage\(\s*'Type this task into the running agents\?',\s*\{ modal: true/);
+  assert.match(source, /const title = input\.title \?\? 'Type this task into the running agents\?';/);
+  assert.match(source, /showWarningMessage\(\s*title,\s*\{ modal: true/);
   assert.match(source, /if \(confirmed !== sendWaiting && confirmed !== sendUnknown\) return;/);
   assert.equal([...source.matchAll(/sessions\.sendPrompt\(/g)].length, 1, 'there is one place a task is typed');
   assert.ok(source.indexOf("confirmed !== sendWaiting") < source.indexOf('sessions.sendPrompt('), 'the confirmation comes first');
 });
 
 test('the Issue is read again after the confirmation and a changed text types nothing', () => {
-  assert.match(source, /rebuilt\.prompt !== task\.prompt\) changed = true/);
+  assert.match(source, /rebuilt && rebuilt\.ok && rebuilt\.prompt === task\.prompt \? rebuilt\.prompt : null/);
+  assert.match(source, /if \(again === null\) changed = true; else prompt = again;/);
   assert.match(source, /reason: 'task-changed'/);
 });
 
