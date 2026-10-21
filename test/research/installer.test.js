@@ -24,6 +24,7 @@ const {
   listResearchTools,
   resolveLaunchExecutable,
   primeHashCacheForTests,
+  programHashForTests,
   prepareResearchTool
 } = require('../../src/research/installer');
 
@@ -536,5 +537,38 @@ test('the quick status does not trust a remembered hash once the file\'s change 
     fs.chmodSync(file, before.mode & 0o777 ^ 0o001);
     fs.chmodSync(file, before.mode & 0o777);
     assert.equal(status(), 'ready', 'the file is read again once its change time moved');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a file that changed moments before it was read is never remembered: an equal-length edit in the same timestamp tick is seen', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-racy-'));
+  try {
+    const file = path.join(root, 'program');
+    const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    fs.writeFileSync(file, 'one-aaaa');
+    const stat = () => fs.lstatSync(file);
+    // The time stamps a coarse file system would show for both versions: identical, and just now.
+    const same = { size: 8, mtimeMs: Date.now(), ctimeMs: Date.now(), ino: stat().ino, dev: stat().dev };
+    assert.equal(programHashForTests(file, same, false), sha('one-aaaa'));
+    fs.writeFileSync(file, 'two-bbbb');
+    assert.equal(programHashForTests(file, same, false), sha('two-bbbb'), 'read again, not answered from memory');
+    fs.writeFileSync(file, 'six-cccc');
+    assert.equal(programHashForTests(file, { ...same, mtimeMs: Date.now() + 60_000 }, false), sha('six-cccc'));
+    fs.writeFileSync(file, 'ten-dddd');
+    assert.equal(programHashForTests(file, { ...same, mtimeMs: Date.now() + 60_000 }, false), sha('ten-dddd'), 'a time in the future cannot be trusted either');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a file that has been quiet for a while is still remembered for the status display, and a full check always reads it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-racy-'));
+  try {
+    const file = path.join(root, 'program');
+    const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    fs.writeFileSync(file, 'one-aaaa');
+    const quiet = { size: 8, mtimeMs: Date.now() - 60_000, ctimeMs: Date.now() - 60_000, ino: fs.lstatSync(file).ino, dev: fs.lstatSync(file).dev };
+    assert.equal(programHashForTests(file, quiet, false), sha('one-aaaa'));
+    fs.writeFileSync(file, 'two-bbbb');
+    assert.equal(programHashForTests(file, quiet, false), sha('one-aaaa'), 'the display may use what it remembers');
+    assert.equal(programHashForTests(file, quiet, true), sha('two-bbbb'), 'a start (full check) never does');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

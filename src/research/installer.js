@@ -269,12 +269,18 @@ const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 // is checked again from its bytes whenever `fullCheck` is set, which is how every start asks (see `listResearchTools`).
 const HASH_CACHE = new Map();
 const HASH_CACHE_LIMIT = 64;
+// A file whose last change is this recent when it is read is "racy": a later edit that keeps its size and lands in the same
+// timestamp tick (Windows and some file systems keep timestamps coarsely, FAT to two seconds) would look unchanged. It is
+// never remembered, so the next look reads it again (the same rule git uses for its index).
+const RACY_MS = 3000;
 
 function programHash(file, info, fullCheck) {
   const key = file;
   const seen = HASH_CACHE.get(key);
   if (!fullCheck && seen && seen.size === info.size && seen.mtimeMs === info.mtimeMs && seen.ctimeMs === info.ctimeMs && seen.ino === info.ino && seen.dev === info.dev) return seen.sha;
   const sha = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  // Not remembered when the file changed within RACY_MS of this read, or has a time in the future (a clock that cannot be trusted).
+  if (!(Date.now() - info.mtimeMs >= RACY_MS)) { HASH_CACHE.delete(key); return sha; }
   if (HASH_CACHE.size >= HASH_CACHE_LIMIT) HASH_CACHE.delete(HASH_CACHE.keys().next().value);
   HASH_CACHE.set(key, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, ino: info.ino, dev: info.dev, sha });
   return sha;
@@ -520,5 +526,6 @@ module.exports = {
   listResearchTools,
   resolveLaunchExecutable,
   primeHashCacheForTests,
+  programHashForTests: programHash,
   prepareResearchTool
 };
