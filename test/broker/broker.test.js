@@ -44,7 +44,7 @@ function setup(over = {}) {
       getPullRequestPublication: async () => ({ kind: 'ok', data: { complete: true, number: 7, headSha: HEAD, diff: 'diff --git a/a.js b/a.js\n+const safe = 1;\n' } }),
       ...(over.reader || {})
     },
-    content: { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: 'Add safe change', diff: 'diff --git a/a.js b/a.js\n+const safe = 1;\n' }), ...(over.content || {}) },
+    content: { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: 'Add safe change', diff: 'diff --git a/a.js b/a.js\n+const safe = 1;\n' }), getRangeMessages: async ({ headSha }) => ({ complete: true, headSha, messages: [{ sha: headSha, message: 'Add safe change' }] }), ...(over.content || {}) },
     transport,
     audit: over.audit || { record: (entry) => audits.push(entry) },
     config: { ...CONFIG, ...(over.config || {}) },
@@ -892,5 +892,100 @@ test('the publish policy has no operation for the researcher either', () => {
       const verdict = evaluatePublishRequest({ operation, role: 'researcher', actorId }, { pmActorId: '10' });
       assert.equal(verdict.allowed, false, `${operation} as researcher ${actorId}`);
     }
+  }
+});
+
+// ---- attribution lines are refused (issue #293) ----
+const PM = { actorId: '10', role: 'pm' };
+const TRAILER = 'Co-authored-by: Someone <someone@example.invalid>';
+const text = (label) => `Refs #1\n${label}\nmore`;
+const FIELDS = [
+  ['createIssue', PM, (value) => ({ title: 'A title', body: value }), 'issue-body'],
+  ['createIssue', PM, (value) => ({ title: value, body: 'body' }), 'issue-title'],
+  ['editIssue', PM, (value) => ({ number: 5, body: value }), 'issue-body'],
+  ['createPr', undefined, (value) => ({ title: 't', body: value, headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }), 'pr-body'],
+  ['createPr', undefined, (value) => ({ title: value, body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }), 'pr-title'],
+  ['comment', undefined, (value) => ({ target: 'issue', number: 5, body: value }), 'comment'],
+  ['reviewPr', PM, (value) => ({ number: 7, decision: 'comment', body: value, expectedHeadSha: HEAD }), 'review']
+];
+
+test('a Co-authored-by or Generated-with line in any text field is refused, whatever the case or leading space, and nothing is written', async () => {
+  const variants = [TRAILER, 'co-authored-by: x', 'CO-AUTHORED-BY: x', '   Co-Authored-By: x', '\tco-authored-by : x', 'Co-authored-by:x',
+    '🤖 Generated with [Claude Code](https://claude.com/claude-code)', 'Generated with Claude Code', 'generated  with   claude code', 'Co-auth​ored-by: x'];
+  for (const [operation, actor, build, field] of FIELDS) {
+    for (const variant of variants) {
+      const value = field.endsWith('title') ? variant.split('\n')[0] : text(variant);
+      const { broker, calls, audits } = setup(actor ? { actor } : {});
+      const result = await broker.request({ operation, requestId: id(), ...build(value) });
+      assert.equal(result.ok, false, `${operation} ${field} ${JSON.stringify(variant)}`);
+      assert.equal(result.reason, 'co-author-forbidden');
+      assert.equal(calls.length, 0, 'nothing reached the transport');
+      assert.deepEqual(result.problems.map((problem) => problem.field), [field]);
+      assert.ok(result.problems[0].lines.every((line) => Number.isInteger(line)), 'line numbers, never the text');
+      assert.equal(JSON.stringify([result, audits]).includes('someone@example.invalid'), false, 'the line is not echoed');
+    }
+  }
+});
+
+test('co-authored-by in the middle of a line, or an ordinary body, is not refused', async () => {
+  for (const body of ['Refs #1. We reject any Co-authored-by: line.', 'Refs #90\nplain text', 'Co-authored is a word', 'see the co-authored-by trailer rules']) {
+    const { broker, calls } = setup({ actor: PM });
+    const result = await broker.request({ operation: 'createIssue', requestId: id(), title: 'A title', body });
+    assert.equal(result.ok, true, body);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('the Claude Code footer is refused wherever it stands in a message, as the rule says', async () => {
+  const { broker, calls } = setup({ actor: PM });
+  const result = await broker.request({ operation: 'createIssue', requestId: id(), title: 'A title', body: 'Done. generated with claude code' });
+  assert.equal(result.reason, 'co-author-forbidden');
+  assert.equal(calls.length, 0);
+});
+
+test('a diff that contains these words (a test of this rule, say) is not refused: only messages are read', async () => {
+  const diff = 'diff --git a/t.js b/t.js\n+const line = "Co-authored-by: x";\n+// the footer is "Generated with Claude Code"\n';
+  const { broker, calls } = setup({ content: { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: 'Add test', diff }) } });
+  assert.equal((await broker.request({ operation: 'push', requestId: id(), branch: 'feat/x', headSha: HEAD })).ok, true);
+  assert.equal(calls.length, 1);
+});
+
+test('push and createPr refuse when any commit in the range has a co-author line, naming the short SHAs', async () => {
+  const messages = [{ sha: 'c'.repeat(40), message: 'First' }, { sha: 'd'.repeat(40), message: `Second\n\n${TRAILER}` }, { sha: HEAD, message: 'Third' }];
+  const content = { getRangeMessages: async ({ headSha }) => ({ complete: true, headSha, messages }) };
+  for (const [operation, fields] of [['push', { branch: 'feat/x', headSha: HEAD }], ['createPr', { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }]]) {
+    const { broker, calls } = setup({ content });
+    const result = await broker.request({ operation, requestId: id(), ...fields });
+    assert.equal(result.reason, 'co-author-forbidden', operation);
+    assert.deepEqual(result.problems, [{ field: 'commit-message', commits: ['ddddddd'] }]);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('a commit range that cannot be read, is partial, is for another head or is malformed refuses (fail closed); so does a reader without the method', async () => {
+  const bad = [
+    { getRangeMessages: async () => { throw new Error('offline'); } },
+    { getRangeMessages: async ({ headSha }) => ({ complete: false, headSha, messages: [{ sha: HEAD, message: 'm' }] }) },
+    { getRangeMessages: async () => ({ complete: true, headSha: OTHER, messages: [{ sha: OTHER, message: 'm' }] }) },
+    { getRangeMessages: async ({ headSha }) => ({ complete: true, headSha, messages: [] }) },
+    { getRangeMessages: async ({ headSha }) => ({ complete: true, headSha, messages: [{ sha: 'zz', message: 'm' }] }) },
+    { getRangeMessages: async ({ headSha }) => ({ complete: true, headSha, messages: [{ sha: HEAD }] }) },
+    { getRangeMessages: async () => null },
+    { getRangeMessages: undefined }
+  ];
+  for (const [operation, fields] of [['push', { branch: 'feat/x', headSha: HEAD }], ['createPr', { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }]]) {
+    for (const content of bad) {
+      const { broker, calls } = setup({ content });
+      assert.equal((await broker.request({ operation, requestId: id(), ...fields })).reason, 'content-unverified', `${operation} ${Object.keys(content)}`);
+      assert.equal(calls.length, 0);
+    }
+  }
+});
+
+test('the head commit\'s own message is refused too, for commit, push and createPr', async () => {
+  for (const [operation, fields] of [['commit', { headSha: HEAD }], ['push', { branch: 'feat/x', headSha: HEAD }], ['createPr', { title: 't', body: 'b', headBranch: 'feat/x', headSha: HEAD, baseBranch: 'main' }]]) {
+    const { broker, calls } = setup({ content: { getCommitContent: async (sha) => ({ complete: true, headSha: sha, message: `Add change\n\n${TRAILER}`, diff: 'diff --git a/a.js b/a.js\n+const safe = 1;\n' }) } });
+    assert.equal((await broker.request({ operation, requestId: id(), ...fields })).reason, 'co-author-forbidden', operation);
+    assert.equal(calls.length, 0);
   }
 });

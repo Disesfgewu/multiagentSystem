@@ -26,6 +26,10 @@
 
 目前沒有任何內建能力標為 `verified`。agy 的啟動參數、登入、帳號隔離、狀態事件、用量來源、規則注入入口與續接，在引用官方文件並實機驗證前都不得寫入程式或文件。
 
+## 署名（co-author）
+
+套件不讓自己啟動的 agent 在對外發佈的內容加上署名行（#293）。**Claude Code**：每次啟動（start、reopen、身份組啟動都走同一條路）帶 `--settings '{"attribution":{"commit":"","pr":"","sessionUrl":false}}'`，不改使用者的任何檔案；這個旗標與設定名稱依 Claude Code 官方文件，**尚未用真實 CLI 實測**（#135）。**Codex、agy、自訂 provider**：沒有已證實的等效設定，**狀態未知**，不宣稱已關閉；它們若自己加署名行，會在經過 Broker 時被拒絕，但直接用 `git`／`gh` 的路徑不受 Broker 管轄。只傳一個 `--settings`；之後若別的功能也要傳設定，必須合併成同一個值。
+
 ## 登錄整合進度
 
 啟動選單、身份組 provider 驗證、儲存匯出的 `provider` 公開值清單與注入 provider 的辨認已改用 `src/providers/registry.js`。Claude Code 與 Codex CLI 保留原有專屬注入方式；agy 目前產生明確的手動貼上計劃，不會假裝已自動注入。

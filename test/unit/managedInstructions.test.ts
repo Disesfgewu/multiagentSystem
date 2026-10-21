@@ -331,7 +331,7 @@ test('SessionManager launches native terminal with safe injection arguments and 
   // Verify terminal command line was safely quoted and passed --append-system-prompt-file
   assert.equal(terminals.length, 1);
   const sentCommand = terminals[0].sent[0].text;
-  assert.match(sentCommand, /^claude --model sonnet --append-system-prompt-file /);
+  assert.match(sentCommand, /^claude --settings '\{"attribution":\{"commit":"","pr":"","sessionUrl":false\}\}' --model sonnet --append-system-prompt-file /);
   assert.equal(session.state, 'launch-requested');
   assert.equal(session.instructionState, 'launch-requested');
   assert.equal(session.instructionDigest, prep.digest);

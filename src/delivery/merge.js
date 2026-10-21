@@ -16,8 +16,8 @@ const MAX_COMMIT_TITLE = 200;
 const MAX_COMMIT_BODY = 4000;
 const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 // Lines git and GitHub read as attribution: a pull request body must not be able to add a co-author,
-// sign-off or reviewer to the merge commit just by containing such a line.
-const TRAILER_LINE = /^\s*(?:co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|suggested-by|helped-by|on-behalf-of|cc)\s*:/i;
+// sign-off or reviewer to the merge commit just by containing such a line. (The shape is shared: `publish/attribution.js`.)
+const { TRAILER_LINE } = require('../publish/attribution');
 
 /** The merge commit text built from untrusted pull request text: one short clean line, and a bounded body. */
 function commitText(rawTitle, rawBody, number) {

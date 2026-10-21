@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SessionError, SessionRegistry } from './registry';
 import { modelArguments, normalizeRequestedModel } from '../providers/modelSelection';
+import { attributionArguments } from '../providers/attribution';
 import { formatShellCommandLine } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
 
@@ -430,7 +431,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
-    const allArgs = [...modelArgs, ...instructionArgs];
+    const allArgs = [...attributionArguments(identity.provider), ...modelArgs, ...instructionArgs];
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
