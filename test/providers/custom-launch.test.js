@@ -182,3 +182,80 @@ test('nothing is planned for an untrusted workspace, an unknown provider, a miss
   program(workspace, 'only-here');
   assert.equal(planCustomLaunch({ ...input, providers: [provider({ executable: 'only-here' })] }, { ...options, env: { PATH: workspace } }).reason, 'executable-only-in-workspace');
 });
+
+// ---- on native Windows only: the real file system -------------------------------------------------------------------
+
+const onlyWindows = process.platform === 'win32' ? {} : { skip: 'needs native Windows' };
+
+function windowsSandbox(t) {
+  // Names with a space and non-ASCII characters, under the runner's temporary folder (which is a short 8.3 name on CI).
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mas custom 工具-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'tools 空白', 'bin');
+  const workspace = path.join(root, 'work space 專案');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  const program = (dir, name) => { fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, name); fs.writeFileSync(file, 'MZ synthetic program'); return file; };
+  return { root, bin, workspace, program };
+}
+
+test('on Windows: a .exe in a folder with spaces and non-ASCII characters is found by its real path, whatever the PATH spelling or case', onlyWindows, (t) => {
+  const { bin, program } = windowsSandbox(t);
+  const exe = program(bin, 'synthetic-cli.exe');
+  const real = fs.realpathSync.native(exe);
+  const found = resolveCustomExecutable('synthetic-cli', { env: { Path: bin } });
+  assert.deepEqual(found, { ok: true, executable: real });
+  assert.equal(path.isAbsolute(found.executable), true);
+  // PATH may be spelled in any case; the entry may be given in upper case.
+  assert.deepEqual(resolveCustomExecutable('synthetic-cli', { env: { PATH: bin.toUpperCase() } }).ok, true);
+  assert.equal(resolveCustomExecutable('missing-cli', { env: { Path: bin } }).reason, 'executable-not-found');
+});
+
+test('on Windows: .com is accepted; .cmd, .bat and .ps1 are refused or not found, never started through an interpreter', onlyWindows, (t) => {
+  const { bin, program } = windowsSandbox(t);
+  program(bin, 'older-cli.com');
+  program(bin, 'script-cli.cmd');
+  program(bin, 'batch-cli.bat');
+  program(bin, 'shell-cli.ps1');
+  const env = { Path: bin };
+  assert.equal(resolveCustomExecutable('older-cli', { env }).ok, true);
+  assert.equal(resolveCustomExecutable('script-cli', { env }).reason, 'script-not-supported');
+  assert.equal(resolveCustomExecutable('batch-cli', { env }).reason, 'script-not-supported');
+  assert.equal(resolveCustomExecutable('shell-cli', { env }).reason, 'executable-not-found');
+});
+
+test('on Windows: a program in the workspace is not used, even when the workspace is named by its short 8.3 name or through a junction', onlyWindows, (t) => {
+  const { root, bin, workspace, program } = windowsSandbox(t);
+  const planted = path.join(workspace, 'bin');
+  program(planted, 'synthetic-cli.exe');
+  const env = { Path: `${planted};${bin}` };
+  // Only the workspace has it.
+  assert.equal(resolveCustomExecutable('synthetic-cli', { env, forbiddenFolders: [workspace] }).reason, 'executable-only-in-workspace');
+  // The same folder spelled with the runner's short names: the operating system's real path is what is compared.
+  const short = fs.realpathSync.native(workspace);
+  assert.equal(resolveCustomExecutable('synthetic-cli', { env: { Path: planted }, forbiddenFolders: [short] }).reason, 'executable-only-in-workspace');
+  assert.equal(resolveCustomExecutable('synthetic-cli', { env: { Path: planted }, forbiddenFolders: [workspace.toUpperCase()] }).reason, 'executable-only-in-workspace', 'the case of folders is not a way around it');
+  // A good copy further along PATH is used instead.
+  const good = program(bin, 'synthetic-cli.exe');
+  assert.deepEqual(resolveCustomExecutable('synthetic-cli', { env, forbiddenFolders: [workspace] }), { ok: true, executable: fs.realpathSync.native(good) });
+  // A junction (needs no special right on Windows) in a "system" folder that points into the workspace is the workspace.
+  const sys = path.join(root, 'sys');
+  fs.mkdirSync(sys);
+  const junction = path.join(sys, 'linked');
+  fs.symlinkSync(planted, junction, 'junction');
+  assert.equal(resolveCustomExecutable('synthetic-cli', { env: { Path: junction }, forbiddenFolders: [workspace] }).reason, 'executable-only-in-workspace');
+  // The workspace opened through a junction is the same workspace.
+  const wslink = path.join(root, 'wslink');
+  fs.symlinkSync(workspace, wslink, 'junction');
+  assert.equal(resolveCustomExecutable('synthetic-cli', { env: { Path: planted }, forbiddenFolders: [wslink] }).reason, 'executable-only-in-workspace');
+});
+
+test('on Windows: a plan for a real program names its real path and the arguments as listed, and a relative PATH entry is never searched', onlyWindows, (t) => {
+  const { bin, workspace, program } = windowsSandbox(t);
+  const exe = program(bin, 'synthetic-cli.exe');
+  const plan = planCustomLaunch({ providers: [provider({ args: ['--name', 'with space', '工具'] })], id: 'synthetic', trusted: true, cwd: workspace, folders: [workspace] }, { env: { Path: `.;relative\\dir;${bin}` } });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.launch.shellPath, fs.realpathSync.native(exe));
+  assert.deepEqual(plan.launch.shellArgs, ['--name', 'with space', '工具']);
+  assert.match(plan.detail, /Program: /);
+});
