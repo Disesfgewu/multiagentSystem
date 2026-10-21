@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { requestFor, parseReply, runRestricted, environmentPairs, powershellPath, launchScriptPath, credentialLocations, HOME_CREDENTIAL_PATHS } = require('../../src/isolation/windows');
-const { createWindowsModule, summarizeGroups } = require('./windows-harness');
+const { createWindowsModule, summarizeGroups, explainToolFailure } = require('./windows-harness');
 const { CHANNELS, collectProbes, assessIsolation, describeAssessment, decideLaunch } = require('../../src/isolation/capabilities');
 
 const onWindows = process.platform === 'win32';
@@ -37,6 +37,25 @@ test('a tool that could not list the token\'s groups is reported as "could not e
   assert.match(summarizeGroups({ ok: true, stdout: '' }), /could not enumerate \(no output\)/);
   assert.match(summarizeGroups({ ok: true, stdout: undefined }), /no output/);
   assert.equal(summarizeGroups({ launchFailed: 'create-process-failed-5' }), 'could not enumerate (launch failed: create-process-failed-5)');
+});
+
+test('a setup command that failed is reported with its own first line of output, never as success and never with a SID', () => {
+  assert.equal(explainToolFailure('icacls', { ok: true, stdout: 'processed 1 file', stderr: '' }), null);
+  assert.equal(explainToolFailure('icacls grant', { ok: false, stdout: '', stderr: 'Access is denied.\r\nSuccessfully processed 0 files; Failed processing 1 files' }), 'icacls grant failed: Access is denied.');
+  assert.equal(explainToolFailure('whoami', { ok: false, stdout: 'ERROR: x S-1-5-21-111-222-333-1001 y', stderr: '' }), 'whoami failed: ERROR: x S-1-5-21-… y');
+  assert.equal(explainToolFailure('x', { ok: false, stdout: '', stderr: '' }), 'x failed (no message)');
+  for (const bad of [undefined, null, {}, { ok: 'yes' }, { ok: 1 }]) assert.match(explainToolFailure('t', bad), /^t failed/, String(bad));
+  assert.ok(explainToolFailure('x', { ok: false, stderr: 'a'.repeat(500) }).length < 200, 'long output is cut');
+});
+
+test('a harness whose fixture cannot be built (no whoami to ask) says why, and every channel stays unknown', async () => {
+  const module = createWindowsModule({ platform: 'win32', parentEnv: { SystemRoot: process.platform === 'win32' ? process.env.SystemRoot : '/nonexistent-system-root' }, powershell: process.execPath, script: __filename, tmpRoot: require('node:os').tmpdir() });
+  if (process.platform !== 'win32') {
+    // Off Windows the tools do not exist: the setup fails at its first step, which is what this checks.
+    assert.deepEqual(await module.probe('file-credentials'), { control: false });
+    assert.match(String(module.preparationError()), /whoami \/user failed|ENOENT|failed/);
+  }
+  await module.dispose();
 });
 
 test('every switch the script reads can be sent in a request, and nothing else can', () => {
@@ -184,6 +203,7 @@ test('on Windows: every channel is tried against a control, and the results are 
   const module = realModule();
   try {
     const described = await module.describe();
+    assert.equal(module.preparationError(), null, `the fixture could not be built: ${module.preparationError()}`);
     for (const line of described) console.log(`windows isolation: ${line}`);
     // The user's own SID no longer grants access: a place whose access list names only the user can be read outside the restriction and not inside it.
     assert.equal(described.__userSidDenyOnly, true, 'the user SID is deny-only in the restricted token');

@@ -58,6 +58,23 @@ function countingServer() {
 }
 
 /**
+ * A setup command that did not work must stop the run with its own reason: carrying on would produce results about a
+ * fixture that was never built (a "blocked" that only means the folder was never made readable).
+ * @returns {string | null} a short reason, or null when the command worked
+ */
+function explainToolFailure(label, result) {
+  if (result && result.ok === true) return null;
+  const said = String(`${result?.stderr ?? ''}\n${result?.stdout ?? ''}`).split(/\r?\n/).map((line) => line.trim()).find((line) => line !== '');
+  return `${label} failed${said ? `: ${said.replace(/S-1-5-21-[0-9-]+/g, 'S-1-5-21-…').slice(0, 160)}` : ' (no message)'}`;
+}
+
+const mustWork = (label, result) => {
+  const problem = explainToolFailure(label, result);
+  if (problem !== null) throw new Error(problem);
+  return result;
+};
+
+/**
  * What `whoami /groups /fo csv /nh` said, as one line for the log. A tool that failed (it cannot open its own token under the
  * restriction) prints "ERROR: ..." and exits non-zero: that is "could not enumerate", never "0 deny-only".
  */
@@ -76,19 +93,20 @@ function summarizeGroups({ ok, stdout, launchFailed }) {
  */
 function createWindowsModule({ attempts: injected, platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS } = {}) {
   let fixture;
+  let preparationError = null;
   const supported = platform === 'win32' && typeof powershell === 'string' && fs.existsSync(powershell) && fs.existsSync(script);
 
   async function prepare() {
     if (fixture) return fixture;
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpRoot, 'mas-iso-')));
     const secret = `synthetic-${randomBytes(8).toString('hex')}`;
-    const who = await run(win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
+    const who = mustWork('whoami /user', await run(win32.join(parentEnv.SystemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh']));
     const sid = /"(S-1-[0-9-]+)"/.exec(who.stdout)?.[1];
-    if (!sid) throw new Error('user-sid-unavailable');
+    if (!sid) throw new Error('whoami /user did not name the user SID');
     const icacls = win32.join(parentEnv.SystemRoot, 'System32', 'icacls.exe');
-    const grantEveryone = (target) => run(icacls, [target, '/grant', '*S-1-1-0:(OI)(CI)F']);
+    const grantEveryone = async (target) => mustWork(`icacls grant Everyone on ${path.basename(target)}`, await run(icacls, [target, '/grant', '*S-1-1-0:(OI)(CI)F']));
     // As a real user folder is: the user, SYSTEM and Administrators, and nobody else.
-    const userOnly = (target) => run(icacls, [target, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F']);
+    const userOnly = async (target) => mustWork(`icacls restrict ${path.basename(target)}`, await run(icacls, [target, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F']));
 
     // Open to everyone: what the restricted program may use. Only the user (so, deny-only in the restricted token) holds the rest.
     const shared = path.join(root, 'shared');
@@ -110,7 +128,7 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     const onlyMine = path.join(root, 'only-me');
     fs.mkdirSync(onlyMine);
     fs.writeFileSync(path.join(onlyMine, 'note.txt'), `${secret}\n`);
-    await run(icacls, [onlyMine, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`]);
+    mustWork('icacls restrict only-me', await run(icacls, [onlyMine, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`]));
     fixture = { root, shared, creds, cliHome, onlyMine, secret, sid, userOnly, repos: 0, github: await countingServer(), provider: await countingServer() };
     return fixture;
   }
@@ -218,7 +236,9 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       const table = injected ?? attempts;
       const kind = Object.hasOwn(CHANNELS, channel) ? CHANNELS[channel].kind : undefined;
       if (!kind || (injected === undefined && !supported) || !Object.hasOwn(table, channel)) return { control: false };
-      if (injected === undefined) await prepare();
+      if (injected === undefined) {
+        try { await prepare(); } catch (error) { preparationError = String(error && error.message ? error.message : error); return { control: false }; }
+      }
       const control = await table[channel](false);
       if (!control || control.skipped || control.achieved !== true) return { control: false };
       const inside = await table[channel](true);
@@ -337,9 +357,11 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       await Promise.all([github.close(), provider.close()]);
       try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* a temporary folder; the runner cleans up */ }
     },
+    /** Why the fixture could not be built, or null: a run whose setup failed says so instead of reporting results about nothing. */
+    preparationError: () => preparationError,
     credentialLocationsFor: () => credentialLocations(fixture ? fixture.root : ''),
     supported
   };
 }
 
-module.exports = { createWindowsModule, summarizeGroups };
+module.exports = { createWindowsModule, summarizeGroups, explainToolFailure };
