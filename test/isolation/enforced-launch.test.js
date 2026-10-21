@@ -11,6 +11,8 @@ const { SANDBOX_EXEC } = require('../../src/isolation/macos');
 
 const GOOD = { bypass: 'blocked', interaction: 'works' };
 const BAD = { bypass: 'open', interaction: 'broken' };
+// The profile and its folder are POSIX paths (macOS only): the folder the tests create on Windows is not one.
+const posixOnly = process.platform === 'win32' ? { skip: 'macOS profile paths are POSIX paths' } : {};
 
 function fakeHarness({ override = {}, log = [] } = {}) {
   return () => ({
@@ -37,7 +39,7 @@ const base = (extra = {}) => {
 };
 const leftovers = (dir) => fs.readdirSync(dir);
 
-test('with every channel proven, the command is the sandboxed one and the environment points at the local proxy', async () => {
+test('with every channel proven, the command is the sandboxed one and the environment points at the local proxy', posixOnly, async () => {
   const input = base();
   const result = await prepareEnforcedLaunch(input);
   assert.equal(result.ok, true);
@@ -58,7 +60,7 @@ test('with every channel proven, the command is the sandboxed one and the enviro
   assert.deepEqual(leftovers(input.storageDir), [], 'everything created is removed again');
 });
 
-test('the proxy is given only the person\'s allowed domains and the profile allows only its port', async () => {
+test('the proxy is given only the person\'s allowed domains and the profile allows only its port', posixOnly, async () => {
   let seen;
   const result = await prepareEnforcedLaunch(base({ createProxy: (options) => { seen = options; return fakeProxy()(options); }, allowedDomains: ['api.provider.test', '*.cdn.provider.test'] }));
   assert.deepEqual(seen.allow, ['api.provider.test', '*.cdn.provider.test']);
@@ -66,7 +68,7 @@ test('the proxy is given only the person\'s allowed domains and the profile allo
   await result.dispose();
 });
 
-test('a channel that is open, broken or whose control did not run refuses, and nothing is left behind', async () => {
+test('a channel that is open, broken or whose control did not run refuses, and nothing is left behind', posixOnly, async () => {
   for (const channel of Object.keys(CHANNELS)) {
     for (const answer of [{ control: true, outcome: BAD[CHANNELS[channel].kind] }, { control: false }, undefined]) {
       const log = [];
@@ -82,7 +84,7 @@ test('a channel that is open, broken or whose control did not run refuses, and n
   }
 });
 
-test('a probe module that throws refuses', async () => {
+test('a probe module that throws refuses', posixOnly, async () => {
   const input = base({ createHarness: () => ({ platform: 'darwin', probe: async () => { throw new Error('boom'); }, dispose: async () => {} }) });
   const result = await prepareEnforcedLaunch(input);
   assert.equal(result.ok, false);
@@ -125,7 +127,7 @@ test('no refusal carries a path, an account or the proxy credential', async () =
   for (const secret of [input.storageDir, input.home, 'abc123', 'synthetic/home']) assert.ok(!text.includes(secret), secret);
 });
 
-test('a program name or arguments that are not plain are refused when the command is wrapped', async () => {
+test('a program name or arguments that are not plain are refused when the command is wrapped', posixOnly, async () => {
   const result = await prepareEnforcedLaunch(base());
   for (const [name, args] of [['../claude', []], ['a b', []], ['/bin/sh', []], ['claude', [1]], ['claude', 'x']]) assert.throws(() => result.wrapCommand(name, args), /launch-invalid/, String(name));
   await result.dispose();
