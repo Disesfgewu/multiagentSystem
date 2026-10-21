@@ -81,7 +81,7 @@ function lastCheckedText(id: string): string {
 
 class AccountItem extends vscode.TreeItem {
   constructor(override readonly id: string, label: string, provider: string, health: string, identity: string, issues: string[], gateState: 'allow' | 'warn' | 'confirm' | 'block' | null = null) {
-    super(label, vscode.TreeItemCollapsibleState.None);
+    super(label, vscode.TreeItemCollapsibleState.Collapsed);
     this.description = `${provider} · ${identity} · ${health}`;
     this.tooltip = issues.length ? issues.join('\n') : `${provider}: identity is unknown until a provider observation is available.`;
     this.contextValue = 'multiagentAccountProfile';
@@ -114,7 +114,18 @@ class SessionItem extends vscode.TreeItem {
   }
 }
 
-type AccountTreeItem = AccountItem | AccountMessage | SessionItem;
+/** Opens the token usage log of one account (issue #294). */
+class UsageLogItem extends vscode.TreeItem {
+  constructor(accountId: string) {
+    super('Token usage log', vscode.TreeItemCollapsibleState.None);
+    this.description = 'open';
+    this.tooltip = 'Opens the recorded token usage of this account. Only providers with a real reading source are recorded.';
+    this.iconPath = new vscode.ThemeIcon('graph');
+    this.command = { command: 'multiagentSystem.usage.showLog', title: 'Show token usage log', arguments: [{ id: accountId }] };
+  }
+}
+
+type AccountTreeItem = AccountItem | AccountMessage | SessionItem | UsageLogItem;
 
 class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
   private readonly changed = new vscode.EventEmitter<AccountTreeItem | undefined>();
@@ -124,6 +135,12 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
   getTreeItem(item: AccountTreeItem): vscode.TreeItem { return item; }
 
   async getChildren(item?: AccountTreeItem): Promise<AccountTreeItem[]> {
+    // An account row expands into its quota: the limits the person set, the current readings (used, remaining, window, read time,
+    // source or why it cannot be read) and a link to the usage log. A reading that cannot be read says why; it is never shown as 0.
+    if (item instanceof AccountItem) {
+      const lines = await limitLines(item.id as string, () => sessions?.list() ?? []);
+      return [...lines.map((line) => new AccountMessage(line)), new UsageLogItem(item.id as string)];
+    }
     if (item) return [];
     const liveSessions = sessions?.list() ?? [];
     const result = await accountService(() => sessions?.list() ?? []);

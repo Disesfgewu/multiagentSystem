@@ -31,6 +31,9 @@ import { gateAccountLaunch } from '../accounts/quotaGateUi';
 import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
+const { recordReading } = require('../accounts/usage-log') as {
+  recordReading(input: { snapshot: unknown; openStore: () => Promise<unknown> }): Promise<{ recorded: boolean; reason: string }>;
+};
 import { prepareIsolationForStart } from '../isolation/enforcedStart';
 import { writeAttributionSettings } from '../providers/attribution';
 const { readUserLevel } = require('../settings/user-level') as { readUserLevel(inspected: unknown): { value: unknown; ignoredScopes: string[] } };
@@ -204,7 +207,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   const observations = new SessionObservationRuntime();
   // New or aged-out provider evidence refreshes the same views a session change does (the Overview reads
   // the evidence when it renders). The runtime has no timer unless a session is bound.
-  context.subscriptions.push(observations.onDidChange(() => changed.fire()), { dispose: () => observations.dispose() });
+  // Every reading a provider really reports is kept in the token usage log (issue #294), per account, in private storage.
+  // Best effort: a reading that cannot be kept never disturbs the session.
+  const recordUsage = async (sessionId: string): Promise<void> => {
+    const view = manager.get(sessionId);
+    if (!view) return;
+    await recordReading({ snapshot: observations.enrich([view])[0]?.providerObservation, openStore: async () => { const opened = await privateStorage()?.use(); return opened?.ok ? opened.store : null; } });
+  };
+  context.subscriptions.push(observations.onDidChange((sessionId) => { changed.fire(); void recordUsage(sessionId); }), { dispose: () => observations.dispose() });
   const manager = new SessionManager<vscode.Terminal>({
     store: new PrivateSessionSnapshot({
       workspaceKey: () => sessionWorkspaceKey((vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.toString()), vscode.workspace.workspaceFile?.toString()),
