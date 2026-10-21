@@ -1,10 +1,12 @@
 'use strict';
 
 const { validateRuleList, safeText } = require('../roles/rule-input');
+const { locateSensitive } = require('../memory/sensitive');
 
 /**
  * Team rules (issue #306): ONE list of instructions that every agent started from now on is given, ahead of its role group's own
- * rules. Pure logic: validation and edits. The list lives in the private store (`store.js`); how it reaches a CLI is the same path
+ * rules. They are rules of the `user` layer, which the resolver (`memory/rules.js`) puts before the `roleGroup` layer; inside the
+ * `user` layer the resolver orders by rule id, not by position in a list. Pure logic: validation and edits. The list lives in the private store (`store.js`); how it reaches a CLI is the same path
  * as any other instruction (`managedInstructions.ts`), so a rule here is text the CLI is TOLD, never something this extension
  * enforces. Only instructions are kept: a ban on a tool is the role group's tool permission, not a sentence in this list.
  */
@@ -58,11 +60,13 @@ function applyEdit(doc, change, now) {
   if (change.kind === 'add') {
     if (rules.length >= MAX_RULES) return fail('too-many-rules');
     if (!safeText(change.text, MAX_TEXT_CHARS)) return fail('invalid-text');
+    if (looksPrivate(change.text)) return fail('sensitive-text');
     rules.push({ id: nextId(rules), type: 'instruction', text: change.text });
   } else if (change.kind === 'edit') {
     const target = rules.find((rule) => rule.id === change.id);
     if (!target) return fail('rule-not-found');
     if (!safeText(change.text, MAX_TEXT_CHARS)) return fail('invalid-text');
+    if (looksPrivate(change.text)) return fail('sensitive-text');
     target.text = change.text;
   } else if (change.kind === 'remove') {
     const index = rules.findIndex((rule) => rule.id === change.id);
@@ -71,6 +75,9 @@ function applyEdit(doc, change, now) {
   } else return fail('invalid-change');
   return validateTeamRules({ version: checked.doc.version + 1, updatedAt: stamp, rules });
 }
+
+/** Whether text looks like a credential, an email address or a local path: a rule is typed into every agent's instructions, so it must not carry one. */
+const looksPrivate = (text) => { try { return locateSensitive(text).length > 0; } catch { return true; } };
 
 /** The rules as the `user` layer takes them, ahead of everything the role group adds there. */
 const teamRuleLayer = (doc) => (validateTeamRules(doc).ok ? doc.rules.map((rule) => ({ id: rule.id, type: 'instruction', text: rule.text })) : []);

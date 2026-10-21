@@ -63,3 +63,15 @@ test('the summary line says what applies and that nothing enforces it', () => {
   const doc = add(emptyTeamRules(), 'ok').doc;
   assert.match(describeTeamRules(doc), /^Team rules \(v1\): 1 instruction given to every agent started after this version, ahead of its role group's rules\. The CLI is told; nothing here enforces them\.$/);
 });
+
+test('a rule that looks like a credential, an email address or a local path is not saved', () => {
+  const token = ['gh', 'p_', 'a'.repeat(36)].join('');
+  const path = ['', 'Users', 'someone', 'project'].join('/');
+  const address = ['someone', 'example.test'].join(String.fromCharCode(64));
+  const doc = add(emptyTeamRules(), 'fine').doc;
+  for (const text of [`use ${token} for pushes`, `work in ${path}`, `ask ${address}`]) {
+    assert.deepEqual(add(doc, text), { ok: false, reason: 'sensitive-text' }, text.slice(0, 10));
+    assert.deepEqual(applyEdit(doc, { kind: 'edit', id: 'team:1', text }, NOW), { ok: false, reason: 'sensitive-text' });
+  }
+  assert.equal(add(doc, 'Run the tests before you push.').ok, true);
+});

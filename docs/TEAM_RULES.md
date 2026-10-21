@@ -11,7 +11,8 @@
 
 ## 注入與預覽
 
-- 團隊規則放在 `user` 層、排在身份組自己的 `user` 層規則之前；沒有身份組的 agent 也會拿到。
+- 團隊規則是 `user` 層的規則。規則解析器（`src/memory/rules.js`）先依層的強弱排序、同一層內再依規則 id 排序，所以團隊規則排在身份組自己的規則（`roleGroup` 層）**之前**，不論 id 的字母順序；它和身份組在 `user` 層的規則同層，彼此之間依 id 排序（團隊規則的 id 是 `team:N`），不是依清單位置。沒有身份組的 agent 也會拿到。
+- 存檔前會檢查：看起來像憑證、email 或本機路徑的文字不能存成規則（規則會被打進每個 agent 的指令）。
 - **Preview Effective Rules** 會顯示「Team rules (vN): …」與每一則規則的文字；讀不到時明說「unknown…NOT reflected」，不假裝已套用。
 - 啟動 agent 前準備的指令快照記錄團隊規則的版本。規則在準備之後被改了，快照視為過期（`team-rules-changed`），不會用舊的啟動。
 - 團隊規則**讀不到或已損毀**時，啟動被拒絕（`team-rules-unavailable`），不會悄悄少帶規則啟動。

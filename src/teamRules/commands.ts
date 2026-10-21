@@ -25,6 +25,7 @@ export async function teamRulesSummary(): Promise<string> {
 }
 
 const REFUSALS: Record<string, string> = {
+  'sensitive-text': 'The rule looks like it contains a credential, an email address or a local path. Rules are typed into every agent\'s instructions, so none of those belong in one.',
   'invalid-text': 'The rule must be 1 to 1000 characters of plain text without hidden or control characters.',
   'too-many-rules': 'There can be at most 50 team rules.',
   'rule-not-found': 'That rule no longer exists.',

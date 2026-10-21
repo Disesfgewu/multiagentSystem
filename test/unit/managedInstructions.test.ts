@@ -760,3 +760,24 @@ test('a snapshot is stale once the team rules change, and while they cannot be r
   assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: true, reason: 'team-rules-unavailable' });
   cleanupSessionPlan(prepared.plan);
 });
+
+test('team rules come before the role group\'s own rules because the user layer is stronger than the role-group layer, whatever the ids sort like; inside the user layer the order is by rule id (issue #306)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  const record = makeRoleRecord('worker-1', 1, 'worker');
+  // The role group's own rule has an id that sorts BEFORE "team:1": only the layer can put the team rule first.
+  (record.group.rules as any[]).splice(0, 1, { id: 'a-first-role-rule', type: 'instruction', text: 'ROLE-GROUP-LAYER rule.', version: 1 });
+  // A user-layer rule of the role group sorts by id among the team rules, not by where it sits in a list.
+  (record.layers.user as any[]).push({ id: 'a-user-rule', type: 'instruction', text: 'USER-LAYER rule before the team id.', version: 1 }, { id: 'z-user-rule', type: 'instruction', text: 'USER-LAYER rule after the team id.', version: 1 });
+  store.put('roleGroups', 'worker-1', record);
+  store.put('teamRules', 'team', teamDoc(1, ['TEAM rule one.', 'TEAM rule two.']));
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-order-12345678', privateDir });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const content = fs.readFileSync(result.argv[1], 'utf8');
+  const at = (text: string) => content.indexOf(text);
+  for (const text of ['TEAM rule one.', 'TEAM rule two.', 'ROLE-GROUP-LAYER rule.', 'USER-LAYER rule before the team id.', 'USER-LAYER rule after the team id.']) assert.ok(at(text) >= 0, text);
+  assert.ok(at('TEAM rule one.') < at('ROLE-GROUP-LAYER rule.') && at('TEAM rule two.') < at('ROLE-GROUP-LAYER rule.'), 'both team rules precede the role group\'s rule although its id sorts first');
+  assert.ok(at('USER-LAYER rule after the team id.') < at('ROLE-GROUP-LAYER rule.'), 'the whole user layer precedes the role-group layer');
+  assert.ok(at('USER-LAYER rule before the team id.') < at('TEAM rule one.') && at('TEAM rule two.') < at('USER-LAYER rule after the team id.'), 'inside the user layer the order is by id');
+  cleanupSessionPlan(result.plan);
+});
