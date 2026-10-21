@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } from '../overview/overviewView';
-import { decisionCountsSnapshot } from '../reports/reportsView';
+import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
 import { builtIn } from '../providers/registry';
 
@@ -67,7 +67,12 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const [snapshot, roles] = await Promise.all([collectOverview(sessions), roleGroups()]);
     // A newer refresh started while this one was reading: only the newest answer is shown.
     if (mine !== generation) return;
-    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles });
+    // The latest report of each agent's pull request: read a few at a time and kept for a minute by the report module.
+    const numbers = [...new Set(snapshot.agents.map((agent) => agent.pullRequestNumber).filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0))].slice(0, 12);
+    const reports: Record<string, unknown> = {};
+    await Promise.all(numbers.map(async (number) => { reports[String(number)] = await pullRequestSummary(number); }));
+    if (mine !== generation) return;
+    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports });
     cached = { pm: built.pm, agents: built.agents, accounts: built.accounts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: snapshot.notes.slice(0, 5).map((note) => String(note).slice(0, 200)) };
     post();
   };

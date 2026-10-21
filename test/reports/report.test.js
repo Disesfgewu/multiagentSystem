@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildIssueReport, buildPullRequestReport, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, fileBulletLines } = require('../../src/reports/report');
+const { buildIssueReport, buildPullRequestReport, summarizePullRequest, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, fileBulletLines } = require('../../src/reports/report');
 const { issueEvidenceVersion, MARKER } = require('../../src/reports/decision-queue');
 
 const cp = (...codes) => String.fromCodePoint(...codes);
@@ -434,4 +434,36 @@ test('fileBulletLines never throws on non-string, missing or empty input', () =>
   assert.deepEqual(fileBulletLines([], ['x']), []);
   assert.deepEqual(fileBulletLines([null, undefined, 42, {}], ['x']), []);
   assert.deepEqual(fileBulletLines(['- x ()'], []), []);
+});
+
+// ---- the short summary of a pull request's report, for a screen with many of them (issue #309) ----
+const pmFields = (over = {}) => ({ operableResult: 'Open the Command Center from the Overview title bar', solution: 's', alternatives: 'a', acceptanceGap: 'none', risks: 'r', recommendedAction: 'Merge after CI is green', evidenceTime: '2026-10-22T01:00:00Z', evidenceVersion: HEAD, ...over });
+const summary = (over = {}) => summarizePullRequest({ repository: 'o/r', pullRequest: pr(), snapshot: snapshot({ approval: { status: 'approved', headSha: HEAD }, unresolvedThreads: 2 }), comments: ok([comment(`${MARKER}\n${JSON.stringify(pmFields())}`, { author: 'o' })]), ...over });
+
+test('the summary says what the PM report says, the approval, CI and unresolved threads of the latest head', () => {
+  assert.deepEqual(summary(), { pm: 'current', userCan: 'Open the Command Center from the Overview title bar', next: 'Merge after CI is green', approval: 'approved', ci: 'passing', unresolved: 2 });
+});
+
+test('a stale, missing or unreadable PM report is said so, and the summary never carries more than the full report', () => {
+  assert.equal(summary({ comments: ok([comment(`${MARKER}\n${JSON.stringify(pmFields({ evidenceVersion: OLD }))}`, { author: 'o' })]) }).pm, 'stale');
+  assert.deepEqual(summary({ comments: ok([comment('an ordinary comment', { author: 'o' })]) }), { pm: 'missing', userCan: null, next: null, approval: 'approved', ci: 'passing', unresolved: 2 });
+  assert.equal(summary({ comments: ok([comment(`${MARKER}\n{broken`, { author: 'o' })]) }).pm, 'unknown');
+  assert.equal(summary({ comments: { kind: 'failed' } }).pm, 'unknown');
+  assert.equal(summary({ comments: ok([comment(`${MARKER}\n${JSON.stringify(pmFields())}`, { author: 'someone-else' })]) }).pm, 'missing', 'only the repository owner\'s marked comment is a PM report');
+});
+
+test('approval and CI are unknown unless the read was complete and for the latest head; nothing is filled in', () => {
+  for (const bad of [undefined, null, 'x', { status: 'partial' }]) {
+    const result = summary({ snapshot: bad });
+    assert.deepEqual([result.approval, result.ci, result.unresolved], ['unknown', 'unknown', null], JSON.stringify(bad));
+  }
+  assert.equal(summary({ snapshot: snapshot({ checksSummary: { state: 'passing', requiredState: 'passing', headSha: OLD, failing: [] } }) }).ci, 'unknown', 'CI of another head is not this head\'s');
+  assert.equal(summary({ snapshot: snapshot({ unresolvedThreads: 'two' }) }).unresolved, null);
+  assert.deepEqual(summary({ pullRequest: null }).pm, 'unknown');
+});
+
+test('the summary is short plain text: long PM fields are cut and control characters are removed', () => {
+  const long = summary({ comments: ok([comment(`${MARKER}\n${JSON.stringify(pmFields({ operableResult: `x${'y'.repeat(500)}\u202e\n` }))}`, { author: 'o' })]) });
+  assert.ok(long.userCan.length <= 160);
+  assert.equal(/[\u202e\n]/.test(long.userCan), false);
 });

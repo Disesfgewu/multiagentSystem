@@ -79,10 +79,16 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   vm.runInNewContext(SCRIPT, sandbox);
   assert.equal(JSON.stringify(posted), JSON.stringify([{ type: 'ready' }]), 'the page announces itself and nothing else');
   const hostile = '<img src=x onerror=alert(1)>';
-  const card = (id, over = {}) => ({ id, name: hostile, role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested, not confirmed', status: { state: 'working', text: 'working', source: 'from the CLI\'s own hooks' }, terminalOpen: true, task: { issue: 1, pullRequest: 7, text: 'Issue #1 · PR #7' }, summary: 's', details: ['Branch: x'], quota: { lines: ['Usage (five_hour): 42% used'], policy: '', gate: 'warn' }, autoMode: 'Auto mode: on', alert: 'quota: near the limit', pinned: false, collapsed: false, ...over });
-  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [card('pm-1', { role: 'pm' })], agents: [card('a-1'), card('a-2', { collapsed: true, task: { issue: null, pullRequest: null, text: 'no task is known' } })], accounts: [{ id: 'acct', label: 'Main', provider: 'Claude Code', lines: [], gate: 'block' }], decisions: { issues: { known: false, text: 'issues: unknown (open the report list to load it)' }, pullRequests: { known: true, text: '2 pull requests need a decision' } }, notes: ['a note'] } } });
+  const card = (id, over = {}) => ({ id, name: hostile, role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested, not confirmed', status: { state: 'working', text: 'working', source: 'from the CLI\'s own hooks' }, terminalOpen: true, task: { issue: 1, pullRequest: 7, text: 'Issue #1 · PR #7' }, worktree: '2 changed, 0 untracked; 1 ahead, 0 behind its upstream', report: { lines: ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing'] }, summary: 's', details: ['Branch: x'], quota: { lines: ['Usage (five_hour): 42% used'], policy: '', gate: 'warn' }, autoMode: 'Auto mode: on', alert: 'quota: near the limit', pinned: false, collapsed: false, ...over });
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [card('pm-1', { role: 'pm' })], agents: [card('a-1'), card('a-2', { collapsed: true, task: { issue: null, pullRequest: null, text: 'no task is known' } }), card('a-3', { status: { state: 'waiting', text: 'waiting for input', source: 'from the CLI\'s own hooks' } }), card('a-4', { status: { state: 'ended', text: 'ended', source: 'from the CLI\'s own hooks' } }), card('a-5', { status: { state: 'unknown', text: 'state unknown', source: 'no hook evidence' } })], accounts: [{ id: 'acct', label: 'Main', provider: 'Claude Code', lines: [], gate: 'block' }], decisions: { issues: { known: false, text: 'issues: unknown (open the report list to load it)' }, pullRequests: { known: true, text: '2 pull requests need a decision' } }, notes: ['a note'] } } });
   const text = app.textContent;
-  for (const expected of ['Command Center', 'PM', 'Agents (2)', 'Accounts (1)', 'quota: near the limit', 'Usage: unknown', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Read-only view']) assert.ok(text.includes(expected), expected);
+  for (const expected of ['Command Center', 'PM', 'Agents (5)', 'Accounts (1)', 'quota: near the limit', 'Usage: unknown', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Read-only view']) assert.ok(text.includes(expected), expected);
+  for (const expected of ['waiting for input', 'ended', 'state unknown', 'working']) assert.ok(text.includes(expected), `the status text "${expected}" is drawn on a card`);
+  assert.ok(text.includes('Worktree: 2 changed, 0 untracked; 1 ahead, 0 behind its upstream'), 'the card itself carries one line about the working folder');
+  for (const expected of ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing']) assert.ok(text.includes(expected), `the latest report is drawn: ${expected}`);
+  assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'badge badge-waiting' && entry.textContent === 'waiting for input'));
+  assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'badge badge-ended' && entry.textContent === 'ended'));
+  assert.ok(nodes.some((entry) => entry.tag === 'section' && /status-waiting/.test(entry.className)) && nodes.some((entry) => entry.tag === 'section' && /status-unknown/.test(entry.className)), 'each state has its own card class');
   assert.ok(text.includes(hostile), 'hostile text is drawn as text');
   assert.equal(nodes.some((entry) => entry.tag === 'img' || entry.tag === 'script'), false, 'no element was created from the text');
   // a click on "Focus terminal" posts exactly the whitelisted message
@@ -99,7 +105,7 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   assert.equal(dragged.draggable, true);
   dragged.listeners.dragstart({ dataTransfer: { setData() {}, effectAllowed: '' } });
   target.listeners.drop({ preventDefault() {} });
-  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'reorder', order: ['a-2', 'a-1'] }));
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'reorder', order: ['a-2', 'a-1', 'a-3', 'a-4', 'a-5'] }));
   const before = posted.length;
   target.listeners.drop({ preventDefault() {} });
   assert.equal(posted.length, before, 'a drop without a drag sends nothing');

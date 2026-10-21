@@ -5,6 +5,7 @@
 ## 畫面
 
 - **左側固定的 PM 面板**：角色為 `pm` 的 session 卡片，加上「待決策事項」。待決策數量來自 Issues Report／PRs Report **已完整讀取**的清單；清單還沒讀過（或讀不完整）時顯示「unknown（open the report list to load it）」並提供按鈕，**不顯示猜測的數字**。
+- **每張卡片（含 PM）都有兩段固定的內容**：**Worktree** 一行（Git 當下讀到的變更與領先／落後，讀不到就是 unknown），以及 **Latest report**：這個 agent 的 pull request 的最新報告摘要——PM 報告的狀態（current／STALE／尚無結構化 PM 報告／unknown）與它寫的「User can」「Next」、最新 head 上的正式核准、CI 與未解決的討論串數量。摘要與完整報告用同一套檢查（`summarizePullRequest`），**不會比完整報告多說**；沒有連結的 PR 就是「none」，還沒讀到是「not loaded yet」，讀不到是「unknown」。讀取由報告模組做並**快取一分鐘**（每次最多 12 個 PR），不會因為畫面常更新就一直讀 GitHub。
 - **右側其他 agent 的卡片**（worker、researcher、沒有身份組的 session…）：身份組、provider、帳號、請求的模型（標明「requested, not confirmed」）、狀態、正在處理的 Issue／PR、額度（最多兩行）、自動模式標示、以及可展開的「Evidence and details」（Branch、CI、worktree 變更摘要等，來自 Overview 已經算好的證據行）。
 - **帳號列**：每個帳號的用量行與是否被額度門檻擋住。額度接近警示／需確認／被擋時，該帳號底下的 agent 卡片會顯示提醒。
 - 版面可切換**格狀／清單**；卡片可**拖曳排序**、**收合**、**釘選**（釘選的排最前）；排列方式記在 workspaceState（`commandCenter.layout`），只存模式與 session id。空間不足時，PM 面板改到上方，其餘卡片可捲動。
