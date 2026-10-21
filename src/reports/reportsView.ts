@@ -92,6 +92,9 @@ let readGeneration = 0;
 export function setReportDepsForTests(next: ReportDeps | undefined): void { deps = next ?? realDeps; readGeneration += 1; }
 
 const order: Record<Kind, number[]> = { issue: [], pullRequest: [] };
+// How many items of each kind need a decision, as the report lists last read them completely. Unknown until a list has been read.
+const decisionCounts: Record<Kind, { count: number; at: string } | null> = { issue: null, pullRequest: null };
+export function decisionCountsSnapshot(): { issue: { count: number; at: string } | null; pullRequest: { count: number; at: string } | null } { return { issue: decisionCounts.issue, pullRequest: decisionCounts.pullRequest }; }
 
 async function localFeedback(repository: string, kind: Kind, number: number): Promise<ReturnType<typeof readFeedback>> {
   try {
@@ -182,6 +185,8 @@ class ReportsTree implements vscode.TreeDataProvider<vscode.TreeItem> {
   // No source, or a source that could not be read in full, means the count is unknown: the badge is
   // cleared rather than showing a stale or guessed number. Only a complete, de-duplicated read sets it.
   private setBadge(count: number | null): void {
+    // A list that could not be read completely makes the count unknown again, never a stale number.
+    decisionCounts[this.kind] = count === null ? null : { count, at: new Date().toISOString() };
     if (!this.view) return;
     this.view.badge = count !== null && count > 0 ? { value: count, tooltip: `${count} item(s) need a decision or more evidence` } : undefined;
   }
