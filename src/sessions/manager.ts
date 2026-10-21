@@ -3,6 +3,7 @@ import { SessionError, SessionRegistry } from './registry';
 import { modelArguments, normalizeRequestedModel } from '../providers/modelSelection';
 import { attributionArguments } from '../providers/attribution';
 const { promptIsSafe } = require('../broadcast/deliver') as { promptIsSafe(prompt: unknown): boolean };
+const { mergeSandboxArguments } = require('../roles/tool-permissions') as { mergeSandboxArguments(auto: string[], permission: string[]): string[] };
 import { formatShellCommandLine } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
 
@@ -378,8 +379,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     instructions?: SessionInstructionsInput;
     /** Enforced isolation: turns the provider's program and its final arguments (model, instructions included) into the command typed instead. */
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] };
-    /** Claude Code's settings file that switches off its own attribution (issue #293); required to launch Claude. */
+    /** Claude Code's settings file (attribution switch and the role group's permissions, issues #293 and #310); required to launch Claude. */
     attributionFile?: string;
+    /** The role group's permissions as launch arguments for a CLI that has them as flags (Codex's sandbox mode); merged with the auto mode's. */
+    permissionArgs?: string[];
     /** Auto mode for the CLI (issue #296): the arguments to pass and the label to show. Resolved by the caller from the person's settings. */
     autoMode?: { args: string[]; label: string };
   }): Promise<SessionView> {
@@ -406,7 +409,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -438,15 +441,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     instructions?: SessionInstructionsInput,
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] },
     attributionFile?: string,
-    autoMode?: { args: string[]; label: string }
+    autoMode?: { args: string[]; label: string },
+    permissionArgs?: string[]
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
     // Decided before a terminal exists: Claude Code without its attribution switch is not started.
     let attributionArgs: string[] = [];
     try { attributionArgs = launch ? attributionArguments(identity.provider, attributionFile) : []; } catch { throw new SessionError('attribution-settings-unavailable'); }
-    const autoArgs = launch && autoMode ? autoMode.args : [];
-    const allArgs = [...attributionArgs, ...autoArgs, ...modelArgs, ...instructionArgs];
+    // The role group's sandbox, when it has one, replaces the auto mode's: a stricter permission is never overridden by a convenience.
+    const modeArgs = launch ? mergeSandboxArguments(autoMode ? autoMode.args : [], permissionArgs ?? []) : [];
+    const allArgs = [...attributionArgs, ...modeArgs, ...modelArgs, ...instructionArgs];
     if (launch && this.deps.executableAvailable && !this.deps.executableAvailable(executable)) {
       throw new SessionError('executable-not-found');
     }
@@ -606,6 +611,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       attributionFile?: string;
       /** The same auto mode `start` takes. */
       autoMode?: { args: string[]; label: string };
+      /** The same permission arguments `start` takes. */
+      permissionArgs?: string[];
     } = {}
   ): Promise<SessionView> {
     await this.ready();
@@ -634,7 +641,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

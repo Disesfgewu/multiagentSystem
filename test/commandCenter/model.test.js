@@ -246,3 +246,40 @@ test('an account action is one of the known ones, names an account that is on th
   assert.deepEqual(parseMessage({ type: 'accountAction', action: 'login', id: 'acct-1' }, cards, ['acct-1']), { ok: true, message: { type: 'accountAction', action: 'login', id: 'acct-1' } }, 'a list works as well as a set');
   assert.deepEqual(ACCOUNT_ACTIONS.slice().sort(), ['check', 'configureStatusLine', 'create', 'details', 'limits', 'login', 'usageLog'], 'no action removes an account, changes a login credential or sends anything');
 });
+
+const review = (over = {}) => ({ pm: 'current', userCan: 'Open it', next: 'Merge', approval: 'approved', ci: 'passing', unresolved: 1, ...over });
+
+test('a card says one line about the working folder, from what Git said, or that nothing is known', () => {
+  const withGit = buildCards({ sessions: [session()], agents: [agent({ tooltip: ['Role: Worker', 'Git (local, read just now): 2 changed, 0 untracked; 1 ahead, 0 behind its upstream; at abc1234', 'Fields marked unknown have no verified source yet.'] })], roles }).agents[0];
+  assert.equal(withGit.worktree, '2 changed, 0 untracked; 1 ahead, 0 behind its upstream; at abc1234');
+  const unknownGit = buildCards({ sessions: [session()], agents: [agent({ tooltip: ['Git: unknown (Git could not read the working folder)'] })], roles }).agents[0];
+  assert.equal(unknownGit.worktree, 'unknown (Git could not read the working folder)');
+  assert.equal(buildCards({ sessions: [session()], agents: [agent({ tooltip: ['Role: Worker'] })], roles }).agents[0].worktree, 'unknown (no Git reading for this session)');
+  assert.equal(buildCards({ sessions: [session()], agents: [], roles }).agents[0].worktree, 'unknown (no Git reading for this session)');
+});
+
+test('a card shows the latest report of its pull request: what it says, or that it is not loaded, could not be read, or does not exist', () => {
+  const card = (reports, over = {}) => buildCards({ sessions: [session()], agents: [agent(over)], accounts: [account()], roles, reports }).agents[0].report.lines;
+  assert.deepEqual(card({ 7: review() }), ['Latest report (PR #7): PM report current', 'User can: Open it', 'Next: Merge', 'Review: approval approved · CI passing · 1 unresolved thread']);
+  assert.equal(card({ 7: review({ pm: 'stale', unresolved: 0 }) })[0], 'Latest report (PR #7): PM report STALE (its evidence is for another head)');
+  assert.equal(card({ 7: review({ pm: 'missing', userCan: null, next: null }) }).length, 2, 'no invented fields');
+  assert.equal(card({ 7: review({ unresolved: null }) }).at(-1), 'Review: approval approved · CI passing');
+  assert.deepEqual(card({}), ['Latest report (PR #7): not loaded yet']);
+  assert.deepEqual(card({ 7: null }), ['Latest report (PR #7): unknown (the report could not be read)']);
+  assert.deepEqual(card({ 7: 'x' }), ['Latest report (PR #7): unknown (the report could not be read)']);
+  assert.deepEqual(card({ 7: review() }, { pullRequestNumber: null, pullRequestUrl: null }), ['Latest report: none (no pull request is linked to this agent)']);
+  assert.equal(card({ 7: review({ pm: 'bogus' }) })[0], 'Latest report (PR #7): PM report unknown');
+  assert.equal(card({ 7: review({ pm: '__proto__' }) })[0], 'Latest report (PR #7): PM report unknown');
+  assert.equal(buildCards({ sessions: [session()], agents: [agent()], reports: 'x' }).agents[0].report.lines[0], 'Latest report (PR #7): not loaded yet');
+});
+
+test('the PM card carries the same report lines, so the pinned panel shows the latest report too', () => {
+  const built = buildCards({ sessions: [session({ id: 'pm-1', roleGroupId: 'g-pm' })], agents: [agent({ id: 'pm-1', pullRequestNumber: 9 })], roles, reports: { 9: review({ pm: 'missing', userCan: null, next: null }) } });
+  assert.deepEqual(built.pm[0].report.lines, ['Latest report (PR #9): no structured PM report yet', 'Review: approval approved · CI passing · 1 unresolved thread']);
+});
+
+test('the state text of every state is what the person reads: working, waiting for input, ended, state unknown', () => {
+  for (const [state, text] of [['working', 'working'], ['waiting', 'waiting for input'], ['ended', 'ended']]) assert.equal(statusOf(session({ deliveryState: hook(state) })).text, text, state);
+  assert.equal(statusOf(session({ deliveryState: undefined })).text, 'state unknown');
+  assert.deepEqual(buildCards({ sessions: ['working', 'waiting', 'ended'].map((state) => session({ id: `s-${state}`, deliveryState: hook(state) })) }).agents.map((card) => card.status.text).sort(), ['ended', 'waiting for input', 'working']);
+});

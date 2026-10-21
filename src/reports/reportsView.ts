@@ -19,7 +19,8 @@ const { classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS } = requ
 };
 
 type ReportFile = { filename: string; status: string; patch: string | null };
-const { buildIssueReport, buildPullRequestReport, neighbour, render, line, fileBulletLines } = require('./report') as {
+const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbour, render, line, fileBulletLines } = require('./report') as {
+  summarizePullRequest(input: { repository: string; pullRequest: unknown; snapshot: unknown; comments: unknown }): PullRequestSummary;
   buildIssueReport(input: Record<string, unknown>): { title: string; lines: string[] };
   buildPullRequestReport(input: Record<string, unknown>): { title: string; lines: string[]; files?: ReportFile[] };
   neighbour(numbers: number[], current: number, step: number): number | null;
@@ -252,6 +253,31 @@ function parse(uri: vscode.Uri): { kind: Kind; number: number } | null {
   const number = Number(params.get('n'));
   if ((kind !== 'issue' && kind !== 'pullRequest') || !Number.isSafeInteger(number) || number < 1) return null;
   return { kind, number };
+}
+
+export type PullRequestSummary = { pm: 'current' | 'stale' | 'missing' | 'unknown'; userCan: string | null; next: string | null; approval: string; ci: string; unresolved: number | null };
+const SUMMARY_TTL_MS = 60_000;
+const summaryCache = new Map<number, { at: number; generation: number; value: PullRequestSummary | null }>();
+/**
+ * A few facts of one pull request's report (issue #309), read the same way the full report is and kept for a minute, so a screen that
+ * refreshes often does not read GitHub each time. `null` means it could not be read (the screen says unknown), never a guess.
+ */
+export async function pullRequestSummary(number: number): Promise<PullRequestSummary | null> {
+  if (!Number.isSafeInteger(number) || number < 1) return null;
+  const kept = summaryCache.get(number);
+  if (kept && kept.generation === readGeneration && Date.now() - kept.at < SUMMARY_TTL_MS) return kept.value;
+  let value: PullRequestSummary | null = null;
+  try {
+    const repository = await deps.repository();
+    const reader = repository ? deps.readerFor(repository) : null;
+    if (repository && reader) {
+      const [pullRequest, snapshot, comments] = await Promise.all([reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getIssueComments(number)]);
+      if (pullRequest.kind === 'ok' && pullRequest.data) value = summarizePullRequest({ repository, pullRequest: pullRequest.data, snapshot, comments });
+    }
+  } catch { value = null; }
+  summaryCache.set(number, { at: Date.now(), generation: readGeneration, value });
+  if (summaryCache.size > 100) summaryCache.delete(summaryCache.keys().next().value as number);
+  return value;
 }
 
 export function reportUri(kind: Kind, number: number): vscode.Uri {

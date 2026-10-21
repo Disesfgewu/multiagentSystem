@@ -473,6 +473,10 @@ async function roleFlow(workspace: string): Promise<void> {
   assert.match(text, /<NOT sent to the CLI>/, 'every rule says it was not sent');
   assert.match(text, /<told to the agent only, not enforced>/, 'every tool permission says it is not enforced');
   assert.match(text, /host-no-merge \(platform v2\)/);
+  assert.match(text, /What the CLI is given when this role is started \(a launch passes this; this preview passes nothing\):/, 'the preview says what a launch gives the CLI');
+  assert.match(text, /  - merge: deny — ENFORCED; the shell is denied, so no command of this kind can run/, 'a ban from a stronger layer is what the CLI would be given; with the shell denied nothing of that kind can run');
+  assert.match(text, /  - fileWrite: deny — ENFORCED; Claude Code removes this tool/, 'a file tool that is denied with the shell denied too is fully removed');
+  assert.match(text, /Broker role: pm/);
   assert.match(text, /permission-relaxation-blocked/);
   assert.match(text, /PRIVATE/);
   assert.doesNotMatch(text, /applied|sent to the CLI \(evidence/i, 'nothing is claimed as applied');

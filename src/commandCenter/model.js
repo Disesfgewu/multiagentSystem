@@ -44,16 +44,41 @@ function statusOf(session) {
   return { state: 'unknown', text: STATE_TEXT.unknown, source: reason ? `no hook evidence (${reason})` : 'no hook evidence' };
 }
 
+const PM_TEXT = Object.freeze({
+  current: 'PM report current',
+  stale: 'PM report STALE (its evidence is for another head)',
+  missing: 'no structured PM report yet',
+  unknown: 'PM report unknown'
+});
+
+/**
+ * The latest report of the agent's pull request, as a few lines: what the PM report says the person can do and what is next, the formal
+ * approval and CI for the latest head. `undefined` means it was not loaded yet and `null` that it could not be read: both are said
+ * plainly, never filled in. An agent with no pull request has no report.
+ */
+function reportLines(pullRequest, summary) {
+  if (pullRequest === null) return ['Latest report: none (no pull request is linked to this agent)'];
+  if (summary === undefined) return [`Latest report (PR #${pullRequest}): not loaded yet`];
+  if (!isPlain(summary)) return [`Latest report (PR #${pullRequest}): unknown (the report could not be read)`];
+  const out = [`Latest report (PR #${pullRequest}): ${Object.hasOwn(PM_TEXT, summary.pm) ? PM_TEXT[summary.pm] : PM_TEXT.unknown}`];
+  if (typeof summary.userCan === 'string' && summary.userCan !== '') out.push(`User can: ${line(summary.userCan, '', 160)}`);
+  if (typeof summary.next === 'string' && summary.next !== '') out.push(`Next: ${line(summary.next, '', 160)}`);
+  const unresolved = Number.isSafeInteger(summary.unresolved) && summary.unresolved >= 0 ? ` · ${summary.unresolved} unresolved thread${summary.unresolved === 1 ? '' : 's'}` : '';
+  out.push(`Review: approval ${line(summary.approval, UNKNOWN, 40)} · CI ${line(summary.ci, UNKNOWN, 20)}${unresolved}`);
+  return out;
+}
+
 /** `role` is the role group's role id ('pm', 'worker', 'researcher', …), or null when the session has no role group. */
 const isPm = (role) => role === 'pm';
 
 /**
- * @param {{ sessions: object[], agents?: object[], accounts?: object[], roles?: Record<string, { name?: string, role?: string }>, now?: Date }} input
+ * @param {{ sessions: object[], agents?: object[], accounts?: object[], roles?: Record<string, { name?: string, role?: string }>, reports?: Record<number, object|null> }} input
+ *   `reports`: a summary of the pull request's report by pull request number (`null` could not be read, a missing key not loaded yet).
  *   `agents`: the overview's presented agents (same ids as the sessions); `accounts`: its presented accounts (id, label, usage lines, gate).
  * @returns {{ pm: object[], agents: object[], accounts: object[], counts: { agents: number, pm: number } }}
  */
 function buildCards(input) {
-  const { sessions, agents = [], accounts = [], roles = {} } = isPlain(input) ? input : {};
+  const { sessions, agents = [], accounts = [], roles = {}, reports = {} } = isPlain(input) ? input : {};
   const presented = new Map((Array.isArray(agents) ? agents : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const accountById = new Map((Array.isArray(accounts) ? accounts : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const cards = [];
@@ -68,6 +93,8 @@ function buildCards(input) {
     const pullRequest = shownAgent && Number.isSafeInteger(shownAgent.pullRequestNumber) ? shownAgent.pullRequestNumber : null;
     const gate = account && isPlain(account.gate) && typeof account.gate.action === 'string' ? account.gate.action : null;
     const details = shownAgent ? lines(shownAgent.tooltip).filter((entry) => !/^Fields marked unknown/.test(entry)) : [];
+    // The one line on the card itself about the working folder: what Git says right now, or that it does not know.
+    const worktree = details.find((entry) => /^Git(?: |:)/.test(entry)) ?? null;
     cards.push({
       id: session.id,
       name: line(session.name, 'Session'),
@@ -86,6 +113,8 @@ function buildCards(input) {
       },
       summary: shownAgent ? line(shownAgent.description, UNKNOWN, 200) : UNKNOWN,
       details,
+      worktree: worktree ? worktree.replace(/^Git(?: \([^)]*\))?:\s*/, '') : 'unknown (no Git reading for this session)',
+      report: { lines: reportLines(pullRequest, pullRequest !== null && isPlain(reports) && Object.hasOwn(reports, String(pullRequest)) ? reports[String(pullRequest)] : undefined) },
       quota: account ? { lines: lines(account.usage).slice(0, 2), policy: line(account.policy, '', 160), gate } : { lines: [], policy: '', gate: null },
       autoMode: line(session.autoModeLabel, '', 140) || null,
       alert: gate === 'block' ? 'quota: new agents on this account are held back' : gate === 'confirm' ? 'quota: needs confirmation' : gate === 'warn' ? 'quota: near the limit' : null
