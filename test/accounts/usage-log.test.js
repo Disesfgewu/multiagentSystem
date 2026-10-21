@@ -80,7 +80,7 @@ test('a stored record that cannot be read is an error, not an empty log; an inva
 });
 
 test('what is stored holds no prompt, path or credential: only the fixed fields, and nothing else is accepted', () => {
-  const checked = validateEntry({ ...entry(), prompt: 'secret prompt', path: '/Users/x/project', token: 'abc', label: 'My Account' });
+  const checked = validateEntry({ ...entry(), prompt: 'secret prompt', path: '/synthetic/project', token: 'abc', label: 'My Account' });
   assert.equal(checked.ok, true);
   assert.deepEqual(Object.keys(checked.entry).sort(), ['accountProfileId', 'at', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens', 'provider', 'sessionId', 'source']);
   assert.equal(JSON.stringify(checked.entry).includes('secret prompt'), false);
