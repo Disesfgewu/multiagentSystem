@@ -102,6 +102,50 @@ const SCRIPT = String.raw`
     return node;
   }
 
+  function accountAction(account, action, label, title) {
+    return button(label, function () { post({ type: 'accountAction', action: action, id: account.id }); }, title);
+  }
+
+  function accountNode(account) {
+    var row = el('div', 'account' + (account.alert ? ' alerting' : ''));
+    row.setAttribute('data-account', account.id);
+    var head = el('div', 'card-head');
+    var title = el('div', 'card-title');
+    title.appendChild(el('strong', null, account.label));
+    title.appendChild(el('span', 'muted', ' · ' + account.provider));
+    head.appendChild(title);
+    head.appendChild(el('span', 'badge', account.signIn));
+    row.appendChild(head);
+    row.appendChild(el('div', 'muted', account.identity + (account.plan ? ' · plan ' + account.plan : '')));
+    account.issues.forEach(function (text) { row.appendChild(el('div', 'detail', text)); });
+    if (account.alert) row.appendChild(el('div', 'alert', 'Quota: ' + account.alert));
+    var usage = el('div', 'quota');
+    account.windows.forEach(function (entry) {
+      usage.appendChild(el('div', 'quota-line' + (entry.kind === 'unknown' ? ' muted' : ''), entry.label + ': ' + entry.text + ' · ' + entry.trust + ' · ' + entry.resets + ' · ' + entry.read + ' · from ' + entry.source));
+    });
+    if (account.windows.length === 0 && !account.reason) usage.appendChild(el('div', 'quota-line muted', 'Usage: unknown'));
+    row.appendChild(usage);
+    var next = null;
+    if (account.reason) {
+      var why = el('div', 'reason');
+      why.appendChild(el('div', 'quota-line', 'Usage: unknown (' + account.reason.short + ')'));
+      why.appendChild(el('div', 'detail muted', account.reason.detail));
+      if (account.reason.hint) why.appendChild(el('div', 'detail', account.reason.hint));
+      row.appendChild(why);
+      next = account.reason.next;
+    }
+    row.appendChild(el('div', 'muted', account.policy));
+    row.appendChild(el('div', 'muted', account.agentCount === 0 ? 'No running agent uses this account.' : 'Agents: ' + account.agents.join(', ') + (account.agentCount > account.agents.length ? ' (+' + (account.agentCount - account.agents.length) + ' more)' : '')));
+    var actions = el('footer', 'card-actions');
+    actions.appendChild(accountAction(account, 'login', 'Sign in'));
+    actions.appendChild(accountAction(account, 'check', 'Check sign-in'));
+    actions.appendChild(accountAction(account, 'limits', 'Set limits'));
+    actions.appendChild(accountAction(account, 'usageLog', 'Token usage log'));
+    if (next) actions.appendChild(accountAction(account, next.action, next.label));
+    row.appendChild(actions);
+    return row;
+  }
+
   function decisionLines(decisions) {
     var box = el('div', 'decisions');
     box.appendChild(el('h3', null, 'Decisions waiting'));
@@ -131,6 +175,12 @@ const SCRIPT = String.raw`
     pm.appendChild(el('h2', null, 'PM'));
     if (state.pm.length === 0) pm.appendChild(el('p', 'muted', 'No PM agent is running. Start a session with a PM role group to pin it here.'));
     state.pm.forEach(function (card) { pm.appendChild(cardNode(card, true)); });
+    if (state.alerts.length > 0) {
+      var alertBox = el('div', 'decisions');
+      alertBox.appendChild(el('h3', null, 'Quota alerts'));
+      state.alerts.forEach(function (text) { alertBox.appendChild(el('div', 'alert', text)); });
+      pm.appendChild(alertBox);
+    }
     pm.appendChild(decisionLines(state.decisions));
     layout.appendChild(pm);
 
@@ -144,15 +194,12 @@ const SCRIPT = String.raw`
     root.appendChild(layout);
 
     var accounts = el('section', 'accounts');
-    accounts.appendChild(el('h2', null, 'Accounts (' + state.accounts.length + ')'));
-    state.accounts.forEach(function (account) {
-      var row = el('div', 'account' + (account.gate === 'block' ? ' alerting' : ''));
-      row.appendChild(el('strong', null, account.label));
-      row.appendChild(el('span', 'muted', ' · ' + account.provider));
-      if (account.lines.length === 0) row.appendChild(el('div', 'muted', 'Usage: unknown'));
-      account.lines.forEach(function (text) { row.appendChild(el('div', 'quota-line', text)); });
-      accounts.appendChild(row);
-    });
+    var accountHead = el('div', 'toolbar');
+    accountHead.appendChild(el('h2', null, 'Accounts (' + state.accounts.length + ')'));
+    accountHead.appendChild(button('Add account', function () { post({ type: 'accountAction', action: 'create' }); }));
+    accounts.appendChild(accountHead);
+    if (state.accounts.length === 0) accounts.appendChild(el('p', 'muted', 'No account profiles yet. Add one to see its sign-in and usage here.'));
+    state.accounts.forEach(function (account) { accounts.appendChild(accountNode(account)); });
     root.appendChild(accounts);
     root.appendChild(el('p', 'muted', 'Read-only view. Values without a source are shown as unknown.'));
   }
@@ -191,7 +238,7 @@ const STYLE = `
   .note { padding: 6px 8px; margin-bottom: 8px; border: 1px solid var(--vscode-panel-border); }
   .report { margin-top: 4px; padding-left: 6px; border-left: 2px solid var(--vscode-panel-border); } .report-head { font-weight: 600; } .report-line { font-size: 0.92em; overflow-wrap: anywhere; }
   .quota { margin-top: 4px; } .quota-line, .detail { font-size: 0.92em; overflow-wrap: anywhere; }
-  .accounts { margin-top: 16px; } .account { padding: 6px 8px; margin-bottom: 6px; border: 1px solid var(--vscode-panel-border); }
+  .accounts { margin-top: 16px; } .account { padding: 6px 8px; margin-bottom: 8px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 3px; } .reason { margin: 2px 0; }
   .btn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 0; padding: 3px 8px; cursor: pointer; border-radius: 2px; }
   .btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
   @media (max-width: 760px) { .layout { flex-direction: column; } .pm-panel { position: static; flex: none; width: 100%; max-height: none; border-right: 0; padding-right: 0; } }

@@ -1,5 +1,8 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { accountService } from '../../../src/accounts/accountRuntime';
 import { pullRequestSummary, setReportDepsForTests } from '../../../src/reports/reportsView';
 import { commandCenterForTests, commandCenterHtmlForTests, commandCenterOpenForTests, COMMAND_CENTER_COMMAND, COMMAND_CENTER_VIEW_TYPE } from '../../../src/commandCenter/commandCenter';
 
@@ -66,6 +69,58 @@ export async function runCommandCenterChecks(workspace: string): Promise<void> {
     ] as Array<[unknown, string]>) assert.deepEqual(await center.handle(message), { ok: false, reason }, JSON.stringify(message));
     assert.equal((await vscode.commands.executeCommand<{ sessions?: Session[] }>('multiagentSystem.sessions.list', { interactive: false })).sessions?.some((entry) => entry.id === subject.id), true, 'a refused message stopped nothing');
     assert.deepEqual(await center.handle({ type: 'focus', id: subject.id }), { ok: true, command: 'focus' });
+    // The account panel (issue #304): a real profile, its sign-in and quota as the services know them, and the account actions, which are the
+    // existing account commands with their own dialogs (answered here by cancelling them).
+    const accountDir = path.join(path.dirname(workspace), 'synthetic-command-center-account');
+    fs.mkdirSync(accountDir, { recursive: true });
+    const accounts = await accountService(() => []);
+    assert.ok(accounts.ok);
+    if (accounts.ok) {
+      const created = accounts.service.create({ provider: 'claude', label: 'Command Center Account', configDir: accountDir });
+      assert.ok(created.ok, JSON.stringify(created));
+      if (created.ok) {
+        const accountId = created.profile.id as string;
+        const original = { pick: vscode.window.showQuickPick, input: vscode.window.showInputBox };
+        const ui = vscode.window as any;
+        try {
+          await center.refresh();
+          const waitFor = async () => { const by = Date.now() + 15000; let found: any; while (!(found = (center.state() as any)?.accounts?.find((row: { id: string }) => row.id === accountId)) && Date.now() < by) { await center.refresh(); await new Promise((resolve) => setTimeout(resolve, 100)); } return found; };
+          const row = await waitFor();
+          assert.ok(row, 'the account is a row on the screen');
+          assert.equal(row.label, 'Command Center Account');
+          assert.equal(row.provider, 'Claude Code');
+          assert.equal(row.signIn, 'sign-in not checked in this window');
+          assert.match(row.identity, /^identity unknown/);
+          assert.equal(row.usageKnown, false, 'no reading source is enabled for this account, so nothing is shown as a number');
+          assert.equal(row.reason.short, 'usage bridge not enabled');
+          assert.deepEqual(row.reason.next, { action: 'configureStatusLine', label: 'Enable the Claude status line bridge' }, 'the next step is a click');
+          assert.equal(row.agentCount, 0);
+          assert.match(row.policy, /^Limits: none set/);
+
+          ui.showQuickPick = async () => undefined;
+          ui.showInputBox = async () => undefined;
+          assert.deepEqual(await center.handle({ type: 'accountAction', action: 'details', id: accountId }), { ok: true, command: 'accountAction:details' });
+          assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-account');
+          assert.deepEqual(await center.handle({ type: 'accountAction', action: 'usageLog', id: accountId }), { ok: true, command: 'accountAction:usageLog' });
+          assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-usage-log');
+          assert.deepEqual(await center.handle({ type: 'accountAction', action: 'limits', id: accountId }), { ok: true, command: 'accountAction:limits' }, 'the limits dialogs are the account command\'s own, and cancelling them changes nothing');
+          assert.match((await waitFor()).policy, /^Limits: none set/);
+          assert.deepEqual(await center.handle({ type: 'accountAction', action: 'create' }), { ok: true, command: 'accountAction:create' });
+          for (const [message, reason] of [
+            [{ type: 'accountAction', action: 'remove', id: accountId }, 'invalid-field'],
+            [{ type: 'accountAction', action: 'login', id: 'not-an-account' }, 'unknown-id'],
+            [{ type: 'accountAction', action: 'create', id: accountId }, 'unexpected-field'],
+            [{ type: 'accountAction', action: 'details', id: subject.id }, 'unknown-id']
+          ] as Array<[unknown, string]>) assert.deepEqual(await center.handle(message), { ok: false, reason }, JSON.stringify(message));
+          assert.ok((await accountService(() => []) as any).service.get(accountId).ok, 'a refused message removed nothing');
+        } finally {
+          ui.showQuickPick = original.pick;
+          ui.showInputBox = original.input;
+          await accounts.service.remove(accountId);
+          fs.rmSync(accountDir, { recursive: true, force: true });
+        }
+      }
+    }
     // back to the defaults for the other checks
     await center.handle({ type: 'setLayout', mode: 'grid' });
     await center.handle({ type: 'togglePin', id: subject.id });
