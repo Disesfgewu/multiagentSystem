@@ -64,6 +64,8 @@
 
 **驗證環境**：本機開發環境是 macOS，Windows 只由 windows-latest CI 驗證（虛擬機，不能取代乾淨實機；實機項在 #135 T26）。CI 日誌印出受限啟動是否成功、被設為 deny-only 的群組數、每個通道的 `control`／`outcome`。
 
+**Windows 的定位（#26，PM 決定選項 2）**：受限權杖與 harness 保留，當作**檔案與環境變數的縱深防禦工具**，**不宣稱 enforced**——權杖擋不了 socket，三個必要的網路通道（git-push／gh-cli／direct-http）在 Windows 一律是 `open`，所以 `decideLaunch` 的 enforced 永遠無法成立，也不放寬這條規則。另外，**已提升權限的管理員 session 擋不住**這個機制。Administrators 也 deny-only 時程式連不到自己建立的具名管線、以及 Windows 網路封鎖（AppContainer／防火牆規則）的原型，都不在 #26 做，之後另開 enhancement issue（post-beta）；乾淨 Windows 實機驗證在 #135 T26。
+
 ## 本機過濾代理（#25／#26，尚未接到任何啟動路徑）
 
 `src/isolation/filter-proxy.js`：沙箱 profile 只能依位址／埠過濾網路，所以 agent CLI 要連自己的供應商、但不能連 GitHub，必須經過一個依**主機名稱**決定的本機代理。profile 之後只放行這個代理的一個本機埠，CLI 以 `HTTPS_PROXY` 指向它；不走代理的程式連不出去。
@@ -82,4 +84,4 @@
 
 只有 Extension Host 測試（`interactive: false`）能代替使用者跳過確認，一般安裝的擴充套件會強制互動。沒有啟動 CLI 的純 shell（`launch: false`）不探測、不包裝。**範圍**：enforced 只涵蓋 session 的 start 與 reopen。「Start Custom Provider Terminal」在 enforced（或模式值不是 advisory／enforced）時**拒絕啟動**（`isolation-enforced-unsupported`／`isolation-mode-invalid`），因為自訂 provider 還沒有受管隔離；要使用請先把模式改回 advisory。空白 shell、四格 terminal 與登入用 terminal 不啟動 agent CLI，使用者自己在裡面輸入的指令**不在受管範圍內**。沙箱只包住 CLI 程式，不包住使用者的 shell 本身。
 
-**未驗證**：真實 CLI 是否肯走 `HTTPS_PROXY`、各供應商需要哪些網域、沒有 `gh` 的機器上（gh-cli 對照組無法成功＝unknown）enforced 會一律拒絕、真實 keychain helper（#135 T25）。Windows 端尚未接上（#26）。
+**未驗證**：真實 CLI 是否肯走 `HTTPS_PROXY`、各供應商需要哪些網域、沒有 `gh` 的機器上（gh-cli 對照組無法成功＝unknown）enforced 會一律拒絕、真實 keychain helper（#135 T25）。**Windows 目前只有 advisory**（PM 於 #26 決定）：使用者設定 enforced 時，start 與 reopen 都在做任何事之前就拒絕（`platform-not-supported`，訊息寫明「Windows 尚不支援受管隔離，受限權杖擋不了網路」），不探測、不呼叫 PowerShell 腳本、不建立 terminal；其他非 macOS 平台同樣拒絕。

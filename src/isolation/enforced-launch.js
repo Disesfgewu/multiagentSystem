@@ -53,7 +53,7 @@ function variablesToUnset(parentEnv) {
  * @returns {Promise<{ ok: true, wrapCommand(executable: string, args: string[]): { executable: string, args: string[] }, env: Record<string, string | null>, notice: string, summary: string[], dispose(): Promise<void> } | { ok: false, code: string, reasons: string[], notice: string }>}
  */
 async function prepareEnforcedLaunch({ platform = process.platform, allowedDomains, storageDir, home, cwd, parentEnv = process.env, createHarness, createProxy = createFilterProxy, signal, now, probeTimeoutMs } = {}) {
-  if (platform !== 'darwin') return refuse('platform-not-supported', ['platform-not-supported'], 'Enforced isolation is only available on macOS for now, so nothing was started. Windows is not wired yet.');
+  if (platform !== 'darwin') return refuse('platform-not-supported', ['platform-not-supported'], 'Enforced isolation is only available on macOS for now, so nothing was started.');
   if (!Array.isArray(allowedDomains) || allowedDomains.length === 0 || allowedDomains.some((entry) => typeof entry !== 'string' || parsePattern(entry) === null)) {
     return refuse('allowed-domains-missing', ['allowed-domains-missing'], 'Enforced isolation needs the provider domains you allow (user setting multiagentSystem.isolation.allowedDomains), so nothing was started.');
   }
