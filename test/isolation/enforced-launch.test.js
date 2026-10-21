@@ -33,7 +33,7 @@ function fakeProxy({ log = [], address = '127.0.0.1', fail = false } = {}) {
 
 const base = (extra = {}) => {
   const storageDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'mas-enf-'));
-  return { platform: 'darwin', allowedDomains: ['api.provider.test'], storageDir, home: '/Users/someone', createHarness: fakeHarness(), createProxy: fakeProxy(), ...extra };
+  return { platform: 'darwin', allowedDomains: ['api.provider.test'], storageDir, home: '/synthetic/home', createHarness: fakeHarness(), createProxy: fakeProxy(), ...extra };
 };
 const leftovers = (dir) => fs.readdirSync(dir);
 
@@ -49,7 +49,7 @@ test('with every channel proven, the command is the sandboxed one and the enviro
   const profile = fs.readFileSync(command.args[1], 'utf8');
   assert.match(profile, /\(deny network\*\)/);
   assert.match(profile, /localhost:45678/);
-  assert.match(profile, /deny file-read\* \(subpath "\/Users\/someone\/\.config\/gh"\)/);
+  assert.match(profile, /deny file-read\* \(subpath "\/synthetic\/home\/\.config\/gh"\)/);
   assert.match(profile, /com\.apple\.SecurityServer/);
   assert.equal(fs.statSync(command.args[1]).mode & 0o077, 0, 'the profile is readable only by the person');
   assert.equal(fs.statSync(path.dirname(command.args[1])).mode & 0o077, 0, 'so is the folder it lives in');
@@ -62,7 +62,7 @@ test('the proxy is given only the person\'s allowed domains and the profile allo
   let seen;
   const result = await prepareEnforcedLaunch(base({ createProxy: (options) => { seen = options; return fakeProxy()(options); }, allowedDomains: ['api.provider.test', '*.cdn.provider.test'] }));
   assert.deepEqual(seen.allow, ['api.provider.test', '*.cdn.provider.test']);
-  assert.deepEqual(launchSpec({ home: '/Users/someone', proxyPort: 45678 }).allowLocalPorts, [45678]);
+  assert.deepEqual(launchSpec({ home: '/synthetic/home', proxyPort: 45678 }).allowLocalPorts, [45678]);
   await result.dispose();
 });
 
@@ -122,7 +122,7 @@ test('no refusal carries a path, an account or the proxy credential', async () =
   const input = base({ createHarness: fakeHarness({ override: { 'direct-http': { control: true, outcome: 'open' } } }) });
   const result = await prepareEnforcedLaunch(input);
   const text = JSON.stringify(result);
-  for (const secret of [input.storageDir, input.home, 'abc123', 'someone']) assert.ok(!text.includes(secret), secret);
+  for (const secret of [input.storageDir, input.home, 'abc123', 'synthetic/home']) assert.ok(!text.includes(secret), secret);
 });
 
 test('a program name or arguments that are not plain are refused when the command is wrapped', async () => {

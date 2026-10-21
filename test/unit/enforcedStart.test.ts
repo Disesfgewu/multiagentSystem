@@ -18,7 +18,7 @@ const okPrepared = (log: string[] = []) => async () => ({
   summary: ['Enforced isolation: proven.', 'Not verified (#135): the real CLI.'],
   dispose: async () => { log.push('disposed'); }
 });
-const base = (extra: Record<string, unknown> = {}) => ({ mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/Users/someone', createHarness: () => ({}), ...extra });
+const base = (extra: Record<string, unknown> = {}) => ({ mode: 'enforced', allowedDomains: ['api.provider.test'], interactive: true, storageDir: '/private/store', home: '/synthetic/home', createHarness: () => ({}), ...extra });
 
 test('without the setting, or in advisory mode, nothing is prepared and nothing is asked: the launch is unchanged', async () => {
   for (const mode of [undefined, 'advisory']) {
