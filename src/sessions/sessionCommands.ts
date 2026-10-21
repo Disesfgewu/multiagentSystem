@@ -33,6 +33,10 @@ import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
 import { prepareIsolationForStart } from '../isolation/enforcedStart';
 import { writeAttributionSettings } from '../providers/attribution';
+const { resolveAutoMode, describeAutoMode } = require('../providers/auto-mode') as {
+  resolveAutoMode(input: { provider: string; setting?: unknown; overrides?: unknown }): { state: 'on' | 'off' | 'unknown'; args: string[]; label: string };
+  describeAutoMode(auto: { state: string; args: string[]; label: string }, isolation: 'enforced' | 'advisory'): string[];
+};
 const { readUserLevel } = require('../settings/user-level') as { readUserLevel(inspected: unknown): { value: unknown; ignoredScopes: string[] } };
 import { callerArgumentNeedsConfirmation } from '../shared/callerConfirm';
 const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(worktree: string, folders: string[], deps?: { realpath?: (p: string) => Promise<string>; commonDir?: (dir: string) => Promise<string | null> }): Promise<boolean> };
@@ -161,6 +165,21 @@ function attributionFileFor(provider: string, launch: boolean | undefined, opene
   } catch {
     throw Object.assign(new Error('attribution-settings-unavailable'), { code: 'attribution-settings-unavailable' });
   }
+}
+
+/**
+ * Auto mode for this launch (issue #296), from the person's own user settings only. Not applicable to a shell opened without
+ * a CLI. The lines say what the CLI will not stop to ask, and how that sits with the isolation of this session.
+ */
+function autoModeFor(provider: string, launch: boolean | undefined, isolationKind: string) {
+  if (launch === false) return { auto: undefined, lines: [] as string[] };
+  const settings = vscode.workspace.getConfiguration('multiagentSystem');
+  const auto = resolveAutoMode({
+    provider,
+    setting: readUserLevel(settings.inspect('agents.autoMode')).value,
+    overrides: readUserLevel(settings.inspect('agents.autoModeOverrides')).value
+  });
+  return { auto: { args: auto.args, label: auto.label, state: auto.state }, lines: describeAutoMode(auto, isolationKind === 'enforced' ? 'enforced' : 'advisory') as string[] };
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
@@ -373,6 +392,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (isolation.kind === 'enforced') isolationDispose = isolation.dispose;
       if (isolation.kind === 'enforced') env = { ...(env ?? {}), ...isolation.env };
       const attributionFile = attributionFileFor(provider, input.launch, openedStorage);
+      const autoMode = autoModeFor(provider, input.launch, isolation.kind);
+      let autoModeShown = false;
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -405,9 +426,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
         }
         if (interactive && prep.digest) {
+          autoModeShown = true;
           const answer = await vscode.window.showInformationMessage(
             `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
-            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nThe instructions are written to a private file outside the workspace (for Codex, inside the account's Codex home); they are removed when the session ends. Whether the CLI reads them is not verified.` },
+            { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}\nThe instructions are written to a private file outside the workspace (for Codex, inside the account's Codex home); they are removed when the session ends. Whether the CLI reads them is not verified.${autoMode.lines.length > 0 ? `\n\n${autoMode.lines.join('\n')}` : ''}` },
             'Start Agent',
             'View Instructions'
           );
@@ -459,8 +481,11 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         launch: input.launch,
         instructions,
         ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}),
-        ...(attributionFile ? { attributionFile } : {})
+        ...(attributionFile ? { attributionFile } : {}),
+        ...(autoMode.auto ? { autoMode: autoMode.auto } : {})
       });
+      // No confirmation window was shown for this launch: say it on screen anyway, so nobody is surprised that the agent does not stop to ask.
+      if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
       if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
       if (release && manager.get(session.id)?.terminalOpen) { reservations.set(session.id, release); release = undefined; }
       changed.fire();
@@ -629,6 +654,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
         if (isolation.kind === 'enforced') { isolationDispose = isolation.dispose; env = { ...(env ?? {}), ...isolation.env }; }
         const attributionFile = attributionFileFor(prior.provider, input.launch, openedStorage);
+        const autoMode = autoModeFor(prior.provider, input.launch, isolation.kind);
+        let autoModeShown = false;
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -659,9 +686,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
           }
           if (interactive && prep.digest) {
+            autoModeShown = true;
             const answer = await vscode.window.showInformationMessage(
               `Reopening session with effective instructions (${prep.digest.slice(0, 16)}...).`,
-              { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}` },
+              { modal: true, detail: `Delivery method: ${prep.injectionStatusLabel}${autoMode.lines.length > 0 ? `\n\n${autoMode.lines.join('\n')}` : ''}` },
               'Reopen Session',
               'View Instructions'
             );
@@ -704,7 +732,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           env
         });
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}) });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}) });
+          if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
         } catch (error) {
           observations.release(newSessionId);
           throw error;

@@ -861,3 +861,34 @@ test('the settings file is private, holds only the attribution switch and is rew
     for (const bad of ['relative', '', undefined as unknown as string]) assert.throws(() => writeAttributionSettings(bad), /attribution-settings-unavailable/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+const AUTO = { args: ['--permission-mode', 'auto'], label: 'Auto mode: on (synthetic)' };
+
+test('auto mode arguments follow the attribution settings and precede the model; the wrap receives them all, in start and reopen', async () => {
+  const r = rig();
+  const wrapped: string[][] = [];
+  const wrap = (executable: string, args: string[]) => { wrapped.push(args); return { executable, args }; };
+  await r.manager.start({ provider: 'claude', name: 'A', cwd: '/synthetic/project', requestedModel: 'sonnet', autoMode: AUTO, wrap });
+  assert.deepEqual(wrapped[0], ['--settings', ATTRIBUTION_FILE, '--permission-mode', 'auto', '--model', 'sonnet']);
+  assert.equal(r.terminals[0].sent[0].text, `claude ${ATTRIBUTION} --permission-mode auto --model sonnet`);
+  const first = await r.manager.start({ provider: 'claude', name: 'B', cwd: '/synthetic/project', launch: false });
+  r.manager.stop(first.id);
+  await r.manager.reopen(first.id, { autoMode: AUTO });
+  assert.equal(r.terminals[r.terminals.length - 1].sent[0].text, `claude ${ATTRIBUTION} --permission-mode auto`);
+});
+
+test('no auto mode, or a shell opened without a CLI, adds no argument; the view says what was requested', async () => {
+  const r = rig();
+  const off = await r.manager.start({ provider: 'claude', name: 'A', cwd: '/synthetic/project', autoMode: { args: [], label: 'Auto mode: off (synthetic)' } });
+  assert.equal(r.terminals[0].sent[0].text, `claude ${ATTRIBUTION}`);
+  assert.equal(off.autoModeLabel, 'Auto mode: off (synthetic)');
+  const none = await r.manager.start({ provider: 'claude', name: 'B', cwd: '/synthetic/project' });
+  assert.equal(r.terminals[1].sent[0].text, `claude ${ATTRIBUTION}`);
+  assert.match(String(none.autoModeLabel), /unknown/);
+  const shell = await r.manager.start({ provider: 'claude', name: 'C', cwd: '/synthetic/project', launch: false, autoMode: AUTO });
+  assert.deepEqual(r.terminals[2].sent, [], 'nothing is typed');
+  assert.match(String(shell.autoModeLabel), /not applicable/);
+  const on = await r.manager.start({ provider: 'codex', name: 'D', cwd: '/synthetic/project', autoMode: { args: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'], label: 'Auto mode: on (codex)' } });
+  assert.equal(r.terminals[3].sent[0].text, 'codex --sandbox workspace-write --ask-for-approval never');
+  assert.equal(on.autoModeLabel, 'Auto mode: on (codex)');
+});

@@ -136,8 +136,14 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 |---|---|---|
 | `multiagentSystem.isolation.mode` | `advisory` | `advisory`：照常啟動。`enforced`：只在 macOS 上，證據完整時才在沙箱中啟動，否則拒絕。 |
 | `multiagentSystem.isolation.allowedDomains` | `[]` | enforced 時 CLI 可以連線的網域，例如 `api.example.com` 或 `*.example.com`。GitHub 相關網域即使列入也不會放行。 |
+| `multiagentSystem.agents.autoMode` | `on` | **預設開啟自動模式**：Claude Code 以 `--permission-mode auto`、Codex 以 `--sandbox workspace-write --ask-for-approval never` 啟動，agent 不會逐項停下來等核准。`off` 則照常詢問。這是對 CLI 的請求，是否被遵守未經驗證；風險與建議見下方。 |
+| `multiagentSystem.agents.autoModeOverrides` | `{}` | 針對單一 provider 覆寫，例如 `{ "claude": "off" }`。 |
 | `multiagentSystem.providers.custom` | `[]` | 自訂 CLI provider 清單。 |
 | `multiagentSystem.skills.autoInstall` | `true` | 是否在受信任的工作區自動準備協作 skills。 |
+
+### 自動模式的風險
+
+自動模式開啟時，agent 可以不經詢問就執行指令、修改與刪除檔案，也可能 push 或使用網路。啟動確認視窗與 Overview 都會顯示「Auto mode: on」與實際帶入的參數。**advisory 模式沒有隔離保護**，建議在 macOS 搭配 enforced 隔離（CLI 在沙箱內執行）。可以在 `multiagentSystem.agents.autoMode` 關閉。套件**沒有**使用更強的繞過旗標（Claude Code 的 `--dangerously-skip-permissions`、Codex 的 `--yolo`），官方文件說它們只適用於隔離的環境。agy 與自訂 provider 沒有官方文件列出的旗標，不帶入、標為未知；自訂 provider 的參數由你自己在 `providers.custom` 指定。
 
 ## 安全與隱私原則
 
