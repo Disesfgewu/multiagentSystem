@@ -39,12 +39,16 @@ function promptIsSafe(prompt) {
 const RUNNING = new Set(['launch-requested', 'cli-observed']);
 
 /**
- * Per targeted session: send, or skip with a reason. A session is only sent to when its terminal is open, its CLI is
- * recorded as running, AND the CLI's own hook evidence (fresh, `actual`) says it is waiting for input. No evidence, a busy
- * CLI or a finished one is a skip with the reason: the prompt is never forced into a shell prompt or a busy CLI.
+ * Per targeted session: `send`, `unknown`, or `skip` with a reason.
+ *  - `send`: the terminal is open, the CLI is recorded as running, AND the CLI's own last hook event says it is waiting for input
+ *    (`session.deliveryState`, which does not age out after 30 seconds: an idle agent sends no further event).
+ *  - `unknown`: the same, but nothing says what the CLI is doing (Codex, agy, a custom provider, a Claude without the hook bridge,
+ *    an old or unbound hook record). Listed separately and NOT sent unless the person explicitly asks for it.
+ *  - `skip`: the terminal is closed, the CLI is not running (a shell, exited), or the CLI is busy or ended. Never sent.
+ * The prompt is never forced into a shell prompt or a busy CLI.
  *
  * @param {{ broadcast: object, sessions: Array<object>, roleOf?: (session: object) => (string|undefined), now: Date }} input
- * @returns {{ ok: true, prompt: string, recipients: Array<{ id: string, name: string, provider: string, decision: 'send'|'skip', reason: string }> } | { ok: false, reason: string }}
+ * @returns {{ ok: true, prompt: string, recipients: Array<{ id: string, name: string, provider: string, decision: 'send'|'unknown'|'skip', reason: string }> } | { ok: false, reason: string }}
  */
 function planDelivery({ broadcast, sessions, roleOf = () => undefined, now }) {
   if (!isPlain(broadcast) || !isLive(broadcast, now)) return { ok: false, reason: 'broadcast-not-live' };
@@ -56,14 +60,13 @@ function planDelivery({ broadcast, sessions, roleOf = () => undefined, now }) {
     const context = { role: roleOf(session), agentId: session.id, provider: session.provider };
     if (!appliesTo(broadcast, context)) continue;
     const entry = { id: session.id, name: typeof session.name === 'string' ? session.name : 'Session', provider: String(session.provider ?? ''), decision: 'skip', reason: '' };
-    const status = session.providerObservation && session.providerObservation.status;
-    const observed = isPlain(status) && status.confidence === 'actual' ? status.value : null;
+    const delivery = isPlain(session.deliveryState) ? session.deliveryState.state : null;
     if (session.terminalOpen !== true) entry.reason = 'terminal-not-open';
     else if (!RUNNING.has(session.state)) entry.reason = 'cli-not-running';
-    else if (observed === 'waiting') { entry.decision = 'send'; entry.reason = 'waiting-for-input'; }
-    else if (observed === 'working') entry.reason = 'cli-busy';
-    else if (observed === 'completed' || observed === 'ended') entry.reason = 'cli-not-waiting';
-    else entry.reason = 'state-unknown';
+    else if (delivery === 'waiting') { entry.decision = 'send'; entry.reason = 'waiting-for-input'; }
+    else if (delivery === 'working') entry.reason = 'cli-busy';
+    else if (delivery === 'ended') entry.reason = 'cli-not-waiting';
+    else { entry.decision = 'unknown'; entry.reason = 'state-unknown'; }
     recipients.push(entry);
   }
   return { ok: true, prompt, recipients };
@@ -75,7 +78,9 @@ const REASON_TEXT = Object.freeze({
   'cli-not-running': 'the CLI is not recorded as running (a shell prompt, or it exited)',
   'cli-busy': 'the CLI is busy working',
   'cli-not-waiting': 'the CLI has finished or ended',
-  'state-unknown': 'not sent: state unknown (no fresh evidence from the CLI)',
+  'state-unknown': 'state unknown (the CLI gave no hook evidence of what it is doing)',
+  'sent-unknown-state': 'typed although its state was unknown (you chose to)',
+  'broadcast-changed': 'not sent: the broadcast was revoked or changed while the window was open',
   'send-failed': 'not sent: the terminal could not be written to'
 });
 const reasonText = (reason) => (Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT[reason] : 'unknown');
@@ -83,10 +88,12 @@ const reasonText = (reason) => (Object.hasOwn(REASON_TEXT, reason) ? REASON_TEXT
 /** The lines of the confirmation window: who gets it, who does not and why, and the complete prompt. */
 function describePlan(plan) {
   const send = plan.recipients.filter((entry) => entry.decision === 'send');
+  const unknown = plan.recipients.filter((entry) => entry.decision === 'unknown');
   const skip = plan.recipients.filter((entry) => entry.decision === 'skip');
   return [
-    send.length > 0 ? `Will be typed into ${send.length} session${send.length === 1 ? '' : 's'}:` : 'No session can receive it now.',
+    send.length > 0 ? `Will be typed into ${send.length} session${send.length === 1 ? '' : 's'} that are waiting for input:` : 'No session is known to be waiting for input.',
     ...send.map((entry) => `  • ${entry.name} (${entry.provider})`),
+    ...(unknown.length > 0 ? [`State unknown for ${unknown.length} (NOT sent unless you choose to):`, ...unknown.map((entry) => `  • ${entry.name} (${entry.provider}): ${reasonText(entry.reason)}`)] : []),
     ...(skip.length > 0 ? [`Will NOT be sent to ${skip.length}:`, ...skip.map((entry) => `  • ${entry.name} (${entry.provider}): ${reasonText(entry.reason)}`)] : []),
     '',
     'The complete prompt:',

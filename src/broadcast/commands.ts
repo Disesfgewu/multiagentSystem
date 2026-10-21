@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { SessionCommands } from '../sessions/sessionCommands';
+import { isExtensionTestMode } from '../shared/testMode';
 
 const { BroadcastStore } = require('./store') as {
   BroadcastStore: new (store: Store) => {
     list(): { ok: boolean; items?: Broadcast[]; reason?: string };
+    get(id: string): { ok: boolean; broadcast?: Broadcast; reason?: string };
     listDeliveries(): { ok: boolean; items?: Array<{ broadcastId: string }>; reason?: string };
     recordDelivery(raw: unknown): { ok: boolean; reason?: string };
     create(raw: unknown): { ok: boolean; broadcast?: Broadcast; reason?: string; problems?: string[]; scan?: unknown };
@@ -13,7 +15,7 @@ const { BroadcastStore } = require('./store') as {
   };
 };
 const { planDelivery, describePlan, summarizeDeliveries } = require('./deliver') as {
-  planDelivery(input: { broadcast: Broadcast; sessions: unknown[]; roleOf: (session: any) => string | undefined; now: Date }): { ok: true; prompt: string; recipients: Array<{ id: string; name: string; provider: string; decision: 'send' | 'skip'; reason: string }> } | { ok: false; reason: string };
+  planDelivery(input: { broadcast: Broadcast; sessions: unknown[]; roleOf: (session: any) => string | undefined; now: Date }): { ok: true; prompt: string; recipients: Array<{ id: string; name: string; provider: string; decision: 'send' | 'unknown' | 'skip'; reason: string }> } | { ok: false; reason: string };
   describePlan(plan: unknown): string[];
   summarizeDeliveries(records: unknown[], broadcastId: string): string;
 };
@@ -110,6 +112,12 @@ class BroadcastTree implements vscode.TreeDataProvider<vscode.TreeItem> {
 }
 
 let testTree: BroadcastTree | undefined;
+/** The delivery command, run against the given sessions: only in the extension's own host tests (a real terminal with a synthetic CLI). */
+export function deliverBroadcastForTests(sessions: SessionCommands): Promise<void> {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  return deliver(sessions);
+}
+
 export function broadcastTreeForTests(): vscode.TreeDataProvider<vscode.TreeItem> {
   if (!testTree) throw new Error('The broadcast list is only exposed in Extension Host tests.');
   return testTree;
@@ -259,33 +267,46 @@ async function deliver(sessions: SessionCommands): Promise<void> {
   const plan = planDelivery({ broadcast: selected, sessions: sessions.list(), roleOf, now });
   if (!plan.ok) { void vscode.window.showErrorMessage(`This broadcast cannot be sent (${plan.reason}).`); return; }
   if (plan.recipients.length === 0) { void vscode.window.showInformationMessage("No open session matches this broadcast's target."); return; }
-  const confirmedIds = new Set(plan.recipients.filter((entry) => entry.decision === 'send').map((entry) => entry.id));
-  if (confirmedIds.size === 0) {
+  const waitingIds = new Set(plan.recipients.filter((entry) => entry.decision === 'send').map((entry) => entry.id));
+  const unknownIds = new Set(plan.recipients.filter((entry) => entry.decision === 'unknown').map((entry) => entry.id));
+  if (waitingIds.size === 0 && unknownIds.size === 0) {
     void vscode.window.showInformationMessage('No session can receive this broadcast now.', { modal: true, detail: describePlan(plan).join('\n') });
     return;
   }
+  // Sessions that are waiting are the default. Sessions whose state is unknown (no hook evidence: Codex, agy, a custom provider, a
+  // Claude without the hook bridge) are only included when the person presses the second, explicit button.
+  const sendWaiting = 'Send Now';
+  const sendUnknown = waitingIds.size > 0 ? 'Also Send to Unknown' : 'Send to Unknown Anyway';
+  const buttons = [...(waitingIds.size > 0 ? [sendWaiting] : []), ...(unknownIds.size > 0 ? [sendUnknown] : [])];
   const confirmed = await vscode.window.showWarningMessage(
     'Type this broadcast into the running agents?',
     { modal: true, detail: describePlan(plan).join('\n') },
-    'Send Now'
+    ...buttons
   );
-  if (confirmed !== 'Send Now') return;
+  if (confirmed !== sendWaiting && confirmed !== sendUnknown) return;
+  const includeUnknown = confirmed === sendUnknown;
+  const allowedIds = new Set([...(confirmed === sendWaiting || includeUnknown ? waitingIds : []), ...(includeUnknown ? unknownIds : [])]);
 
-  // Sessions change while a dialog is open: decide again from fresh evidence, and send only to a session that was both shown
-  // to the person as a recipient and is still waiting for input.
-  const fresh = planDelivery({ broadcast: selected, sessions: sessions.list(), roleOf, now: new Date() });
+  // The broadcast is read again from the store: if it was revoked or changed while the window was open, nothing is typed.
+  const again = new BroadcastStore(await store() ?? opened).get(selected.id);
+  const stillTheSame = again.ok && (again as { broadcast?: Broadcast }).broadcast !== undefined && isLive((again as { broadcast: Broadcast }).broadcast, new Date())
+    && (again as { broadcast: Broadcast }).broadcast.text === selected.text && (again as { broadcast: Broadcast }).broadcast.version === selected.version;
+  // Sessions change while a dialog is open: decide again from fresh evidence, and type only into a session that was shown to the
+  // person as a recipient they allowed, and whose state is still what they agreed to.
+  const fresh = stillTheSame ? planDelivery({ broadcast: selected, sessions: sessions.list(), roleOf, now: new Date() }) : { ok: false as const, reason: 'broadcast-changed' };
   if (!fresh.ok) { void vscode.window.showErrorMessage(`This broadcast can no longer be sent (${fresh.reason}).`); return; }
   const results: Array<{ sessionId: string; provider: string; outcome: 'sent' | 'skipped'; reason: string }> = [];
   for (const entry of fresh.recipients) {
-    if (entry.decision === 'send' && confirmedIds.has(entry.id)) {
+    const allowed = allowedIds.has(entry.id) && (entry.decision === 'send' || (entry.decision === 'unknown' && includeUnknown));
+    if (allowed) {
       try {
         sessions.sendPrompt(entry.id, fresh.prompt);
-        results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'sent', reason: entry.reason });
+        results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'sent', reason: entry.decision === 'unknown' ? 'sent-unknown-state' : entry.reason });
       } catch {
         results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'skipped', reason: 'send-failed' });
       }
     } else {
-      // Not shown as a recipient, or no longer ready: not sent, and the record says why.
+      // Not allowed by the person, not shown, or no longer in the state they agreed to: not typed, and the record says why.
       results.push({ sessionId: entry.id, provider: entry.provider, outcome: 'skipped', reason: entry.decision === 'send' ? 'state-unknown' : entry.reason });
     }
   }
