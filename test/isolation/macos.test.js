@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { seatbeltProfile, scrubEnvironment, safeProfilePath, credentialLocations, KEYCHAIN_SERVICES, HOME_CREDENTIAL_PATHS, SANDBOX_EXEC } = require('../../src/isolation/macos');
-const { createMacosModule } = require('./macos-harness');
+const { createMacosModule } = require('../../src/isolation/macos-harness');
 const { CHANNELS, collectProbes, assessIsolation, decideLaunch } = require('../../src/isolation/capabilities');
 
 const real = process.platform === 'darwin' && fs.existsSync(SANDBOX_EXEC);
@@ -168,4 +168,13 @@ test('a keychain item is out of reach inside the sandbox and in reach without th
     assert.deepEqual(withRule, { control: true, outcome: 'blocked' });
     assert.deepEqual(without, { control: true, outcome: 'open' }, 'with the service reachable, the keychain item comes back');
   } finally { await closed.dispose(); await open.dispose(); }
+});
+
+test('the harness ships in the package, so the publication scan finds nothing in it', () => {
+  const { scanPublication } = require('../../src/publish/scan');
+  const name = 'src/isolation/macos-harness.js';
+  const lines = fs.readFileSync(require.resolve('../../src/isolation/macos-harness'), 'utf8').split('\n');
+  const diff = `diff --git a/${name} b/${name}\nnew file mode 100644\n--- /dev/null\n+++ b/${name}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}`;
+  const result = scanPublication([{ kind: 'diff', text: diff }]);
+  assert.equal(result.status, 'clear', JSON.stringify(result.findings));
 });

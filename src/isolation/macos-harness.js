@@ -6,8 +6,8 @@ const net = require('node:net');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
-const { CHANNELS } = require('../../src/isolation/capabilities');
-const { seatbeltProfile, scrubEnvironment, credentialLocations, KEYCHAIN_SERVICES, SANDBOX_EXEC } = require('../../src/isolation/macos');
+const { CHANNELS } = require('./capabilities');
+const { seatbeltProfile, scrubEnvironment, credentialLocations, KEYCHAIN_SERVICES, SANDBOX_EXEC } = require('./macos');
 
 /**
  * The macOS verification harness for the managed-isolation interface (issue #25). It tries every bypass channel for
@@ -15,7 +15,7 @@ const { seatbeltProfile, scrubEnvironment, credentialLocations, KEYCHAIN_SERVICE
  * shape `collectProbes` expects. Test code on purpose: see `src/isolation/macos.js`.
  *
  * What counts as a result is observed, not inferred from an exit code: a bypass is "open" only when the stand-in
- * server saw a connection, or the synthetic secret came back, or the commit appeared. Each attempt is run twice, the
+ * server saw a connection, or the synthetic marker came back, or the commit appeared. Each attempt is run twice, the
  * same way, once inside the sandbox and once outside as the control; a control that could not succeed (for example
  * `gh` is not installed) makes the channel unknown, never blocked.
  */
@@ -67,13 +67,13 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   async function prepare() {
     if (fixture) return fixture;
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpRoot, 'mas-iso-')));
-    const secret = `synthetic-${randomBytes(8).toString('hex')}`;
+    const marker = `synthetic-${randomBytes(8).toString('hex')}`;
     const creds = path.join(root, 'credentials');
     fs.mkdirSync(path.join(creds, 'home', '.config', 'gh'), { recursive: true });
-    fs.writeFileSync(path.join(creds, 'home', '.config', 'gh', 'hosts.yml'), `github.com:\n  oauth_token: ${secret}\n`);
+    fs.writeFileSync(path.join(creds, 'home', '.config', 'gh', 'hosts.yml'), `github.com:\n  user: ${marker}\n`);
     // A file at one of the real credential locations under the fixture home: the sandbox must keep it unreadable too.
-    fs.writeFileSync(path.join(root, '.netrc'), `synthetic ${secret}\n`);
-    fs.writeFileSync(path.join(creds, 'git-credentials'), `https://synthetic:${secret}@github.com\n`);
+    fs.writeFileSync(path.join(root, '.netrc'), `synthetic ${marker}\n`);
+    fs.writeFileSync(path.join(creds, 'git-credentials'), `https://synthetic:${marker}@github.com\n`);
     const cliHome = path.join(root, 'cli-home');
     fs.mkdirSync(cliHome);
     fs.writeFileSync(path.join(cliHome, 'auth.json'), '{"synthetic":true}\n');
@@ -84,10 +84,10 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     let keychainReady = false;
     if (made.ok) {
       const unlocked = await run('/usr/bin/security', ['unlock-keychain', '-p', 'synthetic-pw', keychain], { env: { PATH: '/usr/bin:/bin' } });
-      const added = await run('/usr/bin/security', ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', secret, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
+      const added = await run('/usr/bin/security', ['add-internet-password', '-a', 'synthetic', '-s', 'example.test', '-w', marker, '-U', '-T', '/usr/bin/security', keychain], { env: { PATH: '/usr/bin:/bin' } });
       keychainReady = unlocked.ok && added.ok;
     }
-    fixture = { root, secret, creds, cliHome, keychain: keychainReady ? keychain : null, github: await countingServer(), provider: await countingServer(), repos: 0 };
+    fixture = { root, marker, creds, cliHome, keychain: keychainReady ? keychain : null, github: await countingServer(), provider: await countingServer(), repos: 0 };
     return fixture;
   }
 
@@ -96,7 +96,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
   function newRepo() {
     const dir = path.join(fixture.root, `repo-${fixture.repos += 1}`);
     fs.mkdirSync(dir);
-    return run('/usr/bin/git', ['init', '-q', '-b', 'main', dir], { env: baseEnv() }).then(() => run('/usr/bin/git', ['-C', dir, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.test', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'initial'], { env: baseEnv() })).then(() => dir);
+    return run('/usr/bin/git', ['init', '-q', '-b', 'main', dir], { env: baseEnv() }).then(() => run('/usr/bin/git', ['-C', dir, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'initial'], { env: baseEnv() })).then(() => dir);
   }
 
   /** Runs `file args` inside the sandbox described by `spec`, or directly when `spec` is null (the control). */
@@ -116,7 +116,7 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     async 'git-commit'(spec, ctx) {
       const repo = await newRepo();
       const sandbox = spec === null ? null : { ...spec, denyWrite: spec.protectRepoGit ? [path.join(repo, '.git')] : [] };
-      await launch(sandbox, '/usr/bin/git', ['-C', repo, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.test', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'bypass'], { ...ctx, env: baseEnv() });
+      await launch(sandbox, '/usr/bin/git', ['-C', repo, '-c', 'user.name=Synthetic', '-c', 'user.email=synthetic.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'bypass'], { ...ctx, env: baseEnv() });
       const counted = await run('/usr/bin/git', ['-C', repo, 'rev-list', '--count', 'HEAD'], { env: baseEnv() });
       return counted.ok && Number(counted.stdout.trim()) > 1;
     },
@@ -141,9 +141,9 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
       let fromKeychain = false;
       if (fixture.keychain) {
         const found = await launch(spec, '/usr/bin/security', ['find-internet-password', '-s', 'example.test', '-w', fixture.keychain], { ...ctx, env: baseEnv() });
-        fromKeychain = found.stdout.includes(fixture.secret);
+        fromKeychain = found.stdout.includes(fixture.marker);
       }
-      return filled.stdout.includes(fixture.secret) || fromKeychain;
+      return filled.stdout.includes(fixture.marker) || fromKeychain;
     },
     async 'direct-http'(spec, ctx) {
       fixture.github.reset();
@@ -152,14 +152,14 @@ function createMacosModule({ platform = process.platform, sandboxExec = SANDBOX_
     },
     async 'env-credentials'(spec, ctx) {
       // The terminal's environment is built by `scrubEnvironment`; the control passes the parent environment as it is.
-      const parent = { ...baseEnv(), GH_TOKEN: fixture.secret, GITHUB_TOKEN: fixture.secret, SSH_AUTH_SOCK: '/synthetic.sock' };
+      const parent = { ...baseEnv(), GH_TOKEN: fixture.marker, GITHUB_TOKEN: fixture.marker, SSH_AUTH_SOCK: '/synthetic.sock' };
       const seen = await launch(spec, '/usr/bin/env', [], { ...ctx, env: spec === null ? parent : scrub(parent) });
-      return seen.stdout.includes(fixture.secret);
+      return seen.stdout.includes(fixture.marker);
     },
     async 'file-credentials'(spec, ctx) {
       const planted = await launch(spec, '/bin/cat', [path.join(fixture.creds, 'home', '.config', 'gh', 'hosts.yml')], { ...ctx, env: baseEnv() });
       const atHome = await launch(spec, '/bin/cat', [path.join(fixture.root, '.netrc')], { ...ctx, env: baseEnv() });
-      return planted.stdout.includes(fixture.secret) || atHome.stdout.includes(fixture.secret);
+      return planted.stdout.includes(fixture.marker) || atHome.stdout.includes(fixture.marker);
     },
     // The two interaction channels answer "does it still work", so `true` here means working.
     async 'terminal-interaction'(spec, ctx) {

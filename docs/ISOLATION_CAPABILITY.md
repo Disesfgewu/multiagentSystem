@@ -30,7 +30,7 @@
 
 ## macOS 平台模組（Refs #25）
 
-`src/isolation/macos.js` 提供 macOS 的積木（Seatbelt 設定檔產生器、環境憑證清除）；實際去試每條旁路的驗證 harness 是**測試程式碼** `test/isolation/macos-harness.js`（`createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`，測試見 `test/isolation/macos.test.js`）。harness 不隨擴充套件發佈：它的合成憑證與信箱正是發佈掃描必須擋下的形狀，所以不放進 `src/`。因此目前**擴充套件執行時無法自行跑這個驗證**；要在執行時使用，需要另外決定怎麼產生探測夾具。
+`src/isolation/macos.js` 提供 macOS 的積木（Seatbelt 設定檔產生器、環境憑證清除）；實際去試每條旁路的驗證 harness 是 `src/isolation/macos-harness.js`（`createMacosModule()` 搭配 `collectProbes` 與 `assessIsolation`，測試見 `test/isolation/macos.test.js`）。harness **隨擴充套件發佈**（PM 於 #25 決定）：它的夾具不再是憑證的形狀（沒有 token／password 欄位、沒有信箱），所以能通過發佈掃描；它只在使用者**明確選擇強制隔離**時才會執行，暫存資料放在呼叫端指定的資料夾（啟動流程接上時會是擴充套件的私有儲存區；預設才是系統暫存資料夾）下新建的專屬目錄、結束即刪，結果只記錄通道與結果（不含路徑或帳號）。鑰匙圈探測用一個暫存的測試鑰匙圈，不碰使用者的鑰匙圈。目前**尚未接上啟動流程**（下一個 PR）。
 
 **機制**：Seatbelt，透過 `/usr/bin/sandbox-exec`。Apple 把這個指令標為 deprecated；它是系統提供的「在設定檔下執行一個程序」的方式，不是長期承諾。設定檔由 `seatbeltProfile` 產生：預設全允許，但**一律拒絕網路**（只放行指定的本機埠）、拒絕讀取指定路徑、拒絕寫入指定路徑。路徑與埠不合格（相對路徑、含引號／括號／反斜線／控制字元／雙向字元、不是整數埠）直接丟錯，不會產生比呼叫端要求更開放的設定檔。
 
