@@ -16,5 +16,8 @@
 ## 認領
 - 動工前在 issue 留言 `Worker：認領 <切片>，分支 <branch>`。依專案進度追蹤 issue（#90）的領取規則，認領後 12 小時內沒有分支或 PR 視為釋放。
 
+## 署名
+- 本專案的 commit、PR 說明、留言與 review 一律**不加 co-author**：不寫 `Co-authored-by:`，也不寫「Generated with Claude Code」。`.claude/settings.json` 已關閉 Claude Code 的自動署名，CI 的 **No co-author** 檢查會擋下違反的 PR。
+
 ## 關閉
 - 只有每條驗收都有程式與測試證據、且不依賴實機等外部資源才關閉；關閉前留言附證據。範圍被上層決定取消時用 `not planned` 並說明原因。

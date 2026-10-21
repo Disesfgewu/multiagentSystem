@@ -1,0 +1,42 @@
+name: No co-author
+
+# Nothing in this repository may carry a co-author: no `Co-authored-by:` trailer in any commit of a pull request,
+# and no co-author trailer or "Generated with Claude Code" line in the pull request description.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: no co-author trailers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Values come in through the environment, never pasted into the script, so a description cannot inject shell.
+      - name: Check commits and description
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          status=0
+          pattern='^[[:space:]]*co-authored-by[[:space:]]*:'
+          for sha in $(git rev-list "$BASE_SHA..$HEAD_SHA"); do
+            if git log -1 --format=%B "$sha" | grep -E -i -q "$pattern"; then
+              echo "::error::commit ${sha:0:7} has a Co-authored-by trailer; remove it (git commit --amend or rebase) and push again"
+              status=1
+            fi
+          done
+          if printf '%s\n' "${PR_BODY:-}" | grep -E -i -q "$pattern|generated with \[?claude code"; then
+            echo "::error::the pull request description has a co-author trailer or a 'Generated with Claude Code' line; remove it"
+            status=1
+          fi
+          exit "$status"

@@ -11,6 +11,8 @@ git status --short
 npm test 2>&1 | tail -20
 ```
 
+Never add a co-author: no `Co-authored-by:` trailer in any commit message, and no co-author or "Generated with Claude Code" line in the PR body (the repo's `.claude/settings.json` turns Claude Code's automatic attribution off, and the **No co-author** CI check fails the PR otherwise). Check with `git log origin/main..HEAD --format=%B | grep -i co-authored-by` before pushing.
+
 If tests fail, fix first — do not open the PR planning to fix after; review will bounce it and cost a full round-trip.
 
 This repo has a PR template (`.github/pull_request_template.md`) that `gh pr create` picks up automatically when you omit `--body`. In headless mode, fill the same shape explicitly — first paragraph is mandatory and must answer "what can the user now do on screen" or say plainly "基礎工作，使用者看不到":
