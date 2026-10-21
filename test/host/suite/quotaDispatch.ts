@@ -51,6 +51,19 @@ export async function runQuotaDispatchChecks(workspace: string, accountProfileId
     assert.match(String(blocked?.description), /BLOCKED NOW/);
     assert.match(String(blocked?.tooltip), /1 agent is already running/);
 
+    // The account row expands into its limits and readings, with a link to the token usage log (issue #294).
+    const accountTree = accountTreeForTests();
+    const quotaRows = (await accountTree.getChildren(blocked as any)) ?? [];
+    assert.ok(quotaRows.some((row) => /^Limits:/.test(String(row.label))), 'the limits the person set are listed under the account');
+    assert.ok(quotaRows.some((row) => /usage/i.test(String(row.label))), 'a reading, or the reason there is none, is listed');
+    const logRow = quotaRows.find((row) => row.label === 'Token usage log')!;
+    assert.ok(logRow, 'a link to the usage log is listed');
+    await vscode.commands.executeCommand(logRow.command!.command, ...(logRow.command!.arguments ?? []));
+    assert.equal(vscode.window.activeTextEditor?.document.uri.scheme, 'multiagent-usage-log');
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /Do not publish this document/);
+    // Other checks of this suite feed synthetic readings through the real status-line path, so the log may hold entries; it holds only what a source reported, each with its source, or says nothing was recorded.
+    assert.match(vscode.window.activeTextEditor?.document.getText() ?? '', /No usage has been recorded yet|· (?:actual|ESTIMATE|actual \+ estimate) · source [a-z0-9.-]+\n/, `the log shows reported readings with their source, or says none were recorded: ${JSON.stringify((vscode.window.activeTextEditor?.document.getText() ?? '').slice(0, 700))}`);
+
     const overviewRows = (await overviewTreeForTests().getChildren()) ?? [];
     const overviewBlocked = overviewRows.find((row) => (row as any).id === accountProfileId);
     assert.ok(overviewBlocked, 'the blocked account appears in the Overview');
