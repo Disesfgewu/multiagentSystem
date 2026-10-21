@@ -96,11 +96,11 @@ test('a current reading has no unknown reason and shows its number', () => {
   } finally { done(); }
 });
 
-test('providers without a verified source say so by name, whatever is on disk', () => {
+test('providers without a verified source say so by name, whatever is on disk (Codex reads its own session log, so it says what that log lacks)', () => {
   const { dir, done } = fixture((_d, q) => fs.writeFileSync(q, JSON.stringify({ observedAt: NOW.toISOString(), rate_limits: goodLimits })));
   try {
     assert.equal(quotaUnknownReason('a', { provider: 'agy', configDir: dir }, NOW), 'no-source-agy');
-    assert.equal(quotaUnknownReason('c', { provider: 'codex', configDir: dir }, NOW), 'no-source-codex');
+    assert.equal(quotaUnknownReason('c', { provider: 'codex', configDir: dir }, NOW), 'codex-no-sessions', 'a Claude quota file is not a Codex log, and there is no sessions folder here');
     assert.equal(quotaUnknownReason('o', { provider: 'opencode', configDir: dir }, NOW), 'no-source-provider');
     assert.deepEqual(quotaObservations('a', { provider: 'agy', configDir: dir }, NOW), []);
     assert.equal(quotaUnknownReason('missing', undefined, NOW), null);
@@ -121,6 +121,7 @@ test('an unrecognised reason code is ignored and the generic sentence stays', ()
 
 test('every reason code in the table is produced by some case (dropping one fails here)', () => {
   const produced = new Set(CASES.map((entry) => entry.reason));
-  for (const code of ['no-source-agy', 'no-source-codex', 'no-source-provider']) produced.add(code);
+  // Produced by the Codex log reader (test/accounts/codex-rate-limits.test.js and test/unit/codexQuotaWiring.test.ts), not by a Claude quota file.
+  for (const code of ['no-source-agy', 'no-source-provider', 'codex-no-sessions', 'codex-no-events', 'codex-format-changed', 'codex-reading-expired']) produced.add(code);
   assert.deepEqual([...produced].sort(), Object.keys(UNKNOWN_REASONS).sort());
 });

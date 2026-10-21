@@ -253,6 +253,40 @@ function codexQuotaFromRateLimits(response, { profileId, observedAt, ttlMs = QUO
   return { profileId, observations: out };
 }
 
+// Codex writes its rate limits next to every token count in the session log (issue #302). The windows are named by their
+// length, not by the slot they sit in: 300 minutes is the 5-hour window and 10080 minutes the weekly one; a window of any
+// other length is not guessed at and is left out. `resets_at` is epoch seconds. The reading is the snapshot of the LAST event
+// of that log, so it is fresh only for the usual reading lifetime (and never past its reset), and it says when it was taken.
+const CODEX_LOG_WINDOWS = Object.freeze({ 300: ['five_hour', '5-hour window reported by the Codex session log'], 10080: ['seven_day', '7-day window reported by the Codex session log'] });
+
+function codexQuotaFromSessionLog(rateLimits, { profileId, observedAt, ttlMs = QUOTA_TTL_MS }) {
+  const source = 'codex session log rate_limits';
+  const nowMs = toTime(observedAt);
+  const out = [];
+  for (const slot of ['primary', 'secondary']) {
+    const window = rateLimits && typeof rateLimits === 'object' ? rateLimits[slot] : undefined;
+    if (!window || typeof window !== 'object') continue;
+    const known = Number.isInteger(window.window_minutes) && Object.hasOwn(CODEX_LOG_WINDOWS, window.window_minutes) ? CODEX_LOG_WINDOWS[window.window_minutes] : null;
+    if (!known) continue;
+    const [name, scope] = known;
+    const rawReset = window.resets_at;
+    const resetGiven = rawReset !== undefined && rawReset !== null;
+    const resetsMs = resetGiven && typeof rawReset === 'number' && Number.isFinite(rawReset) && rawReset > 0 && Number.isFinite(new Date(rawReset * 1000).getTime()) ? rawReset * 1000 : null;
+    const resetInvalid = resetGiven && resetsMs === null;
+    const expired = resetsMs !== null && resetsMs <= nowMs;
+    let reason = 'window-absent';
+    if (expired) reason = 'window-reset-passed';
+    else if (resetInvalid) reason = 'invalid-reset';
+    // A window without a usable reset time is not a reading: how long it holds cannot be known.
+    if (resetsMs === null && reason === 'window-absent') reason = 'invalid-reset';
+    const usable = !expired && resetsMs !== null && typeof window.used_percent === 'number';
+    const base = { source, observedAt, scope, validForMs: quotaLifetime(ttlMs, nowMs, resetsMs) };
+    out.push(observe(`quota.${name}.used_percent`, usable ? window.used_percent : null, { ...base, unit: 'percent', reason }));
+    out.push(observe(`quota.${name}.resets_at`, usable && resetsMs !== null ? toIso(resetsMs) : null, { ...base, unit: 'iso-8601', reason }));
+  }
+  return { profileId, observations: out };
+}
+
 // A real account reachable through two profiles must be counted once.
 function groupBySubject(identities) {
   const groups = new Map();
@@ -284,5 +318,6 @@ module.exports = {
   claudeQuotaFromStatusLine,
   codexIdentityFromAccountRead,
   codexQuotaFromRateLimits,
+  codexQuotaFromSessionLog,
   groupBySubject
 };

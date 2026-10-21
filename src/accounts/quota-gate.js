@@ -94,7 +94,10 @@ function describePolicy(policyRead) {
 // than observed, the words say "likely". Unknown codes are ignored (the generic sentence stays).
 const UNKNOWN_REASONS = Object.freeze({
   'no-source-agy': { short: 'no verified usage source for agy', detail: 'agy has no verified usage source, so its usage stays unknown and is never estimated.' },
-  'no-source-codex': { short: 'no verified usage source for Codex yet', detail: 'This extension has no verified Codex usage source connected yet, so its usage stays unknown and is never estimated.' },
+  'codex-no-sessions': { short: 'no Codex session log yet', detail: 'This account\'s Codex home has no session log yet, so there is nothing to read. Usage appears after the first Codex session in this account.' },
+  'codex-no-events': { short: 'no usage in the Codex log yet', detail: 'The newest Codex session logs of this account hold no usage report yet, so nothing is shown.' },
+  'codex-format-changed': { short: 'Codex log format not recognized', detail: 'The Codex session log has usage reports, but not in the form this extension understands (Codex may have changed its log format), so none is used.' },
+  'codex-reading-expired': { short: 'last Codex reading is out of date', detail: 'The last usage report in the Codex session log is out of date, so it is not used to block and is listed below for reference only. It is the snapshot of the last Codex activity and is refreshed when Codex runs again.' },
   'no-source-provider': { short: 'no verified usage source for this provider', detail: 'This provider has no verified usage source, so its usage stays unknown and is never estimated.' },
   'bridge-not-enabled': { short: 'usage bridge not enabled', detail: 'The Claude status line bridge is not enabled for this account, so nothing reports its usage. Use Configure Claude Status Line Bridge to turn it on; readings then arrive only from a running session.' },
   'bridge-other-statusline': { short: 'usage bridge not active', detail: 'A different status line command is set for this account, so the usage bridge is not active and nothing reports its usage. Use Configure Claude Status Line Bridge to review it.' },

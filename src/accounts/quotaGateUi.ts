@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { accountService, SessionUse } from './accountRuntime';
-import { quotaObservations, quotaUnknownReason, registerProfileForQuota } from './claudeStatusLine';
+import { quotaObservations, quotaUnknownReason, registerProfileForQuota, codexQuotaReading } from './claudeStatusLine';
 import { privateStorage } from '../storage/storageCommands';
 
 export { quotaObservations, registerProfileForQuota };
+
+const { UsageLog } = require('./usage-log') as { UsageLog: new (store: unknown) => { append(entry: unknown, now?: Date): { ok: boolean } } };
+const { codexUsageEntry } = require('./codex-rate-limits') as { codexUsageEntry(reading: unknown, options: { accountProfileId: string }): unknown };
 
 const { loadPolicy, savePolicy } = require('./quota-policy') as {
   loadPolicy(store: unknown, id: string): { ok: boolean; policy?: Record<string, unknown>; stored?: boolean };
@@ -307,9 +310,28 @@ export async function limitLines(accountProfileId: string, sessions: () => Sessi
   if (duplicateIds.length > 0) {
     lines.push(`Duplicate account: shares limits and quota with ${duplicateIds.join(', ')}.`);
   }
+  lines.push(...codexExtras(accounts as any, accountProfileId, now));
   const current = await currentGateState(accountProfileId, sessions);
   if (current) lines.push(current.line);
   return lines;
+}
+
+/**
+ * For a Codex account: the plan its own session log reports, and the last request's token counts kept in the usage log (issue
+ * #302, #294). Best effort and read-only apart from that append: nothing here can fail a launch or change a limit, and the same
+ * event is kept only once.
+ */
+function codexExtras(accounts: AccountsOk, accountProfileId: string, now: Date): string[] {
+  try {
+    const own = accounts.service.get(accountProfileId);
+    if (!own.ok || !own.profile || own.profile.provider !== 'codex') return [];
+    const read = codexQuotaReading(accountProfileId, own.profile.configDir, now);
+    const entry = codexUsageEntry(read.reading, { accountProfileId });
+    if (entry) new UsageLog(accounts.store).append(entry, now);
+    return read.planType ? [`Plan: ${read.planType} (reported by the Codex session log).`] : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Lets the person set the limits for one account. `input` is used instead of asking when given (tests). */
