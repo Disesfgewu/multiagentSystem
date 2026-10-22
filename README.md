@@ -2,16 +2,16 @@
 
 在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
-## 下載最新測試版：0.0.3 Beta 5
+## 下載最新測試版：0.0.3 Beta 6
 
-**[下載 VSIX 安裝檔（Beta 5）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
+**[下載 VSIX 安裝檔（Beta 6）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.6/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.6/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
 
 | 項目 | 值 |
 |---|---|
-| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.5`） |
-| 來源 commit | `4beeb59f6d38bc022cdc132857c7ce9382789332` |
-| 檔案 | `multiagentsystem.vsix`，819528 bytes，內含 219 個檔案 |
-| SHA-256 | `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509` |
+| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.6`） |
+| 來源 commit | `db8ceb11a39f021fcf7de3a77de19107ac9edaa5` |
+| 檔案 | `multiagentsystem.vsix`，863638 bytes，內含 233 個檔案 |
+| SHA-256 | `aa869fe0fbdde7da886770b7ce7128cfbc33a990288ac66956324f3bd69cd144` |
 | 需求 | VS Code 1.95 以上；macOS 或 Windows |
 
 **安裝前請核對雜湊**：
@@ -25,34 +25,27 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 結果必須和上表完全相同，也必須等於 `release-candidate.json` 中的 `artifact.sha256`。核對後，在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取這個檔案，然後重新載入視窗。
 
-這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
+這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 5](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)（SHA-256 `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`）、[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
 
-### Beta 5 的新內容（相對 Beta 4）
+### Beta 6 的新內容（相對 Beta 5）
 
-依使用者以 Beta 4 試用後的回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）改版：
+補齊 Beta 4 試用回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）中剩下的總負責人工作台功能：
 
-- **指揮台（Open Command Center）**：在編輯區開啟總負責人畫面，不再擠在側欄。
-  - 左側固定 PM 面板，顯示待決策事項與額度提醒。
-  - 其他 agent 以卡片顯示：狀態、正在處理的 Issue／PR、worktree 變更、最新報告摘要、額度。
-  - 可以切換格狀或清單、拖曳排序、收合、釘選。
-- **帳號與額度面板**：每個帳號顯示登入與核實身分、5 小時與每週用量、重設時間、來源；讀不到時寫原因並附上下一步。token 用量紀錄可以檢視與匯出。Codex 的額度改從本機 session 紀錄讀取。
-- **派送任務**：
-  - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
-  - 廣播會直接輸入到正在等待輸入的 agent CLI。
-  - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
-- **身份組工具權限**：預設 PM 不得編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。實際強制的程度依 CLI 而不同：
-  - **Claude Code**：會收到官方的 permissions 規則，但多數只是部分強制。例如 shell 仍可用其他寫法改檔或執行 git。
-  - **Codex**：只有「禁止寫檔」會變成唯讀沙箱，其他項目只是告知 agent。
-  - **agy 與自訂 CLI**：只是告知 agent。
-  - 真實 CLI 是否照做尚未驗證（#135）。
-- **CLI 預設自動模式**：只有 Claude Code 與 Codex 會帶入旗標，可在使用者設定關閉；CLI 是否照做尚未驗證。
-- **專案報告匯出成 Markdown**、**不加 co-author**。
+- **沒有執行中的 agent 也能指派任務**：把 Issue 指派給某個身份組時，若沒有可用的 session，會經過確認後建立 worktree、啟動該身份組，等 CLI 回報可以輸入後才送出任務。任何一步失敗都不會送出。
+- **團隊共同規則**：可以編輯一份所有 agent 都要遵守的規則，啟動時排在身份組規則之前一起交給 CLI，預覽中看得到。
+- **Shared Memory 面板**：依身份組和隱私域列出共享筆記，可以新增、修改、關閉、刪除，也可以審核建議記憶；只有已採納的筆記才會交給之後啟動的 agent。
+- **從 PR 報告跳到程式碼**：點變更檔案或行內審查留言會跳到那一行；本機 Git 有該 PR 的 head 與 base 時開啟並排 diff，否則改開 agent 資料夾裡的版本或 GitHub 的 patch。
+- **Discuss with PM Agent**：在編輯器選取程式碼後按右鍵，輸入問題，確認後送給 PM agent。
+- **Start Meeting**：把同一個主題同時送給多個 agent，回覆由你從剪貼簿貼入並整理成會議紀錄；沒貼的標示為沒有回覆，不代為編寫。
+- **自動模式首次確認**：第一次以自動模式啟動 CLI 時會先詢問，之後記住你的選擇。
+- **用量與額度**：token 用量紀錄可以依 session 篩選、相同讀數不重複記錄；Codex 額度的時間窗已重設時顯示為未知，Codex session 更新時也會記錄最後一次請求的 token 數（同一事件只記一次、依帳號節流）。
+- **修正**：匯出 Markdown 時，GitHub 文字中的網址不再被自動轉成連結。
 
-未驗證（在 #135 驗收）：真實 CLI 是否套用權限、自動模式與署名設定，以及收到廣播或任務 prompt 後實際怎麼處理。
+尚未在實機上走過：#311 列的總負責人流程（指揮台、指派、同時下任務、團隊規則、跳到程式碼與討論、開會、匯出、PM 不能 commit）。各 CLI 是否真的讀到規則、記憶、任務與會議內容，屬於實機項目（#135）。身份組的工具權限並非完全強制，各 CLI 的強制程度說明同 Beta 5。
 
-尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
+尚未包含：agent 自己提出建議記憶的收集（#333，審查中）。
 
-完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)。
+完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6)。
 
 ## 第一次使用
 
@@ -81,7 +74,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
-| **Edit Team Rules** | 一份全體 agent 共同遵守的規則：之後啟動的 agent 會在身份組規則之前拿到，預覽會顯示；存檔前要確認、版本會 +1、讀不到時拒絕啟動。這是告訴 CLI 的指示，不是強制。共享記憶面板還沒做。詳見 [團隊規則](docs/TEAM_RULES.md)。 |
+| **Edit Team Rules** | 一份全體 agent 共同遵守的規則：之後啟動的 agent 會在身份組規則之前拿到，預覽會顯示；存檔前要確認、版本會 +1、讀不到時拒絕啟動。這是告訴 CLI 的指示，不是強制。共享記憶見 Shared Memory。詳見 [團隊規則](docs/TEAM_RULES.md)。 |
 | **Export Project Report (Markdown)** | 把 Issues、PRs、PM 報告與審查／CI、待決策事項、agent 狀態與額度、最近廣播彙整成一份 Markdown，以未儲存的編輯器開啟（不寫入工作區），看起來像私人資料的欄位會被遮掉，讀不到的來源寫 unknown。指揮台也有按鈕。詳見 [專案報告](docs/PROJECT_REPORT.md)。 |
 | **Assign Issue / Send Task to Agents** | 把 GitHub 的 Issue（或自己輸入的一句任務）當成一行 prompt 派給正在等輸入的 agent：每次都要確認完整 prompt 與名單、Issue 在確認後會重讀、狀態未知預設不送、記錄結果，Command Center 的卡片顯示交辦了哪個 Issue。指令不接受參數。沒有 session 在跑時不會自動建立。詳見 [派發任務](docs/DISPATCH.md)。 |
 | **Shared Memory** | 側邊欄面板：依身份組與隱私域列出這個專案的共享筆記，新增／修改／關閉／刪除（每次確認、先過敏感內容檢查）、審核建議；之後啟動的 agent（身份組記憶範圍為 role-group）會拿到已採納的筆記，指揮台卡片顯示準備了幾則規則與筆記。詳見 [共享記憶](docs/SHARED_MEMORY.md)。 |
