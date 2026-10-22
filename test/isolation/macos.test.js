@@ -98,14 +98,16 @@ test('a sandbox that also cuts the CLI off from its own endpoint reads as broken
   } finally { await module.dispose(); }
 });
 
-test('disposing removes the temporary folder with the synthetic credentials', onlyMac, async () => {
-  const before = new Set(fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-')));
-  const module = createMacosModule({ tmpRoot: TMP });
+test('disposing removes the temporary folder with the synthetic credentials', onlyMac, async (t) => {
+  // A folder of its own: another run on the same machine (or another test) makes `mas-iso-` folders in the shared temporary folder too.
+  const own = fs.realpathSync.native(fs.mkdtempSync(require('node:path').join(TMP, 'mas-own-')));
+  t.after(() => fs.rmSync(own, { recursive: true, force: true }));
+  const module = createMacosModule({ tmpRoot: own });
   await module.probe('file-credentials');
-  const during = fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-') && !before.has(name));
+  const during = fs.readdirSync(own).filter((name) => name.startsWith('mas-iso-'));
   assert.equal(during.length, 1);
   await module.dispose();
-  assert.equal(fs.existsSync(require('node:path').join(require('node:os').tmpdir(), during[0])), false);
+  assert.equal(fs.existsSync(require('node:path').join(own, during[0])), false);
   await module.dispose();
 });
 
