@@ -41,23 +41,31 @@ export async function runMeetingChecks(workspace: string): Promise<void> {
   let pick: (items: any[]) => any[] | undefined = (items) => items;
   let confirm: string | undefined = 'Send Now';
   let nextStep: string | undefined = 'Enter Replies';
-  const replies = ['Use SQLite for now.', undefined];
-  let replyIndex = 0;
+  // What the clipboard holds, and what the "person" copies from each agent's terminal when asked about it (undefined: copies nothing).
+  let clipboardNow = '';
+  let copies: Array<string | undefined> = [];
+  let copyIndex = 0;
+  let recordAnswer: (buttons: string[], message: string) => string | undefined = (buttons) => buttons[0];
   const errors: string[] = [];
   const shown: string[] = [];
   const ui = vscode.window as any;
   const original = { input: ui.showInputBox, pick: ui.showQuickPick, warning: ui.showWarningMessage, info: ui.showInformationMessage, error: ui.showErrorMessage };
   ui.showInputBox = async () => topic;
   ui.showQuickPick = async (items: any[]) => pick(items);
-  ui.showWarningMessage = async (_m: string, _o: unknown, ...buttons: string[]) => (confirm && buttons.includes(confirm) ? confirm : undefined);
-  ui.showInformationMessage = async (message: string, _o?: unknown, ...buttons: string[]) => {
+  ui.showWarningMessage = async (message: string, _o: unknown, ...buttons: string[]) => {
+    if (buttons.includes('Send Now') || buttons.includes('Send to Unknown Anyway') || buttons.includes('Also Send to Unknown')) return confirm && buttons.includes(confirm) ? confirm : undefined;
+    shown.push(message);
+    return recordAnswer(buttons, message);
+  };
+  ui.showInformationMessage = async (message: string, ...rest: unknown[]) => {
+    const buttons = rest.filter((item): item is string => typeof item === 'string');
     shown.push(message);
     if (buttons.includes('Enter Replies')) return nextStep;
-    if (buttons.includes('Use Clipboard')) { const reply = replies[replyIndex++]; return reply === undefined ? 'No Reply' : 'Use Clipboard'; }
+    if (buttons.includes('Read Clipboard')) { const value = copies[copyIndex++]; if (value === undefined) return 'No Reply'; clipboardNow = value; return 'Read Clipboard'; }
     return undefined;
   };
   ui.showErrorMessage = async (message: string) => { errors.push(message); return undefined; };
-  const clipboard = () => Promise.resolve(replies[Math.max(0, replyIndex - 1)] ?? replies[replyIndex] ?? '');
+  const clipboard = () => Promise.resolve(clipboardNow);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 600));
   try {
     // A. Topic refused (forged marker): nothing is asked of an agent.
@@ -84,7 +92,7 @@ export async function runMeetingChecks(workspace: string): Promise<void> {
 
     // D. Both waiting: the topic reaches both terminals; the first reply is pasted, the second is "No Reply"; the minutes record exactly that.
     confirm = 'Send Now';
-    replyIndex = 0;
+    copies = ['Use SQLite for now.', undefined]; copyIndex = 0;
     await meetingForTests(sessions, { readClipboard: clipboard });
     const first = await lines(logs['Agent One'], 2);
     const second = await lines(logs['Agent Two'], 2);
@@ -101,8 +109,7 @@ export async function runMeetingChecks(workspace: string): Promise<void> {
 
     // E. One agent busy: it is not typed into, it is marked as not asked, and its (impossible) reply is not recorded.
     states['Agent Two'] = { state: 'working', reason: 'last-hook-event', since: new Date().toISOString() };
-    replyIndex = 0;
-    replies[0] = 'Postgres.'; replies[1] = 'should be ignored';
+    copies = ['Postgres.', 'should be ignored']; copyIndex = 0;
     await meetingForTests(sessions, { readClipboard: clipboard });
     await settle();
     assert.equal((await lines(logs['Agent Two'], 0)).length, 2, 'the busy agent got nothing');
@@ -110,6 +117,46 @@ export async function runMeetingChecks(workspace: string): Promise<void> {
     const text2 = vscode.window.activeTextEditor!.document.getText();
     assert.ok(text2.includes('the topic was NOT typed into its terminal (the CLI was busy)') && text2.includes('- Reply: none (it was not asked)'));
     assert.ok(!text2.includes('should be ignored'));
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+
+    // E2. The clipboard is not changed between two agents (the person pasted nothing new): the second is not given the first one's text without a
+    // second, explicit answer; Escape on that window skips only that agent, and the agents after it still get their turn.
+    states['Agent Two'] = waiting();
+    copies = ['Mongo.', 'Mongo.'];
+    copyIndex = 0;
+    shown.length = 0;
+    recordAnswer = (buttons) => (buttons.includes('Record It Anyway') ? undefined : buttons[0]);
+    await meetingForTests(sessions, { readClipboard: clipboard });
+    const text3 = vscode.window.activeTextEditor!.document.getText();
+    assert.ok(shown.some((message) => /same text as the reply recorded for Agent One/.test(message)), 'the second agent was warned');
+    assert.equal((text3.match(/Mongo/g) ?? []).length, 1, 'the text was recorded once, under the first agent only');
+    assert.ok(text3.includes('1 of 2 participants have a recorded reply.'));
+    recordAnswer = (buttons) => buttons[0];
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    // Escape on the first agent's window skips it, and the second agent's own answer is still taken.
+    copies = ['First text.', 'Second text.'];
+    copyIndex = 0;
+    let call = 0;
+    recordAnswer = (buttons) => (call++ === 0 ? undefined : buttons[0]);
+    await meetingForTests(sessions, { readClipboard: clipboard });
+    const text4 = vscode.window.activeTextEditor!.document.getText();
+    assert.ok(!text4.includes('First text') && text4.includes('Second text'), 'Escape skipped one agent only');
+    recordAnswer = (buttons) => buttons[0];
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    // The first agent has no reply: the second is still asked and its answer taken.
+    copies = [undefined, 'Only the second.'];
+    copyIndex = 0;
+    await meetingForTests(sessions, { readClipboard: clipboard });
+    const text5 = vscode.window.activeTextEditor!.document.getText();
+    assert.ok(text5.includes('1 of 2 participants have a recorded reply.') && text5.includes('Only the second'), 'No Reply for one agent does not end the others\' turns');
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    // An empty clipboard records nothing, and the person is told.
+    copies = ['   ', undefined];
+    copyIndex = 0;
+    shown.length = 0;
+    await meetingForTests(sessions, { readClipboard: clipboard });
+    assert.ok(shown.some((message) => /The clipboard is empty, so no reply was recorded for Agent One/.test(message)));
+    assert.ok(vscode.window.activeTextEditor!.document.getText().includes('0 of 2 participants have a recorded reply.'));
     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
 
     // F. "Make Minutes Now": every agent that was asked is "no reply recorded"; an untrusted workspace does nothing.

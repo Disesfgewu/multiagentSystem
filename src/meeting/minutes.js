@@ -23,7 +23,7 @@ const REASON_TEXT = Object.freeze({
 });
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const escapeMd = (value) => value.replace(/[\\`*_{}[\]<>()#+\-.!|~&:]/g, (char) => `\\${char}`);
+const escapeMd = (value) => value.replace(/[\\`*_{}[\]<>()#+\-.!|~&:=]/g, (char) => `\\${char}`);
 
 /** One block of plain text: line breaks kept as separate lines, each line escaped; or a single flat line. */
 function plain(value, { limit, multiline }) {

@@ -82,3 +82,10 @@ test('a topic that is hidden, forged, an instruction to ignore rules, private, e
   for (const [topic, reason] of cases) assert.equal(buildMeetingPrompt({ topic }).reason, reason, String(topic).slice(0, 20));
   assert.equal(buildMeetingPrompt(null).ok, false);
 });
+
+test('a reply made of "=" or "-" lines cannot become a heading underline, so no reply can show a big forged word', () => {
+  const r = build([person({ reply: 'Pass\n===\nPass\n---' })]);
+  assert.ok(r.markdown.includes('> Pass\n> \\=\\=\\='));
+  assert.ok(r.markdown.includes('> \\-\\-\\-'));
+  assert.ok(!/^>?\s*={3,}\s*$/m.test(r.markdown) && !/^>?\s*-{3,}\s*$/m.test(r.markdown));
+});

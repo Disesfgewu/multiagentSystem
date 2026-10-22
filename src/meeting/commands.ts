@@ -58,12 +58,24 @@ async function meeting(sessions: SessionCommands, seams: Seams = {}): Promise<vo
     const next = await vscode.window.showInformationMessage('The topic was typed. Let the agents answer in their terminals.', { modal: true, detail: 'The extension cannot read their answers. When they have answered, choose Enter Replies: for each agent you copy its answer from its terminal and press Use Clipboard. Anything you do not paste is recorded as "no reply recorded".' }, 'Enter Replies', 'Make Minutes Now');
     if (next === 'Enter Replies') {
       const readClipboard = seams.readClipboard ?? (() => vscode.env.clipboard.readText());
+      const used = new Map<string, string>();
       for (const entry of askers) {
+        // Step 1, NOT a modal: the person has to be able to go to the terminal and copy. Nothing is read yet. Closing it skips this agent only.
+        const ready = await vscode.window.showInformationMessage(`Copy ${entry.name}'s answer from its terminal, then press Read Clipboard.`, 'Read Clipboard', 'No Reply');
+        if (ready !== 'Read Clipboard') continue;
+        // Step 2: only now is the clipboard read, and the person sees what will be recorded under this agent's name.
         const clip = await readClipboard();
+        if (clip.trim() === '') { void vscode.window.showInformationMessage(`The clipboard is empty, so no reply was recorded for ${entry.name}.`); continue; }
         const preview = Array.from(clip.replace(/\s+/g, ' ').trim()).slice(0, 200).join('');
-        const decision = await vscode.window.showInformationMessage(`Reply of ${entry.name}: copy its answer from its terminal, then press Use Clipboard.`, { modal: true, detail: `The clipboard now holds (first 200 characters):\n${preview === '' ? '(empty)' : preview}` }, 'Use Clipboard', 'No Reply');
-        if (decision === 'Use Clipboard') entry.reply = clip;
-        else if (decision !== 'No Reply') break;
+        const twin = used.get(clip.trim());
+        // The same text already recorded for another agent means the clipboard was not changed: it is not taken without a second, explicit answer.
+        const decision = await vscode.window.showWarningMessage(
+          twin ? `This is the same text as the reply recorded for ${twin}.` : `Record this as ${entry.name}'s reply?`,
+          { modal: true, detail: `${twin ? `The clipboard has not changed since ${twin}'s reply, so it is probably not ${entry.name}'s answer.\n\n` : ''}The clipboard holds (first 200 characters):\n${preview}` },
+          twin ? 'Record It Anyway' : 'Record Reply'
+        );
+        // Anything but the button (Escape included) skips this agent only.
+        if (decision === 'Record Reply' || decision === 'Record It Anyway') { entry.reply = clip; used.set(clip.trim(), entry.name); }
       }
     }
   }
