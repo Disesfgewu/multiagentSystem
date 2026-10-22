@@ -335,6 +335,21 @@ function codexExtras(accounts: AccountsOk, accountProfileId: string, now: Date):
   }
 }
 
+/**
+ * A Codex session's observation changed: read the account's session log again and keep the last request's counts in the usage log
+ * (issue #302, #294), the same as opening the account's detail does. Best effort: it never disturbs the session.
+ */
+export async function recordCodexSessionReading(accountProfileId: string, sessions: () => any[], now: Date = new Date()): Promise<void> {
+  try {
+    const accounts = await accountService(sessions);
+    if (!accounts.ok) return;
+    const own = accounts.service.get(accountProfileId);
+    if (!own.ok || !own.profile || own.profile.provider !== 'codex') return;
+    const entry = codexUsageEntry(codexQuotaReading(accountProfileId, own.profile.configDir, now).reading, { accountProfileId });
+    if (entry) new UsageLog(accounts.store).append(entry, now);
+  } catch { /* a reading that cannot be kept never disturbs the session */ }
+}
+
 export interface QuotaDetail {
   ok: boolean;
   windows: ReturnType<typeof summarizeQuota>;

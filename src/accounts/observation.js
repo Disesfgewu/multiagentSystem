@@ -259,7 +259,7 @@ function codexQuotaFromRateLimits(response, { profileId, observedAt, ttlMs = QUO
 // of that log, so it is fresh only for the usual reading lifetime (and never past its reset), and it says when it was taken.
 const CODEX_LOG_WINDOWS = Object.freeze({ 300: ['five_hour', '5-hour window reported by the Codex session log'], 10080: ['seven_day', '7-day window reported by the Codex session log'] });
 
-function codexQuotaFromSessionLog(rateLimits, { profileId, observedAt, ttlMs = QUOTA_TTL_MS }) {
+function codexQuotaFromSessionLog(rateLimits, { profileId, observedAt, now = observedAt, ttlMs = QUOTA_TTL_MS }) {
   const source = 'codex session log rate_limits';
   const nowMs = toTime(observedAt);
   const out = [];
@@ -273,7 +273,9 @@ function codexQuotaFromSessionLog(rateLimits, { profileId, observedAt, ttlMs = Q
     const resetGiven = rawReset !== undefined && rawReset !== null;
     const resetsMs = resetGiven && typeof rawReset === 'number' && Number.isFinite(rawReset) && rawReset > 0 && Number.isFinite(new Date(rawReset * 1000).getTime()) ? rawReset * 1000 : null;
     const resetInvalid = resetGiven && resetsMs === null;
-    const expired = resetsMs !== null && resetsMs <= nowMs;
+    // Already reset is judged by the time now (when the log is read), not by when the event was written: a reading whose reset time
+    // has come since is a window that started over, so its percent says nothing about this one.
+    const expired = resetsMs !== null && resetsMs <= Math.max(nowMs, toTime(now));
     let reason = 'window-absent';
     if (expired) reason = 'window-reset-passed';
     else if (resetInvalid) reason = 'invalid-reset';

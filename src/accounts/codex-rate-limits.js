@@ -42,6 +42,8 @@ function folderNames(dir, accept, fsImpl, wantDirectories) {
   if (!info.isDirectory() || info.isSymbolicLink()) return { ok: false, reason: 'unsafe' };
   let names;
   try { names = fsImpl.readdirSync(dir); } catch { return { ok: false, reason: 'unreadable' }; }
+  // Newest first BEFORE the limit: the entries that are kept are the newest ones, not the first the disk happened to list.
+  names = names.filter((name) => accept.test(name)).sort().reverse();
   if (names.length > MAX_DIR_ENTRIES) names = names.slice(0, MAX_DIR_ENTRIES);
   const kept = [];
   for (const name of names) {
@@ -51,7 +53,7 @@ function folderNames(dir, accept, fsImpl, wantDirectories) {
     if (entry.isSymbolicLink()) continue;
     if (wantDirectories ? entry.isDirectory() : entry.isFile()) kept.push(name);
   }
-  return { ok: true, names: kept.sort().reverse() };
+  return { ok: true, names: kept };
 }
 
 /** The newest rollout files, newest first, from the newest day folders. */
@@ -70,7 +72,8 @@ function newestRollouts(sessionsDir, fsImpl) {
         days += 1;
         const found = folderNames(path.join(sessionsDir, year, month, day), ROLLOUT, fsImpl, false);
         if (found.ok) for (const name of found.names) files.push(path.join(sessionsDir, year, month, day, name));
-        if (files.length >= MAX_FILES_TRIED || days >= MAX_DAY_FOLDERS) return { ok: true, files: files.slice(0, MAX_FILES_TRIED) };
+        // Out of room to look: with nothing found that is "no session files", not an empty list of files to try.
+        if (files.length >= MAX_FILES_TRIED || days >= MAX_DAY_FOLDERS) return files.length > 0 ? { ok: true, files: files.slice(0, MAX_FILES_TRIED) } : { ok: false, reason: 'no-session-files' };
       }
     }
   }
@@ -175,7 +178,8 @@ function readCodexRateLimits(codexHome, { profileId = 'codex', now = new Date(),
     const observedAt = new Date(event.timeMs);
     const sessionKey = `codex-${(ROLLOUT.exec(path.basename(file))?.[1] ?? 'log').replace(/[^A-Za-z0-9_-]/g, '-').slice(-80)}`;
     if (!event.hasLimits) return { ...unknown('rate-limits-absent'), observedAt: observedAt.toISOString(), usage: event.usage, sessionKey };
-    const observations = codexQuotaFromSessionLog(event.rateLimits, { profileId, observedAt }).observations;
+    // Whether a window has already reset is judged against the time NOW, not the time the event was written.
+    const observations = codexQuotaFromSessionLog(event.rateLimits, { profileId, observedAt, now }).observations;
     if (observations.length === 0) return { ...unknown('codex-format-changed'), observedAt: observedAt.toISOString(), usage: event.usage, sessionKey };
     return { ok: true, observedAt: observedAt.toISOString(), planType: event.planType, observations, usage: event.usage, sessionKey };
   }
