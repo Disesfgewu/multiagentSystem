@@ -226,6 +226,20 @@ const cell = (value) => {
 const toCsv = (rows) => [CSV_COLUMNS.join(','), ...rows.map((row) => CSV_COLUMNS.map((column) => cell(row[column])).join(','))].join('\n') + '\n';
 const toJson = (rows) => `${JSON.stringify({ masked: true, rows }, null, 2)}\n`;
 
+/**
+ * The sessions in a list of entries, most recent reading first, at most `limit` of them: sorted by each session's LATEST reading
+ * before the cut, so the ones left out are the ones seen longest ago (not whichever the list happened to start with).
+ */
+function sessionsByRecency(entries, limit = 50) {
+  const latest = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!isPlain(entry) || typeof entry.sessionId !== 'string' || !validTime(entry.at)) continue;
+    const at = Date.parse(entry.at);
+    if (!latest.has(entry.sessionId) || latest.get(entry.sessionId) < at) latest.set(entry.sessionId, at);
+  }
+  return [...latest.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, limit).map(([id]) => id);
+}
+
 const ALL_ACCOUNTS = '*';
 /** A log document's address: the account (or `*` for all), and optionally one session after a `~` (neither can contain one). */
 const addressOf = (account, session) => (session ? `${account}~${session}` : account);
@@ -237,4 +251,4 @@ function parseAddress(query) {
   return { account, ...(session !== undefined ? { session } : {}) };
 }
 
-module.exports = { addressOf, parseAddress, recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };
+module.exports = { sessionsByRecency, addressOf, parseAddress, recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrivateStore } = require('../../src/storage/private-store');
-const { addressOf, parseAddress, UsageLog, entryFromSnapshot, validateEntry, rotate, describeLog, exportRows, toCsv, toJson, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS } = require('../../src/accounts/usage-log');
+const { sessionsByRecency, addressOf, parseAddress, UsageLog, entryFromSnapshot, validateEntry, rotate, describeLog, exportRows, toCsv, toJson, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS } = require('../../src/accounts/usage-log');
 const { sandbox, COLLECTIONS } = require('../storage/helpers');
 
 const NOW = new Date('2026-10-21T10:00:00.000Z');
@@ -201,4 +201,41 @@ test('the log command offers the sessions that are in the log, only when there i
   assert.match(source, /const read = await readEntries\(address\.account, address\.session\);/);
   assert.match(source, /query: addressOf\(account, chosen\.session\)/);
   assert.match(source, /\.\.\.\(sessionId \? \{ sessionId \} : \{\}\)/);
+});
+
+test('each of the seven fields alone makes a reading new: a change in only that field is logged, and none of them is ignored', (t) => {
+  const changes = { inputTokens: 1201, outputTokens: 301, cacheReadTokens: 51, cacheWriteTokens: 7, costUsd: 0.0124, model: 'claude-other', measurement: 'actual' };
+  assert.deepEqual(Object.keys(changes).sort(), ['cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens']);
+  for (const [field, value] of Object.entries(changes)) {
+    const { log } = open(t);
+    assert.deepEqual(log().append(later(0), NOW), { ok: true, appended: true }, field);
+    assert.notEqual(later(0)[field], value, `${field}: the changed value differs from the first reading`);
+    assert.deepEqual(log().append(later(1, { [field]: value }), NOW), { ok: true, appended: true }, `${field} alone changed: a new reading`);
+    assert.deepEqual(log().append(later(2, { [field]: value }), NOW), { ok: true, appended: false }, `${field}: and then the repeat of that is not new`);
+    assert.equal(log().query().entries.length, 2, field);
+  }
+});
+
+test('the fields that decide sameness are exactly the seven, and the time and the session are not among them', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/usage-log.js'), 'utf8');
+  const listed = /const SAME_READING = Object\.freeze\(\[([^\]]*)\]\)/.exec(source)[1].split(',').map((item) => item.trim().replace(/'/g, '')).sort();
+  assert.deepEqual(listed, ['cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens']);
+});
+
+test('when there are too many sessions the ones kept are those with the most recent readings, whatever order the list is in', () => {
+  const entries = [];
+  for (let index = 0; index < 60; index += 1) entries.push(entry({ sessionId: `s-${String(index).padStart(2, '0')}`, at: new Date(Date.parse('2026-10-21T00:00:00.000Z') + index * 60_000).toISOString() }));
+  // The newest session also has an old reading listed first; its latest one still counts.
+  entries.unshift(entry({ sessionId: 's-59', at: '2026-10-20T00:00:00.000Z' }));
+  for (const list of [entries, [...entries].reverse(), [...entries].sort((a, b) => (a.sessionId < b.sessionId ? 1 : -1))]) {
+    const kept = sessionsByRecency(list, 50);
+    assert.equal(kept.length, 50);
+    assert.equal(kept[0], 's-59');
+    assert.equal(kept[49], 's-10');
+    assert.ok(!kept.includes('s-09') && !kept.includes('s-00'), 'the oldest sessions are the ones left out');
+  }
+  assert.deepEqual(sessionsByRecency([entry({ sessionId: 'a', at: '2026-10-21T00:00:00.000Z' }), entry({ sessionId: 'b', at: '2026-10-21T00:00:00.000Z' })], 5), ['a', 'b'], 'equal times: by id');
+  for (const bad of [undefined, null, 'x', [null, 5, {}, { sessionId: 3 }, { sessionId: 'x', at: 'never' }]]) assert.deepEqual(sessionsByRecency(bad), []);
 });

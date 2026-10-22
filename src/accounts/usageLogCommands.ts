@@ -4,7 +4,8 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { accountService } from './accountRuntime';
 import { builtIn } from '../providers/registry';
 
-const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddress } = require('./usage-log') as {
+const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddress, sessionsByRecency } = require('./usage-log') as {
+  sessionsByRecency(entries: any[], limit?: number): string[];
   addressOf(account: string, session?: string): string;
   parseAddress(query: string): { account: string; session?: string } | undefined;
   UsageLog: new (store: unknown) => { query(filter?: { accountProfileId?: string; sessionId?: string }): { ok: boolean; entries?: any[]; reason?: string } };
@@ -61,9 +62,10 @@ async function sessionName(sessions: SessionCommands, id: string): Promise<strin
 async function pickSession(sessions: SessionCommands, account: string): Promise<{ cancelled: boolean; session?: string }> {
   const read = await readEntries(account);
   if (!read.ok) { void vscode.window.showErrorMessage(read.reason); return { cancelled: true }; }
-  const ids = [...new Set(read.entries.map((entry) => String(entry.sessionId)))];
+  const all = new Set(read.entries.map((entry) => String(entry.sessionId)));
+  const ids = sessionsByRecency(read.entries, 50);
   if (ids.length < 2) return { cancelled: false };
-  const items = [{ label: 'All sessions', id: undefined as string | undefined, description: `${ids.length} sessions in the log` }, ...(await Promise.all(ids.slice(0, 50).map(async (id) => ({ label: await sessionName(sessions, id), id: id as string | undefined, description: `${read.entries.filter((entry) => entry.sessionId === id).length} readings` }))))];
+  const items = [{ label: 'All sessions', id: undefined as string | undefined, description: ids.length < all.size ? `the ${ids.length} most recent of ${all.size} sessions in the log` : `${ids.length} sessions in the log` }, ...(await Promise.all(ids.map(async (id) => ({ label: await sessionName(sessions, id), id: id as string | undefined, description: `${read.entries.filter((entry) => entry.sessionId === id).length} readings` }))))];
   const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Which session? (the log has more than one)', ignoreFocusOut: true });
   return picked ? { cancelled: false, session: picked.id } : { cancelled: true };
 }
