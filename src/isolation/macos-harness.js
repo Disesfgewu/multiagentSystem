@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { CHANNELS } = require('./capabilities');
 const { seatbeltProfile, scrubEnvironment, credentialLocations, isolationSpec, gitDirectoriesFor, SANDBOX_EXEC } = require('./macos');
@@ -33,18 +33,39 @@ function findExecutable(name, searchPath = process.env.PATH ?? '') {
 
 function run(file, args, { cwd, env, input, signal, timeoutMs = ATTEMPT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
-    let hardTimer;
-    const child = execFile(file, args, { cwd, env, signal, timeout: timeoutMs, maxBuffer: 1 << 20, encoding: 'utf8' }, (error, stdout, stderr) => {
+    let out = '';
+    let err = '';
+    let finished = false;
+    let timedOut = false;
+    // Its own process group (this harness runs on macOS only; `execFile` does not pass `detached` on), so everything the child
+    // started can be stopped together with it.
+    const child = spawn(file, args, { cwd, env, signal, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+    const stopGroup = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    const finish = (ok) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(softTimer);
       clearTimeout(hardTimer);
-      resolve({ ok: !error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-    // `execFile` only answers once the child's output pipes close. A child that ignores the polite stop, or a grandchild that keeps the
-    // pipe open, would leave this wait (and the test) pending forever; after a grace period the child is killed outright and the attempt
-    // is reported as not having succeeded (which the harness reads as unknown, never as blocked).
-    hardTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } resolve({ ok: false, stdout: '', stderr: '' }); }, timeoutMs + 3000);
-    if (typeof hardTimer.unref === 'function') hardTimer.unref();
-    child.on('error', () => {});
-    if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }
+      // Whatever the child left running (a grandchild holding a pipe, a background helper) is stopped now, not left until it ends by itself.
+      stopGroup();
+      resolve({ ok: ok && !timedOut, stdout: out, stderr: err });
+    };
+    const softTimer = setTimeout(() => { timedOut = true; try { child.kill('SIGTERM'); } catch { /* gone */ } }, timeoutMs);
+    // A child that ignores the polite stop, or a grandchild that keeps the output open, would leave this wait (and the test) pending
+    // forever; after a grace period the group is killed outright and the attempt is reported as not having succeeded (which the harness
+    // reads as unknown, never as blocked).
+    const hardTimer = setTimeout(() => { timedOut = true; stopGroup(); try { child.kill('SIGKILL'); } catch { /* gone */ } finish(false); }, timeoutMs + 3000);
+    for (const timer of [softTimer, hardTimer]) if (typeof timer.unref === 'function') timer.unref();
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { if (out.length < (1 << 20)) out += chunk; });
+    child.stderr.on('data', (chunk) => { if (err.length < (1 << 20)) err += chunk; });
+    child.on('error', () => finish(false));
+    child.on('close', (code) => finish(code === 0));
+    child.stdout.on('error', () => {});
+    child.stderr.on('error', () => {});
+    child.stdin.on('error', () => {});
+    if (input !== undefined) child.stdin.end(input); else child.stdin.end();
   });
 }
 

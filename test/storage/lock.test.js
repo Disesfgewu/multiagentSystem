@@ -12,6 +12,8 @@ const { sandbox, COLLECTIONS } = require('./helpers');
 
 const holder = path.join(__dirname, 'fixtures', 'lock-holder.js');
 const quick = { retries: 2, waitMs: 1, staleMs: 100 };
+// For a test that needs a lock to count as FRESH while it runs: a loaded machine can take more than `quick`'s 100 ms between two lines.
+const steady = { retries: 2, waitMs: 1, staleMs: 5000 };
 const open = (s, lock) => new PrivateStore({ dir: s.dir, repoRoot: s.repoRoot, collections: COLLECTIONS, lock });
 const lockPath = (s) => path.join(s.dir, 'store.lock');
 
@@ -83,7 +85,7 @@ test('a crashed holder is reported as dead and cleared only on request', async (
 
 test('recovery refuses a live owner unless forced, and forcing needs a stale lock', (t) => {
   const s = sandbox(t);
-  const store = open(s, quick);
+  const store = open(s, steady);
 
   writeLock(s, mine());
   const refused = store.recoverLock({ confirm: CONFIRM_RECOVER });
@@ -92,7 +94,7 @@ test('recovery refuses a live owner unless forced, and forcing needs a stale loc
   assert.equal(store.recoverLock({ confirm: CONFIRM_RECOVER, force: true }).reason, 'not-stale', 'fresh lock, even forced');
   assert.equal(fs.existsSync(lockPath(s)), true);
 
-  writeLock(s, mine(), 5000);
+  writeLock(s, mine(), 60_000);
   assert.equal(store.recoverLock({ confirm: CONFIRM_RECOVER }).ok, false, 'old but not forced');
   const forced = store.recoverLock({ confirm: CONFIRM_RECOVER, force: true });
   assert.deepEqual([forced.ok, forced.recovered], [true, true], 'a person decided, for example after a pid was reused');
