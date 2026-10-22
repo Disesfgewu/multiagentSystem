@@ -189,6 +189,7 @@ export async function runDispatchTaskChecks(workspace: string): Promise<void> {
     await dispatchForTests(sessions, 'issue', { run: runFake, waitMs: 3000 });
     assert.equal(asked.length, 2);
     assert.equal(asked[0][0], 'multiagentSystem.worktrees.create');
+    assert.equal(asked[0][1].offerOpen, false, 'the worktree is made without the open-in-a-window question that would hold the flow');
     assert.equal(asked[0][1].branch, 'feat/issue-305-dispatch-tasks', 'a plain branch name made from the Issue');
     assert.deepEqual([asked[1][0], asked[1][1].id, asked[1][1].cwd], ['multiagentSystem.roles.start', GROUP, workspace]);
     assert.equal((await lines(linesBefore + 1)).length, linesBefore + 1, 'the task was typed into the new agent once it was waiting');

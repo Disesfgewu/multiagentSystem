@@ -119,8 +119,9 @@ async function startWorkerForIssue(sessions: SessionCommands, roleOf: (session: 
   const branch = issue ? branchNameFor(issue.number, issue.title) : null;
   if (!issue || issue.state !== 'open' || !branch) { void vscode.window.showErrorMessage(`Issue #${task.issueNumber} could not be read as an open Issue. Nothing was started.`); return; }
   const listed = opened.list('roleGroups');
+  if (!listed?.ok) { void vscode.window.showErrorMessage('The role groups could not be read, so no agent was started.'); return; }
   const groups: Array<{ id: string; name: string; role: string }> = [];
-  for (const entry of listed?.ok ? listed.items ?? [] : []) { const group = entry?.value?.group; if (group && typeof group.id === 'string' && typeof group.name === 'string') groups.push({ id: group.id, name: group.name, role: String(group.role ?? '') }); }
+  for (const entry of listed.items ?? []) { const group = entry?.value?.group; if (group && typeof group.id === 'string' && typeof group.name === 'string') groups.push({ id: group.id, name: group.name, role: String(group.role ?? '') }); }
   if (groups.length === 0) { void vscode.window.showInformationMessage('Create a role group first: an agent is started from a role group.'); return; }
   const picked = await vscode.window.showQuickPick(groups.map((group) => ({ label: group.name, description: group.role, id: group.id })), { placeHolder: `Which role group should work on Issue #${issue.number}?`, ignoreFocusOut: true });
   if (!picked) return;
@@ -130,7 +131,8 @@ async function startWorkerForIssue(sessions: SessionCommands, roleOf: (session: 
     'Continue'
   );
   if (go !== 'Continue') return;
-  const created = await run(WORKTREE_CREATE, { branch });
+  // `offerOpen: false`: the person is not asked to open the folder in a window (that notification would hold this flow until answered).
+  const created = await run(WORKTREE_CREATE, { branch, offerOpen: false });
   if (!created || created.ok !== true || typeof created.worktree?.path !== 'string') { void vscode.window.showErrorMessage('The worktree was not created, so no agent was started.'); return; }
   const started = await run(ROLE_START, { id: picked.id, cwd: created.worktree.path, name: `Issue #${issue.number}` });
   const sessionId = started && started.ok === true && typeof started.session?.id === 'string' ? started.session.id : null;
