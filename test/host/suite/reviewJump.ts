@@ -88,7 +88,9 @@ export async function runReviewJumpChecks(): Promise<void> {
   } finally {
     ui.showInformationMessage = original;
     setReportDepsForTests(undefined);
-    fs.rmSync(folder, { recursive: true, force: true });
+    // Windows can still hold the opened file for a moment after the editors close (EBUSY): retry like runTest.ts does.
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
   }
   console.log('host smoke: an inline review comment in a pull request report jumps to its line: in a clean working folder at exactly the head, else in the patch; links out of the folder and bad line numbers are refused');
 }
