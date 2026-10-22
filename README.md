@@ -43,7 +43,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 尚未在實機上走過：#311 列的總負責人流程（指揮台、指派、同時下任務、團隊規則、跳到程式碼與討論、開會、匯出、PM 不能 commit）。各 CLI 是否真的讀到規則、記憶、任務與會議內容，屬於實機項目（#135）。身份組的工具權限並非完全強制，各 CLI 的強制程度說明同 Beta 5。
 
-尚未包含：agent 自己提出建議記憶的收集（#333，審查中）。
+**不在這一版**：agent 自己提出建議記憶的收集（#333）已合併到 main，將收錄於下一個 Beta。
 
 完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6)。
 
