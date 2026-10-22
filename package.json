@@ -69,6 +69,7 @@
     "onCommand:multiagentSystem.broadcasts.send",
     "onCommand:multiagentSystem.broadcasts.deliver",
     "onCommand:multiagentSystem.broadcasts.revoke",
+    "onCommand:multiagentSystem.discuss.withPm",
     "onView:multiagentSystem.memoryView",
     "onCommand:multiagentSystem.memory.refresh",
     "onCommand:multiagentSystem.memory.add",
@@ -364,6 +365,7 @@
       { "command": "multiagentSystem.broadcasts.deliver", "title": "Multiagent: Send Broadcast to Agents", "icon": "$(send)" },
       { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
+      { "command": "multiagentSystem.discuss.withPm", "title": "Discuss with PM Agent", "category": "Multiagent" },
       { "command": "multiagentSystem.memory.refresh", "title": "Multiagent: Refresh Shared Memory", "icon": "$(refresh)" },
       { "command": "multiagentSystem.memory.add", "title": "Multiagent: Add Shared Memory Note", "icon": "$(add)" },
       { "command": "multiagentSystem.memory.edit", "title": "Multiagent: Edit Shared Memory Note" },
@@ -402,6 +404,12 @@
       { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
     ],
     "menus": {
+      "editor/context": [
+        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection && (resourceScheme == file || resourceScheme == multiagent-report-diff)", "group": "9_multiagent@1" }
+      ],
+      "commandPalette": [
+        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection" }
+      ],
       "editor/title": [
         { "command": "multiagentSystem.reports.backToOverview", "when": "resourceScheme == multiagent-report", "group": "navigation@0" },
         { "command": "multiagentSystem.reports.backToList", "when": "resourceScheme == multiagent-report", "group": "navigation" },
