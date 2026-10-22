@@ -694,3 +694,30 @@ test('names that differ only in case are reported as a possible collision with e
   assert.equal(path.basename(h.ui.openedFiles[0]), 'Guide.md', 'its own spelling, not the other worktree\'s');
   assert.equal(path.relative(fsSync.realpathSync.native(a), h.ui.openedFiles[0]), 'Guide.md', 'from the worktree that spells it that way');
 });
+
+test('create can skip the "open in a window" question, so a caller that starts an agent next is never held by a notification', async (t) => {
+  const { root } = await repository(t);
+  const h = harness(root);
+  const managed = managedWorktreeRoot(root);
+  let asked = 0;
+  // A notification the person never answers: its promise never ends.
+  h.ui.offerOpen = (): Promise<boolean> => { asked += 1; return new Promise(() => {}); };
+  const quick = await Promise.race([
+    h.controller.create({ interactive: true, branch: 'feature/no-offer', target: path.join(managed, 'no-offer'), offerOpen: false }),
+    new Promise<'held'>((resolve) => setTimeout(() => resolve('held'), 15000).unref())
+  ]);
+  assert.notEqual(quick, 'held', 'create returned without waiting for the question');
+  assert.ok((quick as { ok: boolean }).ok);
+  assert.equal(asked, 0, 'the question was not asked');
+  assert.deepEqual(h.ui.opened, [], 'and nothing was opened');
+  // Without the option the question is still asked, as before.
+  h.ui.offerOpen = async (): Promise<boolean> => { asked += 1; return false; };
+  assert.ok((await h.controller.create({ interactive: true, branch: 'feature/with-offer', target: path.join(managed, 'with-offer') })).ok);
+  assert.equal(asked, 1);
+  // Any value other than the boolean false keeps the question.
+  for (const value of [0, null, 'false', undefined] as never[]) {
+    asked = 0;
+    assert.ok((await h.controller.create({ interactive: true, branch: `feature/odd-${String(value)}`, target: path.join(managed, `odd-${String(value)}`), offerOpen: value })).ok);
+    assert.equal(asked, 1, String(value));
+  }
+});
