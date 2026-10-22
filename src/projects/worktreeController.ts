@@ -83,6 +83,8 @@ export interface WorktreeCommandOptions {
   base?: string;
   path?: string;
   confirmed?: boolean;
+  /** `false`: do not ask whether to open the new folder in a window (a caller that starts an agent in it next has no use for the question). Only ever removes that one question; nothing that protects anything depends on it. */
+  offerOpen?: boolean;
 }
 
 export type OverlapResult =
@@ -431,7 +433,7 @@ export class WorktreeController {
       const entry: WorktreeEntry = { ...created, primary: false, current: false };
       if (interactive) {
         ui.info(`Created worktree for branch ${branch}.`);
-        if (await ui.offerOpen(entry)) await ui.openFolder(entry.path);
+        if (options.offerOpen !== false && await ui.offerOpen(entry)) await ui.openFolder(entry.path);
       }
       return { ok: true, worktree: entry };
     } catch (error) {

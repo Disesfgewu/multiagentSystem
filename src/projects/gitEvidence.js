@@ -131,4 +131,50 @@ async function readMainHead(folder, { git = runGit } = {}) {
   } catch { return unknown('not-readable'); }
 }
 
-module.exports = { inspectWorktree, describeEvidence, readMainHead, parseStatus, parseDivergence, TIMEOUT_MS };
+const FULL_SHA = /^[0-9a-f]{40}$/;
+const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/;
+const MAX_FILE_BYTES = 1024 * 1024;
+
+/**
+ * The two versions of one file a pull request changed, from the repository's OWN objects (read-only, nothing is fetched): `left` is the
+ * file as it was where the pull request branched from the base branch (the merge base of `origin/<baseRef>` and the head), `right` as it is
+ * at the head. A file that does not exist on one side (added or deleted) is empty there. Unknown, never guessed, when the head commit is
+ * not in this repository, the base branch is not known locally, the path is not a plain repository path, or a version is binary or
+ * larger than MAX_FILE_BYTES. A path missing on one side is accepted only when the pull request says so (`status` `added`: nothing on the
+ * left; `removed`: nothing on the right); any other status with a missing side (a rename, whose old name is not asked for here) is
+ * unknown, and so is a Git command that FAILED, which is not the same as the path not being there.
+ * @returns {Promise<{ ok: true, left: string, right: string, baseSha: string } | { ok: false, reason: string }>}
+ */
+async function readPullRequestFileVersions(folder, { headSha, baseRef, relativePath, status }, { git = runGit } = {}) {
+  if (typeof folder !== 'string' || !path.isAbsolute(folder)) return { ok: false, reason: 'no-folder' };
+  if (typeof headSha !== 'string' || !FULL_SHA.test(headSha)) return { ok: false, reason: 'head-invalid' };
+  if (typeof baseRef !== 'string' || !BRANCH_NAME.test(baseRef) || baseRef.includes('..') || baseRef.endsWith('/') || baseRef.endsWith('.lock')) return { ok: false, reason: 'base-invalid' };
+  if (typeof relativePath !== 'string' || relativePath === '' || relativePath.length > 1024 || relativePath.startsWith('/') || relativePath.includes('\0') || relativePath.includes('\\') || relativePath.split('/').some((part) => part === '' || part === '.' || part === '..')) return { ok: false, reason: 'path-invalid' };
+  try { await git(folder, ['cat-file', '-e', `${headSha}^{commit}`]); } catch { return { ok: false, reason: 'head-not-local' }; }
+  let baseSha;
+  try { baseSha = String(await git(folder, ['merge-base', `refs/remotes/origin/${baseRef}`, headSha])).trim(); } catch { return { ok: false, reason: 'base-not-local' }; }
+  if (!FULL_SHA.test(baseSha)) return { ok: false, reason: 'base-not-local' };
+  const version = async (sha) => {
+    const spec = `${sha}:${relativePath}`;
+    let listing;
+    try { listing = String(await git(folder, ['ls-tree', '-z', sha, '--', relativePath])); } catch { return { ok: false, reason: 'not-readable' }; }
+    if (listing === '') return { ok: true, text: '', missing: true };
+    // `<mode> <type> <object>\t<path>`: only a plain file (blob, not a link or a folder) is shown.
+    if (!/^100(644|755) blob [0-9a-f]{40}\t/.test(listing)) return { ok: false, reason: 'not-a-file' };
+    const size = Number(String(await git(folder, ['cat-file', '-s', spec])).trim());
+    if (!Number.isSafeInteger(size) || size > MAX_FILE_BYTES) return { ok: false, reason: 'too-large' };
+    const text = String(await git(folder, ['cat-file', 'blob', spec]));
+    if (text.includes('\0')) return { ok: false, reason: 'binary' };
+    return { ok: true, text };
+  };
+  try {
+    const left = await version(baseSha);
+    if (!left.ok) return left;
+    const right = await version(headSha);
+    if (!right.ok) return right;
+    if ((left.missing && status !== 'added') || (right.missing && status !== 'removed') || (left.missing && right.missing)) return { ok: false, reason: 'side-missing' };
+    return { ok: true, left: left.text, right: right.text, baseSha };
+  } catch { return { ok: false, reason: 'not-readable' }; }
+}
+
+module.exports = { readPullRequestFileVersions, MAX_FILE_BYTES, inspectWorktree, describeEvidence, readMainHead, parseStatus, parseDivergence, TIMEOUT_MS };

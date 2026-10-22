@@ -28,7 +28,7 @@ type Seams = { trusted?: () => boolean; readClipboard?: () => Thenable<string> }
  * to the chosen agents through the same confirmation and delivery rule as every other message typed into a terminal (only agents that are
  * waiting for input, unknown ones only by an explicit button, nothing typed if the topic changed). Replies are NOT collected by this
  * extension: it cannot read an agent's answer. When the agents have answered in their terminals the person copies each answer and
- * presses "Use Clipboard" for that agent; whatever is not pasted is recorded as "no reply recorded". The minutes open in an unsaved editor.
+ * presses "Read Clipboard" for that agent and then confirms what it holds with "Record Reply"; whatever is not pasted is recorded as "no reply recorded". The minutes open in an unsaved editor.
  */
 async function meeting(sessions: SessionCommands, seams: Seams = {}): Promise<void> {
   if (!(seams.trusted ?? (() => vscode.workspace.isTrusted))()) { void vscode.window.showWarningMessage('Trust this workspace before starting a meeting.'); return; }
@@ -55,7 +55,7 @@ async function meeting(sessions: SessionCommands, seams: Seams = {}): Promise<vo
   const participants: Array<{ name: string; provider: string; outcome: string; reason: string; reply: string | null }> = results.map((entry) => ({ name: names.get(entry.sessionId) ?? 'Agent', provider: entry.provider, outcome: entry.outcome === 'sent' && entry.reason === 'sent-unknown-state' ? 'sent-unknown-state' : entry.outcome, reason: entry.reason, reply: null }));
   const askers = participants.filter((entry) => entry.outcome !== 'skipped');
   if (askers.length > 0) {
-    const next = await vscode.window.showInformationMessage('The topic was typed. Let the agents answer in their terminals.', { modal: true, detail: 'The extension cannot read their answers. When they have answered, choose Enter Replies: for each agent you copy its answer from its terminal and press Use Clipboard. Anything you do not paste is recorded as "no reply recorded".' }, 'Enter Replies', 'Make Minutes Now');
+    const next = await vscode.window.showInformationMessage('The topic was typed. Let the agents answer in their terminals.', { modal: true, detail: 'The extension cannot read their answers. When they have answered, choose Enter Replies: for each agent you copy its answer from its terminal, press Read Clipboard, then confirm with Record Reply. Anything you do not paste is recorded as "no reply recorded".' }, 'Enter Replies', 'Make Minutes Now');
     if (next === 'Enter Replies') {
       const readClipboard = seams.readClipboard ?? (() => vscode.env.clipboard.readText());
       const used = new Map<string, string>();

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { DIFF_SCHEME, REPORT_COMMANDS, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
+import { DIFF_SCHEME, VERSION_SCHEME, REPORT_COMMANDS, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
 import { removeTemp } from './tempCleanup';
 
 const HEAD = 'd'.repeat(40);
@@ -82,6 +82,27 @@ export async function runReviewJumpChecks(): Promise<void> {
       assert.deepEqual([linked.ok, linked.source], [true, 'patch'], 'a symbolic link is not followed out of the working folder');
       fs.rmSync(outsideFile, { force: true });
     }
+
+    // The side-by-side diff against the base is used when this computer has both versions; what is asked of it is the file, the head and the base branch.
+    const asked: unknown[] = [];
+    let versions: { left: string; right: string } | null = { left: 'one\n', right: 'one\nnew\ntwo\n' };
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => reader, worktrees: async () => worktrees, diffSource: async (input) => { asked.push(input); return versions; } });
+    const diffed = await vscode.commands.executeCommand<{ ok: boolean; source?: string }>(REPORT_COMMANDS.openFileDiff, inline[0].args);
+    assert.deepEqual([diffed.ok, diffed.source], [true, 'diff']);
+    assert.deepEqual(asked, [{ relativePath: 'src/report.ts', headSha: HEAD, baseRef: 'main', status: 'modified' }]);
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    assert.ok(tab?.input instanceof vscode.TabInputTextDiff, 'the editor\'s own diff view is open');
+    const input = tab.input as vscode.TabInputTextDiff;
+    assert.deepEqual([input.original.scheme, input.modified.scheme], [VERSION_SCHEME, VERSION_SCHEME]);
+    assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), 'one\n');
+    assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), 'one\nnew\ntwo\n');
+    // Not available here (the head is not in this computer's Git, or the base is unknown): the agent's folder or the patch is used, as before.
+    versions = null;
+    worktrees = [];
+    const fallback = await vscode.commands.executeCommand<{ ok: boolean; source?: string }>(REPORT_COMMANDS.openFileDiff, inline[0].args);
+    assert.deepEqual([fallback.ok, fallback.source], [true, 'patch']);
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => reader, worktrees: async () => worktrees });
 
     // Arguments that are not a line number are refused.
     for (const line of [0, -1, 1.5, '2', null, 10_000_001]) assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.openFileDiff, { ...inline[0].args, line }), { ok: false, code: 'invalid-file-diff' }, String(line));

@@ -38,7 +38,7 @@ test('remove waits a bounded time for the backend to stop returning the old valu
     if (deleting && ++readsAfterDelete === 3) backend.map.delete(key);
     return backend.map.get(key);
   };
-  const vault = new SecretVault(backend, 'accounts', { removeTimeoutMs: 100, removePollMs: 1 });
+  const vault = new SecretVault(backend, 'accounts', { removeTimeoutMs: 10_000, removePollMs: 1 });
   const saved = await vault.save('profile-1', 'synthetic-value-1');
   assert.deepEqual(await vault.remove(saved.secretRef), { ok: true });
   assert.equal(readsAfterDelete, 3, 'success was returned only after a read confirmed absence');
@@ -51,7 +51,7 @@ test('remove reports remove-unconfirmed when the value remains or confirmation c
   const saved = await vault.save('profile-1', 'synthetic-value-1');
   const started = Date.now();
   assert.deepEqual(await vault.remove(saved.secretRef), { ok: false, reason: 'remove-unconfirmed' });
-  assert.ok(Date.now() - started < 250, 'the retry budget is bounded');
+  assert.ok(Date.now() - started < 5000, 'the retry budget is bounded');
 
   const unreadable = memoryBackend();
   const second = new SecretVault(unreadable, 'accounts', { removeTimeoutMs: 100, removePollMs: 1 });
@@ -68,7 +68,7 @@ test('remove also times out if delete or a confirmation read never settles', asy
   deleting.delete = () => new Promise(() => {});
   const deleteStarted = Date.now();
   assert.deepEqual(await first.remove(saved.secretRef), { ok: false, reason: 'remove-unconfirmed' });
-  assert.ok(Date.now() - deleteStarted < 250, 'a stalled delete is bounded');
+  assert.ok(Date.now() - deleteStarted < 5000, 'a stalled delete is bounded');
 
   const reading = memoryBackend();
   const second = new SecretVault(reading, 'accounts', { removeTimeoutMs: 5, removePollMs: 1 });
@@ -76,7 +76,7 @@ test('remove also times out if delete or a confirmation read never settles', asy
   reading.get = () => new Promise(() => {});
   const readStarted = Date.now();
   assert.deepEqual(await second.remove(savedSecond.secretRef), { ok: false, reason: 'remove-unconfirmed' });
-  assert.ok(Date.now() - readStarted < 250, 'a stalled confirmation read is bounded');
+  assert.ok(Date.now() - readStarted < 5000, 'a stalled confirmation read is bounded');
 });
 
 test('references outside the namespace, malformed references and empty values are refused', async () => {

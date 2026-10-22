@@ -276,3 +276,26 @@ test('a program that ignores the polite stop and holds its output open cannot ke
     assert.ok(Date.now() - started < 25000);
   } finally { await module.dispose(); }
 });
+
+for (const [label, redirect] of [['while it holds the output open', ''], ['after letting go of the output (the attempt ends at once)', ' >/dev/null 2>&1 </dev/null']]) {
+  test(`what a program started in the background is stopped with it, not left running until it ends by itself: ${label}`, onlyMac, async (t) => {
+    const own = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP, 'mas-grand-')));
+    t.after(() => fs.rmSync(own, { recursive: true, force: true }));
+    const pidFile = path.join(own, 'grandchild.pid');
+    const script = path.join(own, 'leaves-a-helper');
+    // Starts a helper that outlives it, records the helper's pid, and exits at once.
+    fs.writeFileSync(script, `#!/bin/sh\n( sleep 60 )${redirect} &\necho $! > '${pidFile}'\nexit 0\n`, { mode: 0o755 });
+    const module = createMacosModule({ tmpRoot: own, sandboxExec: script, timeoutMs: 2000 });
+    const started = Date.now();
+    try { await module.probe('file-credentials'); } finally { await module.dispose(); }
+    if (redirect) assert.ok(Date.now() - started < 4000, 'with the output closed the attempt did not wait for the time limit');
+    const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    assert.ok(Number.isSafeInteger(pid) && pid > 1, 'the helper recorded its pid');
+    let alive = true;
+    for (let waited = 0; waited < 3000 && alive; waited += 100) {
+      try { process.kill(pid, 0); await new Promise((resolve) => setTimeout(resolve, 100)); } catch { alive = false; }
+    }
+    if (alive) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    assert.equal(alive, false, 'the helper the program left behind is no longer running');
+  });
+}
