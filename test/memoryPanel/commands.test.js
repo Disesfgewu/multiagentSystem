@@ -9,7 +9,7 @@ const source = fs.readFileSync(path.join(__dirname, '../../src/memoryPanel/comma
 
 test('no command takes an argument: the role group, the text, the choice of note and the confirmation come from the windows', () => {
   const registrations = [...source.matchAll(/registerCommand\(MEMORY_COMMANDS\.(\w+), ([^\n]*)\),?\n/g)];
-  assert.deepEqual(registrations.map((entry) => entry[1]).sort(), ['add', 'edit', 'refresh', 'remove', 'review', 'suggest', 'toggle']);
+  assert.deepEqual(registrations.map((entry) => entry[1]).sort(), ['add', 'collect', 'edit', 'refresh', 'remove', 'review', 'suggest', 'toggle']);
   for (const entry of registrations) assert.match(entry[2], /^\(\) => /, `${entry[1]} ignores arguments`);
 });
 
@@ -36,7 +36,7 @@ test('editing keeps the old note until the new one is saved', () => {
 test('the view and its commands are declared and activate on use', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'));
   assert.ok(manifest.contributes.views.multiagentSystem.some((view) => view.id === 'multiagentSystem.memoryView' && view.name === 'Shared Memory'));
-  for (const name of ['refresh', 'add', 'edit', 'toggle', 'remove', 'suggest', 'review']) {
+  for (const name of ['refresh', 'add', 'edit', 'toggle', 'remove', 'suggest', 'collect', 'review']) {
     assert.ok(manifest.contributes.commands.some((entry) => entry.command === `multiagentSystem.memory.${name}`), name);
     assert.ok(manifest.activationEvents.includes(`onCommand:multiagentSystem.memory.${name}`), name);
   }
@@ -47,4 +47,10 @@ test('a suggestion is stored in the privacy domain of the account of the agent t
   assert.match(body, /defaultDomainFor\(typeof session\.accountProfileId === 'string'/);
   assert.match(body, /propose\(\{[^}]*privacyDomain,/);
   assert.doesNotMatch(body, /defaultDomainFor\('unassigned'\)\s*,\s*content/);
+});
+
+test('collecting: a suggestion that cannot be written is counted and the rest, the refresh and the summary still happen', () => {
+  const body = source.slice(source.indexOf('async function collect('), source.indexOf('/** Reviews one suggestion'));
+  assert.match(body, /try \{ proposed = handle\.memory\.propose\(\{[^\n]*\} catch \{ unreadable \+= 1; continue; \}/);
+  assert.ok(body.indexOf('tree?.refresh()') > body.indexOf('for (const text of read.suggestions)'), 'the refresh and the summary come after the whole loop');
 });
