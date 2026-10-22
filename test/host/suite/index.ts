@@ -14,6 +14,7 @@ import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
 import { runCommandCenterChecks } from './commandCenter';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
+import { runAutoModeConfirmChecks } from './autoModeConfirm';
 import { runTeamRulesChecks } from './teamRules';
 import { runExportReportChecks } from './exportReport';
 import { runDispatchTaskChecks } from './dispatchTask';
@@ -1049,6 +1050,7 @@ export async function run(): Promise<void> {
   await runCodexQuotaChecks(workspace);
   await runCommandCenterChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
+  await runAutoModeConfirmChecks();
   await runTeamRulesChecks();
   await runExportReportChecks(workspace);
   await runDispatchTaskChecks(workspace);
