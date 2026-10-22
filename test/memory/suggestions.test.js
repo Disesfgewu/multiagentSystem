@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { readSuggestionFile, FILE_NAME, MAX_BYTES, MAX_SUGGESTIONS, MAX_TEXT_CHARS } = require('../../src/memory/suggestions');
+const { suggestionScope, readSuggestionFile, FILE_NAME, MAX_BYTES, MAX_SUGGESTIONS, MAX_TEXT_CHARS } = require('../../src/memory/suggestions');
 const { MemoryStore } = require('../../src/memory/store');
 
 const posix = process.platform !== 'win32';
@@ -113,4 +113,28 @@ test('a file that is a link, or that passes through a link inside the folder, is
   put(theirs, { suggestions: [{ text: 'elsewhere' }] });
   fs.symlinkSync(path.join(theirs, FILE_NAME), path.join(root, FILE_NAME));
   assert.deepEqual(readSuggestionFile(root), { ok: false, reason: 'unsafe-file' });
+});
+
+test('a folder named with a trailing separator is still refused when it is a link', { skip: !posix }, (t) => {
+  const theirs = folder(t);
+  put(theirs, { suggestions: [{ text: 'belongs to another agent' }] });
+  const holder = folder(t);
+  const link = path.join(holder, 'my-worktree');
+  fs.symlinkSync(theirs, link);
+  for (const named of [link, `${link}/`, `${link}//`, `${link}/.`, `${link}\\`]) assert.deepEqual(readSuggestionFile(named), { ok: false, reason: 'unsafe-worktree' }, JSON.stringify(named.slice(holder.length)));
+  // The same real folder named with a trailing separator is read like any other.
+  put(holder, { suggestions: [{ text: 'mine' }] });
+  assert.deepEqual(readSuggestionFile(`${holder}/`), { ok: true, suggestions: ['mine'], skipped: 0 });
+});
+
+test('a suggestion belongs to the session\'s own role group and the privacy domain of the session\'s own account', () => {
+  const roles = { 'role-a': 'Workers', 'role-b': 'Researchers' };
+  assert.deepEqual(suggestionScope({ roleGroupId: 'role-b', accountProfileId: 'acct-b' }, roles), { ok: true, roleGroupId: 'role-b', privacyDomain: 'account:acct-b' });
+  assert.deepEqual(suggestionScope({ roleGroupId: 'role-a', accountProfileId: 'ACCT-A' }, roles), { ok: true, roleGroupId: 'role-a', privacyDomain: 'account:acct-a' }, 'account ids are not case-sensitive');
+  assert.notEqual(suggestionScope({ roleGroupId: 'role-a', accountProfileId: 'acct-a' }, roles).privacyDomain, suggestionScope({ roleGroupId: 'role-a', accountProfileId: 'acct-b' }, roles).privacyDomain, 'two accounts never share a domain by default');
+  for (const accountProfileId of [undefined, null, '', 5]) assert.equal(suggestionScope({ roleGroupId: 'role-a', accountProfileId }, roles).privacyDomain, 'account:unassigned', String(accountProfileId));
+  assert.deepEqual(suggestionScope({ roleGroupId: 'role-a', accountProfileId: 'bad id!' }, roles), { ok: false, reason: 'no-domain' });
+  for (const session of [{ roleGroupId: 'unassigned' }, { roleGroupId: 'role-unknown' }, { roleGroupId: undefined }, { roleGroupId: '__proto__' }, { roleGroupId: 'toString' }, null, undefined, 5]) assert.deepEqual(suggestionScope(session, roles), { ok: false, reason: 'no-role-group' }, JSON.stringify(session));
+  assert.deepEqual(suggestionScope({ roleGroupId: 'unassigned' }, { ...roles, unassigned: 'A role group that happens to be named like the placeholder' }), { ok: false, reason: 'no-role-group' }, 'the placeholder is never a role group, even if one is listed under that name');
+  for (const bad of [null, undefined, [], 'x']) assert.deepEqual(suggestionScope({ roleGroupId: 'role-a' }, bad), { ok: false, reason: 'no-role-group' });
 });

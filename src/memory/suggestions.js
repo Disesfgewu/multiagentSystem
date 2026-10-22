@@ -29,6 +29,9 @@ const isPlain = (value) => value !== null && typeof value === 'object' && !Array
  */
 function readSuggestionFile(worktree, { fsImpl = fs } = {}) {
   if (typeof worktree !== 'string' || !path.isAbsolute(worktree)) return { ok: false, reason: 'worktree-invalid' };
+  // A trailing separator would make the system follow a link for the folder itself (`link/` names the folder the link points to), and
+  // the check below could not see it: the folder is always named without one.
+  worktree = path.resolve(worktree);
   const file = path.join(worktree, FILE_NAME);
   let fd;
   try {
@@ -69,4 +72,20 @@ function readSuggestionFile(worktree, { fsImpl = fs } = {}) {
   }
 }
 
-module.exports = { readSuggestionFile, FILE_NAME, MAX_BYTES, MAX_SUGGESTIONS, MAX_TEXT_CHARS };
+const { defaultDomainFor } = require('./domains');
+
+/**
+ * Where a session's suggestion belongs: ITS role group (only one that exists) and the privacy domain of ITS account. Never a default
+ * borrowed from another session, so only agents of the same account can ever be given it once it is adopted.
+ * @returns {{ ok: true, roleGroupId: string, privacyDomain: string } | { ok: false, reason: 'no-role-group' | 'no-domain' }}
+ */
+function suggestionScope(session, roleNames) {
+  const known = roleNames !== null && typeof roleNames === 'object' && !Array.isArray(roleNames) ? roleNames : {};
+  const roleGroupId = session && typeof session.roleGroupId === 'string' && session.roleGroupId !== 'unassigned' && Object.hasOwn(known, session.roleGroupId) ? session.roleGroupId : null;
+  if (roleGroupId === null) return { ok: false, reason: 'no-role-group' };
+  try {
+    return { ok: true, roleGroupId, privacyDomain: defaultDomainFor(typeof session.accountProfileId === 'string' && session.accountProfileId !== '' ? session.accountProfileId : 'unassigned') };
+  } catch { return { ok: false, reason: 'no-domain' }; }
+}
+
+module.exports = { suggestionScope, readSuggestionFile, FILE_NAME, MAX_BYTES, MAX_SUGGESTIONS, MAX_TEXT_CHARS };

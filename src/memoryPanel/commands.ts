@@ -8,7 +8,8 @@ import { isExtensionTestMode } from '../shared/testMode';
 
 const { MemoryStore } = require('../memory/store') as { MemoryStore: new (options: Record<string, unknown>) => any };
 const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(id: string): string };
-const { readSuggestionFile, FILE_NAME } = require('../memory/suggestions') as {
+const { readSuggestionFile, suggestionScope, FILE_NAME } = require('../memory/suggestions') as {
+  suggestionScope(session: unknown, roleNames: Record<string, string>): { ok: true; roleGroupId: string; privacyDomain: string } | { ok: false; reason: string };
   readSuggestionFile(worktree: string): { ok: true; suggestions: string[]; skipped: number } | { ok: false; reason: string };
   FILE_NAME: string;
 };
@@ -261,10 +262,9 @@ async function collect(sessions: SessionCommands): Promise<void> {
     if (!read.ok) { if (read.reason !== 'no-file') { unreadable += 1; reasons.add(read.reason); } continue; }
     withFile += 1;
     refused += read.skipped;
-    const roleGroupId = session.roleGroupId && session.roleGroupId !== 'unassigned' && handle.roleNames[session.roleGroupId] ? session.roleGroupId : undefined;
-    if (!roleGroupId) { withoutRole += read.suggestions.length; continue; }
-    let privacyDomain: string;
-    try { privacyDomain = defaultDomainFor(typeof session.accountProfileId === 'string' && session.accountProfileId !== '' ? session.accountProfileId : 'unassigned'); } catch { unreadable += 1; continue; }
+    const scope = suggestionScope(session, handle.roleNames);
+    if (!scope.ok) { if (scope.reason === 'no-role-group') withoutRole += read.suggestions.length; else unreadable += 1; continue; }
+    const { roleGroupId, privacyDomain } = scope;
     for (const text of read.suggestions) {
       let proposed: { ok: boolean; reason?: string };
       // One that cannot be written is counted, and the rest (and the summary) still happen.
