@@ -59,3 +59,9 @@
 **畫面與用量紀錄**：Accounts 的額度列展開後顯示兩個視窗、重設時間、方案（`Plan: plus (reported by the Codex session log)`）與來源；讀不到時說明原因（`no Codex session log yet`、`no usage in the Codex log yet`、`Codex log format not recognized`、`last Codex reading is out of date`、檔案不可讀或不安全…）。每次讀取同時把**最後一次請求**的 `last_token_usage`（輸入、快取讀取＝`cached_input_tokens`、快取寫入、輸出；`reasoning_output_tokens` 已含在輸出內不另算）以 `actual` 追加到 token 用量紀錄，同一個事件只記一次；只涵蓋讀取當下的最後一個事件，中間的請求不會逐一補記。
 
 **限制（請勿過度宣稱）**：這個格式**不是 OpenAI 公開承諾的 API**，Codex 改版時可能改變，屆時欄位對不上就 fail closed 成未知，不會猜。真實帳號上的讀數是否與 Codex 自己顯示的額度一致、Windows 路徑，都未經驗證（#135）。
+
+## Codex 讀數的補強（#302）
+- 時間窗是否**已經重設**，用「現在」判斷（讀檔的時間），不是事件寫入的時間：事件寫入時還開著、之後重設了的時間窗，百分比不再顯示（`window-reset-passed`）。
+- 搜尋日期資料夾用完額度卻沒找到任何檔案時，原因是 `no-session-files`（不是 `log-unreadable`）。
+- 資料夾內的項目超過 1000 時，**先依名稱由新到舊排序再截斷**，保留的是最新的，不是磁碟剛好先列出的。
+- Codex session 的觀測有更新時，也會讀該帳號的 session 紀錄並把最後一次請求的 token 數寫進用量紀錄（與展開帳號詳情時相同的路徑，相同事件只記一次、失敗不影響 session）。
