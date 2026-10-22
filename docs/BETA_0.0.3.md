@@ -23,8 +23,15 @@
   - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
   - 廣播會直接輸入到正在等待輸入的 agent CLI。
   - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
-- **身份組工具權限**：PM 不能編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。這些權限會轉成 Claude Code 的官方 permissions 規則；Bash 的前綴比對有已知限制，標為「部分強制」。
-- **CLI 預設自動模式**（可在使用者設定關閉）、**專案報告匯出成 Markdown**、**不加 co-author**。
+- **身份組工具權限**：預設 PM 不得編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。實際強制的程度依 CLI 而不同：
+  - **Claude Code**：會收到官方的 permissions 規則，但多數只是部分強制。例如 shell 仍可用其他寫法改檔或執行 git。
+  - **Codex**：只有「禁止寫檔」會變成唯讀沙箱，其他項目只是告知 agent。
+  - **agy 與自訂 CLI**：只是告知 agent。
+  - 真實 CLI 是否照做尚未驗證（#135）。
+- **CLI 預設自動模式**：只有 Claude Code 與 Codex 會帶入旗標，可在使用者設定關閉；CLI 是否照做尚未驗證。
+- **專案報告匯出成 Markdown**、**不加 co-author**。
+
+未驗證（在 #135 驗收）：真實 CLI 是否套用權限、自動模式與署名設定，以及收到廣播或任務 prompt 後實際怎麼處理。
 
 尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
 

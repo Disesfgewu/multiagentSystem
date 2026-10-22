@@ -40,8 +40,15 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
   - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
   - 廣播會直接輸入到正在等待輸入的 agent CLI。
   - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
-- **身份組工具權限**：PM 不能編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。這些權限會轉成 Claude Code 的官方 permissions 規則；Bash 的前綴比對有已知限制，標為「部分強制」。
-- **CLI 預設自動模式**（可在使用者設定關閉）、**專案報告匯出成 Markdown**、**不加 co-author**。
+- **身份組工具權限**：預設 PM 不得編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。實際強制的程度依 CLI 而不同：
+  - **Claude Code**：會收到官方的 permissions 規則，但多數只是部分強制。例如 shell 仍可用其他寫法改檔或執行 git。
+  - **Codex**：只有「禁止寫檔」會變成唯讀沙箱，其他項目只是告知 agent。
+  - **agy 與自訂 CLI**：只是告知 agent。
+  - 真實 CLI 是否照做尚未驗證（#135）。
+- **CLI 預設自動模式**：只有 Claude Code 與 Codex 會帶入旗標，可在使用者設定關閉；CLI 是否照做尚未驗證。
+- **專案報告匯出成 Markdown**、**不加 co-author**。
+
+未驗證（在 #135 驗收）：真實 CLI 是否套用權限、自動模式與署名設定，以及收到廣播或任務 prompt 後實際怎麼處理。
 
 尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
 
@@ -68,7 +75,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 | 畫面 | 用途 |
 |---|---|
-| **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選。只讀；沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
+| **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選；也可以從這裡派送任務、匯出 Markdown 報告。沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
 | **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
 | **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
