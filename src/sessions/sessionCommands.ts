@@ -27,7 +27,7 @@ const { SessionObservationRuntime } = require('../observations/runtime') as {
 const { selectRoleProfiles } = require('../roles/account-choices') as {
   selectRoleProfiles(profiles: unknown, provider: string): { ok: boolean; reason?: string; profiles?: Array<{ id: string; label: string }> };
 };
-import { gateAccountLaunch } from '../accounts/quotaGateUi';
+import { gateAccountLaunch, recordCodexSessionReading } from '../accounts/quotaGateUi';
 import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
@@ -257,6 +257,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   const recordUsage = async (sessionId: string): Promise<void> => {
     const view = manager.get(sessionId);
     if (!view) return;
+    // A Codex session has no usage in its own observation; its account's session log is read whenever the session's observation changes.
+    if (view.provider === 'codex' && typeof view.accountProfileId === 'string' && view.accountProfileId !== 'unassigned') await recordCodexSessionReading(view.accountProfileId, () => manager.list());
     await recordReading({ snapshot: observations.enrich([view])[0]?.providerObservation, openStore: async () => { const opened = await privateStorage()?.use(); return opened?.ok ? opened.store : null; } });
   };
   context.subscriptions.push(observations.onDidChange((sessionId) => { changed.fire(); void recordUsage(sessionId); }), { dispose: () => observations.dispose() });
