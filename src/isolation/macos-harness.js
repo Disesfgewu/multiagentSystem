@@ -33,9 +33,16 @@ function findExecutable(name, searchPath = process.env.PATH ?? '') {
 
 function run(file, args, { cwd, env, input, signal, timeoutMs = ATTEMPT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
+    let hardTimer;
     const child = execFile(file, args, { cwd, env, signal, timeout: timeoutMs, maxBuffer: 1 << 20, encoding: 'utf8' }, (error, stdout, stderr) => {
+      clearTimeout(hardTimer);
       resolve({ ok: !error, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
     });
+    // `execFile` only answers once the child's output pipes close. A child that ignores the polite stop, or a grandchild that keeps the
+    // pipe open, would leave this wait (and the test) pending forever; after a grace period the child is killed outright and the attempt
+    // is reported as not having succeeded (which the harness reads as unknown, never as blocked).
+    hardTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } resolve({ ok: false, stdout: '', stderr: '' }); }, timeoutMs + 3000);
+    if (typeof hardTimer.unref === 'function') hardTimer.unref();
     child.on('error', () => {});
     if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }
   });
