@@ -2,16 +2,16 @@
 
 在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
-## 下載最新測試版：0.0.3 Beta 4
+## 下載最新測試版：0.0.3 Beta 5
 
-**[下載 VSIX 安裝檔（Beta 4）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
+**[下載 VSIX 安裝檔（Beta 5）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
 
 | 項目 | 值 |
 |---|---|
-| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.4`） |
-| 來源 commit | `3b6d614349d539d88c12d1578beda4c88c4ba058` |
-| 檔案 | `multiagentsystem.vsix`，741430 bytes，內含 203 個檔案 |
-| SHA-256 | `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3` |
+| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.5`） |
+| 來源 commit | `4beeb59f6d38bc022cdc132857c7ce9382789332` |
+| 檔案 | `multiagentsystem.vsix`，819528 bytes，內含 219 個檔案 |
+| SHA-256 | `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509` |
 | 需求 | VS Code 1.95 以上；macOS 或 Windows |
 
 **安裝前請核對雜湊**：
@@ -25,24 +25,27 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 結果必須和上表完全相同，也必須等於 `release-candidate.json` 中的 `artifact.sha256`。核對後，在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取這個檔案，然後重新載入視窗。
 
-這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
+這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
 
-### Beta 4 的新內容（相對 Beta 3）
+### Beta 5 的新內容（相對 Beta 4）
 
-- **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九項檢查：七個旁路通道，加上兩項確認 CLI 仍可互動與登入。每一項都要有對照組證據並通過，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
-  - 沙箱拒絕讀取已知的憑證位置（家目錄下的 git 憑證檔、gh 設定資料夾、netrc、SSH 資料夾與鑰匙圈資料夾），拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務。其他位置的憑證與其他鑰匙圈存取方式尚未驗證。
-  - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
-  - Windows 目前只有 advisory。
-- **自訂 CLI provider**：在使用者設定列出自己的 CLI（例如 opencode），用原生 terminal 啟動。程式會解析成絕對路徑，不使用工作區內的同名程式；第一次啟動要確認。
-- **研究工具（基礎工作，尚無法從介面完成安裝）**：新增「Research: Search Papers」，以及研究用 MCP 的允許清單與啟用、停止、撤銷；github-mcp-server 使用固定版本並驗證雜湊，每個工具有自己的私人資料夾。目前 **Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從命令面板無法完成下載，所以這些流程只有自動化測試。
-- **報告**：可以從 Issue 報告關閉 Issue，PR 合併後可以刪除它的 head 分支。
-- **帳號與 session**：
-  - Claude hook 讓總覽顯示 working／waiting／ended。
-  - 用量未知時顯示具體原因。
-  - session 可以改名。
-  - 額度租約更嚴格。
+依使用者以 Beta 4 試用後的回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）改版：
 
-完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)。
+- **指揮台（Open Command Center）**：在編輯區開啟總負責人畫面，不再擠在側欄。
+  - 左側固定 PM 面板，顯示待決策事項與額度提醒。
+  - 其他 agent 以卡片顯示：狀態、正在處理的 Issue／PR、worktree 變更、最新報告摘要、額度。
+  - 可以切換格狀或清單、拖曳排序、收合、釘選。
+- **帳號與額度面板**：每個帳號顯示登入與核實身分、5 小時與每週用量、重設時間、來源；讀不到時寫原因並附上下一步。token 用量紀錄可以檢視與匯出。Codex 的額度改從本機 session 紀錄讀取。
+- **派送任務**：
+  - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
+  - 廣播會直接輸入到正在等待輸入的 agent CLI。
+  - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
+- **身份組工具權限**：PM 不能編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。這些權限會轉成 Claude Code 的官方 permissions 規則；Bash 的前綴比對有已知限制，標為「部分強制」。
+- **CLI 預設自動模式**（可在使用者設定關閉）、**專案報告匯出成 Markdown**、**不加 co-author**。
+
+尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
+
+完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)。
 
 ## 第一次使用
 
@@ -56,6 +59,10 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 詳細步驟、診斷與故障排除見 [首次設定與診斷](docs/GETTING_STARTED.md)。
 
 ## 功能說明
+
+### 指揮台
+
+執行 **Open Command Center**（Overview 標題列也有按鈕），在編輯區開啟總負責人畫面：左側固定 PM 面板，其他 agent 以卡片顯示，並附帳號與額度面板。可以從這裡派送任務、匯出 Markdown 報告、開啟各 agent 的 terminal 與報告。
 
 ### 側欄畫面
 

@@ -4,37 +4,29 @@
 
 ## 取得與核對
 
-1. 從 [GitHub Beta 4 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/release-candidate.json)。
-2. 核對 JSON：`version` 是 `0.0.3`，`prerelease` 是 `true`，`release` 是 `v0.0.3-beta.4`，`sourceCommit` 是 `3b6d614349d539d88c12d1578beda4c88c4ba058`。
-3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完全相同：`36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
+1. 從 [GitHub Beta 5 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/release-candidate.json)。
+2. 核對 JSON：`version` 是 `0.0.3`，`prerelease` 是 `true`，`release` 是 `v0.0.3-beta.5`，`sourceCommit` 是 `4beeb59f6d38bc022cdc132857c7ce9382789332`。
+3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完全相同：`fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
 
-此專案沒有設定 publisher，也不會自動上架 Marketplace。Beta 4 Release 的來源 commit 可能和目前 `main` 上的文件版本不同，以上雜湊對應 Release 中的檔案。較舊的版本保留供回復：[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)（SHA-256 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`）、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)（SHA-256 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`），以及[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。第一版不含報告頁的完整留言與檔案入口。
+此專案沒有設定 publisher，也不會自動上架 Marketplace。Beta 5 Release 的來源 commit 可能和目前 `main` 上的文件版本不同，以上雜湊對應 Release 中的檔案。較舊的版本保留供回復：[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)（SHA-256 `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3`）、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)（SHA-256 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`）、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)（SHA-256 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`），以及[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。第一版不含報告頁的完整留言與檔案入口。
 
-## 此版更新（相對 Beta 3）
+## 此版更新（相對 Beta 4）
 
-- **受管隔離（macOS，需使用者明確選用）**：在使用者設定把 `multiagentSystem.isolation.mode` 設為 `enforced`，並填入 `isolation.allowedDomains` 後，session 的啟動與重新開啟會先在本機實測九項檢查（七個旁路通道，加上兩項確認 CLI 仍可互動與登入）。每一項都有對照組證據並通過時，才會在 Seatbelt 沙箱中啟動 CLI。
-  - 沙箱拒絕讀取已知的憑證位置、拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務；符合規則的 GitHub 憑證環境變數會被移除。其他位置的憑證、其他鑰匙圈存取方式、以其他名稱匯出的 token，都不在範圍內或尚未驗證。
-  - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
-  - 任何證據不足、代理失敗或發生錯誤時，都不啟動，也不會退回無隔離的啟動。
-  - 預設的 advisory 行為不變。
-- **Windows**：受限權杖與驗證 harness 已在 CI 的 Windows runner（管理員權限）上執行，但權杖擋不了網路，所以 Windows 只有 advisory，選 enforced 時會直接拒絕並說明原因。
-- **自訂 CLI provider**：在使用者設定 `multiagentSystem.providers.custom` 列出自己的 CLI，用 **Start Custom Provider Terminal** 在原生 terminal 啟動。
-  - 程式會解析成絕對路徑；工作區內的同名程式不會被使用，經過 symlink 或 junction 也一樣。
-  - 第一次啟動要確認；未信任的工作區不啟動；enforced 時拒絕啟動。
-- **研究工具（基礎工作）**：目前 **Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從介面無法完成下載，以下流程只有自動化測試。
-  - 新增 **Research: Search Papers**。
-  - 研究用 MCP 有允許清單，以及受控的啟用、停止、撤銷。
-  - github-mcp-server 使用固定版本並驗證雜湊，啟動前一律重新核對。
-  - 每個工具有自己的私人資料夾與暫存目錄。**Revoke Research MCP Server** 會停止程式並清除資料夾；**Revoke Research MCP Tool Consent** 只刪除已安裝的程式。
-  - researcher 角色不能經由套件的寫入路徑寫 GitHub。
-- **報告**：可以從 Issue 報告關閉 Issue，合併後可以從 PR 報告刪除 head 分支。
-- **帳號與 session**：
-  - Claude hook 橋接讓總覽顯示 working／waiting／ended。
-  - 用量未知時顯示具體原因。
-  - session 可以改名。
-  - 刪除帳號設定時，一併處理以它為預設帳號的身份組。
-  - 額度租約更嚴格。
-  - 遇到無法安全加引號的 shell 時不會送出指令。
+依使用者以 Beta 4 試用後的回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）改版：
+
+- **指揮台（Open Command Center）**：在編輯區開啟總負責人畫面，不再擠在側欄。
+  - 左側固定 PM 面板，顯示待決策事項與額度提醒。
+  - 其他 agent 以卡片顯示：狀態、正在處理的 Issue／PR、worktree 變更、最新報告摘要、額度。
+  - 可以切換格狀或清單、拖曳排序、收合、釘選。
+- **帳號與額度面板**：每個帳號顯示登入與核實身分、5 小時與每週用量、重設時間、來源；讀不到時寫原因並附上下一步。token 用量紀錄可以檢視與匯出。Codex 的額度改從本機 session 紀錄讀取。
+- **派送任務**：
+  - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
+  - 廣播會直接輸入到正在等待輸入的 agent CLI。
+  - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
+- **身份組工具權限**：PM 不能編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。這些權限會轉成 Claude Code 的官方 permissions 規則；Bash 的前綴比對有已知限制，標為「部分強制」。
+- **CLI 預設自動模式**（可在使用者設定關閉）、**專案報告匯出成 Markdown**、**不加 co-author**。
+
+尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
 
 ## 安裝與升級
 
@@ -59,7 +51,7 @@
 
 ## 發行核對結果
 
-- Release tag `v0.0.3-beta.4` 指向上述來源 commit，並標為 prerelease。
-- 來源 commit 的 Build、Terminal session model、GitHub read adapter 三個 GitHub Actions workflow 全部成功，含 macOS／Windows 封裝與 Extension Host 冒煙測試。本機 typecheck 通過，1892 項測試通過、0 失敗。
-- 封裝檢查通過，含 203 個檔案；唯一打包的第三方套件是 fflate 0.8.3（MIT）。
-- 從 Release 下載回來的 VSIX 已重新計算 SHA-256，與 `release-candidate.json` 的來源 commit、版本、檔名、大小（741430 bytes）與 SHA-256 都相符。Release 說明列出了未驗證事項。
+- Release tag `v0.0.3-beta.5` 指向上述來源 commit，並標為 prerelease。
+- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Git worktrees 四個 GitHub Actions workflow 全部成功，含 macOS／Windows 封裝與 Extension Host 冒煙測試。本機 typecheck 通過，2055 項測試通過、0 失敗。
+- 封裝檢查通過，含 219 個檔案；唯一打包的第三方套件是 fflate 0.8.3（MIT）。
+- 從 Release 下載回來的 VSIX 已重新計算 SHA-256，與 `release-candidate.json` 的來源 commit、版本、檔名、大小（819528 bytes）與 SHA-256 都相符。Release 說明列出了未驗證事項。
