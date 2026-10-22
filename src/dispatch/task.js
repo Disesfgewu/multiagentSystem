@@ -148,7 +148,7 @@ function validateDispatch(raw) {
   if (!isPlain(raw)) return { ok: false, problems: ['invalid-dispatch'] };
   const problems = [];
   if (typeof raw.id !== 'string' || !RECORD_ID.test(raw.id)) problems.push('invalid-id');
-  if (raw.kind !== 'issue' && raw.kind !== 'free' && raw.kind !== 'discussion') problems.push('invalid-kind');
+  if (raw.kind !== 'issue' && raw.kind !== 'free' && raw.kind !== 'discussion' && raw.kind !== 'meeting') problems.push('invalid-kind');
   if (raw.kind === 'issue' ? !(Number.isSafeInteger(raw.issueNumber) && raw.issueNumber > 0) : raw.issueNumber !== null) problems.push('invalid-issue-number');
   if (typeof raw.at !== 'string' || !Number.isFinite(Date.parse(raw.at))) problems.push('invalid-time');
   const results = validateDeliveryResults(raw.results);
