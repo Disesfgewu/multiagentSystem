@@ -18,6 +18,8 @@ const SCHEMA_VERSION = 1;
 const MAX_ENTRIES_PER_ACCOUNT = 150;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_RECORD_BYTES = 56 * 1024;
+// What makes two readings of one session the same reading: every figure and how it was measured, not when it was seen.
+const SAME_READING = Object.freeze(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'model', 'measurement']);
 
 const FIELDS = Object.freeze({
   inputTokens: 'usage.input_tokens',
@@ -100,7 +102,7 @@ class UsageLog {
   }
 
   /**
-   * Adds one entry. The same session and time twice is one entry (a reading that has not changed is not a new reading); the
+   * Adds one entry. The same session and time twice is one entry, and so is a reading identical in every figure to the session's latest one; the
    * oldest entries of the account are dropped by age and count. A failure to store is reported, never hidden.
    * @returns {{ ok: true, appended: boolean } | { ok: false, reason: string }}
    */
@@ -118,6 +120,10 @@ class UsageLog {
         entries = read.entries;
       }
       if (entries.some((existing) => existing.sessionId === entry.sessionId && existing.at === entry.at)) return { appended: false };
+      // A reading that says the same as this session's latest one (the status line repeats itself) is not a new reading: it would
+      // only use up the account's entries.
+      const latest = entries.filter((existing) => existing.sessionId === entry.sessionId).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
+      if (latest && SAME_READING.every((key) => latest[key] === entry[key])) return { appended: false };
       entries = rotate([...entries, entry].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)), now);
       tx.put(COLLECTION, id, { schemaVersion: SCHEMA_VERSION, accountProfileId: entry.accountProfileId, entries });
       return { appended: true };
@@ -180,8 +186,9 @@ async function recordReading({ snapshot, openStore, now = new Date() }) {
 const number = (value) => (value === null ? '—' : value.toLocaleString('en-US'));
 
 /** Plain lines for the read-only log document, newest first. The unit of every figure is stated, and a missing figure is "—", never 0. */
-function describeLog(entries, { labelFor = () => 'Account', providerLabel = (provider) => provider } = {}) {
+function describeLog(entries, { labelFor = () => 'Account', providerLabel = (provider) => provider, sessionLabel = null } = {}) {
   const lines = ['PRIVATE — local token usage log. Do not publish this document.', '', 'Figures are what the provider reported ("actual") or a local estimate, as marked. A dash means that figure was not reported.', ''];
+  if (sessionLabel) lines.splice(2, 0, `Showing one session only: ${sessionLabel}.`);
   if (entries.length === 0) lines.push('No usage has been recorded yet. Only providers with a real reading source are logged; Codex and agy have none connected, so nothing is shown for them (unknown, not zero).');
   for (const entry of entries) {
     const mark = entry.measurement === 'actual' ? 'actual' : entry.measurement === 'estimated' ? 'ESTIMATE' : 'actual + estimate';
@@ -219,4 +226,15 @@ const cell = (value) => {
 const toCsv = (rows) => [CSV_COLUMNS.join(','), ...rows.map((row) => CSV_COLUMNS.map((column) => cell(row[column])).join(','))].join('\n') + '\n';
 const toJson = (rows) => `${JSON.stringify({ masked: true, rows }, null, 2)}\n`;
 
-module.exports = { recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };
+const ALL_ACCOUNTS = '*';
+/** A log document's address: the account (or `*` for all), and optionally one session after a `~` (neither can contain one). */
+const addressOf = (account, session) => (session ? `${account}~${session}` : account);
+function parseAddress(query) {
+  if (typeof query !== 'string') return undefined;
+  const [account, session, ...extra] = query.split('~');
+  if (extra.length > 0 || !(account === ALL_ACCOUNTS || ACCOUNT_ID.test(account))) return undefined;
+  if (session !== undefined && !SESSION_ID.test(session)) return undefined;
+  return { account, ...(session !== undefined ? { session } : {}) };
+}
+
+module.exports = { addressOf, parseAddress, recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };
