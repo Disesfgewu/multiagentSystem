@@ -113,6 +113,18 @@ function buildTaskPrompt(input) {
   return { ok: true, prompt, kind, issueNumber };
 }
 
+/**
+ * The branch for a new worktree made for an Issue: `feat/issue-<number>-<words of the title>`, ASCII lower case, at most 60 characters,
+ * and only characters Git always accepts. A title with no usable words gives `feat/issue-<number>`.
+ */
+function branchNameFor(number, title) {
+  if (!Number.isSafeInteger(number) || number < 1) return null;
+  const words = typeof title === 'string' ? title.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : '';
+  const base = `feat/issue-${number}`;
+  const tail = words.slice(0, 40).replace(/-+$/g, '');
+  return tail ? `${base}-${tail}` : base;
+}
+
 /** Which sessions a task is for: `{ scope: 'all' }`, `{ scope: 'role', role }`, `{ scope: 'provider', provider }` or `{ scope: 'sessions', ids }`. */
 function targetMatcher(target, roleOf = () => undefined) {
   if (!isPlain(target)) return () => false;
@@ -171,4 +183,4 @@ function latestAssignments(records) {
   return latest;
 }
 
-module.exports = { buildTaskPrompt, targetMatcher, targetLabel, planTask, validateDispatch, latestAssignments, acceptanceLines, requirementSummary, SUFFIX, MAX_TEXT_CHARS };
+module.exports = { branchNameFor, buildTaskPrompt, targetMatcher, targetLabel, planTask, validateDispatch, latestAssignments, acceptanceLines, requirementSummary, SUFFIX, MAX_TEXT_CHARS };

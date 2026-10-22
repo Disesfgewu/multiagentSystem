@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildTaskPrompt, targetMatcher, planTask, validateDispatch, latestAssignments, acceptanceLines, MAX_TEXT_CHARS } = require('../../src/dispatch/task');
+const { branchNameFor, buildTaskPrompt, targetMatcher, planTask, validateDispatch, latestAssignments, acceptanceLines, MAX_TEXT_CHARS } = require('../../src/dispatch/task');
 const { promptIsSafe } = require('../../src/broadcast/deliver');
 
 const issue = (over = {}) => ({ number: 305, title: 'Dispatch tasks to agents', body: 'Hand a task to several agents.\n\nMore detail here.\n\n## 驗收\n- [ ] one\n- [x] two\n3. three\n\n## 其他\n- not acceptance', ...over });
@@ -135,4 +135,15 @@ test('the discussion marker is refused in an Issue or a task too: one shared def
     assert.deepEqual(buildTaskPrompt({ text }), { ok: false, reason: 'marker-forged' }, JSON.stringify(text));
     assert.deepEqual(buildTaskPrompt({ issue: issue({ title: text }) }), { ok: false, reason: 'marker-forged' });
   }
+});
+
+test('a new worktree for an Issue gets a plain, valid branch name made from its number and title', () => {
+  assert.equal(branchNameFor(305, 'Dispatch tasks to agents!'), 'feat/issue-305-dispatch-tasks-to-agents');
+  assert.equal(branchNameFor(7, '團隊 rules / 共享 memory'), 'feat/issue-7-rules-memory');
+  assert.equal(branchNameFor(7, '團隊規則'), 'feat/issue-7');
+  assert.equal(branchNameFor(7, '--..~^: *?[\\ \n x'), 'feat/issue-7-x');
+  assert.ok(branchNameFor(9, 'a'.repeat(200)).length <= 60);
+  assert.ok(!branchNameFor(9, `${'ab-'.repeat(30)}`).endsWith('-'));
+  for (const bad of [0, -1, 1.5, '5', null, undefined, NaN]) assert.equal(branchNameFor(bad, 't'), null, String(bad));
+  assert.equal(branchNameFor(1, 5), 'feat/issue-1');
 });

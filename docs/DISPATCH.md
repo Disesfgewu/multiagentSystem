@@ -35,8 +35,11 @@
 - 派發紀錄只存 Issue 編號、時間、session id、供應商與結果代碼；自己輸入的任務文字**不存**。
 - 在未信任的工作區不能用。
 
+## 沒有執行中的 session 時
+
+指派 Issue 時若沒有開著終端機的 session（或在選對象時選 **A new agent in a new worktree**）：選一個身份組 → 確認視窗說明會做什麼 → 用既有的 worktree 建立流程（你選資料夾並確認，分支名是 `feat/issue-<編號>-<標題的英數字>`）→ 用既有的身份組啟動流程在那個 worktree 啟動 agent（帳號選擇、第一次自動模式確認、enforced 隔離檢查都照常）→ **等 CLI 自己說在等輸入**（最多 90 秒）才把 Issue 打進去，同樣先確認完整 prompt。CLI 沒說（有些 CLI 從不說）就什麼都不打，並告訴你等它準備好後再按 Assign Issue。worktree 沒建成就不啟動 agent。
+
 ## 沒做的事
 
-- 沒有 session 在跑時，不會自動建立 worktree 或啟動 session；派發只送給已經在跑的 session（它們各自的 worktree 沿用）。
 - 「打進終端機」不等於 agent 讀了、會做或做完了；沒有任何完成回報的機制。
 - 沒有用真的 Claude Code / Codex 驗證（#135 的使用者驗證項目）。測試用的是一個把收到的行寫進檔案的合成 CLI。
