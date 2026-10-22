@@ -262,3 +262,17 @@ test('with a working test keychain credential-helper is still judged: blocked in
   const module = createMacosModule({ tmpRoot: TMP });
   try { assert.deepEqual(await module.probe('credential-helper'), { control: true, outcome: 'blocked' }); } finally { await module.dispose(); }
 });
+
+test('a program that ignores the polite stop and holds its output open cannot keep an attempt waiting forever', onlyMac, async (t) => {
+  const own = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP, 'mas-stuck-')));
+  t.after(() => fs.rmSync(own, { recursive: true, force: true }));
+  const stuck = path.join(own, 'stuck-sandbox-exec');
+  fs.writeFileSync(stuck, '#!/bin/sh\ntrap \'\' TERM\n( trap \'\' TERM; sleep 30 ) &\nwait\n', { mode: 0o755 });
+  const module = createMacosModule({ tmpRoot: own, sandboxExec: stuck, timeoutMs: 300 });
+  const started = Date.now();
+  try {
+    const result = await Promise.race([module.probe('file-credentials'), new Promise((_, reject) => setTimeout(() => reject(new Error('the attempt never ended')), 25000).unref())]);
+    assert.notEqual(result.outcome, 'blocked', 'an attempt that did not finish is never read as blocked');
+    assert.ok(Date.now() - started < 25000);
+  } finally { await module.dispose(); }
+});
