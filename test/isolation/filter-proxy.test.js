@@ -218,12 +218,12 @@ test('the real connect function: a reset after it connected, or a connect that n
   const resetting = net.createServer((socket) => { socket.on('error', () => {}); setTimeout(() => socket.resetAndDestroy(), 50); });
   await new Promise((resolve) => resetting.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { resetting.close(() => resolve()); setTimeout(resolve, 2000).unref(); }));
-  const socket = await defaultConnect('127.0.0.1', resetting.address().port, 1000);
+  const socket = await bounded(defaultConnect('127.0.0.1', resetting.address().port, 1000), 'the connection to the resetting server');
   await bounded(closedOf(socket), 'the reset to close the socket'); // the reset arrives; there must be no 'uncaughtException'
   assert.equal(socket.destroyed, true);
   // An address nothing answers on (TEST-NET, never routed): refused by time, not left waiting.
   const started = Date.now();
-  await assert.rejects(defaultConnect('192.0.2.1', 9, 300), /connect-timeout|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|EADDRNOTAVAIL/);
+  await assert.rejects(bounded(defaultConnect('192.0.2.1', 9, 300), 'the connect to an address nothing answers on', 5000), /connect-timeout|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|EADDRNOTAVAIL/);
   assert.ok(Date.now() - started < 3000);
 });
 
@@ -270,4 +270,33 @@ test('the proxy refuses to be made with an allow list that is empty, too long, o
   assert.throws(() => createFilterProxy({ allow: ['a.example.com'], deny: ['127.0.0.1'] }), TypeError);
   for (const ports of [[], [0], [70000], ['443'], 443]) assert.throws(() => createFilterProxy({ allow: ['a.example.com'], ports }), TypeError);
   assert.ok(createFilterProxy({ allow: ['a.example.com'] }));
+});
+
+test('a socket that closes before it connected, with or without an error, rejects the connect instead of leaving it waiting', async () => {
+  const { EventEmitter } = require('node:events');
+  const fake = () => Object.assign(new EventEmitter(), { connecting: false, destroyed: false, setTimeout() {}, destroy() { this.destroyed = true; } });
+  const closedOnly = fake();
+  const pending = defaultConnect('127.0.0.1', 1, 1000, () => closedOnly);
+  closedOnly.emit('close');
+  await assert.rejects(bounded(pending, 'a close before connect', 2000), /closed-before-connect/);
+  const errored = fake();
+  const withError = defaultConnect('127.0.0.1', 1, 1000, () => errored);
+  errored.emit('error', new Error('boom'));
+  await assert.rejects(bounded(withError, 'an error before connect', 2000), /boom/);
+  assert.equal(errored.destroyed, true);
+  // After it has connected, a later error or close changes nothing and throws nothing.
+  const ok = fake();
+  const connected = defaultConnect('127.0.0.1', 1, 1000, () => ok);
+  ok.emit('connect');
+  assert.equal(await connected, ok);
+  assert.doesNotThrow(() => { ok.emit('error', new Error('late')); ok.emit('close'); });
+  assert.equal(ok.destroyed, false, 'a connected socket is not destroyed by a later close event');
+  // A connect that arrives after the attempt failed is destroyed, not handed out.
+  const late = fake();
+  const failed = defaultConnect('127.0.0.1', 1, 1000, () => late);
+  late.emit('close');
+  await assert.rejects(bounded(failed, 'the failed attempt', 2000), /closed-before-connect/);
+  late.destroyed = false;
+  late.emit('connect');
+  assert.equal(late.destroyed, true);
 });
