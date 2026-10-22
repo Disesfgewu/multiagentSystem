@@ -122,3 +122,12 @@ test('a long report is scanned in batches, and a finding in a later batch still 
   assert.ok(md.includes('### Issue #99: title 98'));
   assert.ok(!md.includes('someone'));
 });
+
+test('a bare web address, a mail address and a scheme in GitHub text are not turned into links: the colon is escaped', () => {
+  const urls = ['https://example.test/path', 'http://example.test', 'ftp://example.test/x', 'mailto:someone', 'www.example.test', 'javascript:alert(1)'];
+  const md = build(full({ issues: ok(urls.map((url, index) => issue({ number: index + 1, title: `see ${url} now`, body: `${url}\n\n## 驗收\n- [ ] ${url}` }))) }));
+  assert.ok(!/(^|[^\\])[a-z]+:\/\//i.test(md), 'no unescaped scheme://');
+  assert.ok(!/(^|[^\\a-z])(mailto|javascript):/i.test(md), 'no unescaped mailto: or javascript:');
+  assert.ok(md.includes('https\\://example\\.test/path'));
+  assert.ok(!/(^|[^\\])www\./i.test(md), 'no unescaped www.');
+});
