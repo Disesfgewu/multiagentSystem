@@ -26,6 +26,8 @@ const { TOOLS: TOOL_NAMES } = require('./role-group') as { TOOLS: readonly strin
 const { injectionStatus } = require('./injection-status') as { injectionStatus(input: { provider: string }): { state: string; label: string; reason: string } };
 const { roleProviderChoices } = require('./provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 const { BroadcastStore } = require('../broadcast/store') as { BroadcastStore: new (store: Store) => { list(): { ok: boolean; items?: unknown[]; reason?: string } } };
+const { TeamRulesStore } = require('../teamRules/store') as { TeamRulesStore: new (store: any) => { get(): { ok: true; doc: any } | { ok: false; reason: string } } };
+const { teamRuleLayer, describeTeamRules } = require('../teamRules/model') as { teamRuleLayer(doc: unknown): Rule[]; describeTeamRules(doc: unknown): string };
 const { liveBroadcastRules, broadcastPreviewLines } = require('../broadcast/model') as {
   liveBroadcastRules(items: unknown, context: { role: string; provider: string }, now: Date): Rule[];
   broadcastPreviewLines(items: unknown, context: { role: string; provider: string }, now: Date): string[];
@@ -346,7 +348,9 @@ export async function previewText(id: string): Promise<string> {
   const broadcastNote = broadcasts.ok
     ? null
     : `Administrator broadcasts: unknown (${broadcasts.reason ?? 'could not be read'}). Any live broadcast for this role group is NOT reflected below.`;
+  const team = new TeamRulesStore(opened).get();
   const userLayer = [
+    ...(team.ok ? teamRuleLayer(team.doc) : []),
     ...(loaded.record.layers.user ?? []),
     ...(broadcasts.ok ? liveBroadcastRules(broadcasts.items, broadcastContext, broadcastNow) : [])
   ];
@@ -356,6 +360,7 @@ export async function previewText(id: string): Promise<string> {
   return [
     'PRIVATE — shown on this computer only. This holds the text of your instructions: do not paste it into GitHub, issues or logs.',
     'This preview is read-only and cannot be saved to a file.',
+    team.ok ? describeTeamRules(team.doc) : `Team rules: unknown (${team.reason}). They are NOT reflected below, and an agent will not be started while they cannot be read.`,
     ...(broadcastNote ? [broadcastNote] : []),
     ...(broadcasts.ok ? broadcastPreviewLines(broadcasts.items, broadcastContext, broadcastNow) : []),
     '',

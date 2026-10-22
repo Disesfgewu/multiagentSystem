@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const exec = promisify(execFile);
-const { inspectWorktree, describeEvidence, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
+const { inspectWorktree, describeEvidence, readMainHead, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
 
 const git = async (cwd, ...args) => (await exec('git', args, { cwd, encoding: 'utf8' })).stdout.trim();
 
@@ -113,4 +113,27 @@ test('reading never takes the repository index lock, never runs a configured fil
   assert.equal(text.includes('secret-name'), false);
   assert.equal(text.includes(temporary), false, 'no path');
   assert.equal(text.includes('remote.git'), false, 'no remote address');
+});
+
+test('the main head is a short commit id from the local origin/main, and anything else is unknown with a reason', async () => {
+  const asked = [];
+  const git = async (cwd, args) => { asked.push(args); return 'abc123def456\n'; };
+  assert.deepEqual(await readMainHead(path.resolve('/work/project'), { git }), { state: 'known', head: 'abc123def456' });
+  assert.ok(asked[0].includes('refs/remotes/origin/main^{commit}') && asked[0].includes('--short=12'), 'it reads the last fetched origin/main and never contacts the remote');
+  assert.deepEqual(await readMainHead(path.resolve('/work/project'), { git: async () => { throw new Error('no such ref'); } }), { state: 'unknown', reason: 'not-readable' });
+  for (const output of ['', 'not a sha', 'abc\nrm -rf', 5, null]) assert.deepEqual(await readMainHead(path.resolve('/work/project'), { git: async () => output }), { state: 'unknown', reason: 'not-readable' }, String(output));
+  for (const folder of [undefined, null, 5, 'relative/path', '']) assert.deepEqual(await readMainHead(folder, { git: async () => 'abc123def456' }), { state: 'unknown', reason: 'no-folder' }, String(folder));
+});
+
+test('in a real repository the main head is read from refs/remotes/origin/main, and is unknown without it', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mas-mainhead-')));
+  try {
+    const run = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' });
+    await run('init', '-q');
+    await run('commit', '-q', '--allow-empty', '-m', 'one');
+    assert.deepEqual(await readMainHead(root), { state: 'unknown', reason: 'not-readable' }, 'no origin/main yet');
+    await run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const expected = (await run('rev-parse', '--short=12', 'HEAD')).stdout.trim();
+    assert.deepEqual(await readMainHead(root), { state: 'known', head: expected });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

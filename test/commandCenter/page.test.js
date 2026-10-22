@@ -53,7 +53,7 @@ test('the page script sends only messages the host accepts', () => {
   sent.delete('state');
   const { COMMANDS } = require('../../src/commandCenter/model');
   for (const type of sent) assert.ok(COMMANDS.includes(type), `${type} is not a command the host accepts`);
-  for (const type of ['focus', 'openReport', 'openPullRequest', 'toggleCollapse', 'togglePin', 'reorder', 'setLayout', 'refresh', 'ready', 'openReports', 'assignIssue', 'sendTask']) assert.ok(sent.has(type), `${type} is sent by the page`);
+  for (const type of ['focus', 'openReport', 'openPullRequest', 'toggleCollapse', 'togglePin', 'reorder', 'setLayout', 'refresh', 'ready', 'openReports', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask']) assert.ok(sent.has(type), `${type} is sent by the page`);
 });
 
 test('the page really runs: given a state it draws every card, the PM panel and the accounts as text, even for hostile text', () => {

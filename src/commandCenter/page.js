@@ -166,6 +166,8 @@ const SCRIPT = String.raw`
     bar.appendChild(el('h1', null, 'Command Center'));
     var tools = el('div', 'row');
     tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
+    tools.appendChild(button('Team rules…', function () { post({ type: 'editTeamRules' }); }));
+    tools.appendChild(button('Export report…', function () { post({ type: 'exportReport' }); }));
     tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));
     tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
     tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));

@@ -2,16 +2,16 @@
 
 在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
-## 下載最新測試版：0.0.3 Beta 4
+## 下載最新測試版：0.0.3 Beta 5
 
-**[下載 VSIX 安裝檔（Beta 4）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.4/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
+**[下載 VSIX 安裝檔（Beta 5）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
 
 | 項目 | 值 |
 |---|---|
-| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.4`） |
-| 來源 commit | `3b6d614349d539d88c12d1578beda4c88c4ba058` |
-| 檔案 | `multiagentsystem.vsix`，741430 bytes，內含 203 個檔案 |
-| SHA-256 | `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3` |
+| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.5`） |
+| 來源 commit | `4beeb59f6d38bc022cdc132857c7ce9382789332` |
+| 檔案 | `multiagentsystem.vsix`，819528 bytes，內含 219 個檔案 |
+| SHA-256 | `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509` |
 | 需求 | VS Code 1.95 以上；macOS 或 Windows |
 
 **安裝前請核對雜湊**：
@@ -25,24 +25,34 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 結果必須和上表完全相同，也必須等於 `release-candidate.json` 中的 `artifact.sha256`。核對後，在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取這個檔案，然後重新載入視窗。
 
-這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
+這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
 
-### Beta 4 的新內容（相對 Beta 3）
+### Beta 5 的新內容（相對 Beta 4）
 
-- **受管隔離（macOS，需使用者明確選用）**：選用 enforced 後，啟動或重新開啟 agent 前，會先在本機實測九項檢查：七個旁路通道，加上兩項確認 CLI 仍可互動與登入。每一項都要有對照組證據並通過，才會在 Seatbelt 沙箱中啟動 CLI；只要有任何證據不足，就不啟動。
-  - 沙箱拒絕讀取已知的憑證位置（家目錄下的 git 憑證檔、gh 設定資料夾、netrc、SSH 資料夾與鑰匙圈資料夾），拒絕寫入 `.git`，並封鎖鑰匙圈的 SecurityServer 服務。其他位置的憑證與其他鑰匙圈存取方式尚未驗證。
-  - 網路只能經過依主機名稱過濾的本機代理；GitHub 相關網域即使列入也不會放行。
-  - Windows 目前只有 advisory。
-- **自訂 CLI provider**：在使用者設定列出自己的 CLI（例如 opencode），用原生 terminal 啟動。程式會解析成絕對路徑，不使用工作區內的同名程式；第一次啟動要確認。
-- **研究工具（基礎工作，尚無法從介面完成安裝）**：新增「Research: Search Papers」，以及研究用 MCP 的允許清單與啟用、停止、撤銷；github-mcp-server 使用固定版本並驗證雜湊，每個工具有自己的私人資料夾。目前 **Prepare Consented Research MCP Tool** 還沒有選擇工具的步驟，從命令面板無法完成下載，所以這些流程只有自動化測試。
-- **報告**：可以從 Issue 報告關閉 Issue，PR 合併後可以刪除它的 head 分支。
-- **帳號與 session**：
-  - Claude hook 讓總覽顯示 working／waiting／ended。
-  - 用量未知時顯示具體原因。
-  - session 可以改名。
-  - 額度租約更嚴格。
+依使用者以 Beta 4 試用後的回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）改版：
 
-完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)。
+- **指揮台（Open Command Center）**：在編輯區開啟總負責人畫面，不再擠在側欄。
+  - 左側固定 PM 面板，顯示待決策事項與額度提醒。
+  - 其他 agent 以卡片顯示：狀態、正在處理的 Issue／PR、worktree 變更、最新報告摘要、額度。
+  - 可以切換格狀或清單、拖曳排序、收合、釘選。
+- **帳號與額度面板**：每個帳號顯示登入與核實身分、5 小時與每週用量、重設時間、來源；讀不到時寫原因並附上下一步。token 用量紀錄可以檢視與匯出。Codex 的額度改從本機 session 紀錄讀取。
+- **派送任務**：
+  - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
+  - 廣播會直接輸入到正在等待輸入的 agent CLI。
+  - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
+- **身份組工具權限**：預設 PM 不得編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。實際強制的程度依 CLI 而不同：
+  - **Claude Code**：會收到官方的 permissions 規則，但多數只是部分強制。例如 shell 仍可用其他寫法改檔或執行 git。
+  - **Codex**：只有「禁止寫檔」會變成唯讀沙箱，其他項目只是告知 agent。
+  - **agy 與自訂 CLI**：只是告知 agent。
+  - 真實 CLI 是否照做尚未驗證（#135）。
+- **CLI 預設自動模式**：只有 Claude Code 與 Codex 會帶入旗標，可在使用者設定關閉；CLI 是否照做尚未驗證。
+- **專案報告匯出成 Markdown**、**不加 co-author**。
+
+未驗證（在 #135 驗收）：真實 CLI 是否套用權限、自動模式與署名設定，以及收到廣播或任務 prompt 後實際怎麼處理。
+
+尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
+
+完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)。
 
 ## 第一次使用
 
@@ -57,16 +67,22 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 ## 功能說明
 
+### 指揮台
+
+執行 **Open Command Center**（Overview 標題列也有按鈕），在編輯區開啟總負責人畫面：左側固定 PM 面板，其他 agent 以卡片顯示，並附帳號與額度面板。可以從這裡派送任務、匯出 Markdown 報告、開啟各 agent 的 terminal 與報告。
+
 ### 側欄畫面
 
 | 畫面 | 用途 |
 |---|---|
-| **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選。只讀；沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
+| **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選；也可以從這裡派送任務、匯出 Markdown 報告。沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
 | **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
 | **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。PR 報告裡的每個變更檔案與每則行內審查留言（`路徑:行號`）都能點開：若某個 agent 的工作資料夾剛好停在這個 PR 的 head 且沒有未提交的修改，就開啟那裡的檔案並跳到該行，否則開啟 GitHub 回傳的 patch 並跳到該行（該行不在 patch 內時會說明）。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
+| **Edit Team Rules** | 一份全體 agent 共同遵守的規則：之後啟動的 agent 會在身份組規則之前拿到，預覽會顯示；存檔前要確認、版本會 +1、讀不到時拒絕啟動。這是告訴 CLI 的指示，不是強制。共享記憶面板還沒做。詳見 [團隊規則](docs/TEAM_RULES.md)。 |
+| **Export Project Report (Markdown)** | 把 Issues、PRs、PM 報告與審查／CI、待決策事項、agent 狀態與額度、最近廣播彙整成一份 Markdown，以未儲存的編輯器開啟（不寫入工作區），看起來像私人資料的欄位會被遮掉，讀不到的來源寫 unknown。指揮台也有按鈕。詳見 [專案報告](docs/PROJECT_REPORT.md)。 |
 | **Assign Issue / Send Task to Agents** | 把 GitHub 的 Issue（或自己輸入的一句任務）當成一行 prompt 派給正在等輸入的 agent：每次都要確認完整 prompt 與名單、Issue 在確認後會重讀、狀態未知預設不送、記錄結果，Command Center 的卡片顯示交辦了哪個 Issue。指令不接受參數。沒有 session 在跑時不會自動建立。詳見 [派發任務](docs/DISPATCH.md)。 |
 | **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷、**Send Broadcast to Agents**。之後新啟動的 agent 會在指令中帶入仍有效、適用於它的公告；已在執行的 agent 要用 Send Broadcast to Agents，把公告當成一行 prompt 輸入到「確實在等輸入」的 CLI（每次都要確認完整 prompt 與名單，狀態未知就不送，並記錄結果）。「已輸入」不等於 CLI 已讀到或會遵守。詳見 [管理者廣播](docs/BROADCASTS.md)。 |
 | **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及一份遮罩過、可以複製的唯讀診斷文件。 |
@@ -187,5 +203,5 @@ npm run vsix:package # 打包 VSIX、做內容與發佈掃描、寫出 release-c
 
 - 進度追蹤：[Issue #90](https://github.com/Disesfgewu/multiagentSystem/issues/90)；實機驗收清單：[Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)。
 - 需求與驗收標準：[實作計劃書](docs/IMPLEMENTATION_PLAN.md)；PM 工作規則：[PM system prompt](docs/PM_SYSTEM_PROMPT.md)；worker 指令：[Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
-- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
+- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [團隊規則](docs/TEAM_RULES.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - [舊交付台帳](docs/MASTER_PLAN.md)只供查閱歷史紀錄，不是即時狀態。
