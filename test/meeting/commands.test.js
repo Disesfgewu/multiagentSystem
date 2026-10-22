@@ -18,7 +18,7 @@ test('the topic is checked before anything is asked of an agent, and it is typed
   assert.match(source, /chosen\.length < 2/);
 });
 
-test('replies are never written for an agent: only the clipboard text the person pressed Use Clipboard for is recorded', () => {
+test('replies are never written for an agent: only the clipboard text the person read and then confirmed with Record Reply is recorded', () => {
   assert.match(source, /if \(decision === 'Record Reply' \|\| decision === 'Record It Anyway'\) \{ entry\.reply = clip;/);
   assert.equal([...source.matchAll(/\.reply = /g)].length, 1, 'there is one place a reply is set');
   assert.match(source, /reply: null \}\)\)/, 'every participant starts with no reply');
@@ -44,4 +44,11 @@ test('the command is declared and activates on use', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'));
   assert.ok(manifest.contributes.commands.some((entry) => entry.command === 'multiagentSystem.meeting.start' && /Start Meeting/.test(entry.title)));
   assert.ok(manifest.activationEvents.includes('onCommand:multiagentSystem.meeting.start'));
+});
+
+test('no wording in the code or the documents names a button that no longer exists', () => {
+  const docs = fs.readFileSync(path.join(__dirname, '../../docs/MEETING.md'), 'utf8');
+  assert.equal(/Use Clipboard/.test(source) || /Use Clipboard/.test(docs), false);
+  for (const label of ['Enter Replies', 'Make Minutes Now', 'Read Clipboard', 'No Reply', 'Record Reply', 'Record It Anyway']) assert.ok(source.includes(`'${label}'`) || source.includes(label), label);
+  for (const label of ['Read Clipboard', 'Record Reply']) assert.ok(docs.includes(label), `${label} is in the document`);
 });

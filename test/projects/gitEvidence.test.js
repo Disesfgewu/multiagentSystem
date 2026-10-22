@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const exec = promisify(execFile);
-const { inspectWorktree, describeEvidence, readMainHead, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
+const { inspectWorktree, describeEvidence, readMainHead, readPullRequestFileVersions, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
 
 const git = async (cwd, ...args) => (await exec('git', args, { cwd, encoding: 'utf8' })).stdout.trim();
 
@@ -135,5 +135,42 @@ test('in a real repository the main head is read from refs/remotes/origin/main, 
     await run('update-ref', 'refs/remotes/origin/main', 'HEAD');
     const expected = (await run('rev-parse', '--short=12', 'HEAD')).stdout.trim();
     assert.deepEqual(await readMainHead(root), { state: 'known', head: expected });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('the two versions of a pull request file come from the repository\'s own objects, and anything unknown is a reason, not a guess', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mas-prfile-')));
+  try {
+    const run = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' });
+    await run('init', '-q', '-b', 'main');
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src', 'a.txt'), 'one\ntwo\n');
+    await fs.writeFile(path.join(root, 'gone.txt'), 'bye\n');
+    await run('add', '-A'); await run('commit', '-q', '-m', 'base');
+    await run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    await run('checkout', '-q', '-b', 'feature');
+    await fs.writeFile(path.join(root, 'src', 'a.txt'), 'one\ntwo\nthree\n');
+    await fs.writeFile(path.join(root, 'new.txt'), 'fresh\n');
+    await fs.rm(path.join(root, 'gone.txt'));
+    await fs.writeFile(path.join(root, 'bin.dat'), Buffer.from([1, 0, 2]));
+    await run('add', '-A'); await run('commit', '-q', '-m', 'change');
+    // The base branch moves on after the pull request branched: the left side is where it branched, not the new tip.
+    await run('checkout', '-q', 'main');
+    await fs.writeFile(path.join(root, 'src', 'a.txt'), 'one\ntwo\nELSEWHERE\n');
+    await run('commit', '-q', '-am', 'main moves'); await run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const headSha = (await run('rev-parse', 'feature')).stdout.trim();
+    const read = (relativePath, over = {}) => readPullRequestFileVersions(root, { headSha, baseRef: 'main', relativePath, ...over });
+    const changed = await read('src/a.txt');
+    assert.deepEqual([changed.ok, changed.left, changed.right], [true, 'one\ntwo\n', 'one\ntwo\nthree\n']);
+    assert.deepEqual([(await read('new.txt')).left, (await read('new.txt')).right], ['', 'fresh\n'], 'added: nothing on the left');
+    assert.deepEqual([(await read('gone.txt')).left, (await read('gone.txt')).right], ['bye\n', ''], 'deleted: nothing on the right');
+    assert.deepEqual(await read('bin.dat'), { ok: false, reason: 'binary' });
+    assert.deepEqual(await read('src'), { ok: false, reason: 'not-a-file' });
+    assert.deepEqual(await read('src/a.txt', { headSha: 'f'.repeat(40) }), { ok: false, reason: 'head-not-local' });
+    assert.deepEqual(await read('src/a.txt', { baseRef: 'nope' }), { ok: false, reason: 'base-not-local' });
+    for (const [over, reason] of [[{ headSha: 'abc' }, 'head-invalid'], [{ headSha: undefined }, 'head-invalid'], [{ baseRef: '--upload-pack=x' }, 'base-invalid'], [{ baseRef: 'a..b' }, 'base-invalid'], [{ baseRef: 5 }, 'base-invalid'], [{ relativePath: '../x' }, 'path-invalid'], [{ relativePath: '/etc/passwd' }, 'path-invalid'], [{ relativePath: 'a\\b' }, 'path-invalid'], [{ relativePath: '' }, 'path-invalid']]) {
+      assert.deepEqual(await read('src/a.txt', over), { ok: false, reason }, JSON.stringify(over));
+    }
+    assert.deepEqual(await readPullRequestFileVersions('relative', { headSha, baseRef: 'main', relativePath: 'x' }), { ok: false, reason: 'no-folder' });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
