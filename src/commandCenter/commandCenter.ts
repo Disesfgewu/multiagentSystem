@@ -25,12 +25,19 @@ const { renderPage } = require('./page') as { renderPage(input: { nonce: string 
 export const COMMAND_CENTER_COMMAND = 'multiagentSystem.commandCenter.open';
 export const COMMAND_CENTER_VIEW_TYPE = 'multiagentSystem.commandCenter';
 const LAYOUT_KEY = 'commandCenter.layout';
+// The export command lives in `export/commands.ts`, which reads this module's cards; the name is repeated here to keep the imports one-way.
+const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
 type Message = { type: string; action?: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest' };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
+let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null>) | undefined;
+/** The cards and account rows the Command Center would show right now (read again), for the Markdown project report. `null` if they could not be built. */
+export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
+  try { return teamReader ? await teamReader() : null; } catch { return null; }
+}
 let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void> } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
@@ -167,6 +174,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         scheduleRefresh();
         return { ok: true, command: `accountAction:${message.action}` };
       }
+      // Takes no content: the report is built and opened by the command itself.
+      case 'exportReport':
+        void vscode.commands.executeCommand(EXPORT_PROJECT_REPORT);
+        return { ok: true, command: message.type };
       case 'openReports':
         await vscode.commands.executeCommand(message.kind === 'issue' ? 'multiagentSystem.issuesReportView.focus' : 'multiagentSystem.prsReportView.focus');
         return { ok: true, command: message.type };
@@ -174,6 +185,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         return { ok: false, reason: 'unknown-command' };
     }
   };
+  teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
   controller = { handle, state: payload, refresh };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
