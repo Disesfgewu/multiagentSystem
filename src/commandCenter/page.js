@@ -170,6 +170,7 @@ const SCRIPT = String.raw`
     tools.appendChild(button('Team rules…', function () { post({ type: 'editTeamRules' }); }));
     tools.appendChild(button('Export report…', function () { post({ type: 'exportReport' }); }));
     tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));
+    tools.appendChild(button('Start meeting…', function () { post({ type: 'startMeeting' }); }));
     tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
     tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));
     bar.appendChild(tools);

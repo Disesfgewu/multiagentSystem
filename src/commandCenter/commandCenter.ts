@@ -155,6 +155,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'assignIssue':
         void vscode.commands.executeCommand(DISPATCH_COMMANDS.assignIssue);
         return { ok: true, command: message.type };
+      // Takes no content: the topic, the agents and the confirmations come from the command's own windows.
+      case 'startMeeting':
+        void vscode.commands.executeCommand('multiagentSystem.meeting.start');
+        return { ok: true, command: message.type };
       case 'sendTask':
         void vscode.commands.executeCommand(DISPATCH_COMMANDS.sendTask);
         return { ok: true, command: message.type };

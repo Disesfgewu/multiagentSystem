@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PrivateStore } = require('../../src/storage/private-store');
-const { UsageLog, entryFromSnapshot, validateEntry, rotate, describeLog, exportRows, toCsv, toJson, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS } = require('../../src/accounts/usage-log');
+const { sessionsByRecency, addressOf, parseAddress, UsageLog, entryFromSnapshot, validateEntry, rotate, describeLog, exportRows, toCsv, toJson, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS } = require('../../src/accounts/usage-log');
 const { sandbox, COLLECTIONS } = require('../storage/helpers');
 
 const NOW = new Date('2026-10-21T10:00:00.000Z');
@@ -135,4 +135,107 @@ test('storage that is unavailable or throws keeps nothing and never throws: a se
   assert.deepEqual(await recordReading({ snapshot: snapshot(), openStore: async () => null, now: NOW }), { recorded: false, reason: 'storage-unavailable' });
   assert.deepEqual(await recordReading({ snapshot: snapshot(), openStore: async () => { throw new Error('boom'); }, now: NOW }), { recorded: false, reason: 'failed' });
   assert.deepEqual(await recordReading({ snapshot: snapshot(), openStore: async () => ({ get: () => ({ ok: false }), list: () => ({ ok: false }), transact: () => ({ ok: false, reason: 'store-unavailable' }) }), now: NOW }), { recorded: false, reason: 'store-unavailable' });
+});
+
+const later = (minutes, over = {}) => entry({ at: new Date(Date.parse('2026-10-21T09:59:30.000Z') + minutes * 60_000).toISOString(), ...over });
+
+test('a reading that says the same as the session\'s latest one is not logged again; a change, another session or another model is', (t) => {
+  const { log } = open(t);
+  assert.deepEqual(log().append(later(0), NOW), { ok: true, appended: true });
+  assert.deepEqual(log().append(later(1), NOW), { ok: true, appended: false }, 'the status line repeating itself');
+  assert.deepEqual(log().append(later(2), NOW), { ok: true, appended: false });
+  assert.deepEqual(log().append(later(3, { outputTokens: 301 }), NOW), { ok: true, appended: true }, 'a figure changed');
+  assert.deepEqual(log().append(later(4, { outputTokens: 301 }), NOW), { ok: true, appended: false }, 'the same as the new latest one');
+  assert.deepEqual(log().append(later(5, { outputTokens: 301, sessionId: 'session-2' }), NOW), { ok: true, appended: true }, 'another session has its own latest');
+  assert.deepEqual(log().append(later(6, { outputTokens: 301, model: 'claude-other' }), NOW), { ok: true, appended: true }, 'another model');
+  assert.deepEqual(log().append(later(7, { outputTokens: 301, costUsd: 0.5 }), NOW), { ok: true, appended: true }, 'another cost');
+  assert.deepEqual(log().append(later(8, { outputTokens: 301, measurement: 'actual' }), NOW), { ok: true, appended: true }, 'another measurement');
+  assert.equal(log().query().entries.length, 6);
+});
+
+test('an older identical reading does not hide a later change, and a figure that went back to an earlier value is a new reading', (t) => {
+  const { log } = open(t);
+  log().append(later(0), NOW); log().append(later(10, { outputTokens: 400 }), NOW);
+  assert.deepEqual(log().append(later(20), NOW), { ok: true, appended: true }, 'back to the first figures, after a different latest one');
+  assert.deepEqual(log().append(later(5), NOW), { ok: true, appended: false }, 'a reading older than the latest is compared with the latest (same figures: not new)');
+  assert.deepEqual(log().append(later(6, { outputTokens: 7 }), NOW), { ok: true, appended: true }, 'and a different one is new');
+});
+
+test('a stored record that cannot be read makes the append an error and leaves the record exactly as it was', (t) => {
+  const { store, log } = open(t);
+  assert.equal(log().append(later(0), NOW).ok, true);
+  const listed = store().list('usageLog').items[0];
+  const bad = { ...listed.value, entries: [{ nonsense: true }] };
+  assert.equal(store().transact((tx) => { tx.put('usageLog', listed.id, bad); return true; }).ok, true);
+  assert.deepEqual(log().append(later(1, { outputTokens: 5 }), NOW), { ok: false, reason: 'invalid-usage-record' });
+  assert.deepEqual(store().get('usageLog', listed.id).value, bad, 'the stored record is unchanged');
+  assert.deepEqual(log().query(), { ok: false, reason: 'invalid-usage-record' });
+});
+
+test('the log can be read for one session, and the document says so', (t) => {
+  const { log } = open(t);
+  log().append(later(0), NOW); log().append(later(1, { sessionId: 'session-2', outputTokens: 9 }), NOW);
+  assert.deepEqual(log().query({ sessionId: 'session-2' }).entries.map((item) => item.sessionId), ['session-2']);
+  assert.deepEqual(log().query({ sessionId: 'nope' }).entries, []);
+  assert.deepEqual(log().query({ accountProfileId: 'profile-a', sessionId: 'session-1' }).entries.map((item) => item.sessionId), ['session-1']);
+  const lines = describeLog(log().query({ sessionId: 'session-2' }).entries, { sessionLabel: 'Worker (session-2)' });
+  assert.ok(lines.includes('Showing one session only: Worker (session-2).'));
+  assert.equal(describeLog([]).some((line) => line.startsWith('Showing one session')), false);
+});
+
+test('a document address names an account (or all) and at most one session, and anything else is refused', () => {
+  assert.equal(addressOf('profile-a'), 'profile-a');
+  assert.equal(addressOf('profile-a', 'session-1'), 'profile-a~session-1');
+  assert.deepEqual(parseAddress('profile-a'), { account: 'profile-a' });
+  assert.deepEqual(parseAddress('*'), { account: '*' });
+  assert.deepEqual(parseAddress('profile-a~session-1'), { account: 'profile-a', session: 'session-1' });
+  assert.deepEqual(parseAddress('*~session-1'), { account: '*', session: 'session-1' });
+  for (const bad of ['', 'a b', 'a~', 'a~b~c', '~s', 'a~b c', '../x', 'a~../x', 5, null, undefined, 'x'.repeat(101)]) assert.equal(parseAddress(bad), undefined, String(bad));
+});
+
+test('the log command offers the sessions that are in the log, only when there is more than one, and reads with the chosen one', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/usageLogCommands.ts'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(source, /if \(ids\.length < 2\) return \{ cancelled: false \};/);
+  assert.match(source, /const read = await readEntries\(address\.account, address\.session\);/);
+  assert.match(source, /query: addressOf\(account, chosen\.session\)/);
+  assert.match(source, /\.\.\.\(sessionId \? \{ sessionId \} : \{\}\)/);
+});
+
+test('each of the seven fields alone makes a reading new: a change in only that field is logged, and none of them is ignored', (t) => {
+  const changes = { inputTokens: 1201, outputTokens: 301, cacheReadTokens: 51, cacheWriteTokens: 7, costUsd: 0.0124, model: 'claude-other', measurement: 'actual' };
+  assert.deepEqual(Object.keys(changes).sort(), ['cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens']);
+  for (const [field, value] of Object.entries(changes)) {
+    const { log } = open(t);
+    assert.deepEqual(log().append(later(0), NOW), { ok: true, appended: true }, field);
+    assert.notEqual(later(0)[field], value, `${field}: the changed value differs from the first reading`);
+    assert.deepEqual(log().append(later(1, { [field]: value }), NOW), { ok: true, appended: true }, `${field} alone changed: a new reading`);
+    assert.deepEqual(log().append(later(2, { [field]: value }), NOW), { ok: true, appended: false }, `${field}: and then the repeat of that is not new`);
+    assert.equal(log().query().entries.length, 2, field);
+  }
+});
+
+test('the fields that decide sameness are exactly the seven, and the time and the session are not among them', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/usage-log.js'), 'utf8');
+  const listed = /const SAME_READING = Object\.freeze\(\[([^\]]*)\]\)/.exec(source)[1].split(',').map((item) => item.trim().replace(/'/g, '')).sort();
+  assert.deepEqual(listed, ['cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens']);
+});
+
+test('when there are too many sessions the ones kept are those with the most recent readings, whatever order the list is in', () => {
+  const entries = [];
+  for (let index = 0; index < 60; index += 1) entries.push(entry({ sessionId: `s-${String(index).padStart(2, '0')}`, at: new Date(Date.parse('2026-10-21T00:00:00.000Z') + index * 60_000).toISOString() }));
+  // The newest session also has an old reading listed first; its latest one still counts.
+  entries.unshift(entry({ sessionId: 's-59', at: '2026-10-20T00:00:00.000Z' }));
+  for (const list of [entries, [...entries].reverse(), [...entries].sort((a, b) => (a.sessionId < b.sessionId ? 1 : -1))]) {
+    const kept = sessionsByRecency(list, 50);
+    assert.equal(kept.length, 50);
+    assert.equal(kept[0], 's-59');
+    assert.equal(kept[49], 's-10');
+    assert.ok(!kept.includes('s-09') && !kept.includes('s-00'), 'the oldest sessions are the ones left out');
+  }
+  assert.deepEqual(sessionsByRecency([entry({ sessionId: 'a', at: '2026-10-21T00:00:00.000Z' }), entry({ sessionId: 'b', at: '2026-10-21T00:00:00.000Z' })], 5), ['a', 'b'], 'equal times: by id');
+  for (const bad of [undefined, null, 'x', [null, 5, {}, { sessionId: 3 }, { sessionId: 'x', at: 'never' }]]) assert.deepEqual(sessionsByRecency(bad), []);
 });
