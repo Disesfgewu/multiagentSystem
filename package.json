@@ -69,6 +69,15 @@
     "onCommand:multiagentSystem.broadcasts.send",
     "onCommand:multiagentSystem.broadcasts.deliver",
     "onCommand:multiagentSystem.broadcasts.revoke",
+    "onCommand:multiagentSystem.discuss.withPm",
+    "onView:multiagentSystem.memoryView",
+    "onCommand:multiagentSystem.memory.refresh",
+    "onCommand:multiagentSystem.memory.add",
+    "onCommand:multiagentSystem.memory.edit",
+    "onCommand:multiagentSystem.memory.toggle",
+    "onCommand:multiagentSystem.memory.remove",
+    "onCommand:multiagentSystem.memory.suggest",
+    "onCommand:multiagentSystem.memory.review",
     "onCommand:multiagentSystem.teamRules.edit",
     "onCommand:multiagentSystem.export.projectReport",
     "onCommand:multiagentSystem.dispatch.assignIssue",
@@ -173,6 +182,7 @@
         { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
         { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" },
         { "id": "multiagentSystem.broadcastsView", "name": "Administrator Broadcasts" },
+        { "id": "multiagentSystem.memoryView", "name": "Shared Memory" },
         { "id": "multiagentSystem.toolsSetupView", "name": "Tools Setup" }
       ]
     },
@@ -204,6 +214,10 @@
       {
         "view": "multiagentSystem.broadcastsView",
         "contents": "Local broadcast notices are stored on this computer. A new notice reaches agents started after it was saved; Send Broadcast to Agents types it into the running agent CLIs that are waiting for input.\n[Create Broadcast Notice](command:multiagentSystem.broadcasts.send)"
+      },
+      {
+        "view": "multiagentSystem.memoryView",
+        "contents": "Shared notes are short, reviewed facts given to agents of a role group when they start. They stay on this computer.\n[Add Shared Memory Note](command:multiagentSystem.memory.add)"
       },
       {
         "view": "multiagentSystem.toolsSetupView",
@@ -351,6 +365,14 @@
       { "command": "multiagentSystem.broadcasts.deliver", "title": "Multiagent: Send Broadcast to Agents", "icon": "$(send)" },
       { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
+      { "command": "multiagentSystem.discuss.withPm", "title": "Discuss with PM Agent", "category": "Multiagent" },
+      { "command": "multiagentSystem.memory.refresh", "title": "Multiagent: Refresh Shared Memory", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.memory.add", "title": "Multiagent: Add Shared Memory Note", "icon": "$(add)" },
+      { "command": "multiagentSystem.memory.edit", "title": "Multiagent: Edit Shared Memory Note" },
+      { "command": "multiagentSystem.memory.toggle", "title": "Multiagent: Switch Shared Memory Note On or Off" },
+      { "command": "multiagentSystem.memory.remove", "title": "Multiagent: Delete Shared Memory Note" },
+      { "command": "multiagentSystem.memory.suggest", "title": "Multiagent: Record Agent Suggestion as Memory Candidate" },
+      { "command": "multiagentSystem.memory.review", "title": "Multiagent: Review Suggested Memory", "icon": "$(checklist)" },
       { "command": "multiagentSystem.teamRules.edit", "title": "Multiagent: Edit Team Rules", "icon": "$(law)" },
       { "command": "multiagentSystem.export.projectReport", "title": "Multiagent: Export Project Report (Markdown)", "icon": "$(markdown)" },
       { "command": "multiagentSystem.dispatch.assignIssue", "title": "Multiagent: Assign Issue to Agents", "icon": "$(issues)" },
@@ -382,6 +404,12 @@
       { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
     ],
     "menus": {
+      "editor/context": [
+        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection && (resourceScheme == file || resourceScheme == multiagent-report-diff)", "group": "9_multiagent@1" }
+      ],
+      "commandPalette": [
+        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection" }
+      ],
       "editor/title": [
         { "command": "multiagentSystem.reports.backToOverview", "when": "resourceScheme == multiagent-report", "group": "navigation@0" },
         { "command": "multiagentSystem.reports.backToList", "when": "resourceScheme == multiagent-report", "group": "navigation" },
@@ -409,6 +437,9 @@
         { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.roles.refresh", "when": "view == multiagentSystem.rolesView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.send", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
+        { "command": "multiagentSystem.memory.add", "when": "view == multiagentSystem.memoryView", "group": "navigation" },
+        { "command": "multiagentSystem.memory.review", "when": "view == multiagentSystem.memoryView", "group": "navigation" },
+        { "command": "multiagentSystem.memory.refresh", "when": "view == multiagentSystem.memoryView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.deliver", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.broadcasts.refresh", "when": "view == multiagentSystem.broadcastsView", "group": "navigation" },
         { "command": "multiagentSystem.setup.diagnose", "when": "view == multiagentSystem.toolsSetupView", "group": "navigation@1" },

@@ -77,13 +77,14 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 |---|---|
 | **指揮台（Open Command Center）** | 在編輯區開一個整潔的總負責人畫面：左側固定 PM 面板與待決策事項，右側是其他 agent 的卡片（狀態、任務、模型、額度、證據），可切換格狀／清單、拖曳排序、收合與釘選；也可以從這裡派送任務、匯出 Markdown 報告。沒有證據的值顯示未知。詳見 [指揮台](docs/COMMAND_CENTER.md)。 |
 | **Overview** | Agent 總覽：每個 session 的 provider、帳號、身份組、狀態、模型與用量（沒有證據時顯示未知）、worktree 的未提交變更、相對上游領先或落後幾個 commit。多個 worktree 是否改到同一檔案，要用 **Find Files Changed in More Than One Worktree** 檢查。 |
-| **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。 |
+| **Issues Report**／**PRs Report** | 不必輸入編號，就能在編輯器內閱讀 Issue／PR 的需求、解法、PM 報告、reviewer 結論與它對應的 head、CI 結果、變更檔案與 diff；可以切換上一份、下一份，或回到清單與總覽。PR 報告裡的每個變更檔案與每則行內審查留言（`路徑:行號`）都能點開：若某個 agent 的工作資料夾剛好停在這個 PR 的 head 且沒有未提交的修改，就開啟那裡的檔案並跳到該行，否則開啟 GitHub 回傳的 patch 並跳到該行（該行不在 patch 內時會說明）。 |
 | **GitHub** | 目前專案的開放 Issues／PRs 清單（唯讀），點選後在編輯器讀取內容。 |
 | **Accounts and Sessions** | 帳號設定、登入、身份核對、額度與並行上限；session 的聚焦、停止、重新開啟與改名。 |
 | **Role Groups and Rules** | 身份組的角色、可用帳號、system／project／task 規則，以及有效規則預覽。 |
 | **Edit Team Rules** | 一份全體 agent 共同遵守的規則：之後啟動的 agent 會在身份組規則之前拿到，預覽會顯示；存檔前要確認、版本會 +1、讀不到時拒絕啟動。這是告訴 CLI 的指示，不是強制。共享記憶面板還沒做。詳見 [團隊規則](docs/TEAM_RULES.md)。 |
 | **Export Project Report (Markdown)** | 把 Issues、PRs、PM 報告與審查／CI、待決策事項、agent 狀態與額度、最近廣播彙整成一份 Markdown，以未儲存的編輯器開啟（不寫入工作區），看起來像私人資料的欄位會被遮掉，讀不到的來源寫 unknown。指揮台也有按鈕。詳見 [專案報告](docs/PROJECT_REPORT.md)。 |
 | **Assign Issue / Send Task to Agents** | 把 GitHub 的 Issue（或自己輸入的一句任務）當成一行 prompt 派給正在等輸入的 agent：每次都要確認完整 prompt 與名單、Issue 在確認後會重讀、狀態未知預設不送、記錄結果，Command Center 的卡片顯示交辦了哪個 Issue。指令不接受參數。沒有 session 在跑時不會自動建立。詳見 [派發任務](docs/DISPATCH.md)。 |
+| **Shared Memory** | 側邊欄面板：依身份組與隱私域列出這個專案的共享筆記，新增／修改／關閉／刪除（每次確認、先過敏感內容檢查）、審核建議；之後啟動的 agent（身份組記憶範圍為 role-group）會拿到已採納的筆記，指揮台卡片顯示準備了幾則規則與筆記。詳見 [共享記憶](docs/SHARED_MEMORY.md)。 |
 | **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷、**Send Broadcast to Agents**。之後新啟動的 agent 會在指令中帶入仍有效、適用於它的公告；已在執行的 agent 要用 Send Broadcast to Agents，把公告當成一行 prompt 輸入到「確實在等輸入」的 CLI（每次都要確認完整 prompt 與名單，狀態未知就不送，並記錄結果）。「已輸入」不等於 CLI 已讀到或會遵守。詳見 [管理者廣播](docs/BROADCASTS.md)。 |
 | **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及一份遮罩過、可以複製的唯讀診斷文件。 |
 
@@ -203,5 +204,6 @@ npm run vsix:package # 打包 VSIX、做內容與發佈掃描、寫出 release-c
 
 - 進度追蹤：[Issue #90](https://github.com/Disesfgewu/multiagentSystem/issues/90)；實機驗收清單：[Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)。
 - 需求與驗收標準：[實作計劃書](docs/IMPLEMENTATION_PLAN.md)；PM 工作規則：[PM system prompt](docs/PM_SYSTEM_PROMPT.md)；worker 指令：[Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
+- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [共享記憶](docs/SHARED_MEMORY.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [團隊規則](docs/TEAM_RULES.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - [舊交付台帳](docs/MASTER_PLAN.md)只供查閱歷史紀錄，不是即時狀態。

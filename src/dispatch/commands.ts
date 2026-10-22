@@ -15,7 +15,7 @@ const { DispatchStore } = require('./store') as { DispatchStore: new (store: Sto
 const { describePlan } = require('../broadcast/deliver') as { describePlan(plan: unknown): string[] };
 const { roleProviderChoices } = require('../roles/provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 
-type Target = { scope: 'all' } | { scope: 'role'; role: string } | { scope: 'provider'; provider: string } | { scope: 'sessions'; ids: string[] };
+export type Target = { scope: 'all' } | { scope: 'role'; role: string } | { scope: 'provider'; provider: string } | { scope: 'sessions'; ids: string[] };
 type Recipient = { id: string; name: string; provider: string; decision: 'send' | 'unknown' | 'skip'; reason: string };
 type Store = { get(collection: string, id: string): any; list(collection: string): any; transact(work: (tx: any) => unknown): any };
 type Mode = 'issue' | 'free';
@@ -39,7 +39,7 @@ const REFUSALS: Record<string, string> = {
 const refusal = (reason: string): string => REFUSALS[reason] ?? 'it cannot be sent';
 
 /** The private store, or undefined with a message. */
-async function openStore(): Promise<Store | undefined> {
+export async function openStore(): Promise<Store | undefined> {
   const opened = await privateStorage()?.use();
   if (!opened?.ok) { void vscode.window.showErrorMessage(`Private storage is unavailable (${String(opened?.reason ?? 'unknown')}).`); return undefined; }
   return opened.store as Store;
@@ -110,6 +110,27 @@ async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => bo
   if (!task) return;
   const target = await chooseTarget(sessions, roleOf);
   if (!target) return;
+  await confirmAndType({
+    sessions, roleOf, task, target,
+    // The Issue is read again: if its text changed while the window was open, the person agreed to different text and nothing is typed.
+    recheck: task.kind === 'issue' && task.issueNumber !== null ? async () => {
+      const again = await issueForDispatch(task.issueNumber as number);
+      const rebuilt = again && again.state === 'open' ? buildTaskPrompt({ issue: again }) : undefined;
+      return rebuilt && rebuilt.ok && rebuilt.prompt === task.prompt ? rebuilt.prompt : null;
+    } : undefined
+  });
+}
+
+export type TypedTask = { prompt: string; kind: 'issue' | 'free' | 'discussion'; issueNumber: number | null };
+
+/**
+ * The part every "type this into running agents" command shares: who can receive it now, one modal that shows the whole prompt and the
+ * list, the explicit second button for agents whose state is unknown, a second look at fresh evidence after the confirmation (and, when
+ * the caller gives one, a re-check that the text itself is still what was agreed to), the typing, and the record of what happened.
+ */
+export async function confirmAndType(input: { sessions: SessionCommands; roleOf: (session: any) => string | undefined; task: TypedTask; target: Target; recheck?: () => Promise<string | null>; title?: string }): Promise<void> {
+  const { sessions, roleOf, task, target } = input;
+  const title = input.title ?? 'Type this task into the running agents?';
   const plan = planTask({ prompt: task.prompt, target, sessions: sessions.list(), roleOf });
   if (!plan.ok) { void vscode.window.showErrorMessage(`This task cannot be sent (${plan.reason}).`); return; }
   if (plan.recipients.length === 0) { void vscode.window.showInformationMessage(`No open session matches: ${targetLabel(target)}.`); return; }
@@ -119,7 +140,7 @@ async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => bo
   const sendWaiting = 'Send Now';
   const sendUnknown = waitingIds.size > 0 ? 'Also Send to Unknown' : 'Send to Unknown Anyway';
   const confirmed = await vscode.window.showWarningMessage(
-    'Type this task into the running agents?',
+    title,
     { modal: true, detail: `Target: ${targetLabel(target)}\n\n${describePlan(plan).join('\n')}` },
     ...(waitingIds.size > 0 ? [sendWaiting] : []), ...(unknownIds.size > 0 ? [sendUnknown] : [])
   );
@@ -127,13 +148,12 @@ async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => bo
   const includeUnknown = confirmed === sendUnknown;
   const allowedIds = new Set([...waitingIds, ...(includeUnknown ? unknownIds : [])]);
 
-  // The Issue is read again: if its text changed while the window was open, the person agreed to different text and nothing is typed.
+  // The text is checked again if the caller can: when it changed while the window was open, the person agreed to different text and nothing is typed.
   let prompt = task.prompt;
   let changed = false;
-  if (task.kind === 'issue' && task.issueNumber !== null) {
-    const again = await issueForDispatch(task.issueNumber);
-    const rebuilt = again && again.state === 'open' ? buildTaskPrompt({ issue: again }) : undefined;
-    if (!rebuilt || !rebuilt.ok || rebuilt.prompt !== task.prompt) changed = true; else prompt = rebuilt.prompt;
+  if (input.recheck) {
+    const again = await input.recheck();
+    if (again === null) changed = true; else prompt = again;
   }
   const fresh = changed ? { ok: false as const, reason: 'task-changed' } : planTask({ prompt, target, sessions: sessions.list(), roleOf });
   if (!fresh.ok) { void vscode.window.showErrorMessage(`This task can no longer be sent (${fresh.reason}). Nothing was typed.`); return; }

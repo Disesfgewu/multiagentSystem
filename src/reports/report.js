@@ -236,7 +236,8 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
       lines.push(`- ${name} (${status}; +${additions}/-${deletions})`);
       const patch = file && typeof file.patch === 'string' ? file.patch : null;
       if (index < 12) lines.push(patch !== null ? indent(block(patch, 4000), 4) : '  Patch unavailable (binary file or GitHub omitted it).');
-      shownFiles.push({ filename: name, status, patch });
+      // `path` is the file's real repository path, only when showing it as text changed nothing (so it can be looked up on disk).
+      shownFiles.push({ filename: name, path: file && typeof file.filename === 'string' && file.filename === baseName ? baseName : null, status, patch });
     }
   }
 

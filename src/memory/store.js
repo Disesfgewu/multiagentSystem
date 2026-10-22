@@ -9,6 +9,7 @@ const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
 const { byCodeUnit } = require('./order');
 const { validDomain } = require('./domains');
+const { contentProblem } = require('./content-check');
 
 const SCHEMA_VERSION = 1;
 const MAX_CONTENT_CHARS = 2000;
@@ -272,6 +273,8 @@ class MemoryStore {
     if (content === '' || content.length > MAX_CONTENT_CHARS) return { ok: false, reason: 'invalid-length' };
     if (flatten(content).length < MIN_MATCHABLE_CHARS) return { ok: false, reason: 'too-short' };
     if (looksLikeTranscript(content)) return { ok: false, reason: 'transcript-like' };
+    const unsafe = contentProblem(content);
+    if (unsafe) return { ok: false, reason: unsafe };
 
     const findings = scanSensitive(content);
     if (findings.length > 0) return { ok: false, reason: 'sensitive-content', findings };
@@ -381,7 +384,7 @@ class MemoryStore {
   // can tell "no memory" from "no access". Only adopted, switched-on, unexpired memory is read.
   // What the budget leaves out is reported (`omitted`), not silently dropped.
   select(request = {}) {
-    const { repoId, roleGroupId, privacyDomain, task, budgetChars } = request && typeof request === 'object' && !Array.isArray(request)
+    const { repoId, roleGroupId, privacyDomain, task, budgetChars, all } = request && typeof request === 'object' && !Array.isArray(request)
       ? request
       : {};
     const current = this.#read();
@@ -396,15 +399,19 @@ class MemoryStore {
     const now = this.now();
     const readable = this.#readableDomains(privacyDomain);
     const scored = [];
+    let withheld = 0;
     for (const item of current.items) {
       if (!isReadable(item, now)) continue;
+      // A note whose text fails today's check is never given to an agent, even if it was stored before the check existed.
+      if (contentProblem(item.content)) { withheld += 1; continue; }
       if (item.repoId !== repoId || item.roleGroupId !== roleGroupId || !readable.includes(item.privacyDomain)) continue;
       const own = tokens(item.content);
       let score = 0;
       for (const token of wanted) if (own.has(token)) score += 1;
-      if (score > 0) scored.push({ item, score });
+      // `all: true` is for the launch, where there is no task text yet: every readable note of the scope counts, oldest first.
+      if (score > 0 || all === true) scored.push({ item, score });
     }
-    scored.sort((a, b) => b.score - a.score || byCodeUnit(a.item.id, b.item.id));
+    scored.sort((a, b) => b.score - a.score || (all === true ? byCodeUnit(a.item.createdAt, b.item.createdAt) : 0) || byCodeUnit(a.item.id, b.item.id));
 
     const wasAsked = budgetChars !== undefined;
     const valid = Number.isFinite(budgetChars) && budgetChars >= 0;
@@ -425,6 +432,7 @@ class MemoryStore {
       selected.push(copy);
     }
     const result = { items: selected, usedChars: used, truncated: omittedCount > 0, unavailable };
+    if (withheld > 0) result.withheld = withheld;
     if (omittedCount > 0) result.omitted = { count: omittedCount, chars: omittedChars, reason: 'budget' };
     if (wasAsked && valid && budgetChars > MAX_BUDGET_CHARS) result.budgetClamped = MAX_BUDGET_CHARS;
     return result;
@@ -598,4 +606,4 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, MAX_CONTENT_CHARS, DEFAULT_TTL_MS, DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, CONFIRM_DELETE_SCOPE, looksLikeTranscript };
+module.exports = { MemoryStore, isReadable, MAX_CONTENT_CHARS, DEFAULT_TTL_MS, DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, CONFIRM_DELETE_SCOPE, looksLikeTranscript };

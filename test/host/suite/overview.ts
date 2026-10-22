@@ -16,7 +16,7 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
   assert.ok(manifest, 'the manifest is readable');
   const container = manifest.contributes.viewsContainers.activitybar.find((entry: { id: string }) => entry.id === 'multiagentSystem');
   const ids = manifest.contributes.views.multiagentSystem.map((view: { id: string }) => view.id);
-  assert.deepEqual(ids, [OVERVIEW_VIEW, 'multiagentSystem.issuesReportView', 'multiagentSystem.prsReportView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView', 'multiagentSystem.broadcastsView', 'multiagentSystem.toolsSetupView']);
+  assert.deepEqual(ids, [OVERVIEW_VIEW, 'multiagentSystem.issuesReportView', 'multiagentSystem.prsReportView', 'multiagentSystem.githubView', 'multiagentSystem.accountsView', 'multiagentSystem.rolesView', 'multiagentSystem.broadcastsView', 'multiagentSystem.memoryView', 'multiagentSystem.toolsSetupView']);
   assert.equal(manifest.contributes.views.explorer, undefined, 'nothing is left in the Explorer');
 
   const tree = overviewTreeForTests();
