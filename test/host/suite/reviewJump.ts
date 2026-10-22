@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { DIFF_SCHEME, REPORT_COMMANDS, setReportDepsForTests, ReportReader } from '../../../src/reports/reportsView';
+import { removeTemp } from './tempCleanup';
 
 const HEAD = 'd'.repeat(40);
 
@@ -88,9 +89,7 @@ export async function runReviewJumpChecks(): Promise<void> {
   } finally {
     ui.showInformationMessage = original;
     setReportDepsForTests(undefined);
-    // Windows can still hold the opened file for a moment after the editors close (EBUSY): retry like runTest.ts does.
-    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    await removeTemp(folder);
   }
   console.log('host smoke: an inline review comment in a pull request report jumps to its line: in a clean working folder at exactly the head, else in the patch; links out of the folder and bad line numbers are refused');
 }

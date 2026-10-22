@@ -7,6 +7,7 @@ import { privateStorage } from '../../../src/storage/storageCommands';
 import { DispatchStore } from '../../../src/dispatch/store';
 import { discussForTests } from '../../../src/discuss/commands';
 import { SessionManager } from '../../../src/sessions/manager';
+import { removeTemp } from './tempCleanup';
 
 type DeliveryState = { state: 'waiting' | 'working' | 'ended' | 'unknown'; reason: string; since: string | null };
 
@@ -157,9 +158,8 @@ export async function runDiscussWithPmChecks(workspace: string): Promise<void> {
     ui.showErrorMessage = original.error;
     try { manager.stop(started.id); } catch { /* already closed */ }
     store.transact((tx: any) => tx.delete('roleGroups', GROUP));
-    // Windows can still hold a file that was open in an editor (EBUSY): retry like runTest.ts does.
-    fs.rmSync(sample, { force: true, maxRetries: 10, retryDelay: 500 });
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    await removeTemp(sample);
+    await removeTemp(root);
   }
   console.log('host smoke: Discuss with PM Agent types the selected code, its place and the question into the PM terminal only after the confirmation; private data, an empty selection, a non-PM agent and an untrusted workspace send nothing');
 }
