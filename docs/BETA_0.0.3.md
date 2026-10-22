@@ -4,36 +4,29 @@
 
 ## 取得與核對
 
-1. 從 [GitHub Beta 5 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.5/release-candidate.json)。
-2. 核對 JSON：`version` 是 `0.0.3`，`prerelease` 是 `true`，`release` 是 `v0.0.3-beta.5`，`sourceCommit` 是 `4beeb59f6d38bc022cdc132857c7ce9382789332`。
-3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完全相同：`fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
+1. 從 [GitHub Beta 6 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6) 下載 [multiagentsystem.vsix](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.6/multiagentsystem.vsix) 與 [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.6/release-candidate.json)。
+2. 核對 JSON：`version` 是 `0.0.3`，`prerelease` 是 `true`，`release` 是 `v0.0.3-beta.6`，`sourceCommit` 是 `db8ceb11a39f021fcf7de3a77de19107ac9edaa5`。
+3. 計算 VSIX 的 SHA-256，必須與 JSON 的 `artifact.sha256` 完全相同：`aa869fe0fbdde7da886770b7ce7128cfbc33a990288ac66956324f3bd69cd144`。macOS 可用 `shasum -a 256 multiagentsystem.vsix`；Windows PowerShell 可用 `Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256`。
 
-此專案沒有設定 publisher，也不會自動上架 Marketplace。Beta 5 Release 的來源 commit 可能和目前 `main` 上的文件版本不同，以上雜湊對應 Release 中的檔案。較舊的版本保留供回復：[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)（SHA-256 `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3`）、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)（SHA-256 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`）、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)（SHA-256 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`），以及[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。第一版不含報告頁的完整留言與檔案入口。
+此專案沒有設定 publisher，也不會自動上架 Marketplace。Beta 6 Release 的來源 commit 可能和目前 `main` 上的文件版本不同，以上雜湊對應 Release 中的檔案。較舊的版本保留供回復：[Beta 5](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)（SHA-256 `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`）、[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)（SHA-256 `36f77104830dc339fa2e57ac0f4f5c4f6ac74f594ee4ebfd3c2adf72df090cb3`）、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)（SHA-256 `af1a7aaaa858c81db55cbd209874ad5a0d7089c460b83cd7940d9bcb975cf8dd`）、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)（SHA-256 `123da5468d620e25fcaaee787df593f5b8eb699625cc5b540a481e201bd76374`），以及[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。第一版不含報告頁的完整留言與檔案入口。
 
-## 此版更新（相對 Beta 4）
+## 此版更新（相對 Beta 5）
 
-依使用者以 Beta 4 試用後的回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）改版：
+補齊 Beta 4 試用回饋（[#311](https://github.com/Disesfgewu/multiagentSystem/issues/311)）中剩下的總負責人工作台功能：
 
-- **指揮台（Open Command Center）**：在編輯區開啟總負責人畫面，不再擠在側欄。
-  - 左側固定 PM 面板，顯示待決策事項與額度提醒。
-  - 其他 agent 以卡片顯示：狀態、正在處理的 Issue／PR、worktree 變更、最新報告摘要、額度。
-  - 可以切換格狀或清單、拖曳排序、收合、釘選。
-- **帳號與額度面板**：每個帳號顯示登入與核實身分、5 小時與每週用量、重設時間、來源；讀不到時寫原因並附上下一步。token 用量紀錄可以檢視與匯出。Codex 的額度改從本機 session 紀錄讀取。
-- **派送任務**：
-  - 可以把 Issue 指派給 agent，或一次對多個 agent 下同一段任務。
-  - 廣播會直接輸入到正在等待輸入的 agent CLI。
-  - 送出前都要確認；狀態未知的 agent 要另外按明確的按鈕才會送出。
-- **身份組工具權限**：預設 PM 不得編輯檔案、commit、push 或合併；worker 可以開發與開 PR；researcher 唯讀。實際強制的程度依 CLI 而不同：
-  - **Claude Code**：會收到官方的 permissions 規則，但多數只是部分強制。例如 shell 仍可用其他寫法改檔或執行 git。
-  - **Codex**：只有「禁止寫檔」會變成唯讀沙箱，其他項目只是告知 agent。
-  - **agy 與自訂 CLI**：只是告知 agent。
-  - 真實 CLI 是否照做尚未驗證（#135）。
-- **CLI 預設自動模式**：只有 Claude Code 與 Codex 會帶入旗標，可在使用者設定關閉；CLI 是否照做尚未驗證。
-- **專案報告匯出成 Markdown**、**不加 co-author**。
+- **沒有執行中的 agent 也能指派任務**：把 Issue 指派給某個身份組時，若沒有可用的 session，會經過確認後建立 worktree、啟動該身份組，等 CLI 回報可以輸入後才送出任務。任何一步失敗都不會送出。
+- **團隊共同規則**：可以編輯一份所有 agent 都要遵守的規則，啟動時排在身份組規則之前一起交給 CLI，預覽中看得到。
+- **Shared Memory 面板**：依身份組和隱私域列出共享筆記，可以新增、修改、關閉、刪除，也可以審核建議記憶；只有已採納的筆記才會交給之後啟動的 agent。
+- **從 PR 報告跳到程式碼**：點變更檔案或行內審查留言會跳到那一行；本機 Git 有該 PR 的 head 與 base 時開啟並排 diff，否則改開 agent 資料夾裡的版本或 GitHub 的 patch。
+- **Discuss with PM Agent**：在編輯器選取程式碼後按右鍵，輸入問題，確認後送給 PM agent。
+- **Start Meeting**：把同一個主題同時送給多個 agent，回覆由你從剪貼簿貼入並整理成會議紀錄；沒貼的標示為沒有回覆，不代為編寫。
+- **自動模式首次確認**：第一次以自動模式啟動 CLI 時會先詢問，之後記住你的選擇。
+- **用量與額度**：token 用量紀錄可以依 session 篩選、相同讀數不重複記錄；Codex 額度的時間窗已重設時顯示為未知，Codex session 更新時也會記錄最後一次請求的 token 數（同一事件只記一次、依帳號節流）。
+- **修正**：匯出 Markdown 時，GitHub 文字中的網址不再被自動轉成連結。
 
-未驗證（在 #135 驗收）：真實 CLI 是否套用權限、自動模式與署名設定，以及收到廣播或任務 prompt 後實際怎麼處理。
+尚未在實機上走過：#311 列的總負責人流程（指揮台、指派、同時下任務、團隊規則、跳到程式碼與討論、開會、匯出、PM 不能 commit）。各 CLI 是否真的讀到規則、記憶、任務與會議內容，屬於實機項目（#135）。身份組的工具權限並非完全強制，各 CLI 的強制程度說明同 Beta 5。
 
-尚未包含（開發中）：團隊共同規則、共享記憶的操作介面、從 PR 報告跳到程式碼、與 PM 討論、開會。
+**不在這一版**：agent 自己提出建議記憶的收集（#333）已合併到 main，將收錄於下一個 Beta。
 
 ## 安裝與升級
 
@@ -56,9 +49,10 @@
 - 角色規則是否真正注入、帳號身份與 provider 能力只在有相應證據時顯示已核實；不同 CLI 的強制力仍有未驗證項目。
 - 此 VSIX 的封裝檢查未發現登入憑證、帳號資料、工作區內容、terminal transcript 或本機 session 資料；掃描仍無法證明不存在未知格式或編碼的秘密。
 
-## 發行核對結果
+## 發行核對結果（依 Release 說明）
 
-- Release tag `v0.0.3-beta.5` 指向上述來源 commit，並標為 prerelease。
-- 來源 commit 的 Build、Terminal session model、GitHub read adapter、Git worktrees 四個 GitHub Actions workflow 全部成功，含 macOS／Windows 封裝與 Extension Host 冒煙測試。本機 typecheck 通過，2055 項測試通過、0 失敗。
-- 封裝檢查通過，含 219 個檔案；唯一打包的第三方套件是 fflate 0.8.3（MIT）。
-- 從 Release 下載回來的 VSIX 已重新計算 SHA-256，與 `release-candidate.json` 的來源 commit、版本、檔名、大小（819528 bytes）與 SHA-256 都相符。Release 說明列出了未驗證事項。
+- Release tag `v0.0.3-beta.6` 指向上述來源 commit，並標為 prerelease。
+- 來源 commit 的 CI 22 項全部成功，含 macOS 與 Windows 的單元測試、Extension Host smoke 與 VSIX 打包；在隔離 worktree 對來源 commit 執行 `npm ci`、`tsc`、`npm test`：2170 項，2162 通過、0 失敗。
+- VSIX 由來源 commit 以 `npm run vsix:package` 產生，`verify-vsix` 確認共 233 個檔案（863638 bytes）；唯一打包的第三方套件是 fflate 0.8.3（MIT）。
+- 雜湊以本頁與 `release-candidate.json` 為準。
+- **尚未在實機上走過**：#311 列的總負責人流程；各 CLI 是否真的讀到規則、記憶、任務與會議內容屬於實機項目（#135）。

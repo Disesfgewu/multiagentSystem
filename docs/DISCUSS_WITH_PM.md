@@ -8,4 +8,4 @@
 - 送達規則與 #305／廣播相同（共用 `confirmAndType`）：只送給 CLI 自己說正在等輸入的 PM；狀態不明要按第二個明確按鈕；確認後會再讀一次選取的文字，變了就不送；結果記在派發紀錄（kind: discussion，不存文字）。
 - 「已打進終端機」不等於 PM 讀了或會回覆。沒有用真的 CLI 驗證（#135）。
 
-**還沒做**：Start Meeting（多 agent 同題、彙整回覆成會議紀錄）。
+多 agent 同題、彙整回覆成會議紀錄的 Start Meeting 見 `docs/MEETING.md`。
