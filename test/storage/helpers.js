@@ -33,7 +33,7 @@ function sandbox(t) {
   return { root, repoRoot, dir };
 }
 
-const COLLECTIONS = ['profiles', 'roleGroups', 'sessions', 'policies', 'taskDispatches', 'usageLog'];
+const COLLECTIONS = ['profiles', 'roleGroups', 'sessions', 'policies', 'teamRules', 'taskDispatches', 'usageLog'];
 const failure = (code) => Object.assign(new Error(`synthetic ${code}`), { code });
 
 module.exports = { sandbox, COLLECTIONS, failure, watchRawPathIo };
