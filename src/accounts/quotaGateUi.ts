@@ -336,15 +336,15 @@ function codexExtras(accounts: AccountsOk, accountProfileId: string, now: Date):
   }
 }
 
-/**
- * A Codex session's observation changed: read the account's session log again and keep the last request's counts in the usage log
- * (issue #302, #294), the same as opening the account's detail does. Best effort: it never disturbs the session.
- */
 const codexRecorder = createCodexRecorder({
   readReading: (accountProfileId: string, at: Date, context: any) => codexQuotaReading(accountProfileId, context.configDir, at).reading,
   append: (entry: unknown, at: Date, context: any) => new UsageLog(context.store).append(entry, at)
 });
 
+/**
+ * A Codex session's observation changed: read the account's session log again and keep the last request's counts in the usage log
+ * (issue #302, #294), the same as opening the account's detail does. Best effort: it never disturbs the session.
+ */
 export async function recordCodexSessionReading(accountProfileId: string, sessions: () => any[], now: Date = new Date()): Promise<void> {
   try {
     const accounts = await accountService(sessions);

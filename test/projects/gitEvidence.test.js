@@ -170,12 +170,14 @@ test('the two versions of a pull request file come from the repository\'s own ob
     assert.deepEqual(await read('nowhere.txt', { status: 'added' }), { ok: false, reason: 'side-missing' }, 'missing on both sides is never a diff');
     assert.deepEqual(await read('nowhere.txt', { status: 'removed' }), { ok: false, reason: 'side-missing' });
     await run('checkout', '-q', 'feature');
-    if (process.platform !== 'win32') {
-      await fs.symlink('src/a.txt', path.join(root, 'link.txt'));
-      await run('add', '-A'); await run('commit', '-q', '-m', 'a link');
-      const linkHead = (await run('rev-parse', 'HEAD')).stdout.trim();
-      assert.deepEqual(await readPullRequestFileVersions(root, { headSha: linkHead, baseRef: 'main', relativePath: 'link.txt', status: 'added' }), { ok: false, reason: 'not-a-file' }, 'a link (mode 120000) is not shown as a file');
-    }
+    // A link (mode 120000) written straight into the index, so this runs on Windows too (no file system link is needed).
+    await fs.writeFile(path.join(root, 'link-target.txt'), 'src/a.txt');
+    const blob = (await exec('git', ['hash-object', '-w', 'link-target.txt'], { cwd: root, encoding: 'utf8' })).stdout.trim();
+    await fs.rm(path.join(root, 'link-target.txt'));
+    await run('update-index', '--add', '--cacheinfo', `120000,${blob},link.txt`);
+    await run('commit', '-q', '-m', 'a link');
+    const linkHead = (await run('rev-parse', 'HEAD')).stdout.trim();
+    assert.deepEqual(await readPullRequestFileVersions(root, { headSha: linkHead, baseRef: 'main', relativePath: 'link.txt', status: 'added' }), { ok: false, reason: 'not-a-file' }, 'a link (mode 120000) is not shown as a file');
     await run('checkout', '-q', 'main');
     assert.deepEqual(await read('bin.dat'), { ok: false, reason: 'binary' });
     assert.deepEqual(await read('src'), { ok: false, reason: 'not-a-file' });
