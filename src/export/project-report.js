@@ -32,7 +32,7 @@ const itemsOf = (result) => (!complete(result) ? null : result.kind === 'empty' 
 /** The place an external piece of text is registered; its final form is decided after the scan. */
 function createFields() {
   const texts = [];
-  const escape = (value) => value.replace(/[\\`*_{}[\]<>()#+\-.!|~&]/g, (char) => `\\${char}`);
+  const escape = (value) => value.replace(/[\\`*_{}[\]<>()#+\-.!|~&:]/g, (char) => `\\${char}`);
   return {
     texts,
     /** One line of plain text, cut to `limit` characters and Markdown-escaped. Returns a token the final pass replaces. */

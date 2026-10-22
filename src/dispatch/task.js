@@ -23,7 +23,7 @@ const MAX_ACCEPTANCE_LINE_CHARS = 160;
 const HIDDEN = /[\p{Cf}\p{Zl}\p{Zp}]/u;
 const CONTROL = /[\p{Cc}]/gu;
 // The wording this package itself puts at the front of a prompt. Text that comes from GitHub (or is typed) must not be able to imitate it.
-const MARKER = /task\s+from\s+the\s+administrator|administrator\s+broadcast/i;
+const { OWN_MARKER: MARKER } = require('../shared/markers');
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const refuse = (reason) => ({ ok: false, reason });

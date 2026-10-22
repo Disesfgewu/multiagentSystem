@@ -8,6 +8,7 @@ import { accountService } from '../accounts/accountRuntime';
 import { observationsFor, ACCOUNT_COMMANDS } from '../accounts/accountCommands';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
+import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
 import { DISPATCH_COMMANDS, readAssignments } from '../dispatch/commands';
 
 const model = require('./model') as {
@@ -109,8 +110,9 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const assignments = Object.fromEntries(await readAssignments());
     const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments });
     const accountRows = await readAccounts(live);
+    const teamRules = await teamRulesSummary();
     if (mine !== generation) return;
-    cached = { pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: snapshot.notes.slice(0, 5).map((note) => String(note).slice(0, 200)) };
+    cached = { pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: [teamRules, ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240)) };
     post();
   };
   const scheduleRefresh = (): void => {
@@ -144,6 +146,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         return { ok: true, command: message.type };
       case 'openPullRequest':
         await vscode.commands.executeCommand(OVERVIEW_OPEN_PULL_REQUEST, { id: message.id });
+        return { ok: true, command: message.type };
+      // Takes no content: the rule text and the confirmation come from the command's own windows.
+      case 'editTeamRules':
+        void vscode.commands.executeCommand(TEAM_RULES_COMMANDS.edit);
         return { ok: true, command: message.type };
       // The two commands take no argument and ask for everything in their own windows; the page only presses the button.
       case 'assignIssue':
