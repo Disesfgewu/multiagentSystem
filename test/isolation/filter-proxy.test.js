@@ -8,6 +8,16 @@ const { createFilterProxy, defaultConnect, normalizeHost, parsePattern, matches,
 
 const PUBLIC = '93.184.216.34';
 
+// Under load (several test runs on one machine) an event can arrive before a listener is attached. Waiting for 'close' on a socket that
+// already closed never ends, so a wait on a socket checks first, and every wait has a limit that turns a stuck await into a failure.
+const WAIT_MS = 15000;
+const closedOf = (socket) => (socket.destroyed ? Promise.resolve() : new Promise((resolve) => socket.once('close', resolve)));
+function bounded(promise, what, ms = WAIT_MS) {
+  let timer;
+  const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms); });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
+
 /** A local echo server standing in for a provider: what it receives it sends back upper-cased. */
 async function echoServer(t) {
   const received = [];
@@ -19,7 +29,7 @@ async function echoServer(t) {
     socket.on('error', () => {});
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => { for (const socket of open) socket.destroy(); server.close(resolve); }));
+  t.after(() => new Promise((resolve) => { for (const socket of open) socket.destroy(); server.close(() => resolve()); setTimeout(resolve, 2000).unref(); }));
   return { port: server.address().port, received };
 }
 
@@ -43,7 +53,7 @@ async function proxyFor(t, options = {}) {
 /** Sends one CONNECT and returns the status line, and the socket for more. */
 const clients = new Set();
 function connectThrough(started, target, { header, credential, raw } = {}) {
-  return new Promise((resolve, reject) => {
+  return bounded(new Promise((resolve, reject) => {
     const socket = net.connect(started.port, '127.0.0.1');
     clients.add(socket);
     socket.on('close', () => clients.delete(socket));
@@ -55,10 +65,11 @@ function connectThrough(started, target, { header, credential, raw } = {}) {
       const end = buffer.indexOf('\r\n\r\n');
       if (end !== -1) { socket.removeAllListeners('data'); resolve({ status: buffer.slice(0, buffer.indexOf('\r\n')), socket, rest: buffer.slice(end + 4) }); }
     });
-    socket.on('close', () => { if (buffer && buffer.indexOf('\r\n\r\n') === -1) resolve({ status: buffer.split('\r\n')[0], socket, rest: '' }); });
+    // A connection that closes without a complete reply ends the wait with whatever status line there was (maybe none).
+    socket.on('close', () => { if (buffer.indexOf('\r\n\r\n') === -1) resolve({ status: buffer.split('\r\n')[0], socket, rest: '' }); });
     const auth = header ?? (credential === undefined ? '' : `Proxy-Authorization: Basic ${Buffer.from(`managed:${credential}`).toString('base64')}\r\n`);
     socket.write(raw ?? `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${auth}\r\n`);
-  });
+  }), `the proxy's reply to CONNECT ${target}`);
 }
 
 const statusOf = (reply) => Number(/^HTTP\/1\.1 (\d{3})/.exec(reply.status)?.[1]);
@@ -69,7 +80,7 @@ test('an allowed host is tunnelled both ways, to the address that was checked, a
   assert.equal(statusOf(reply), 200);
   assert.deepEqual(looked, ['api.provider.test']);
   assert.deepEqual(connected, [[PUBLIC, 443]], 'the connection goes to the address that was looked at');
-  const answer = await new Promise((resolve) => { reply.socket.once('data', (chunk) => resolve(chunk.toString())); reply.socket.write('hello'); });
+  const answer = await bounded(new Promise((resolve) => { reply.socket.once('data', (chunk) => resolve(chunk.toString())); reply.socket.write('hello'); }), 'the echo through the tunnel');
   assert.equal(answer, 'HELLO');
   assert.deepEqual(echo.received, ['hello']);
   reply.socket.destroy();
@@ -130,7 +141,7 @@ test('without the proxy\'s own credential nothing is served: none, wrong, anothe
 
 test('plain HTTP through the proxy, other methods and malformed requests are never forwarded', async (t) => {
   const { started, credential, connected } = await proxyFor(t);
-  const send = (text) => new Promise((resolve) => {
+  const send = (text) => bounded(new Promise((resolve) => {
     const socket = net.connect(started.port, '127.0.0.1');
     let buffer = '';
     socket.setEncoding('utf8');
@@ -139,7 +150,7 @@ test('plain HTTP through the proxy, other methods and malformed requests are nev
     socket.on('error', () => resolve(buffer.split('\r\n')[0]));
     socket.write(text);
     setTimeout(() => socket.end(), 150);
-  });
+  }), 'the proxy to answer a plain request');
   assert.match(await send('GET http://api.provider.test/ HTTP/1.1\r\nHost: api.provider.test\r\n\r\n'), /^HTTP\/1\.1 405/);
   assert.match(await send(`POST http://api.provider.test/ HTTP/1.1\r\nHost: api.provider.test\r\nProxy-Authorization: Basic ${Buffer.from(`managed:${credential}`).toString('base64')}\r\nContent-Length: 0\r\n\r\n`), /^HTTP\/1\.1 405/);
   assert.match(await send('this is not http\r\n\r\n'), /^HTTP\/1\.1 400/);
@@ -154,9 +165,9 @@ test('the number of connections is capped, an unlimited flood is refused with bu
   assert.deepEqual([statusOf(first), statusOf(second)], [200, 200]);
   assert.equal(statusOf(await connectThrough(started, 'api.provider.test:443', { credential })), 503);
   assert.equal(proxy.stats().active >= 2, true);
-  const closed = new Promise((resolve) => first.socket.once('close', resolve));
-  await proxy.stop();
-  await closed;
+  const closed = closedOf(first.socket);
+  await bounded(proxy.stop(), 'the proxy to stop');
+  await bounded(closed, 'the open tunnel to close');
   assert.equal(first.socket.destroyed, true);
   await proxy.stop();
 });
@@ -177,12 +188,12 @@ test('it listens on the loopback address only: the address it reports is 127.0.0
   assert.equal(started.address, '127.0.0.1');
   const others = Object.values(os.networkInterfaces()).flat().filter((entry) => entry && entry.family === 'IPv4' && !entry.internal).map((entry) => entry.address);
   for (const address of others.slice(0, 3)) {
-    const outcome = await new Promise((resolve) => {
+    const outcome = await bounded(new Promise((resolve) => {
       const socket = net.connect({ host: address, port: started.port });
       socket.on('connect', () => { socket.destroy(); resolve('connected'); });
       socket.on('error', (error) => resolve(error.code));
       setTimeout(() => { socket.destroy(); resolve('timeout'); }, 2000);
-    });
+    }), `an attempt on ${address}`);
     assert.notEqual(outcome, 'connected', `${address} reaches the proxy`);
   }
 });
@@ -206,14 +217,13 @@ test('an upstream that connects after the time limit is destroyed and its later 
 test('the real connect function: a reset after it connected, or a connect that never finishes, is an error value, never an unhandled error', async (t) => {
   const resetting = net.createServer((socket) => { socket.on('error', () => {}); setTimeout(() => socket.resetAndDestroy(), 50); });
   await new Promise((resolve) => resetting.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => resetting.close(resolve)));
-  const socket = await defaultConnect('127.0.0.1', resetting.address().port, 1000);
-  const closed = new Promise((resolve) => socket.once('close', resolve));
-  await closed; // the reset arrives; there must be no 'uncaughtException'
+  t.after(() => new Promise((resolve) => { resetting.close(() => resolve()); setTimeout(resolve, 2000).unref(); }));
+  const socket = await bounded(defaultConnect('127.0.0.1', resetting.address().port, 1000), 'the connection to the resetting server');
+  await bounded(closedOf(socket), 'the reset to close the socket'); // the reset arrives; there must be no 'uncaughtException'
   assert.equal(socket.destroyed, true);
   // An address nothing answers on (TEST-NET, never routed): refused by time, not left waiting.
   const started = Date.now();
-  await assert.rejects(defaultConnect('192.0.2.1', 9, 300), /connect-timeout|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|EADDRNOTAVAIL/);
+  await assert.rejects(bounded(defaultConnect('192.0.2.1', 9, 300), 'the connect to an address nothing answers on', 5000), /connect-timeout|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|EADDRNOTAVAIL/);
   assert.ok(Date.now() - started < 3000);
 });
 
@@ -260,4 +270,33 @@ test('the proxy refuses to be made with an allow list that is empty, too long, o
   assert.throws(() => createFilterProxy({ allow: ['a.example.com'], deny: ['127.0.0.1'] }), TypeError);
   for (const ports of [[], [0], [70000], ['443'], 443]) assert.throws(() => createFilterProxy({ allow: ['a.example.com'], ports }), TypeError);
   assert.ok(createFilterProxy({ allow: ['a.example.com'] }));
+});
+
+test('a socket that closes before it connected, with or without an error, rejects the connect instead of leaving it waiting', async () => {
+  const { EventEmitter } = require('node:events');
+  const fake = () => Object.assign(new EventEmitter(), { connecting: false, destroyed: false, setTimeout() {}, destroy() { this.destroyed = true; } });
+  const closedOnly = fake();
+  const pending = defaultConnect('127.0.0.1', 1, 1000, () => closedOnly);
+  closedOnly.emit('close');
+  await assert.rejects(bounded(pending, 'a close before connect', 2000), /closed-before-connect/);
+  const errored = fake();
+  const withError = defaultConnect('127.0.0.1', 1, 1000, () => errored);
+  errored.emit('error', new Error('boom'));
+  await assert.rejects(bounded(withError, 'an error before connect', 2000), /boom/);
+  assert.equal(errored.destroyed, true);
+  // After it has connected, a later error or close changes nothing and throws nothing.
+  const ok = fake();
+  const connected = defaultConnect('127.0.0.1', 1, 1000, () => ok);
+  ok.emit('connect');
+  assert.equal(await connected, ok);
+  assert.doesNotThrow(() => { ok.emit('error', new Error('late')); ok.emit('close'); });
+  assert.equal(ok.destroyed, false, 'a connected socket is not destroyed by a later close event');
+  // A connect that arrives after the attempt failed is destroyed, not handed out.
+  const late = fake();
+  const failed = defaultConnect('127.0.0.1', 1, 1000, () => late);
+  late.emit('close');
+  await assert.rejects(bounded(failed, 'the failed attempt', 2000), /closed-before-connect/);
+  late.destroyed = false;
+  late.emit('connect');
+  assert.equal(late.destroyed, true);
 });

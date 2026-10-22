@@ -98,14 +98,16 @@ test('a sandbox that also cuts the CLI off from its own endpoint reads as broken
   } finally { await module.dispose(); }
 });
 
-test('disposing removes the temporary folder with the synthetic credentials', onlyMac, async () => {
-  const before = new Set(fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-')));
-  const module = createMacosModule({ tmpRoot: TMP });
+test('disposing removes the temporary folder with the synthetic credentials', onlyMac, async (t) => {
+  // A folder of its own: another run on the same machine (or another test) makes `mas-iso-` folders in the shared temporary folder too.
+  const own = fs.realpathSync.native(fs.mkdtempSync(require('node:path').join(TMP, 'mas-own-')));
+  t.after(() => fs.rmSync(own, { recursive: true, force: true }));
+  const module = createMacosModule({ tmpRoot: own });
   await module.probe('file-credentials');
-  const during = fs.readdirSync(require('node:os').tmpdir()).filter((name) => name.startsWith('mas-iso-') && !before.has(name));
+  const during = fs.readdirSync(own).filter((name) => name.startsWith('mas-iso-'));
   assert.equal(during.length, 1);
   await module.dispose();
-  assert.equal(fs.existsSync(require('node:path').join(require('node:os').tmpdir(), during[0])), false);
+  assert.equal(fs.existsSync(require('node:path').join(own, during[0])), false);
   await module.dispose();
 });
 
@@ -259,4 +261,18 @@ test('when the test keychain cannot be made, unlocked or filled, credential-help
 test('with a working test keychain credential-helper is still judged: blocked inside the sandbox', onlyMac, async () => {
   const module = createMacosModule({ tmpRoot: TMP });
   try { assert.deepEqual(await module.probe('credential-helper'), { control: true, outcome: 'blocked' }); } finally { await module.dispose(); }
+});
+
+test('a program that ignores the polite stop and holds its output open cannot keep an attempt waiting forever', onlyMac, async (t) => {
+  const own = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP, 'mas-stuck-')));
+  t.after(() => fs.rmSync(own, { recursive: true, force: true }));
+  const stuck = path.join(own, 'stuck-sandbox-exec');
+  fs.writeFileSync(stuck, '#!/bin/sh\ntrap \'\' TERM\n( trap \'\' TERM; sleep 30 ) &\nwait\n', { mode: 0o755 });
+  const module = createMacosModule({ tmpRoot: own, sandboxExec: stuck, timeoutMs: 300 });
+  const started = Date.now();
+  try {
+    const result = await Promise.race([module.probe('file-credentials'), new Promise((_, reject) => setTimeout(() => reject(new Error('the attempt never ended')), 25000).unref())]);
+    assert.notEqual(result.outcome, 'blocked', 'an attempt that did not finish is never read as blocked');
+    assert.ok(Date.now() - started < 25000);
+  } finally { await module.dispose(); }
 });

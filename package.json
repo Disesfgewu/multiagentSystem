@@ -490,7 +490,7 @@
   "scripts": {
     "build": "tsc -p .",
     "check": "tsc -p . --noEmit",
-    "test:unit": "npm run build && node --test \"test/**/*.test.js\" \"out/test/unit/**/*.test.js\"",
+    "test:unit": "npm run build && node --test --test-force-exit --test-timeout=120000 \"test/**/*.test.js\" \"out/test/unit/**/*.test.js\"",
     "test:host": "npm run build && node out/test/host/runTest.js",
     "test": "npm run check && npm run test:unit",
     "vscode:prepublish": "npm run build",
