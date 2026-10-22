@@ -9,6 +9,7 @@ const { scanSensitive } = require('./sensitive');
 const { flatten, MIN_MATCHABLE_CHARS } = require('./text');
 const { byCodeUnit } = require('./order');
 const { validDomain } = require('./domains');
+const { contentProblem } = require('./content-check');
 
 const SCHEMA_VERSION = 1;
 const MAX_CONTENT_CHARS = 2000;
@@ -272,6 +273,8 @@ class MemoryStore {
     if (content === '' || content.length > MAX_CONTENT_CHARS) return { ok: false, reason: 'invalid-length' };
     if (flatten(content).length < MIN_MATCHABLE_CHARS) return { ok: false, reason: 'too-short' };
     if (looksLikeTranscript(content)) return { ok: false, reason: 'transcript-like' };
+    const unsafe = contentProblem(content);
+    if (unsafe) return { ok: false, reason: unsafe };
 
     const findings = scanSensitive(content);
     if (findings.length > 0) return { ok: false, reason: 'sensitive-content', findings };
@@ -396,8 +399,11 @@ class MemoryStore {
     const now = this.now();
     const readable = this.#readableDomains(privacyDomain);
     const scored = [];
+    let withheld = 0;
     for (const item of current.items) {
       if (!isReadable(item, now)) continue;
+      // A note whose text fails today's check is never given to an agent, even if it was stored before the check existed.
+      if (contentProblem(item.content)) { withheld += 1; continue; }
       if (item.repoId !== repoId || item.roleGroupId !== roleGroupId || !readable.includes(item.privacyDomain)) continue;
       const own = tokens(item.content);
       let score = 0;
@@ -426,6 +432,7 @@ class MemoryStore {
       selected.push(copy);
     }
     const result = { items: selected, usedChars: used, truncated: omittedCount > 0, unavailable };
+    if (withheld > 0) result.withheld = withheld;
     if (omittedCount > 0) result.omitted = { count: omittedCount, chars: omittedChars, reason: 'budget' };
     if (wasAsked && valid && budgetChars > MAX_BUDGET_CHARS) result.budgetClamped = MAX_BUDGET_CHARS;
     return result;

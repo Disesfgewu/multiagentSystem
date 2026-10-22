@@ -36,7 +36,7 @@ export async function runExportReportChecks(workspace: string): Promise<void> {
     const text = document.getText();
     for (const expected of ['# Project report', '### Issue #12: Read reports in the editor', 'Acceptance: 1 of 2 items ticked', '### Pull request #7: Add reports', 'Pull requests: #7', 'Head: cccccccccccc', '## What this report does not know']) assert.ok(text.includes(expected), expected);
     assert.ok(!text.split('\n').some((row) => /^#{1,6}\s.*Fake heading/.test(row) && !row.startsWith('### Issue #13:')), 'GitHub text did not become a heading of its own');
-    assert.ok(text.includes('### Issue #13: \\# Fake heading \\[x\\]\\(http://example\\.test\\)'), 'GitHub text is shown escaped');
+    assert.ok(text.includes('### Issue #13: \\# Fake heading \\[x\\]\\(http\\://example\\.test\\)'), 'GitHub text is shown escaped');
     assert.ok(!text.includes(workspace), 'the workspace path is not in the report');
     assert.deepEqual(fs.readdirSync(workspace).sort(), before, 'nothing was written to the workspace');
     assert.ok(info.some((message) => /Project report opened \(not saved\)/.test(message)));

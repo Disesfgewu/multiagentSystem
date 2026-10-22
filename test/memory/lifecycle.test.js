@@ -377,7 +377,9 @@ test('a memory is a short note: text shaped like a conversation is refused, and 
     'Note: the assistant role may read but not write; the user role is out of scope here.'
   ];
   for (const text of fine) assert.equal(looksLikeTranscript(text), false, text.slice(0, 30));
-  assert.equal(store.propose({ ...scope(), content: fine[1], source: { ref: 'docs/R.md' } }).ok, true, 'two labelled lines are a note, not a conversation');
+  // Not a conversation, but still two lines: a note is one line (a line break could open a new section of the instructions it is written into).
+  assert.deepEqual(store.propose({ ...scope(), content: fine[1], source: { ref: 'docs/R.md' } }), { ok: false, reason: 'unsafe-characters' });
+  assert.equal(store.propose({ ...scope(), content: fine[2], source: { ref: 'docs/R.md' } }).ok, true, 'one labelled line is a note, not a conversation');
 });
 
 // ---- follow-ups from the review of the privacy-domain PR --------------------

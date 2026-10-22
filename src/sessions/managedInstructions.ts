@@ -12,6 +12,8 @@ import { BroadcastStore } from '../broadcast/store';
 import * as nodePath from 'node:path';
 const { MemoryStore } = require('../memory/store') as { MemoryStore: new (options: Record<string, unknown>) => { select(request: Record<string, unknown>): any } };
 const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(accountProfileId: string): string };
+import { TeamRulesStore } from '../teamRules/store';
+import { teamRuleLayer, describeTeamRules } from '../teamRules/model';
 import { isLive, appliesTo, broadcastRule, broadcastPreviewLines } from '../broadcast/model';
 const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
   checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
@@ -37,6 +39,8 @@ export interface InstructionSnapshot {
   broadcastBindings: BroadcastBinding[];
   /** The shared notes this snapshot was composed with (id and version). A change to any of them makes the snapshot stale. */
   memoryBindings: Array<{ id: string; version: number }>;
+  /** The version of the team rules this snapshot was composed with (0: none were written). A newer version makes the snapshot stale. */
+  teamRulesVersion: number;
   digest: string | null;
   createdAt: string;
 }
@@ -157,6 +161,15 @@ export async function prepareInstructionSnapshot(
 
   const broadcastRules = matchingBroadcasts.map(broadcastRule);
 
+  // Team rules: given to every agent, ahead of its role group's own user-layer rules. If they cannot be read the launch is refused:
+  // an agent must not start without rules it is supposed to have because a file was damaged.
+  const teamLoaded: any = new TeamRulesStore(store).get();
+  if (!teamLoaded.ok) {
+    return { ok: false, code: 'team-rules-unavailable', message: `Team rules could not be read (${teamLoaded.reason ?? 'unknown'}). The agent was not started.` };
+  }
+  const teamRules: any[] = teamRuleLayer(teamLoaded.doc);
+  const teamRulesVersion: number = teamLoaded.doc.version;
+
   // Step 3: Compose Effective Rules and Digest
   let effectiveRules: any = null;
   let permissions: any[] = [];
@@ -171,7 +184,7 @@ export async function prepareInstructionSnapshot(
   }
 
   if (group) {
-    const userLayer = [...(layers.user ?? []), ...broadcastRules];
+    const userLayer = [...teamRules, ...(layers.user ?? []), ...broadcastRules];
     const combinedLayers = { ...layers, user: userLayer };
     previewResult = previewEffectiveRules({ roleGroup: group, layers: combinedLayers });
     if (!previewResult.ok) {
@@ -186,17 +199,18 @@ export async function prepareInstructionSnapshot(
     effectiveRules = previewResult.rules;
     permissions = previewResult.permissions;
     digest = previewResult.digest;
-  } else if (broadcastRules.length > 0) {
-    for (const bRule of broadcastRules) {
+  } else if (broadcastRules.length > 0 || teamRules.length > 0) {
+    const ungrouped = [...teamRules.map((rule) => ({ ...rule, layer: 'user' })), ...broadcastRules];
+    for (const bRule of ungrouped) {
       if (typeof bRule.text === 'string' && checkPromptInjection(bRule.text).hasInjection) {
         return {
           ok: false,
           code: 'prompt-injection-detected',
-          message: 'Adversarial prompt injection detected in broadcast instruction.'
+          message: 'Adversarial prompt injection detected in team or broadcast instructions.'
         };
       }
     }
-    const resolved = resolveRules(broadcastRules);
+    const resolved = resolveRules(ungrouped);
     effectiveRules = {
       forbids: resolved.forbids,
       requires: resolved.requires,
@@ -301,6 +315,7 @@ export async function prepareInstructionSnapshot(
     targetSessionId,
     broadcastBindings,
     memoryBindings: memories.map((item) => ({ id: item.id, version: item.version })),
+    teamRulesVersion,
     digest,
     createdAt: now.toISOString()
   };
@@ -312,6 +327,7 @@ export async function prepareInstructionSnapshot(
     permissions,
     matchingBroadcasts,
     memoryCount: memories.length,
+    teamRulesLine: describeTeamRules(teamLoaded.doc),
     injectionStatusLabel,
     injectionState,
     now
@@ -373,6 +389,10 @@ export async function isSnapshotStale(
       } else if ((snapshot.memoryBindings ?? []).length > 0) return { stale: true, reason: 'memory-changed' };
     } catch { return { stale: true, reason: 'memory-unavailable' }; }
   }
+  // Team rules changed since the snapshot was prepared: the agent would start with rules the person did not review.
+  const team: any = new TeamRulesStore(store).get();
+  if (!team.ok) return { stale: true, reason: 'team-rules-unavailable' };
+  if (team.doc.version !== (snapshot.teamRulesVersion ?? 0)) return { stale: true, reason: 'team-rules-changed' };
 
   const broadcastStore = new BroadcastStore(store);
   const listed: any = broadcastStore.list();
@@ -429,6 +449,7 @@ export function formatInstructionSummary(
     permissions?: any[];
     matchingBroadcasts?: any[];
     memoryCount?: number;
+    teamRulesLine?: string;
     injectionStatusLabel?: string;
     injectionState?: PreparedInstructions['injectionState'];
     now: Date;
@@ -448,6 +469,7 @@ export function formatInstructionSummary(
   ];
 
   lines.push(`Shared memory: ${details.memoryCount ? `${details.memoryCount} reviewed note${details.memoryCount === 1 ? '' : 's'} prepared for this agent` : 'none prepared for this agent'}. The CLI is told; nothing enforces them.`, '');
+  if (details.teamRulesLine) lines.push(details.teamRulesLine, '');
 
   if (details.matchingBroadcasts && details.matchingBroadcasts.length > 0) {
     lines.push('Matching local administrator notices:');

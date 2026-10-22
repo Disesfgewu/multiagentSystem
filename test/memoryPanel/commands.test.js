@@ -41,3 +41,10 @@ test('the view and its commands are declared and activate on use', () => {
     assert.ok(manifest.activationEvents.includes(`onCommand:multiagentSystem.memory.${name}`), name);
   }
 });
+
+test('a suggestion is stored in the privacy domain of the account of the agent that made it, never a shared default', () => {
+  const body = source.slice(source.indexOf('async function suggest('), source.indexOf('/** Reviews one suggestion'));
+  assert.match(body, /defaultDomainFor\(typeof session\.accountProfileId === 'string'/);
+  assert.match(body, /propose\(\{[^}]*privacyDomain,/);
+  assert.doesNotMatch(body, /defaultDomainFor\('unassigned'\)\s*,\s*content/);
+});

@@ -1,6 +1,6 @@
 # 指揮台（Command Center）
 
-指令 **Open Command Center**（Overview 標題列的按鈕，或 Command Palette）在**編輯區**開啟一個 webview 分頁（不是側欄），讓使用者以專案總負責人的角色，一眼看到每個 agent 的狀態與額度。這一版以**顯示**為主：它顯示資料、提供「聚焦 terminal、開啟報告」等導覽，以及**帳號面板上的帳號操作**（見下，每一項都是既有的帳號指令）；派任務、廣播、開會等動作由 #305～#308 接上。
+指令 **Open Command Center**（Overview 標題列的按鈕，或 Command Palette）在**編輯區**開啟一個 webview 分頁（不是側欄），讓使用者以專案總負責人的角色，一眼看到每個 agent 的狀態與額度。這一版以**顯示**為主：它顯示資料、提供「聚焦 terminal、開啟報告」等導覽，以及**帳號面板上的帳號操作**（見下，每一項都是既有的帳號指令），以及派送任務（Assign Issue to Agents、Send Task to Agents，#316）與匯出 Markdown 報告（#318）。開會與和 PM 討論還沒有做（#308）。
 
 ## 畫面
 

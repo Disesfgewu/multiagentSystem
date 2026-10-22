@@ -1,6 +1,7 @@
 'use strict';
 
 const { isReadable } = require('./store');
+const { contentProblem } = require('./content-check');
 
 /**
  * What the Shared Memory panel shows (issue #306). Pure: it turns stored notes into short lines and groups. It reads and writes nothing.
@@ -24,7 +25,10 @@ function stateOf(item, now) {
   if (item.status === 'stale') return { key: 'stale', text: 'needs review (its source changed)', injected: false };
   if (item.status === 'adopted') {
     if (item.disabled === true) return { key: 'disabled', text: 'switched off', injected: false };
-    return isReadable(item, now) ? { key: 'active', text: 'active', injected: true } : { key: 'expired', text: 'expired', injected: false };
+    if (!isReadable(item, now)) return { key: 'expired', text: 'expired', injected: false };
+    // A stored note whose text fails the check is not given to any agent, and says why.
+    if (contentProblem(item.content)) return { key: 'unsafe', text: 'NOT given to agents: its text fails the safety check (line break, hidden character or instruction-like wording)', injected: false };
+    return { key: 'active', text: 'active', injected: true };
   }
   return { key: 'unknown', text: 'unknown', injected: false };
 }

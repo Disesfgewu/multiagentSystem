@@ -47,6 +47,8 @@ export async function prepareIsolationForStart(input: {
   platform?: string;
   createHarness: (options: { tmpRoot: string }) => unknown;
   ui: EnforcedStartUi;
+  /** Extra lines for the confirmation window (for example what auto mode means inside the sandbox). Shown only in enforced mode. */
+  extraLines?: string[];
   prepare?: typeof prepareEnforcedLaunch;
 }): Promise<EnforcedStartResult> {
   if (input.mode === undefined || input.mode === 'advisory') return { kind: 'advisory' };
@@ -72,6 +74,7 @@ export async function prepareIsolationForStart(input: {
   if (input.interactive) {
     const lines = [
       ...prepared.summary,
+      ...(Array.isArray(input.extraLines) ? input.extraLines.filter((line) => typeof line === 'string') : []),
       'This is the enforced mode you chose in your settings. Starting with it is not the same as the CLI working through it.'
     ];
     if (!await input.ui.confirm(lines)) {

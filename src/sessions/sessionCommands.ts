@@ -141,13 +141,15 @@ function workspaceFolder(): string | undefined {
  * (a new session and a reopened one alike) comes through here, and when enforced cannot be provided it is refused, never
  * run without it.
  */
-async function isolationForLaunch(interactive: boolean, launch: boolean | undefined, cwd: string, openedStorage: { ok?: boolean; store?: unknown } | undefined) {
+async function isolationForLaunch(interactive: boolean, launch: boolean | undefined, cwd: string, openedStorage: { ok?: boolean; store?: unknown } | undefined, provider: string) {
   const settings = vscode.workspace.getConfiguration('multiagentSystem');
   return prepareIsolationForStart({
     // A shell opened without launching a CLI has nothing to isolate (and types nothing).
     mode: launch === false ? undefined : readUserLevel(settings.inspect('isolation.mode')).value,
     allowedDomains: readUserLevel(settings.inspect('isolation.allowedDomains')).value,
     interactive,
+    // The enforced confirmation also says what auto mode means inside the sandbox (issue #296).
+    extraLines: autoModeFor(provider, launch, 'enforced').lines,
     storageDir: openedStorage?.ok ? path.join((openedStorage.store as any).dir, 'isolation') : undefined,
     home: os.homedir(),
     cwd,
@@ -187,6 +189,26 @@ function autoModeFor(provider: string, launch: boolean | undefined, isolationKin
     overrides: readUserLevel(settings.inspect('agents.autoModeOverrides')).value
   });
   return { auto: { args: auto.args, label: auto.label, state: auto.state }, lines: describeAutoMode(auto, isolationKind === 'enforced' ? 'enforced' : 'advisory') as string[] };
+}
+
+const AUTO_MODE_ACKNOWLEDGED_KEY = 'multiagentSystem.autoModeAcknowledged';
+
+/**
+ * The first time an agent is started with auto mode on, a window the person must answer says what it means; the answer is remembered
+ * for this user (not per workspace), so it is asked once. Declining starts nothing. Auto mode off, a shell without a CLI and a provider
+ * with no documented flag need no such window. Only the person's own window can answer it: an argument cannot.
+ */
+export async function confirmAutoModeOnce(context: vscode.ExtensionContext, autoMode: { auto?: { state: string }; lines: string[] }): Promise<boolean> {
+  if (!autoMode.auto || autoMode.auto.state !== 'on') return true;
+  if (context.globalState.get<boolean>(AUTO_MODE_ACKNOWLEDGED_KEY) === true) return true;
+  const answer = await vscode.window.showWarningMessage(
+    'Agents start in auto mode by default',
+    { modal: true, detail: `${autoMode.lines.join('\n')}\n\nThis is the default you get unless you set multiagentSystem.agents.autoMode to "off" in your user settings (or per provider). You will not be asked again.` },
+    'I Understand, Continue'
+  );
+  if (answer !== 'I Understand, Continue') return false;
+  await context.globalState.update(AUTO_MODE_ACKNOWLEDGED_KEY, true);
+  return true;
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
@@ -398,7 +420,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       let instructions: any;
       targetSessionId = randomUUID();
       const openedStorage = await privateStorage()?.use();
-      const isolation = await isolationForLaunch(interactive, input.launch, cwd, openedStorage);
+      const isolation = await isolationForLaunch(interactive, input.launch, cwd, openedStorage, provider);
       if (isolation.kind === 'refused') {
         if (interactive && isolation.code !== 'cancelled') void vscode.window.showErrorMessage(isolation.message);
         return { ok: false, code: isolation.code, message: isolation.message };
@@ -407,6 +429,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (isolation.kind === 'enforced') env = { ...(env ?? {}), ...isolation.env };
       const autoMode = autoModeFor(provider, input.launch, isolation.kind);
       let autoModeShown = false;
+      if (interactive && !(await confirmAutoModeOnce(context, autoMode))) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
       if (!openedStorage?.ok) {
         if (input.roleGroupId && input.roleGroupId !== 'unassigned') {
           const reason = openedStorage?.reason ?? 'storage-unavailable';
@@ -670,7 +693,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         let instructions: any;
         const newSessionId = randomUUID();
         const openedStorage = await privateStorage()?.use();
-        const isolation = await isolationForLaunch(interactive, input.launch, prior.worktree, openedStorage);
+        const isolation = await isolationForLaunch(interactive, input.launch, prior.worktree, openedStorage, prior.provider);
         if (isolation.kind === 'refused') {
           if (release) { await release(); release = undefined; }
           if (interactive && isolation.code !== 'cancelled') void vscode.window.showErrorMessage(isolation.message);
@@ -679,6 +702,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         if (isolation.kind === 'enforced') { isolationDispose = isolation.dispose; env = { ...(env ?? {}), ...isolation.env }; }
         const autoMode = autoModeFor(prior.provider, input.launch, isolation.kind);
         let autoModeShown = false;
+        if (interactive && !(await confirmAutoModeOnce(context, autoMode))) { if (release) { await release(); release = undefined; } return { ok: false, code: 'cancelled', message: 'Cancelled.' }; }
         if (!openedStorage?.ok) {
           if (prior.roleGroupId !== 'unassigned') {
             const reason = openedStorage?.reason ?? 'storage-unavailable';

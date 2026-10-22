@@ -28,6 +28,9 @@ const APPROVER = { kind: 'human', id: 'local-user' } as const;
 const REASONS: Record<string, string> = {
   'sensitive-content': 'It looks like it contains a credential, an email address or a local path.',
   'transcript-like': 'It looks like a copied conversation. Save a short note instead.',
+  'unsafe-characters': 'A note must be one line of plain text: no line breaks, control, hidden or direction-changing characters.',
+  'injection-suspected': 'It reads like an instruction to ignore or change the agent\'s rules, which a note cannot be.',
+  'marker-forged': 'It contains wording this extension uses to mark its own messages.',
   'too-short': 'It is too short to be a useful note.',
   'invalid-length': 'A note must be 1 to 2000 characters.',
   duplicate: 'The same note already exists in this scope.',
@@ -212,13 +215,16 @@ async function suggest(sessions: SessionCommands): Promise<void> {
   if (!handle) return;
   const listed = sessions.list();
   if (listed.length === 0) { void vscode.window.showInformationMessage('No managed session to attribute the suggestion to.'); return; }
-  const session = await vscode.window.showQuickPick(listed.map((entry) => ({ label: entry.name, description: entry.provider, id: entry.id, roleGroupId: entry.roleGroupId })), { placeHolder: 'Which agent suggested it?', ignoreFocusOut: true });
+  const session = await vscode.window.showQuickPick(listed.map((entry) => ({ label: entry.name, description: entry.provider, id: entry.id, roleGroupId: entry.roleGroupId, accountProfileId: entry.accountProfileId })), { placeHolder: 'Which agent suggested it?', ignoreFocusOut: true });
   if (!session) return;
   const roleGroupId = session.roleGroupId && session.roleGroupId !== 'unassigned' && handle.roleNames[session.roleGroupId] ? session.roleGroupId : await pickRole(handle);
   if (!roleGroupId) return;
+  // The suggestion belongs to the privacy domain of the account that agent ran on, so only agents of that account can ever be given it.
+  let privacyDomain: string;
+  try { privacyDomain = defaultDomainFor(typeof session.accountProfileId === 'string' && session.accountProfileId !== '' ? session.accountProfileId : 'unassigned'); } catch { void vscode.window.showErrorMessage('The account of that agent has no usable privacy domain, so nothing was saved.'); return; }
   const text = await noteText('The note the agent suggested (it is only a suggestion until you review it).');
   if (!text) return;
-  const proposed = handle.memory.propose({ repoId: handle.repoId, roleGroupId, privacyDomain: defaultDomainFor('unassigned'), content: text, source: { kind: 'agent-suggestion', ref: `session ${oneLine(session.id, 40)}` } });
+  const proposed = handle.memory.propose({ repoId: handle.repoId, roleGroupId, privacyDomain, content: text, source: { kind: 'agent-suggestion', ref: `session ${oneLine(session.id, 40)}` } });
   if (!proposed.ok) { void vscode.window.showErrorMessage(why(proposed.reason)); return; }
   tree?.refresh();
   void vscode.window.showInformationMessage('Saved as a suggestion. No agent is told it until you review it.');
