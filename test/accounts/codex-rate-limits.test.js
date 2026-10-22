@@ -184,3 +184,52 @@ test('the usage entry is the last request\'s counts, once per event, with cached
   assert.equal(codexUsageEntry(null, { accountProfileId: 'p' }), null);
   assert.equal(codexUsageEntry({ ok: false, reason: 'no-token-count' }, { accountProfileId: 'p' }), null);
 });
+
+test('a window is "already reset" by the time NOW, not by the time the event was written', (t) => {
+  // The event was written 30 minutes ago and its window resets 10 minutes ago: it was still open when written, but is over now.
+  const root = home(t, { [rollout()]: tokenCount({ minutesAgo: 30, primary: { used_percent: 90, window_minutes: 300, resets_at: epoch(-10) }, secondary: { used_percent: 10, window_minutes: 10080, resets_at: epoch(60) } }) });
+  const reading = read(root);
+  assert.equal(reading.ok, true);
+  const five = field(reading, 'quota.five_hour.used_percent');
+  assert.equal(five.value, null, 'the 5-hour percent of a window that has since reset is not shown');
+  assert.equal(five.reason, 'window-reset-passed');
+  assert.equal(field(reading, 'quota.five_hour.resets_at').value, null);
+  assert.equal(field(reading, 'quota.seven_day.used_percent').value, 10, 'the other window is untouched');
+  // The same event read when its reset is still ahead is a reading.
+  const earlier = read(root, { now: new Date(NOW.getTime() - 20 * 60_000) });
+  assert.equal(field(earlier, 'quota.five_hour.used_percent').value, 90);
+});
+
+test('when the search runs out of room with no file found the reason is no-session-files, not an unreadable log', (t) => {
+  const files = {};
+  // More day folders than the search looks at, all empty.
+  for (let day = 1; day <= 20; day += 1) files[`sessions/2026/10/${String(day).padStart(2, '0')}/.keep-not-a-rollout`] = '';
+  const root = home(t, files);
+  assert.deepEqual(read(root), { ok: false, reason: 'no-session-files' });
+});
+
+test('the newest entries are kept when a folder has more than the limit: names are sorted first, then cut', (t) => {
+  const files = {};
+  for (let index = 0; index < 1005; index += 1) files[`sessions/2026/10/21/rollout-2026-10-21T00-00-${String(index).padStart(4, '0')}-aaaa.jsonl`] = noise();
+  const newest = 'rollout-2026-10-21T00-00-1004-aaaa.jsonl';
+  files[`sessions/2026/10/21/${newest}`] = tokenCount({ minutesAgo: 1 });
+  const root = home(t, files);
+  const opened = [];
+  const spy = { ...fs, openSync: (file, ...rest) => { opened.push(path.basename(file)); return fs.openSync(file, ...rest); } };
+  const reading = readCodexRateLimits(root, { profileId: 'p1', now: NOW, fsImpl: spy });
+  assert.equal(reading.ok, true, 'the newest file, which sorts last, is among those kept');
+  assert.equal(opened[0], newest);
+  // The listing order of the disk does not matter: a listing in the opposite order gives the same answer.
+  const reversed = { ...fs, readdirSync: (dir, ...rest) => fs.readdirSync(dir, ...rest).reverse() };
+  assert.equal(readCodexRateLimits(root, { profileId: 'p1', now: NOW, fsImpl: reversed }).ok, true);
+});
+
+test('a Codex session\'s observation change reads its account\'s log and keeps the counts, once', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/sessions/sessionCommands.ts'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(source, /view\.provider === 'codex' && typeof view\.accountProfileId === 'string' && view\.accountProfileId !== 'unassigned'\) await recordCodexSessionReading\(view\.accountProfileId, \(\) => manager\.list\(\)\);/);
+  const gate = fs.readFileSync(path.join(__dirname, '../../src/accounts/quotaGateUi.ts'), 'utf8').replace(/\r\n/g, '\n');
+  const body = gate.slice(gate.indexOf('export async function recordCodexSessionReading'), gate.indexOf('export interface QuotaDetail'));
+  assert.match(body, /own\.profile\.provider !== 'codex'\) return;/);
+  assert.match(body, /new UsageLog\(accounts\.store\)\.append\(entry, now\)/);
+  assert.match(body, /catch \{ \/\* a reading that cannot be kept never disturbs the session \*\/ \}/);
+});
