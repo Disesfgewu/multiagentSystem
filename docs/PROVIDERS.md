@@ -45,3 +45,8 @@
 ## 登錄整合進度
 
 啟動選單、身份組 provider 驗證、儲存匯出的 `provider` 公開值清單與注入 provider 的辨認已改用 `src/providers/registry.js`。Claude Code 與 Codex CLI 保留原有專屬注入方式；agy 目前產生明確的手動貼上計劃，不會假裝已自動注入。
+
+## 自動模式的確認（Issue #296）
+
+- **第一次**以自動模式（`on`）啟動 agent 時，會先跳出一個必須回答的視窗，說明自動模式代表什麼、如何關閉（`multiagentSystem.agents.autoMode`／各 provider 覆寫，僅使用者設定）；按 **I Understand, Continue** 後記住（跨工作區，只問一次），不按就不啟動、也不記住。新開與重開 session 都適用；自動模式關閉、未知（無官方旗標）或只開 shell 時不問。確認只能在這個視窗回答，參數不能代答。
+- **enforced 隔離**的確認視窗也會列出自動模式的說明（在沙箱內執行）。

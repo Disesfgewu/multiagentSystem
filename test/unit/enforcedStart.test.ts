@@ -177,3 +177,15 @@ test('every start and reopen writes the role group\'s permissions into the sessi
   const writeAt = source.indexOf('attributionFile = attributionFileFor(', startAt);
   assert.ok(source.indexOf('instructions = prep;', startAt) < writeAt, 'the role group\'s permissions exist before the file is written');
 });
+
+test('the enforced confirmation carries the extra lines the caller gives (what auto mode means in the sandbox), before the closing sentence', async () => {
+  const { seen, handle } = ui();
+  await prepareIsolationForStart({ ...base(), ui: handle, prepare: okPrepared() as never, extraLines: ['Auto mode: on (won\'t ask for each approval)', 5 as never] } as never);
+  const lines = seen.confirms[0];
+  assert.ok(lines.includes('Auto mode: on (won\'t ask for each approval)'));
+  assert.ok(!lines.includes(5 as never), 'only text is shown');
+  assert.ok(lines.indexOf('Auto mode: on (won\'t ask for each approval)') < lines.findIndex((line) => line.startsWith('This is the enforced mode')));
+  const none = ui();
+  await prepareIsolationForStart({ ...base(), ui: none.handle, prepare: okPrepared() as never, extraLines: 'not a list' as never } as never);
+  assert.equal(none.seen.confirms[0].length, 3, 'a bad list adds nothing');
+});
