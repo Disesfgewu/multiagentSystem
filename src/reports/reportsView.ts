@@ -9,7 +9,8 @@ import { requireInteractive } from '../shared/testMode';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
 const { inspectWorktree } = require('../projects/gitEvidence') as { inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }> };
-const { patchRowFor, inlineCommentLinks, worktreeFor, isInside, isLine } = require('./jump') as {
+const { patchRowFor, inlineCommentLinks, worktreeFor, isUsableWorktree, isInside, isLine } = require('./jump') as {
+  isUsableWorktree(entry: unknown, evidence: unknown): boolean;
   patchRowFor(patch: unknown, line: unknown): number | null;
   inlineCommentLinks(lines: string[], filenames: string[]): Array<{ lineNumber: number; filename: string; line: number; start: number; end: number }>;
   worktreeFor(input: { filename: unknown; headSha: unknown; worktrees: unknown }): { folder: string; relative: string } | null;
@@ -105,9 +106,8 @@ const realDeps: ReportDeps = {
       const project = await WorktreeService.open(folder.uri.fsPath);
       const clean: Array<{ path: string; headSha: string }> = [];
       for (const entry of (await project.list()).slice(0, 30)) {
-        if (typeof entry.path !== 'string' || typeof entry.headSha !== 'string' || entry.bare || entry.prunable) continue;
-        const evidence = await inspectWorktree(entry.path);
-        if (evidence.state === 'known' && evidence.dirty === false) clean.push({ path: entry.path, headSha: entry.headSha });
+        if (typeof entry.path !== 'string' || typeof entry.headSha !== 'string') continue;
+        if (isUsableWorktree(entry, await inspectWorktree(entry.path))) clean.push({ path: entry.path, headSha: entry.headSha });
       }
       return clean;
     } catch { return []; }

@@ -68,7 +68,8 @@ function isRepositoryPath(value) {
   if (typeof value !== 'string' || value === '' || value.length > 1024 || value.includes('\0') || value.includes('\\')) return false;
   if (path.posix.isAbsolute(value) || /^[A-Za-z]:/.test(value)) return false;
   const parts = value.split('/');
-  return parts.every((part) => part !== '' && part !== '.' && part !== '..');
+  // Git's own folder is never a file of the pull request.
+  return parts.every((part) => part !== '' && part !== '.' && part !== '..') && parts[0].toLowerCase() !== '.git';
 }
 
 /**
@@ -86,10 +87,20 @@ function worktreeFor({ filename, headSha, worktrees }) {
   return null;
 }
 
+/**
+ * Whether a working folder may be used to show a pull request's file: a real, non-bare, non-prunable entry whose Git reading is KNOWN and
+ * shows no uncommitted change and no untracked file (`dirty` counts both). A folder that cannot be read, or has any change, is not used:
+ * its files may not be what the pull request contains.
+ */
+function isUsableWorktree(entry, evidence) {
+  if (!entry || typeof entry.path !== 'string' || typeof entry.headSha !== 'string' || entry.bare === true || entry.prunable === true) return false;
+  return Boolean(evidence) && evidence.state === 'known' && evidence.dirty === false;
+}
+
 /** Whether `real` is `folder` itself or inside it (both already resolved). */
 function isInside(folder, real) {
   const relative = path.relative(folder, real);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-module.exports = { patchRowFor, inlineCommentLinks, worktreeFor, isRepositoryPath, isInside, isLine, MAX_LINE };
+module.exports = { patchRowFor, inlineCommentLinks, worktreeFor, isUsableWorktree, isRepositoryPath, isInside, isLine, MAX_LINE };
