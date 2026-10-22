@@ -293,3 +293,11 @@ test('a card says which Issue was typed into its terminal, from the dispatch log
   assert.equal(card({}).assigned, null);
   for (const bad of [undefined, null, 5, { a: null }, { a: { issueNumber: 'x', at } }, { b: { issueNumber: 1, at } }, JSON.parse('{"__proto__": {"issueNumber": 1}}')]) assert.equal(card(bad).assigned, null, JSON.stringify(bad));
 });
+
+test('a card says how many rules and shared notes were prepared for the agent, and that this is not proof the CLI read them', () => {
+  const base = { id: 'a', name: 'A', provider: 'claude', roleGroupId: 'g', terminalOpen: true };
+  const card = (injectedCounts) => buildCards({ sessions: [{ ...base, injectedCounts }] }).agents[0];
+  assert.equal(card({ rules: 3, memories: 1 }).injected, 'Prepared for this agent: 3 rules and 1 shared note (the CLI is told; not proof it read them)');
+  assert.match(card({ rules: 1, memories: 2 }).injected, /1 rule and 2 shared notes/);
+  for (const bad of [undefined, null, 5, {}, { rules: -1, memories: 0 }, { rules: 1.5, memories: 0 }, { rules: 'x', memories: 0 }]) assert.match(card(bad).injected, /^Rules and notes given to this agent: unknown/, JSON.stringify(bad));
+});

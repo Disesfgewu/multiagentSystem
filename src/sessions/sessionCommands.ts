@@ -110,7 +110,7 @@ export interface SessionCommands {
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 // The repo identity is a private local value. It never goes to GitHub.
-async function resolveProject(cwd: string): Promise<{ repoId: string }> {
+export async function resolveProject(cwd: string): Promise<{ repoId: string }> {
   try {
     const service = await WorktreeService.open(cwd);
     return { repoId: service.githubRepository ?? `local:${digest(service.commonDir)}` };

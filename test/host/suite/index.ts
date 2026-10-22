@@ -14,6 +14,7 @@ import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
 import { runCommandCenterChecks } from './commandCenter';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
+import { runMemoryPanelChecks } from './memoryPanel';
 import { runExportReportChecks } from './exportReport';
 import { runDispatchTaskChecks } from './dispatchTask';
 import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
@@ -1048,6 +1049,7 @@ export async function run(): Promise<void> {
   await runCodexQuotaChecks(workspace);
   await runCommandCenterChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
+  await runMemoryPanelChecks(workspace);
   await runExportReportChecks(workspace);
   await runDispatchTaskChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));

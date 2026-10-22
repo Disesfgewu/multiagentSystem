@@ -381,7 +381,7 @@ class MemoryStore {
   // can tell "no memory" from "no access". Only adopted, switched-on, unexpired memory is read.
   // What the budget leaves out is reported (`omitted`), not silently dropped.
   select(request = {}) {
-    const { repoId, roleGroupId, privacyDomain, task, budgetChars } = request && typeof request === 'object' && !Array.isArray(request)
+    const { repoId, roleGroupId, privacyDomain, task, budgetChars, all } = request && typeof request === 'object' && !Array.isArray(request)
       ? request
       : {};
     const current = this.#read();
@@ -402,9 +402,10 @@ class MemoryStore {
       const own = tokens(item.content);
       let score = 0;
       for (const token of wanted) if (own.has(token)) score += 1;
-      if (score > 0) scored.push({ item, score });
+      // `all: true` is for the launch, where there is no task text yet: every readable note of the scope counts, oldest first.
+      if (score > 0 || all === true) scored.push({ item, score });
     }
-    scored.sort((a, b) => b.score - a.score || byCodeUnit(a.item.id, b.item.id));
+    scored.sort((a, b) => b.score - a.score || (all === true ? byCodeUnit(a.item.createdAt, b.item.createdAt) : 0) || byCodeUnit(a.item.id, b.item.id));
 
     const wasAsked = budgetChars !== undefined;
     const valid = Number.isFinite(budgetChars) && budgetChars >= 0;
@@ -598,4 +599,4 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, MAX_CONTENT_CHARS, DEFAULT_TTL_MS, DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, CONFIRM_DELETE_SCOPE, looksLikeTranscript };
+module.exports = { MemoryStore, isReadable, MAX_CONTENT_CHARS, DEFAULT_TTL_MS, DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, CONFIRM_DELETE_SCOPE, looksLikeTranscript };
