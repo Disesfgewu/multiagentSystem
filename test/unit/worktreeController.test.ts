@@ -721,3 +721,17 @@ test('create can skip the "open in a window" question, so a caller that starts a
     assert.equal(asked, 1, String(value));
   }
 });
+
+test('skipping the "open in a window" question never skips the confirmation of the folder: a refusal still creates nothing', async (t) => {
+  const { root, temporary } = await repository(t);
+  const h = harness(root);
+  const managed = managedWorktreeRoot(root);
+  const target = path.join(managed, 'refused-with-offer-skipped');
+  h.ui.confirmCreateAnswer = false;
+  const result = await h.controller.create({ interactive: true, branch: 'feature/refused', target, offerOpen: false });
+  assert.equal((result as { ok: boolean }).ok, false);
+  assert.equal((result as { cancelled?: boolean }).cancelled ?? (result as { code?: string }).code === 'cancelled', true, 'the refusal is reported as a cancellation');
+  assert.deepEqual(h.ui.createConfirms, [['feature/refused', target]], 'the confirmation was asked');
+  await assert.rejects(fs.stat(target), 'nothing was created');
+  void temporary;
+});
