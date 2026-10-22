@@ -184,22 +184,22 @@ async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => bo
   });
 }
 
-export type TypedTask = { prompt: string; kind: 'issue' | 'free' | 'discussion'; issueNumber: number | null };
+export type TypedTask = { prompt: string; kind: 'issue' | 'free' | 'discussion' | 'meeting'; issueNumber: number | null };
 
 /**
  * The part every "type this into running agents" command shares: who can receive it now, one modal that shows the whole prompt and the
  * list, the explicit second button for agents whose state is unknown, a second look at fresh evidence after the confirmation (and, when
  * the caller gives one, a re-check that the text itself is still what was agreed to), the typing, and the record of what happened.
  */
-export async function confirmAndType(input: { sessions: SessionCommands; roleOf: (session: any) => string | undefined; task: TypedTask; target: Target; recheck?: () => Promise<string | null>; title?: string }): Promise<void> {
+export async function confirmAndType(input: { sessions: SessionCommands; roleOf: (session: any) => string | undefined; task: TypedTask; target: Target; recheck?: () => Promise<string | null>; title?: string }): Promise<Array<{ sessionId: string; provider: string; outcome: 'sent' | 'skipped'; reason: string }> | null> {
   const { sessions, roleOf, task, target } = input;
   const title = input.title ?? 'Type this task into the running agents?';
   const plan = planTask({ prompt: task.prompt, target, sessions: sessions.list(), roleOf });
-  if (!plan.ok) { void vscode.window.showErrorMessage(`This task cannot be sent (${plan.reason}).`); return; }
-  if (plan.recipients.length === 0) { void vscode.window.showInformationMessage(`No open session matches: ${targetLabel(target)}.`); return; }
+  if (!plan.ok) { void vscode.window.showErrorMessage(`This task cannot be sent (${plan.reason}).`); return null; }
+  if (plan.recipients.length === 0) { void vscode.window.showInformationMessage(`No open session matches: ${targetLabel(target)}.`); return null; }
   const waitingIds = new Set(plan.recipients.filter((entry) => entry.decision === 'send').map((entry) => entry.id));
   const unknownIds = new Set(plan.recipients.filter((entry) => entry.decision === 'unknown').map((entry) => entry.id));
-  if (waitingIds.size === 0 && unknownIds.size === 0) { void vscode.window.showInformationMessage('No session can receive this task now.', { modal: true, detail: describePlan(plan).join('\n') }); return; }
+  if (waitingIds.size === 0 && unknownIds.size === 0) { void vscode.window.showInformationMessage('No session can receive this task now.', { modal: true, detail: describePlan(plan).join('\n') }); return null; }
   const sendWaiting = 'Send Now';
   const sendUnknown = waitingIds.size > 0 ? 'Also Send to Unknown' : 'Send to Unknown Anyway';
   const confirmed = await vscode.window.showWarningMessage(
@@ -207,7 +207,7 @@ export async function confirmAndType(input: { sessions: SessionCommands; roleOf:
     { modal: true, detail: `Target: ${targetLabel(target)}\n\n${describePlan(plan).join('\n')}` },
     ...(waitingIds.size > 0 ? [sendWaiting] : []), ...(unknownIds.size > 0 ? [sendUnknown] : [])
   );
-  if (confirmed !== sendWaiting && confirmed !== sendUnknown) return;
+  if (confirmed !== sendWaiting && confirmed !== sendUnknown) return null;
   const includeUnknown = confirmed === sendUnknown;
   const allowedIds = new Set([...waitingIds, ...(includeUnknown ? unknownIds : [])]);
 
@@ -219,7 +219,7 @@ export async function confirmAndType(input: { sessions: SessionCommands; roleOf:
     if (again === null) changed = true; else prompt = again;
   }
   const fresh = changed ? { ok: false as const, reason: 'task-changed' } : planTask({ prompt, target, sessions: sessions.list(), roleOf });
-  if (!fresh.ok) { void vscode.window.showErrorMessage(`This task can no longer be sent (${fresh.reason}). Nothing was typed.`); return; }
+  if (!fresh.ok) { void vscode.window.showErrorMessage(`This task can no longer be sent (${fresh.reason}). Nothing was typed.`); return null; }
   const results: Array<{ sessionId: string; provider: string; outcome: 'sent' | 'skipped'; reason: string }> = [];
   for (const entry of fresh.recipients) {
     const allowed = allowedIds.has(entry.id) && (entry.decision === 'send' || (entry.decision === 'unknown' && includeUnknown));
@@ -239,6 +239,7 @@ export async function confirmAndType(input: { sessions: SessionCommands; roleOf:
   }
   const sent = results.filter((entry) => entry.outcome === 'sent').length;
   void vscode.window.showInformationMessage(`Typed into ${sent} of ${results.length} session${results.length === 1 ? '' : 's'}. "Typed" is not proof that the agent read it or will do it.`);
+  return results;
 }
 
 /** The latest Issue each session was handed, for the Command Center cards. An unreadable log is "no information", never a guess. */

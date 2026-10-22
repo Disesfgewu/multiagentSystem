@@ -16,7 +16,7 @@ test('both dispatch commands take no argument, so nothing a caller passes can ch
 test('the confirmation is a modal with explicit buttons, and nothing is typed without one of them', () => {
   assert.match(source, /const title = input\.title \?\? 'Type this task into the running agents\?';/);
   assert.match(source, /showWarningMessage\(\s*title,\s*\{ modal: true/);
-  assert.match(source, /if \(confirmed !== sendWaiting && confirmed !== sendUnknown\) return;/);
+  assert.match(source, /if \(confirmed !== sendWaiting && confirmed !== sendUnknown\) return null;/);
   assert.equal([...source.matchAll(/sessions\.sendPrompt\(/g)].length, 1, 'there is one place a task is typed');
   assert.ok(source.indexOf("confirmed !== sendWaiting") < source.indexOf('sessions.sendPrompt('), 'the confirmation comes first');
 });
