@@ -122,12 +122,18 @@ function isPrivateV4(address) {
 const defaultLookup = (host) => new Promise((resolve, reject) => {
   dns.lookup(host, { all: true, verbatim: true }, (error, addresses) => (error ? reject(error) : resolve(addresses.map((entry) => entry.address))));
 });
-const defaultConnect = (address, port, timeoutMs = 10_000) => new Promise((resolve, reject) => {
-  const socket = net.connect({ host: address, port });
+// `open` is only replaced by tests (a socket that closes before it connects cannot be made with a real one on demand).
+const defaultConnect = (address, port, timeoutMs = 10_000, open = (target) => net.connect(target)) => new Promise((resolve, reject) => {
+  const socket = open({ host: address, port });
+  let settled = false;
+  const fail = (error) => { if (settled) return; settled = true; socket.destroy(); reject(error); };
   // An error listener stays for the socket's whole life: a reset after it connected must never be an unhandled 'error'.
-  socket.on('error', (error) => { if (!socket.connecting) return; socket.destroy(); reject(error); });
-  socket.setTimeout(timeoutMs, () => { socket.destroy(); reject(new Error('connect-timeout')); });
-  socket.once('connect', () => { socket.setTimeout(0); resolve(socket); });
+  socket.on('error', (error) => { if (!settled) fail(error); });
+  // A socket that closes before it ever connected (whatever the reason, with or without an error) ends the wait: the connect timer is
+  // cleared by `destroy`, so without this nothing would ever settle the promise.
+  socket.once('close', () => fail(new Error('closed-before-connect')));
+  socket.setTimeout(timeoutMs, () => fail(new Error('connect-timeout')));
+  socket.once('connect', () => { if (settled) { socket.destroy(); return; } settled = true; socket.setTimeout(0); resolve(socket); });
 });
 
 /** Runs `attempt` with a time limit. A socket that arrives after the limit is destroyed, never left running with nobody holding it. */
