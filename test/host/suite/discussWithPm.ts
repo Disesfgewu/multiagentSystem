@@ -73,6 +73,7 @@ export async function runDiscussWithPmChecks(workspace: string): Promise<void> {
   };
   const settle = () => new Promise((resolve) => setTimeout(resolve, 600));
   const count = () => (records.list() as { items: unknown[] }).items.length;
+  const baseline = count();
   try {
     // A. A selection in a real file, the PM waiting: "Send Now" types one line with the path, the lines, the code and the question.
     answer = (buttons) => buttons.includes('Send Now') ? 'Send Now' : undefined;
@@ -82,10 +83,10 @@ export async function runDiscussWithPmChecks(workspace: string): Promise<void> {
     assert.ok(afterA[1].includes('Selected code: «alpha ⏎ beta() ⏎»') || afterA[1].includes('Selected code: «alpha ⏎ beta()»'), 'newlines are shown as marks, indentation collapsed');
     assert.ok(afterA[1].includes('Question: «What does this do?»'));
     assert.ok(!afterA[1].includes(workspace), 'no absolute path');
-    assert.equal(count(), 1);
+    assert.equal(count(), baseline + 1);
     const shown = seen.find((entry) => entry.message === 'Type this question into the PM agent?');
     assert.ok(shown && shown.detail.includes(afterA[1]) && shown.buttons.join() === 'Send Now', 'the person saw the whole prompt and only the default button');
-    assert.equal((records.list() as { items: Array<{ kind: string; issueNumber: number | null }> }).items[0].kind, 'discussion');
+    assert.equal([...(records.list() as { items: Array<{ kind: string; at: string }> }).items].sort((x, y) => (x.at < y.at ? -1 : 1)).at(-1)!.kind, 'discussion');
 
     // B. The selection holds a token: refused before anything is asked of an agent, and the refusal repeats nothing.
     errors.length = 0;
@@ -126,6 +127,7 @@ export async function runDiscussWithPmChecks(workspace: string): Promise<void> {
     putGroup();
     state = { state: 'unknown', reason: 'no-hook-event', since: null };
     seen.length = 0;
+    answer = () => undefined;
     await discussForTests(sessions, await select(0, 1));
     assert.deepEqual(seen.find((entry) => entry.message === 'Type this question into the PM agent?')?.buttons, ['Send to Unknown Anyway']);
     await settle();
@@ -138,7 +140,7 @@ export async function runDiscussWithPmChecks(workspace: string): Promise<void> {
     await settle();
     assert.equal((await lines(0)).length, 2);
     assert.equal(seen.some((entry) => entry.message === 'Type this question into the PM agent?'), false);
-    assert.ok(count() === 1, 'nothing was recorded');
+    assert.ok(count() === baseline + 1, 'nothing more was recorded');
 
     // F. Text that is not a project file has no project path: refused.
     seen.length = 0;
