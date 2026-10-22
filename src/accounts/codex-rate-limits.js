@@ -160,10 +160,12 @@ function lastTokenCount(text, truncated) {
  * @param {{ profileId?: string, now?: Date, fsImpl?: object }} [options] `fsImpl` lets a test see exactly which paths are opened
  * @returns {{ ok: true, observedAt: string, planType: string|null, observations: object[], usage: object|null, sessionKey: string } | { ok: false, reason: string }}
  *   Reasons: codex-home-invalid, no-sessions-folder, sessions-unsafe, no-session-files, log-unreadable, no-token-count,
- *   timestamp-invalid, timestamp-future, rate-limits-absent, codex-format-changed, window-reset-passed, reading-expired.
+ *   timestamp-invalid, timestamp-future, clock-invalid, rate-limits-absent, codex-format-changed, window-reset-passed, reading-expired.
  */
 function readCodexRateLimits(codexHome, { profileId = 'codex', now = new Date(), fsImpl = fs } = {}) {
   if (typeof codexHome !== 'string' || !path.isAbsolute(codexHome)) return unknown('codex-home-invalid');
+  // Whether an event is in the future, or a window has reset, is judged against "now": a "now" that is not a time judges nothing.
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) return unknown('clock-invalid');
   const sessionsDir = path.join(codexHome, 'sessions');
   const listed = newestRollouts(sessionsDir, fsImpl);
   if (!listed.ok) return unknown(listed.reason);

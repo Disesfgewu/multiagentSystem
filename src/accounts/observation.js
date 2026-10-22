@@ -275,7 +275,9 @@ function codexQuotaFromSessionLog(rateLimits, { profileId, observedAt, now = obs
     const resetInvalid = resetGiven && resetsMs === null;
     // Already reset is judged by the time now (when the log is read), not by when the event was written: a reading whose reset time
     // has come since is a window that started over, so its percent says nothing about this one.
-    const expired = resetsMs !== null && resetsMs <= Math.max(nowMs, toTime(now));
+    // A clock that is not a time counts as past every reset: an unusable "now" never makes a reading look current.
+    const clock = Math.max(nowMs, toTime(now));
+    const expired = resetsMs !== null && !(Number.isFinite(clock) && resetsMs > clock);
     let reason = 'window-absent';
     if (expired) reason = 'window-reset-passed';
     else if (resetInvalid) reason = 'invalid-reset';

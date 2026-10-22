@@ -488,7 +488,7 @@ const { readCodexRateLimits } = require('./codex-rate-limits') as {
 
 const CODEX_REASONS: Record<string, string> = {
   'codex-home-invalid': 'file-unreadable', 'sessions-unsafe': 'file-unreadable', 'log-unreadable': 'file-unreadable',
-  'no-sessions-folder': 'codex-no-sessions', 'no-session-files': 'codex-no-sessions', 'no-token-count': 'codex-no-events',
+  'no-sessions-folder': 'codex-no-sessions', 'no-session-files': 'codex-no-sessions', 'no-token-count': 'codex-no-events', 'clock-invalid': 'file-unreadable',
   'timestamp-invalid': 'timestamp-invalid', 'timestamp-future': 'timestamp-future', 'rate-limits-absent': 'rate-limits-absent', 'codex-format-changed': 'codex-format-changed'
 };
 
