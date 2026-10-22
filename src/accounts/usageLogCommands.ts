@@ -4,9 +4,12 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { accountService } from './accountRuntime';
 import { builtIn } from '../providers/registry';
 
-const { UsageLog, describeLog, exportRows, toCsv, toJson } = require('./usage-log') as {
+const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddress, sessionsByRecency } = require('./usage-log') as {
+  sessionsByRecency(entries: any[], limit?: number): string[];
+  addressOf(account: string, session?: string): string;
+  parseAddress(query: string): { account: string; session?: string } | undefined;
   UsageLog: new (store: unknown) => { query(filter?: { accountProfileId?: string; sessionId?: string }): { ok: boolean; entries?: any[]; reason?: string } };
-  describeLog(entries: any[], options?: { labelFor?: (id: string) => string; providerLabel?: (id: string) => string }): string[];
+  describeLog(entries: any[], options?: { labelFor?: (id: string) => string; providerLabel?: (id: string) => string; sessionLabel?: string | null }): string[];
   exportRows(entries: any[]): unknown[];
   toCsv(rows: unknown[]): string;
   toJson(rows: unknown[]): string;
@@ -20,7 +23,6 @@ export const USAGE_LOG_SCHEME = 'multiagent-usage-log';
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const ALL = '*';
-
 async function labels(sessions: SessionCommands): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   try {
@@ -32,10 +34,10 @@ async function labels(sessions: SessionCommands): Promise<Map<string, string>> {
   return map;
 }
 
-async function readEntries(accountId: string): Promise<{ ok: true; entries: any[] } | { ok: false; reason: string }> {
+async function readEntries(accountId: string, sessionId?: string): Promise<{ ok: true; entries: any[] } | { ok: false; reason: string }> {
   const opened = await privateStorage()?.use();
   if (!opened?.ok) return { ok: false, reason: 'Private storage is unavailable.' };
-  const read = new UsageLog(opened.store).query(accountId === ALL ? {} : { accountProfileId: accountId });
+  const read = new UsageLog(opened.store).query({ ...(accountId === ALL ? {} : { accountProfileId: accountId }), ...(sessionId ? { sessionId } : {}) });
   return read.ok ? { ok: true, entries: read.entries ?? [] } : { ok: false, reason: `The usage log could not be read (${read.reason ?? 'unknown'}).` };
 }
 
@@ -50,17 +52,35 @@ async function pickAccount(sessions: SessionCommands, given: unknown): Promise<s
   return picked?.id;
 }
 
+/** How a session is called in the picker and the log: its name while it is known, otherwise a short form of its id. */
+async function sessionName(sessions: SessionCommands, id: string): Promise<string> {
+  const known = sessions.list().find((entry) => entry.id === id);
+  return known ? `${known.name} (${id.slice(0, 8)})` : `session ${id.slice(0, 8)} (no longer open)`;
+}
+
+/** All of the account's sessions, or one of those that appear in its log. A session that is not in the log cannot be chosen. */
+async function pickSession(sessions: SessionCommands, account: string): Promise<{ cancelled: boolean; session?: string }> {
+  const read = await readEntries(account);
+  if (!read.ok) { void vscode.window.showErrorMessage(read.reason); return { cancelled: true }; }
+  const all = new Set(read.entries.map((entry) => String(entry.sessionId)));
+  const ids = sessionsByRecency(read.entries, 50);
+  if (ids.length < 2) return { cancelled: false };
+  const items = [{ label: 'All sessions', id: undefined as string | undefined, description: ids.length < all.size ? `the ${ids.length} most recent of ${all.size} sessions in the log` : `${ids.length} sessions in the log` }, ...(await Promise.all(ids.map(async (id) => ({ label: await sessionName(sessions, id), id: id as string | undefined, description: `${read.entries.filter((entry) => entry.sessionId === id).length} readings` }))))];
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Which session? (the log has more than one)', ignoreFocusOut: true });
+  return picked ? { cancelled: false, session: picked.id } : { cancelled: true };
+}
+
 class UsageLogDocument implements vscode.TextDocumentContentProvider {
   readonly changed = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.changed.event;
   constructor(private readonly sessions: SessionCommands) {}
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    const account = uri.query === ALL || ACCOUNT_ID.test(uri.query) ? uri.query : undefined;
-    if (!account) return 'No valid account was selected.\n';
-    const read = await readEntries(account);
+    const address = parseAddress(uri.query);
+    if (!address) return 'No valid account was selected.\n';
+    const read = await readEntries(address.account, address.session);
     if (!read.ok) return `${read.reason}\n`;
     const names = await labels(this.sessions);
-    return `${describeLog(read.entries, { labelFor: (id) => names.get(id) ?? 'Account (removed)', providerLabel: (id) => builtIn.get(id)?.label ?? id }).join('\n')}\n`;
+    return `${describeLog(read.entries, { labelFor: (id) => names.get(id) ?? 'Account (removed)', providerLabel: (id) => builtIn.get(id)?.label ?? id, sessionLabel: address.session ? await sessionName(this.sessions, address.session) : null }).join('\n')}\n`;
   }
 }
 
@@ -74,7 +94,9 @@ export function registerUsageLogCommands(context: vscode.ExtensionContext, sessi
     vscode.commands.registerCommand(USAGE_COMMANDS.showLog, async (given?: unknown) => {
       const account = await pickAccount(sessions, typeof given === 'object' && given !== null && 'id' in given ? (given as { id: unknown }).id : given);
       if (!account) return;
-      const uri = vscode.Uri.from({ scheme: USAGE_LOG_SCHEME, path: '/token-usage-log.txt', query: account });
+      const chosen = await pickSession(sessions, account);
+      if (chosen.cancelled) return;
+      const uri = vscode.Uri.from({ scheme: USAGE_LOG_SCHEME, path: '/token-usage-log.txt', query: addressOf(account, chosen.session) });
       const document = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(document, { preview: true });
     }),

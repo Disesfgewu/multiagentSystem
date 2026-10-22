@@ -41,7 +41,7 @@
 ## 帳號的額度列與 Token 用量紀錄（#294）
 
 - **額度列**：Accounts and Sessions 的每個帳號可以展開，內容是這個帳號的額度：使用者設定的上限（警示、阻擋、並行上限、額度未知時的處理）、目前讀數（已用、剩餘、時間窗與重設時間、讀取時間、來源與可信度，真實、估算或未知）、目前會不會被擋，最後一列「Token usage log」點擊後開啟該帳號的用量紀錄。讀不到時寫明原因，**不顯示 0**。
-- **Token 用量紀錄**：每次 provider 真正回報 token 用量（目前只有 Claude Code 經 status line，`docs/ACCOUNT_PROFILES.md`），就把一筆追加到擴充套件**私人儲存區**中該帳號的紀錄（`usageLog` 集合，每個帳號一筆記錄）：時間、session、provider、模型（有回報才記）、輸入／輸出／快取讀／快取寫 token、費用（有回報才記）、`actual` 或 `estimate` 標記、來源代碼。**不記錄 prompt、檔案路徑或憑證。**同一個 session 同一時間的讀數只記一次；每個帳號最多保留最近 150 筆且不超過 30 天，超過就輪替。紀錄無法讀取時顯示錯誤，不當成空的。
+- **Token 用量紀錄**：每次 provider 真正回報 token 用量（目前只有 Claude Code 經 status line，`docs/ACCOUNT_PROFILES.md`），就把一筆追加到擴充套件**私人儲存區**中該帳號的紀錄（`usageLog` 集合，每個帳號一筆記錄）：時間、session、provider、模型（有回報才記）、輸入／輸出／快取讀／快取寫 token、費用（有回報才記）、`actual` 或 `estimate` 標記、來源代碼。**不記錄 prompt、檔案路徑或憑證。**同一個 session 同一時間的讀數只記一次，**所有數字、模型與量測方式都和該 session 上一筆相同的讀數也不再記**（status line 會重複更新，否則 150 筆很快用完）；開啟紀錄時，帳號有一個以上的 session 會問要看全部或單一個 session（寫明目前只顯示哪一個）；每個帳號最多保留最近 150 筆且不超過 30 天，超過就輪替。紀錄無法讀取時顯示錯誤，不當成空的。
 - **沒有真實來源的 provider**（目前 agy；Codex 見下節）：讀數是未知，**不寫入**（不寫 0、不用估算冒充）；紀錄畫面說明這一點（Codex 的額度與最後一次請求的 token 見「Codex 的真實額度來源」，只在 Codex 的本機 session 紀錄有資料時才記）。本機估算的數字（例如 Claude 的費用估算）會標為「ESTIMATE」。
 - **指令**：**Show Token Usage Log**（唯讀文件，可選全部帳號或單一帳號）與 **Export Token Usage Log (masked)**（在未命名的編輯器開啟 CSV 或 JSON，帳號與 session 都被遮罩成 `account-1`、`s-xxxxxx`，不含標籤、id 或路徑；CSV 中會被試算表當成公式的儲存格以 `'` 開頭保持為文字；擴充套件不會自己寫檔，要不要儲存由使用者決定）。
 - **未驗證**：Claude Code 的 status line 讀數在真實帳號上是否持續回報、費用估算與真實帳單的差距、重啟後的紀錄行為都未經真機驗證（#135）。紀錄只涵蓋這個擴充套件啟動、而且有讀數來源的 session，不涵蓋使用者自己在別處開的 CLI。
