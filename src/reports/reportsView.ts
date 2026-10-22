@@ -10,7 +10,7 @@ import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
 const { inspectWorktree, readPullRequestFileVersions } = require('../projects/gitEvidence') as {
   inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }>;
-  readPullRequestFileVersions(folder: string, input: { headSha: string; baseRef: string; relativePath: string }): Promise<{ ok: true; left: string; right: string } | { ok: false; reason: string }>;
+  readPullRequestFileVersions(folder: string, input: { headSha: string; baseRef: string; relativePath: string; status: string }): Promise<{ ok: true; left: string; right: string } | { ok: false; reason: string }>;
 };
 const { patchRowFor, inlineCommentLinks, worktreeFor, isUsableWorktree, isInside, isLine } = require('./jump') as {
   isUsableWorktree(entry: unknown, evidence: unknown): boolean;
@@ -89,7 +89,7 @@ export interface ReportDeps {
   /** The working folders (of this repository) that have no uncommitted changes, with the commit each has checked out. */
   worktrees?(): Promise<Array<{ path: string; headSha: string }>>;
   /** The two versions of one file of a pull request (where it branched from the base, and at the head), from this computer's own Git objects; null when they are not available here. */
-  diffSource?(input: { relativePath: string; headSha: string; baseRef: string }): Promise<{ left: string; right: string } | null>;
+  diffSource?(input: { relativePath: string; headSha: string; baseRef: string; status: string }): Promise<{ left: string; right: string } | null>;
 }
 
 const realDeps: ReportDeps = {
@@ -522,10 +522,10 @@ function versionUri(text: string, filename: string, side: 'base' | 'head'): vsco
 }
 
 /** Opens the editor's own side-by-side diff of one file (where the pull request branched from the base, against its head), at a line. Null when this computer cannot show it. */
-async function openVersionDiff(filename: string, relativePath: string, headSha: string | null, baseRef: string | null, line: number | undefined): Promise<{ ok: true; source: 'diff' } | null> {
+async function openVersionDiff(filename: string, relativePath: string, status: string, headSha: string | null, baseRef: string | null, line: number | undefined): Promise<{ ok: true; source: 'diff' } | null> {
   if (!deps.diffSource || !headSha || !baseRef) return null;
   let versions: { left: string; right: string } | null;
-  try { versions = await deps.diffSource({ relativePath, headSha, baseRef }); } catch { return null; }
+  try { versions = await deps.diffSource({ relativePath, headSha, baseRef, status }); } catch { return null; }
   if (!versions) return null;
   const left = versionUri(versions.left, relativePath, 'base');
   const right = versionUri(versions.right, relativePath, 'head');
@@ -583,7 +583,7 @@ async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: strin
     return { ok: true, source: 'patch', row: row + 2 };
   };
   // The side-by-side diff against the base is preferred; the agent's folder and then the patch are what is left when it is not available here.
-  if (file && typeof file.path === 'string') { const shown = await openVersionDiff(file.filename, file.path, evidence?.headSha ?? null, evidence?.baseRef ?? null, line); if (shown) return shown; }
+  if (file && typeof file.path === 'string') { const shown = await openVersionDiff(file.filename, file.path, file.status, evidence?.headSha ?? null, evidence?.baseRef ?? null, line); if (shown) return shown; }
   const real = file && typeof file.path === 'string' ? await worktreeFile(file.path, evidence?.headSha ?? null) : null;
   if (real) {
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(real));

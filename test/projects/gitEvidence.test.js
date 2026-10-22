@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const exec = promisify(execFile);
-const { inspectWorktree, describeEvidence, readMainHead, readPullRequestFileVersions, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
+const { inspectWorktree, describeEvidence, readMainHead, readPullRequestFileVersions, MAX_FILE_BYTES, parseStatus, parseDivergence } = require('../../src/projects/gitEvidence');
 
 const git = async (cwd, ...args) => (await exec('git', args, { cwd, encoding: 'utf8' })).stdout.trim();
 
@@ -159,11 +159,16 @@ test('the two versions of a pull request file come from the repository\'s own ob
     await fs.writeFile(path.join(root, 'src', 'a.txt'), 'one\ntwo\nELSEWHERE\n');
     await run('commit', '-q', '-am', 'main moves'); await run('update-ref', 'refs/remotes/origin/main', 'HEAD');
     const headSha = (await run('rev-parse', 'feature')).stdout.trim();
-    const read = (relativePath, over = {}) => readPullRequestFileVersions(root, { headSha, baseRef: 'main', relativePath, ...over });
+    const read = (relativePath, over = {}) => readPullRequestFileVersions(root, { headSha, baseRef: 'main', relativePath, status: 'modified', ...over });
     const changed = await read('src/a.txt');
     assert.deepEqual([changed.ok, changed.left, changed.right], [true, 'one\ntwo\n', 'one\ntwo\nthree\n']);
-    assert.deepEqual([(await read('new.txt')).left, (await read('new.txt')).right], ['', 'fresh\n'], 'added: nothing on the left');
-    assert.deepEqual([(await read('gone.txt')).left, (await read('gone.txt')).right], ['bye\n', ''], 'deleted: nothing on the right');
+    assert.deepEqual([(await read('new.txt', { status: 'added' })).left, (await read('new.txt', { status: 'added' })).right], ['', 'fresh\n'], 'added: nothing on the left');
+    assert.deepEqual(await read('new.txt'), { ok: false, reason: 'side-missing' }, 'a missing side is accepted only when the status says added');
+    assert.deepEqual(await read('new.txt', { status: 'renamed' }), { ok: false, reason: 'side-missing' }, 'a renamed file is not shown as all new');
+    assert.deepEqual([(await read('gone.txt', { status: 'removed' })).left, (await read('gone.txt', { status: 'removed' })).right], ['bye\n', ''], 'deleted: nothing on the right');
+    assert.deepEqual(await read('gone.txt'), { ok: false, reason: 'side-missing' });
+    assert.deepEqual(await read('nowhere.txt', { status: 'added' }), { ok: false, reason: 'side-missing' }, 'missing on both sides is never a diff');
+    assert.deepEqual(await read('nowhere.txt', { status: 'removed' }), { ok: false, reason: 'side-missing' });
     assert.deepEqual(await read('bin.dat'), { ok: false, reason: 'binary' });
     assert.deepEqual(await read('src'), { ok: false, reason: 'not-a-file' });
     assert.deepEqual(await read('src/a.txt', { headSha: 'f'.repeat(40) }), { ok: false, reason: 'head-not-local' });
@@ -171,6 +176,27 @@ test('the two versions of a pull request file come from the repository\'s own ob
     for (const [over, reason] of [[{ headSha: 'abc' }, 'head-invalid'], [{ headSha: undefined }, 'head-invalid'], [{ baseRef: '--upload-pack=x' }, 'base-invalid'], [{ baseRef: 'a..b' }, 'base-invalid'], [{ baseRef: 5 }, 'base-invalid'], [{ relativePath: '../x' }, 'path-invalid'], [{ relativePath: '/etc/passwd' }, 'path-invalid'], [{ relativePath: 'a\\b' }, 'path-invalid'], [{ relativePath: '' }, 'path-invalid']]) {
       assert.deepEqual(await read('src/a.txt', over), { ok: false, reason }, JSON.stringify(over));
     }
+    // A Git command that FAILS is not "the file is not there": on either side the answer is unknown, never an empty side.
+    const realGit = async (cwd, args) => (await exec('git', args, { cwd, encoding: 'utf8' })).stdout;
+    for (const failing of ['ls-tree', 'cat-file', 'merge-base']) {
+      let calls = 0;
+      const flaky = async (cwd, args) => { if (args[0] === failing) { calls += 1; if (calls >= 1) throw new Error('git timed out'); } return realGit(cwd, args); };
+      const outcome = await readPullRequestFileVersions(root, { headSha, baseRef: 'main', relativePath: 'new.txt', status: 'added' }, { git: flaky });
+      assert.equal(outcome.ok, false, failing);
+    }
+    let lsCalls = 0;
+    const failsOnTheHeadSide = async (cwd, args) => { if (args[0] === 'ls-tree' && (lsCalls += 1) === 2) throw new Error('git timed out'); return realGit(cwd, args); };
+    assert.deepEqual(await readPullRequestFileVersions(root, { headSha, baseRef: 'main', relativePath: 'src/a.txt', status: 'modified' }, { git: failsOnTheHeadSide }), { ok: false, reason: 'not-readable' }, 'a failure on the second side is not "added"');
+    // The size limit: a file over it on either side is not read.
+    await run('checkout', '-q', 'feature');
+    await fs.writeFile(path.join(root, 'big.txt'), 'x'.repeat(MAX_FILE_BYTES + 1));
+    await run('add', '-A'); await run('commit', '-q', '-m', 'big');
+    const bigHead = (await run('rev-parse', 'HEAD')).stdout.trim();
+    assert.deepEqual(await readPullRequestFileVersions(root, { headSha: bigHead, baseRef: 'main', relativePath: 'big.txt', status: 'added' }), { ok: false, reason: 'too-large' });
+    await fs.writeFile(path.join(root, 'ok.txt'), 'x'.repeat(MAX_FILE_BYTES));
+    await run('add', '-A'); await run('commit', '-q', '-m', 'at the limit');
+    const okHead = (await run('rev-parse', 'HEAD')).stdout.trim();
+    assert.equal((await readPullRequestFileVersions(root, { headSha: okHead, baseRef: 'main', relativePath: 'ok.txt', status: 'added' })).ok, true, 'exactly at the limit is allowed');
     assert.deepEqual(await readPullRequestFileVersions('relative', { headSha, baseRef: 'main', relativePath: 'x' }), { ok: false, reason: 'no-folder' });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

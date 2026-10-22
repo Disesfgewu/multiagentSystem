@@ -88,7 +88,7 @@ export async function runReviewJumpChecks(): Promise<void> {
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => reader, worktrees: async () => worktrees, diffSource: async (input) => { asked.push(input); return versions; } });
     const diffed = await vscode.commands.executeCommand<{ ok: boolean; source?: string }>(REPORT_COMMANDS.openFileDiff, inline[0].args);
     assert.deepEqual([diffed.ok, diffed.source], [true, 'diff']);
-    assert.deepEqual(asked, [{ relativePath: 'src/report.ts', headSha: HEAD, baseRef: 'main' }]);
+    assert.deepEqual(asked, [{ relativePath: 'src/report.ts', headSha: HEAD, baseRef: 'main', status: 'modified' }]);
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
     assert.ok(tab?.input instanceof vscode.TabInputTextDiff, 'the editor\'s own diff view is open');
     const input = tab.input as vscode.TabInputTextDiff;
