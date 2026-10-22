@@ -8,7 +8,10 @@ import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, co
 import { requireInteractive } from '../shared/testMode';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
-const { inspectWorktree } = require('../projects/gitEvidence') as { inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }> };
+const { inspectWorktree, readPullRequestFileVersions } = require('../projects/gitEvidence') as {
+  inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }>;
+  readPullRequestFileVersions(folder: string, input: { headSha: string; baseRef: string; relativePath: string; status: string }): Promise<{ ok: true; left: string; right: string } | { ok: false; reason: string }>;
+};
 const { patchRowFor, inlineCommentLinks, worktreeFor, isUsableWorktree, isInside, isLine } = require('./jump') as {
   isUsableWorktree(entry: unknown, evidence: unknown): boolean;
   patchRowFor(patch: unknown, line: unknown): number | null;
@@ -42,6 +45,8 @@ const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbou
 
 export const REPORT_SCHEME = 'multiagent-report';
 export const DIFF_SCHEME = 'multiagent-report-diff';
+/** Read-only documents holding one side of a pull request file's diff (issue #308). */
+export const VERSION_SCHEME = 'multiagent-pr-version';
 export const REPORT_VIEWS = { issues: 'multiagentSystem.issuesReportView', pullRequests: 'multiagentSystem.prsReportView' } as const;
 export const REPORT_COMMANDS = {
   open: 'multiagentSystem.reports.open',
@@ -83,6 +88,8 @@ export interface ReportDeps {
   promptFeedback?(value: string): Thenable<string | undefined>;
   /** The working folders (of this repository) that have no uncommitted changes, with the commit each has checked out. */
   worktrees?(): Promise<Array<{ path: string; headSha: string }>>;
+  /** The two versions of one file of a pull request (where it branched from the base, and at the head), from this computer's own Git objects; null when they are not available here. */
+  diffSource?(input: { relativePath: string; headSha: string; baseRef: string; status: string }): Promise<{ left: string; right: string } | null>;
 }
 
 const realDeps: ReportDeps = {
@@ -99,6 +106,12 @@ const realDeps: ReportDeps = {
   },
   readerFor: (repository) => githubReaderFor(repository) as unknown as ReportReader | null,
   promptFeedback: (value) => vscode.window.showInputBox({ prompt: 'Feedback saved only on this machine; nothing is sent to GitHub', value, ignoreFocusOut: true }),
+  async diffSource(input) {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !vscode.workspace.isTrusted) return null;
+    const read = await readPullRequestFileVersions(folder.uri.fsPath, input);
+    return read.ok ? { left: read.left, right: read.right } : null;
+  },
   async worktrees() {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder || !vscode.workspace.isTrusted) return [];
@@ -362,7 +375,7 @@ export function reportUri(kind: Kind, number: number): vscode.Uri {
   return vscode.Uri.from({ scheme: REPORT_SCHEME, path: `/${kind === 'issue' ? 'issue' : 'pull-request'}-${number}.txt`, query: `kind=${kind}&n=${number}` });
 }
 
-type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; version: string; files: ReportFile[] };
+type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; baseRef?: string | null; version: string; files: ReportFile[] };
 type ReportResult = { text: string; evidence: ReportEvidence | null };
 
 /** Builds one report and records exactly which repository/head its text represents. */
@@ -399,7 +412,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
     const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
     const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified });
-    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
+    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, baseRef: typeof pullRequest.data.baseRef === 'string' ? pullRequest.data.baseRef : null, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
   } catch {
     return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
   }
@@ -494,6 +507,33 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
 
 let reportContent: ReportContent | undefined;
 
+// The text of each side of a diff, kept only for the documents currently shown (bounded).
+const versionTexts = new Map<string, string>();
+class VersionContent implements vscode.TextDocumentContentProvider {
+  provideTextDocumentContent(uri: vscode.Uri): string { return versionTexts.get(uri.query) ?? 'This version is no longer available. Open the file from the report again.\n'; }
+}
+let versionCounter = 0;
+function versionUri(text: string, filename: string, side: 'base' | 'head'): vscode.Uri {
+  versionCounter += 1;
+  const id = `v${versionCounter}-${side}`;
+  versionTexts.set(id, text);
+  if (versionTexts.size > 40) versionTexts.delete(versionTexts.keys().next().value as string);
+  return vscode.Uri.from({ scheme: VERSION_SCHEME, path: `/${side}/${filename}`, query: id });
+}
+
+/** Opens the editor's own side-by-side diff of one file (where the pull request branched from the base, against its head), at a line. Null when this computer cannot show it. */
+async function openVersionDiff(filename: string, relativePath: string, status: string, headSha: string | null, baseRef: string | null, line: number | undefined): Promise<{ ok: true; source: 'diff' } | null> {
+  if (!deps.diffSource || !headSha || !baseRef) return null;
+  let versions: { left: string; right: string } | null;
+  try { versions = await deps.diffSource({ relativePath, headSha, baseRef, status }); } catch { return null; }
+  if (!versions) return null;
+  const left = versionUri(versions.left, relativePath, 'base');
+  const right = versionUri(versions.right, relativePath, 'head');
+  const at = line !== undefined ? new vscode.Range(new vscode.Position(Math.max(0, line - 1), 0), new vscode.Position(Math.max(0, line - 1), 0)) : undefined;
+  await vscode.commands.executeCommand('vscode.diff', left, right, `${filename} (base ↔ head ${headSha.slice(0, 7)})`, { preview: true, ...(at ? { selection: at } : {}) });
+  return { ok: true, source: 'diff' };
+}
+
 /** A clean working folder that has exactly this pull request's head checked out, and the file in it; null if there is none. Never leaves the folder. */
 async function worktreeFile(filename: string, headSha: string | null): Promise<string | null> {
   if (!deps.worktrees || !headSha) return null;
@@ -516,7 +556,7 @@ async function worktreeFile(filename: string, headSha: string | null): Promise<s
  * opened, scrolled to the line when the patch shows it. Only a file the open report listed can be opened, and only a repository-relative
  * path inside a folder (checked after links are resolved).
  */
-async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: string; source?: 'worktree' | 'patch'; row?: number }> {
+async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: string; source?: 'diff' | 'worktree' | 'patch'; row?: number }> {
   const input = value && typeof value === 'object' ? (value as { reportUri?: unknown; filename?: unknown; line?: unknown }) : {};
   if (typeof input.reportUri !== 'string' || typeof input.filename !== 'string') return { ok: false, code: 'invalid-file-diff' };
   if (input.line !== undefined && !isLine(input.line)) return { ok: false, code: 'invalid-file-diff' };
@@ -542,6 +582,8 @@ async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: strin
     editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
     return { ok: true, source: 'patch', row: row + 2 };
   };
+  // The side-by-side diff against the base is preferred; the agent's folder and then the patch are what is left when it is not available here.
+  if (file && typeof file.path === 'string') { const shown = await openVersionDiff(file.filename, file.path, file.status, evidence?.headSha ?? null, evidence?.baseRef ?? null, line); if (shown) return shown; }
   const real = file && typeof file.path === 'string' ? await worktreeFile(file.path, evidence?.headSha ?? null) : null;
   if (real) {
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(real));
@@ -615,6 +657,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, content),
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, new DiffContent(content)),
+    vscode.workspace.registerTextDocumentContentProvider(VERSION_SCHEME, new VersionContent()),
     vscode.languages.registerDocumentLinkProvider({ scheme: REPORT_SCHEME }, new ReportFileLinks(content)),
     issueView,
     pullRequestView,
