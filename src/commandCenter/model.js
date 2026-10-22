@@ -278,9 +278,9 @@ function toggled(list, id) {
 
 // ---- the only messages the page may send ----
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: []
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: []
 });
 
 /**

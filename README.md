@@ -85,6 +85,7 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 | **Export Project Report (Markdown)** | 把 Issues、PRs、PM 報告與審查／CI、待決策事項、agent 狀態與額度、最近廣播彙整成一份 Markdown，以未儲存的編輯器開啟（不寫入工作區），看起來像私人資料的欄位會被遮掉，讀不到的來源寫 unknown。指揮台也有按鈕。詳見 [專案報告](docs/PROJECT_REPORT.md)。 |
 | **Assign Issue / Send Task to Agents** | 把 GitHub 的 Issue（或自己輸入的一句任務）當成一行 prompt 派給正在等輸入的 agent：每次都要確認完整 prompt 與名單、Issue 在確認後會重讀、狀態未知預設不送、記錄結果，Command Center 的卡片顯示交辦了哪個 Issue。指令不接受參數。沒有 session 在跑時不會自動建立。詳見 [派發任務](docs/DISPATCH.md)。 |
 | **Shared Memory** | 側邊欄面板：依身份組與隱私域列出這個專案的共享筆記，新增／修改／關閉／刪除（每次確認、先過敏感內容檢查）、審核建議；之後啟動的 agent（身份組記憶範圍為 role-group）會拿到已採納的筆記，指揮台卡片顯示準備了幾則規則與筆記。詳見 [共享記憶](docs/SHARED_MEMORY.md)。 |
+| **Start Meeting** | 輸入主題、勾選至少兩個 agent，確認後同一個主題同時打進它們的終端機（只送給在等輸入的）；之後你把各 agent 的回覆從終端機複製貼上，彙整成會議紀錄（未儲存的編輯器）；沒貼的標示「no reply recorded」，不會代為編寫。詳見 [會議](docs/MEETING.md)。 |
 | **Administrator Broadcasts** | 管理者廣播：建立、閱讀全文、撤銷、**Send Broadcast to Agents**。之後新啟動的 agent 會在指令中帶入仍有效、適用於它的公告；已在執行的 agent 要用 Send Broadcast to Agents，把公告當成一行 prompt 輸入到「確實在等輸入」的 CLI（每次都要確認完整 prompt 與名單，狀態未知就不送，並記錄結果）。「已輸入」不等於 CLI 已讀到或會遵守。詳見 [管理者廣播](docs/BROADCASTS.md)。 |
 | **Tools Setup** | CLI 工具的準備狀態、經驗證的安裝與重試，以及一份遮罩過、可以複製的唯讀診斷文件。 |
 
@@ -204,6 +205,6 @@ npm run vsix:package # 打包 VSIX、做內容與發佈掃描、寫出 release-c
 
 - 進度追蹤：[Issue #90](https://github.com/Disesfgewu/multiagentSystem/issues/90)；實機驗收清單：[Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135)。
 - 需求與驗收標準：[實作計劃書](docs/IMPLEMENTATION_PLAN.md)；PM 工作規則：[PM system prompt](docs/PM_SYSTEM_PROMPT.md)；worker 指令：[Claude Code worker prompt](docs/CLAUDE_CODE_WORKER_PROMPT.md)。
-- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [共享記憶](docs/SHARED_MEMORY.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
+- 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [會議](docs/MEETING.md) · [共享記憶](docs/SHARED_MEMORY.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - 主題文件：[Provider 登錄](docs/PROVIDERS.md) · [身份組](docs/ROLE_GROUPS.md) · [帳號設定](docs/ACCOUNT_PROFILES.md) · [額度政策](docs/QUOTA_POLICY.md) · [寫入 Broker](docs/WRITE_BROKER.md) · [發佈掃描](docs/PUBLISH_SCAN.md) · [Worktree 服務](docs/WORKTREE_SERVICE.md) · [管理者廣播](docs/BROADCASTS.md) · [團隊規則](docs/TEAM_RULES.md) · [專案報告](docs/PROJECT_REPORT.md) · [派發任務](docs/DISPATCH.md) · [指揮台](docs/COMMAND_CENTER.md) · [隔離能力](docs/ISOLATION_CAPABILITY.md) · [自訂 provider](docs/CUSTOM_PROVIDERS.md)。
 - [舊交付台帳](docs/MASTER_PLAN.md)只供查閱歷史紀錄，不是即時狀態。
