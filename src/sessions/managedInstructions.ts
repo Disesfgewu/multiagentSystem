@@ -9,6 +9,9 @@ import { validRecord } from '../roles/role-store';
 import { validateRoleGroup } from '../roles/role-group';
 import { checkRoleForLaunch } from '../roles/launch-role';
 import { BroadcastStore } from '../broadcast/store';
+import * as nodePath from 'node:path';
+const { MemoryStore } = require('../memory/store') as { MemoryStore: new (options: Record<string, unknown>) => { select(request: Record<string, unknown>): any } };
+const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(accountProfileId: string): string };
 import { TeamRulesStore } from '../teamRules/store';
 import { teamRuleLayer, describeTeamRules } from '../teamRules/model';
 import { isLive, appliesTo, broadcastRule, broadcastPreviewLines } from '../broadcast/model';
@@ -34,6 +37,8 @@ export interface InstructionSnapshot {
   requestedModel: string | null;
   targetSessionId: string;
   broadcastBindings: BroadcastBinding[];
+  /** The shared notes this snapshot was composed with (id and version). A change to any of them makes the snapshot stale. */
+  memoryBindings: Array<{ id: string; version: number }>;
   /** The version of the team rules this snapshot was composed with (0: none were written). A newer version makes the snapshot stale. */
   teamRulesVersion: number;
   digest: string | null;
@@ -68,6 +73,8 @@ export interface PreparedInstructions {
   summaryText: string;
   /** The role group's effective level for each tool (a stronger layer's ban applied), or null without a role group: what the launch turns into the CLI's own permission settings (issue #310). */
   toolPermissions: Record<string, string> | null;
+  /** How many rules and shared notes were put into the prepared instructions (prepared, not proof that the CLI read them). */
+  injectedCounts: { rules: number; memories: number };
 }
 
 export interface PrepareInstructionsFailure {
@@ -216,6 +223,26 @@ export async function prepareInstructionSnapshot(
     digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(canonicalEffective)).digest('hex')}`;
   }
 
+  // Shared memory: reviewed notes of this repository and role group, in this account's privacy domain, only when the role group
+  // asks for them (memory scope "role-group"). A memory file that exists but cannot be read stops the launch.
+  let memories: any[] = [];
+  let memoryOmitted: any;
+  if (group && group.memoryScope?.mode === 'role-group') {
+    try {
+      const memoryStore = new MemoryStore({ dir: nodePath.join(privateDir, 'memory'), repoRoot, now: () => now.getTime() });
+      const chosen: any = memoryStore.select({ repoId, roleGroupId: group.id, privacyDomain: defaultDomainFor(options.accountProfileId ?? 'unassigned'), all: true });
+      if (chosen.unavailable) return { ok: false, code: 'memory-unavailable', message: `Shared memory could not be read (${chosen.unavailable}). The agent was not started.` };
+      memories = chosen.items;
+      memoryOmitted = chosen.omitted;
+    } catch {
+      return { ok: false, code: 'memory-unavailable', message: 'Shared memory could not be opened. The agent was not started.' };
+    }
+    if (memories.length > 0 && digest !== null) {
+      const memoryDigest = crypto.createHash('sha256').update(JSON.stringify(memories.map((item) => [item.id, item.version]))).digest('hex');
+      digest = `sha256:${crypto.createHash('sha256').update(`${digest}\n${memoryDigest}`).digest('hex')}`;
+    }
+  }
+
   // Step 4: Plan and Write Injection Files (strictly in owner directory outside repo)
   let plan: any = null;
   let method = 'none';
@@ -228,7 +255,8 @@ export async function prepareInstructionSnapshot(
     renderedContext = renderContext({
       roleGroup: group ?? { id: 'unassigned', name: 'Agent', role: 'general' },
       rules: effectiveRules,
-      memories: []
+      memories,
+      omitted: memoryOmitted
     });
 
     try {
@@ -239,7 +267,8 @@ export async function prepareInstructionSnapshot(
         provider,
         roleGroup: group ?? { id: 'unassigned', name: 'Agent', role: 'general' },
         rules: effectiveRules,
-        memories: [],
+        memories,
+        omitted: memoryOmitted,
         privateDir,
         codexHome: options.codexHome,
         repoRoot,
@@ -285,6 +314,7 @@ export async function prepareInstructionSnapshot(
     requestedModel: options.requestedModel ?? null,
     targetSessionId,
     broadcastBindings,
+    memoryBindings: memories.map((item) => ({ id: item.id, version: item.version })),
     teamRulesVersion,
     digest,
     createdAt: now.toISOString()
@@ -296,6 +326,7 @@ export async function prepareInstructionSnapshot(
     effectiveRules,
     permissions,
     matchingBroadcasts,
+    memoryCount: memories.length,
     teamRulesLine: describeTeamRules(teamLoaded.doc),
     injectionStatusLabel,
     injectionState,
@@ -313,6 +344,7 @@ export async function prepareInstructionSnapshot(
     injectionStatusLabel,
     renderedContext,
     summaryText,
+    injectedCounts: { rules: effectiveRules ? effectiveRules.instructions.length + effectiveRules.forbids.length + effectiveRules.requires.length : 0, memories: memories.length },
     toolPermissions: group && previewResult && previewResult.ok ? Object.fromEntries(previewResult.permissions.map((entry: { tool: string; effective: string }) => [entry.tool, entry.effective])) : null
   };
 }
@@ -344,6 +376,19 @@ export async function isSnapshotStale(
     }
   }
 
+  // A shared note changed, was disabled or was added since the snapshot: the agent would start with notes the person did not review.
+  if (snapshot.roleGroupId !== 'unassigned') {
+    try {
+      const loadedGroup = store.get('roleGroups', snapshot.roleGroupId);
+      if (loadedGroup?.ok && loadedGroup.found && loadedGroup.value?.group?.memoryScope?.mode === 'role-group') {
+        const memoryStore = new MemoryStore({ dir: nodePath.join(store.dir, 'memory'), repoRoot, now: () => now.getTime() });
+        const chosen: any = memoryStore.select({ repoId: snapshot.repoId, roleGroupId: snapshot.roleGroupId, privacyDomain: defaultDomainFor(snapshot.accountProfileId), all: true });
+        if (chosen.unavailable) return { stale: true, reason: 'memory-unavailable' };
+        const now2 = JSON.stringify(chosen.items.map((item: any) => [item.id, item.version]));
+        if (now2 !== JSON.stringify((snapshot.memoryBindings ?? []).map((item) => [item.id, item.version]))) return { stale: true, reason: 'memory-changed' };
+      } else if ((snapshot.memoryBindings ?? []).length > 0) return { stale: true, reason: 'memory-changed' };
+    } catch { return { stale: true, reason: 'memory-unavailable' }; }
+  }
   // Team rules changed since the snapshot was prepared: the agent would start with rules the person did not review.
   const team: any = new TeamRulesStore(store).get();
   if (!team.ok) return { stale: true, reason: 'team-rules-unavailable' };
@@ -403,6 +448,7 @@ export function formatInstructionSummary(
     effectiveRules?: any;
     permissions?: any[];
     matchingBroadcasts?: any[];
+    memoryCount?: number;
     teamRulesLine?: string;
     injectionStatusLabel?: string;
     injectionState?: PreparedInstructions['injectionState'];
@@ -422,6 +468,7 @@ export function formatInstructionSummary(
     ''
   ];
 
+  lines.push(`Shared memory: ${details.memoryCount ? `${details.memoryCount} reviewed note${details.memoryCount === 1 ? '' : 's'} prepared for this agent` : 'none prepared for this agent'}. The CLI is told; nothing enforces them.`, '');
   if (details.teamRulesLine) lines.push(details.teamRulesLine, '');
 
   if (details.matchingBroadcasts && details.matchingBroadcasts.length > 0) {

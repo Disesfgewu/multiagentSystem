@@ -6,6 +6,7 @@ import { registerStorageCommands } from './storage/storageCommands';
 import { ACCOUNT_COMMANDS, ACCOUNT_VIEW, registerAccountCommands } from './accounts/accountCommands';
 import { registerRoleCommands } from './roles/roleCommands';
 import { registerBroadcastCommands } from './broadcast/commands';
+import { registerMemoryCommands } from './memoryPanel/commands';
 import { registerTeamRulesCommands } from './teamRules/commands';
 import { registerExportCommands } from './export/commands';
 import { registerDispatchCommands } from './dispatch/commands';
@@ -98,6 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerReports(context);
   registerRoleCommands(context, sessions);
   registerBroadcastCommands(context, sessions);
+  registerMemoryCommands(context, sessions);
   registerTeamRulesCommands(context);
   registerExportCommands(context);
   registerDispatchCommands(context, sessions);

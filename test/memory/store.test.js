@@ -310,3 +310,19 @@ test('a directory owned by someone else is refused', (t) => {
   t.mock.restoreAll();
   assert.equal(fs.existsSync(path.join(dir, 'memory.json')), true);
 });
+
+test('with `all`, a launch with no task text gets every readable note of the scope, oldest first; without it a note needs a word in common', (t) => {
+  const { store, nowRef } = setup(t);
+  const first = store.propose(note({ content: 'Alpha note about packaging scripts.' }));
+  nowRef.value += 1000;
+  const second = store.propose(note({ content: 'Beta note about release trains.' }));
+  const other = store.propose(note({ content: 'Gamma note in another domain entirely.', privacyDomain: 'domain-2' }));
+  for (const made of [first, second, other]) assert.equal(store.adopt(made.id, human).ok, true);
+  assert.deepEqual(store.select({ ...scopeA }).items, [], 'no task text, no match, as before');
+  assert.deepEqual(store.select({ ...scopeA, all: true }).items.map((item) => item.id), [first.id, second.id]);
+  assert.deepEqual(store.select({ ...scopeA, all: 'yes' }).items, [], 'only the boolean true widens it');
+  store.disable(first.id);
+  assert.deepEqual(store.select({ ...scopeA, all: true }).items.map((item) => item.id), [second.id], 'a switched-off note is not given');
+  assert.deepEqual(store.select({ repoId: 'repo-1', roleGroupId: 'impl', all: true }).items, [], 'a scope without a domain gets nothing');
+  assert.deepEqual(store.select({ ...scopeA, roleGroupId: 'other', all: true }).items, [], 'another role group gets nothing');
+});
