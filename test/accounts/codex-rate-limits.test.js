@@ -230,6 +230,6 @@ test('a Codex session\'s observation change reads its account\'s log and keeps t
   const gate = fs.readFileSync(path.join(__dirname, '../../src/accounts/quotaGateUi.ts'), 'utf8').replace(/\r\n/g, '\n');
   const body = gate.slice(gate.indexOf('export async function recordCodexSessionReading'), gate.indexOf('export interface QuotaDetail'));
   assert.match(body, /own\.profile\.provider !== 'codex'\) return;/);
-  assert.match(body, /new UsageLog\(accounts\.store\)\.append\(entry, now\)/);
+  assert.match(body, /codexRecorder\.record\(accountProfileId,/);
   assert.match(body, /catch \{ \/\* a reading that cannot be kept never disturbs the session \*\/ \}/);
 });

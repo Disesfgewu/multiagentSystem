@@ -7,6 +7,7 @@ export { quotaObservations, registerProfileForQuota };
 
 const { UsageLog } = require('./usage-log') as { UsageLog: new (store: unknown) => { append(entry: unknown, now?: Date): { ok: boolean } } };
 const { codexUsageEntry } = require('./codex-rate-limits') as { codexUsageEntry(reading: unknown, options: { accountProfileId: string }): unknown };
+const { createCodexRecorder } = require('./codex-recorder') as { createCodexRecorder(options: { readReading: (id: string, at: Date, context: any) => unknown; append: (entry: unknown, at: Date, context: any) => unknown; now?: () => Date; throttleMs?: number }): { record(id: string, context?: { now?: Date; [key: string]: unknown }): string } };
 
 const { summarizeQuota } = require('./quota-policy') as { summarizeQuota(observations: unknown[], now: Date): Array<{ window: string; usedPercent: number | null; source: string | null; observedAt: string | null; confidence: string; fresh: boolean; gateEligible: boolean; resetsAt: string | null }> };
 const { loadPolicy, savePolicy } = require('./quota-policy') as {
@@ -339,14 +340,19 @@ function codexExtras(accounts: AccountsOk, accountProfileId: string, now: Date):
  * A Codex session's observation changed: read the account's session log again and keep the last request's counts in the usage log
  * (issue #302, #294), the same as opening the account's detail does. Best effort: it never disturbs the session.
  */
+const codexRecorder = createCodexRecorder({
+  readReading: (accountProfileId: string, at: Date, context: any) => codexQuotaReading(accountProfileId, context.configDir, at).reading,
+  append: (entry: unknown, at: Date, context: any) => new UsageLog(context.store).append(entry, at)
+});
+
 export async function recordCodexSessionReading(accountProfileId: string, sessions: () => any[], now: Date = new Date()): Promise<void> {
   try {
     const accounts = await accountService(sessions);
     if (!accounts.ok) return;
     const own = accounts.service.get(accountProfileId);
     if (!own.ok || !own.profile || own.profile.provider !== 'codex') return;
-    const entry = codexUsageEntry(codexQuotaReading(accountProfileId, own.profile.configDir, now).reading, { accountProfileId });
-    if (entry) new UsageLog(accounts.store).append(entry, now);
+    // One recorder for the whole window: it throttles per account and the usage log keeps the same event once.
+    codexRecorder.record(accountProfileId, { configDir: own.profile.configDir, store: accounts.store, now });
   } catch { /* a reading that cannot be kept never disturbs the session */ }
 }
 
