@@ -4,9 +4,15 @@ import * as vscode from 'vscode';
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
 import { resolveProject, SessionCommands } from '../sessions/sessionCommands';
+import { isExtensionTestMode } from '../shared/testMode';
 
 const { MemoryStore } = require('../memory/store') as { MemoryStore: new (options: Record<string, unknown>) => any };
 const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(id: string): string };
+const { readSuggestionFile, suggestionScope, FILE_NAME } = require('../memory/suggestions') as {
+  suggestionScope(session: unknown, roleNames: Record<string, string>): { ok: true; roleGroupId: string; privacyDomain: string } | { ok: false; reason: string };
+  readSuggestionFile(worktree: string): { ok: true; suggestions: string[]; skipped: number } | { ok: false; reason: string };
+  FILE_NAME: string;
+};
 const { groupNotes, candidates, oneLine } = require('../memory/panel') as {
   groupNotes(items: unknown[], roleNames: Record<string, string>, now: number): Array<{ roleGroupId: string; roleName: string; domains: Array<{ domain: string; items: Array<{ id: string; label: string; state: string; stateText: string; injected: boolean; scope: string; source: string; expires: string; full: string }> }> }>;
   candidates(items: unknown[]): Array<{ id: string; content: string; roleGroupId: string; privacyDomain: string }>;
@@ -21,6 +27,7 @@ export const MEMORY_COMMANDS = {
   toggle: 'multiagentSystem.memory.toggle',
   remove: 'multiagentSystem.memory.remove',
   suggest: 'multiagentSystem.memory.suggest',
+  collect: 'multiagentSystem.memory.collect',
   review: 'multiagentSystem.memory.review'
 } as const;
 
@@ -230,6 +237,46 @@ async function suggest(sessions: SessionCommands): Promise<void> {
   void vscode.window.showInformationMessage('Saved as a suggestion. No agent is told it until you review it.');
 }
 
+/**
+ * "Collect Memory Suggestions from Agents": reads the suggestion file each running session may have left in ITS OWN working folder
+ * (`FILE_NAME`, see memory/suggestions.js) and proposes each suggestion as a CANDIDATE: it goes through the memory store's own checks
+ * (credentials, paths, emails, conversation-shaped or instruction-like text are refused), is stored in the privacy domain of that
+ * session's account and the role group of that session, and is given to no agent until a person adopts it in "Review Suggested Memory".
+ * Nothing is adopted here and the agent's file is left as it is (a suggestion already stored is recognised as a duplicate).
+ */
+async function collect(sessions: SessionCommands): Promise<void> {
+  if (!trusted()) return;
+  const handle = await open();
+  if (!handle) return;
+  const running = sessions.list().filter((entry) => entry.terminalOpen && typeof entry.worktree === 'string');
+  if (running.length === 0) { void vscode.window.showInformationMessage('No managed session has an open terminal.'); return; }
+  let added = 0;
+  let duplicates = 0;
+  let refused = 0;
+  let unreadable = 0;
+  let withoutRole = 0;
+  let withFile = 0;
+  const reasons = new Set<string>();
+  for (const session of running) {
+    const read = readSuggestionFile(session.worktree);
+    if (!read.ok) { if (read.reason !== 'no-file') { unreadable += 1; reasons.add(read.reason); } continue; }
+    withFile += 1;
+    refused += read.skipped;
+    const scope = suggestionScope(session, handle.roleNames);
+    if (!scope.ok) { if (scope.reason === 'no-role-group') withoutRole += read.suggestions.length; else unreadable += 1; continue; }
+    const { roleGroupId, privacyDomain } = scope;
+    for (const text of read.suggestions) {
+      let proposed: { ok: boolean; reason?: string };
+      // One that cannot be written is counted, and the rest (and the summary) still happen.
+      try { proposed = handle.memory.propose({ repoId: handle.repoId, roleGroupId, privacyDomain, content: text, source: { kind: 'agent-suggestion', ref: `session ${oneLine(session.id, 40)}` } }); } catch { unreadable += 1; continue; }
+      if (proposed.ok) added += 1; else if (proposed.reason === 'duplicate') duplicates += 1; else { refused += 1; reasons.add(String(proposed.reason)); }
+    }
+  }
+  tree?.refresh();
+  const parts = [`${added} new suggestion${added === 1 ? '' : 's'} saved for review`, ...(duplicates > 0 ? [`${duplicates} already known`] : []), ...(refused > 0 ? [`${refused} refused (${[...reasons].sort().join(', ') || 'invalid'})`] : []), ...(withoutRole > 0 ? [`${withoutRole} from sessions with no role group (not saved)`] : []), ...(unreadable > 0 ? [`${unreadable} file${unreadable === 1 ? '' : 's'} could not be read`] : [])];
+  void vscode.window.showInformationMessage(`${withFile === 0 ? `No session left a ${FILE_NAME} file. ` : ''}${parts.join('; ')}. Suggestions are given to no agent until you review them.`);
+}
+
 /** Reviews one suggestion: Adopt (in your name) or Reject. Nothing is adopted without this window. */
 async function review(): Promise<void> {
   if (!trusted()) return;
@@ -244,6 +291,12 @@ async function review(): Promise<void> {
   tree?.refresh();
 }
 
+/** The collect command run against the given sessions: only in the extension's own host tests. */
+export function collectForTests(sessions: SessionCommands): Promise<void> {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  return collect(sessions);
+}
+
 export function registerMemoryCommands(context: vscode.ExtensionContext, sessions: SessionCommands): void {
   tree = new MemoryTree();
   context.subscriptions.push(
@@ -255,6 +308,7 @@ export function registerMemoryCommands(context: vscode.ExtensionContext, session
     vscode.commands.registerCommand(MEMORY_COMMANDS.toggle, () => toggle()),
     vscode.commands.registerCommand(MEMORY_COMMANDS.remove, () => remove()),
     vscode.commands.registerCommand(MEMORY_COMMANDS.suggest, () => suggest(sessions)),
+    vscode.commands.registerCommand(MEMORY_COMMANDS.collect, () => collect(sessions)),
     vscode.commands.registerCommand(MEMORY_COMMANDS.review, () => review())
   );
 }

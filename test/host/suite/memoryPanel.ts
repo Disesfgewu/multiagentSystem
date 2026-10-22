@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import * as vscode from 'vscode';
 import { privateStorage } from '../../../src/storage/storageCommands';
+import * as os from 'node:os';
+import { collectForTests } from '../../../src/memoryPanel/commands';
 
 const { MemoryStore } = require('../../../src/memory/store') as { MemoryStore: new (options: Record<string, unknown>) => any };
 
@@ -74,14 +76,44 @@ export async function runMemoryPanelChecks(workspace: string): Promise<void> {
     confirm = 'Adopt';
     await vscode.commands.executeCommand('multiagentSystem.memory.review');
     assert.equal(mine().find((item) => item.id === suggested.id).status, 'adopted');
+    // Suggestions an agent left in ITS OWN folder are collected as candidates only: a secret is refused, another folder is not read, nothing is adopted.
+    const mineDir = fs.realpathSync.native(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mas-collect-a-')));
+    const otherDir = fs.realpathSync.native(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mas-collect-b-')));
+    try {
+      const token = ['gh', 'p_', 'c'.repeat(36)].join('');
+      fs.writeFileSync(nodePath.join(mineDir, '.multiagent-memory-suggestions.json'), JSON.stringify({ suggestions: [{ text: 'Agents should write the test first.' }, { text: `deploy with ${token}` }] }));
+      fs.writeFileSync(nodePath.join(otherDir, '.multiagent-memory-suggestions.json'), JSON.stringify({ suggestions: [{ text: 'This belongs to a folder nobody runs in.' }] }));
+      const fake: any = { list: () => [{ id: 'session-collect-1', terminalOpen: true, worktree: mineDir, roleGroupId: GROUP, accountProfileId: 'unassigned' }, { id: 'session-closed', terminalOpen: false, worktree: otherDir, roleGroupId: GROUP }] };
+      await collectForTests(fake);
+      const added = mine().filter((item) => item.source?.kind === 'agent-suggestion' && item.status === 'candidate');
+      assert.deepEqual(added.map((item) => [item.content, item.status]), [['Agents should write the test first.', 'candidate']], 'one candidate; the secret and the closed session\'s folder gave nothing');
+      assert.ok(!mine().some((item) => item.content.includes('nobody runs in') || item.content.includes(token)));
+      assert.equal(memory().select({ repoId: added[0].repoId, roleGroupId: GROUP, privacyDomain: added[0].privacyDomain, all: true }).items.some((item: any) => item.id === added[0].id), false, 'a candidate is given to no agent');
+      await collectForTests(fake);
+      assert.equal(mine().filter((item) => item.source?.kind === 'agent-suggestion' && item.status === 'candidate').length, 1, 'collecting again adds nothing');
+      // A session of ANOTHER account and ANOTHER role group: its suggestion is stored in that account's privacy domain and that role group, never the default ones.
+      const GROUP_B = 'memory-panel-group-b';
+      assert.ok(store.transact((tx: any) => { tx.put('roleGroups', GROUP_B, { group: { id: GROUP_B, name: 'Second Role', role: 'researcher' } }); return true; }).ok);
+      const bDir = fs.realpathSync.native(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mas-collect-c-')));
+      try {
+        fs.writeFileSync(nodePath.join(bDir, '.multiagent-memory-suggestions.json'), JSON.stringify({ suggestions: [{ text: 'Researchers should cite their sources.' }] }));
+        const second: any = { list: () => [{ id: 'session-collect-2', terminalOpen: true, worktree: bDir, roleGroupId: GROUP_B, accountProfileId: 'acct-b' }] };
+        await collectForTests(second);
+        const found = (memory().list().items as any[]).filter((item) => item.content === 'Researchers should cite their sources.');
+        assert.equal(found.length, 1);
+        assert.deepEqual([found[0].privacyDomain, found[0].roleGroupId, found[0].status], ['account:acct-b', GROUP_B, 'candidate'], 'that session\'s account domain and role group');
+        assert.notEqual(found[0].privacyDomain, added[0].privacyDomain, 'not the default domain of the first session');
+        for (const item of found) memory().remove(item.id);
+      } finally { fs.rmSync(bDir, { recursive: true, force: true }); store.transact((tx: any) => tx.delete('roleGroups', GROUP_B)); }
+    } finally { fs.rmSync(mineDir, { recursive: true, force: true }); fs.rmSync(otherDir, { recursive: true, force: true }); }
     // Deleting needs the confirmation.
     pickWhich = (items) => items[0];
     confirm = undefined;
     await vscode.commands.executeCommand('multiagentSystem.memory.remove');
-    assert.equal(mine().length, 2);
+    assert.equal(mine().length, 3);
     confirm = 'Delete';
     await vscode.commands.executeCommand('multiagentSystem.memory.remove');
-    assert.equal(mine().length, 1);
+    assert.equal(mine().length, 2);
   } finally {
     for (const item of mine()) memory().remove(item.id);
     store.transact((tx: any) => tx.delete('roleGroups', GROUP));

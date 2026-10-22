@@ -30,3 +30,11 @@ Multiagent 側邊欄的 **Shared Memory**：依身份組、再依隱私域分組
 - **存入前**（新增、修改、建議都一樣）：必須是**一行**純文字——不能有換行、控制字元、不可見或改變方向的字元；不能是「叫 agent 忽略規則」的文字；不能含本套件自己的訊息標記字樣。不通過就不儲存，並說明原因。
 - **選給 agent 時再檢查一次**：先前存下、現在不通過的筆記（包含舊資料或被直接改過檔案的）不會給任何 agent，回報被擋下的數量，面板上標示「NOT given to agents」。
 - 建議記憶存進**提出建議的那個 session 的帳號**的隱私域（不是共用預設），所以只有同帳號的 agent 讀得到。
+
+## agent 自己提出的建議（#306 驗收 4）
+指令 **Collect Memory Suggestions from Agents**（Shared Memory 面板上方的按鈕）：讀每個**開著終端機的 session 自己的工作資料夾**裡的 `.multiagent-memory-suggestions.json`，格式 `{ "suggestions": [ { "text": "…" } ] }`，每則存成**候選**。
+- 只讀那個資料夾根目錄下那個檔名：不進子資料夾、不跟隨連結（`lstat` 加 `O_NOFOLLOW`）、最多 64 KB、最多 20 則、每則最多 500 字，只取 `text`；別的資料夾、沒有開著終端機的 session 的檔案不讀。
+- 每則走記憶庫自己的檢查（憑證／路徑／email、像對話、換行或隱藏字元、叫 agent 忽略規則、套件標記字樣都拒收）；存入該 session 的身份組與**該 session 帳號的隱私域**；相同文字記成重複，所以再收一次不會多出東西。
+- **絕不自動採納**：候選不會給任何 agent，要在 Review Suggested Memory 按 Adopt。agent 的檔案不被修改。
+- 沒有身份組的 session 的建議不存（會告知數量）。agent 要怎麼知道寫這個檔，可放進身份組規則（例如「想到值得記住的事，加到工作資料夾的 `.multiagent-memory-suggestions.json`」）；這個檔在 worktree 內，請自己決定要不要加進 `.gitignore`，不要提交。
+- 限制：agent 是否會寫、寫得好不好，屬於實機項目（#135）。
