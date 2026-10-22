@@ -266,7 +266,9 @@ async function collect(sessions: SessionCommands): Promise<void> {
     let privacyDomain: string;
     try { privacyDomain = defaultDomainFor(typeof session.accountProfileId === 'string' && session.accountProfileId !== '' ? session.accountProfileId : 'unassigned'); } catch { unreadable += 1; continue; }
     for (const text of read.suggestions) {
-      const proposed = handle.memory.propose({ repoId: handle.repoId, roleGroupId, privacyDomain, content: text, source: { kind: 'agent-suggestion', ref: `session ${oneLine(session.id, 40)}` } });
+      let proposed: { ok: boolean; reason?: string };
+      // One that cannot be written is counted, and the rest (and the summary) still happen.
+      try { proposed = handle.memory.propose({ repoId: handle.repoId, roleGroupId, privacyDomain, content: text, source: { kind: 'agent-suggestion', ref: `session ${oneLine(session.id, 40)}` } }); } catch { unreadable += 1; continue; }
       if (proposed.ok) added += 1; else if (proposed.reason === 'duplicate') duplicates += 1; else { refused += 1; reasons.add(String(proposed.reason)); }
     }
   }

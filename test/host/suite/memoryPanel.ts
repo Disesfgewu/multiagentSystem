@@ -91,6 +91,20 @@ export async function runMemoryPanelChecks(workspace: string): Promise<void> {
       assert.equal(memory().select({ repoId: added[0].repoId, roleGroupId: GROUP, privacyDomain: added[0].privacyDomain, all: true }).items.some((item: any) => item.id === added[0].id), false, 'a candidate is given to no agent');
       await collectForTests(fake);
       assert.equal(mine().filter((item) => item.source?.kind === 'agent-suggestion' && item.status === 'candidate').length, 1, 'collecting again adds nothing');
+      // A session of ANOTHER account and ANOTHER role group: its suggestion is stored in that account's privacy domain and that role group, never the default ones.
+      const GROUP_B = 'memory-panel-group-b';
+      assert.ok(store.transact((tx: any) => { tx.put('roleGroups', GROUP_B, { group: { id: GROUP_B, name: 'Second Role', role: 'researcher' } }); return true; }).ok);
+      const bDir = fs.realpathSync.native(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mas-collect-c-')));
+      try {
+        fs.writeFileSync(nodePath.join(bDir, '.multiagent-memory-suggestions.json'), JSON.stringify({ suggestions: [{ text: 'Researchers should cite their sources.' }] }));
+        const second: any = { list: () => [{ id: 'session-collect-2', terminalOpen: true, worktree: bDir, roleGroupId: GROUP_B, accountProfileId: 'acct-b' }] };
+        await collectForTests(second);
+        const found = (memory().list().items as any[]).filter((item) => item.content === 'Researchers should cite their sources.');
+        assert.equal(found.length, 1);
+        assert.deepEqual([found[0].privacyDomain, found[0].roleGroupId, found[0].status], ['account:acct-b', GROUP_B, 'candidate'], 'that session\'s account domain and role group');
+        assert.notEqual(found[0].privacyDomain, added[0].privacyDomain, 'not the default domain of the first session');
+        for (const item of found) memory().remove(item.id);
+      } finally { fs.rmSync(bDir, { recursive: true, force: true }); store.transact((tx: any) => tx.delete('roleGroups', GROUP_B)); }
     } finally { fs.rmSync(mineDir, { recursive: true, force: true }); fs.rmSync(otherDir, { recursive: true, force: true }); }
     // Deleting needs the confirmation.
     pickWhich = (items) => items[0];

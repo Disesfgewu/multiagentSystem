@@ -48,3 +48,9 @@ test('a suggestion is stored in the privacy domain of the account of the agent t
   assert.match(body, /propose\(\{[^}]*privacyDomain,/);
   assert.doesNotMatch(body, /defaultDomainFor\('unassigned'\)\s*,\s*content/);
 });
+
+test('collecting: a suggestion that cannot be written is counted and the rest, the refresh and the summary still happen', () => {
+  const body = source.slice(source.indexOf('async function collect('), source.indexOf('/** Reviews one suggestion'));
+  assert.match(body, /try \{ proposed = handle\.memory\.propose\(\{[^\n]*\} catch \{ unreadable \+= 1; continue; \}/);
+  assert.ok(body.indexOf('tree?.refresh()') > body.indexOf('for (const text of read.suggestions)'), 'the refresh and the summary come after the whole loop');
+});

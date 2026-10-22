@@ -25,19 +25,27 @@ const isPlain = (value) => value !== null && typeof value === 'object' && !Array
  * @param {string} worktree absolute path of the folder the session runs in
  * @param {{ fsImpl?: object }} [options]
  * @returns {{ ok: true, suggestions: string[], skipped: number } | { ok: false, reason: string }}
- *   reasons: worktree-invalid, no-file, unsafe-file, too-large, unreadable, not-json, wrong-shape
+ *   reasons: worktree-invalid, unsafe-worktree, no-file, unsafe-file, too-large, unreadable, not-json, wrong-shape
  */
 function readSuggestionFile(worktree, { fsImpl = fs } = {}) {
   if (typeof worktree !== 'string' || !path.isAbsolute(worktree)) return { ok: false, reason: 'worktree-invalid' };
   const file = path.join(worktree, FILE_NAME);
   let fd;
   try {
+    // The folder itself must not be a link: a link to another agent's folder would hand this session that agent's suggestions. (A link
+    // higher up, such as /tmp on macOS, is fine: the file's real location is compared with the folder's real location below.)
+    try {
+      const root = fsImpl.lstatSync(worktree);
+      if (root.isSymbolicLink() || !root.isDirectory()) return { ok: false, reason: 'unsafe-worktree' };
+    } catch { return { ok: false, reason: 'unsafe-worktree' }; }
     let before;
     try { before = fsImpl.lstatSync(file); } catch (error) { return { ok: false, reason: error && error.code === 'ENOENT' ? 'no-file' : 'unreadable' }; }
     if (before.isSymbolicLink() || !before.isFile()) return { ok: false, reason: 'unsafe-file' };
     if (before.size > MAX_BYTES) return { ok: false, reason: 'too-large' };
     fd = fsImpl.openSync(file, fsImpl.constants.O_RDONLY | (fsImpl.constants.O_NOFOLLOW ?? 0) | (fsImpl.constants.O_NONBLOCK ?? 0));
     const opened = fsImpl.fstatSync(fd);
+    // Whatever path led here, the file really lies directly in the folder's real location (no link in between).
+    try { if (fsImpl.realpathSync(file) !== path.join(fsImpl.realpathSync(worktree), FILE_NAME)) return { ok: false, reason: 'unsafe-file' }; } catch { return { ok: false, reason: 'unsafe-file' }; }
     if (!opened.isFile() || opened.size > MAX_BYTES) return { ok: false, reason: opened.isFile() ? 'too-large' : 'unsafe-file' };
     const buffer = Buffer.alloc(opened.size);
     let read = 0;

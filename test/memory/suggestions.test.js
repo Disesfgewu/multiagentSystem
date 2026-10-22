@@ -82,3 +82,35 @@ test('a suggestion is only a candidate: it is refused if it holds a secret, and 
   // The same file collected again adds nothing new.
   assert.equal(memory.propose({ repoId: 'o/r', roleGroupId: 'g1', privacyDomain: 'account:one', content: 'Always run the whole suite before pushing.', source: { kind: 'agent-suggestion', ref: 'session x' } }).reason, 'duplicate');
 });
+
+test('a working folder that is itself a link is refused, so another agent\'s suggestions cannot be read as this session\'s', { skip: !posix }, (t) => {
+  const theirs = folder(t);
+  put(theirs, { suggestions: [{ text: 'belongs to another agent' }] });
+  const holder = folder(t);
+  const link = path.join(holder, 'my-worktree');
+  fs.symlinkSync(theirs, link);
+  assert.deepEqual(readSuggestionFile(link), { ok: false, reason: 'unsafe-worktree' });
+  assert.deepEqual(readSuggestionFile(path.join(holder, 'missing')), { ok: false, reason: 'unsafe-worktree' });
+  const aFile = path.join(holder, 'plain-file');
+  fs.writeFileSync(aFile, 'x');
+  assert.deepEqual(readSuggestionFile(aFile), { ok: false, reason: 'unsafe-worktree' });
+});
+
+test('a link ABOVE the folder (like /tmp on macOS) is fine, because the file really lies in the folder\'s own real location', { skip: !posix }, (t) => {
+  const real = folder(t);
+  put(real, { suggestions: [{ text: 'reached through a link higher up' }] });
+  const holder = folder(t);
+  fs.symlinkSync(real, path.join(holder, 'up'));
+  // The folder is named through a linked parent; the folder itself is a real directory.
+  fs.mkdirSync(path.join(real, 'inner'));
+  put(path.join(real, 'inner'), { suggestions: [{ text: 'inner' }] });
+  assert.deepEqual(readSuggestionFile(path.join(holder, 'up', 'inner')), { ok: true, suggestions: ['inner'], skipped: 0 });
+});
+
+test('a file that is a link, or that passes through a link inside the folder, is refused', { skip: !posix }, (t) => {
+  const root = folder(t);
+  const theirs = folder(t);
+  put(theirs, { suggestions: [{ text: 'elsewhere' }] });
+  fs.symlinkSync(path.join(theirs, FILE_NAME), path.join(root, FILE_NAME));
+  assert.deepEqual(readSuggestionFile(root), { ok: false, reason: 'unsafe-file' });
+});
