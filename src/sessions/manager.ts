@@ -61,6 +61,7 @@ export interface SessionInstructionsInput {
   argv?: string[];
   injectionState?: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
   injectionStatusLabel?: string;
+  injectedCounts?: { rules: number; memories: number };
 }
 
 export interface SessionView extends SessionIdentity {
@@ -77,6 +78,8 @@ export interface SessionView extends SessionIdentity {
   /** What auto mode was requested for this window's launch of the CLI; a request, not proof of how the CLI runs. */
   autoModeLabel?: string;
   instructionDigest?: string | null;
+  /** What was put into the prepared instructions of this session (prepared, not proof that the CLI read it); null when unknown. */
+  injectedCounts?: { rules: number; memories: number } | null;
   instructionMethod?: string | null;
   /** Fresh, verified provider evidence only. It is never persisted with the session record. */
   providerObservation?: any;
@@ -179,6 +182,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly instructionLabels = new Map<string, string>();
   private readonly autoModeLabels = new Map<string, string>();
   private readonly instructionDigests = new Map<string, string>();
+  private readonly injectedCounts = new Map<string, { rules: number; memories: number }>();
   private readonly instructionMethods = new Map<string, string>();
   private readonly activePlans = new Map<string, any>();
   private readonly bound = new Map<T, { id: string; token: string }>();
@@ -305,6 +309,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       instructionStatusLabel: this.instructionLabels.get(entry.id) ?? 'No instructions configured',
       autoModeLabel: this.autoModeLabels.get(entry.id) ?? 'Auto mode: unknown (not started in this window)',
       instructionDigest: this.instructionDigests.get(entry.id) ?? null,
+      injectedCounts: this.injectedCounts.get(entry.id) ?? null,
       instructionMethod: this.instructionMethods.get(entry.id) ?? null
     };
   }
@@ -474,6 +479,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (autoMode) this.autoModeLabels.set(identity.id, launch ? autoMode.label : 'Auto mode: not applicable (a shell only: no CLI was started)');
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
+    if (instructions?.injectedCounts) this.injectedCounts.set(identity.id, instructions.injectedCounts);
     if (instructions?.method && instructions.method !== 'none') this.instructionMethods.set(identity.id, instructions.method);
     if (instructions?.plan) this.activePlans.set(identity.id, instructions.plan);
 

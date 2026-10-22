@@ -688,6 +688,74 @@ function sandbox(t: any) {
   return { privateDir, repoRoot, store: new FakeStore(privateDir) };
 }
 
+function memoryFile(privateDir: string, notes: any[]) {
+  const dir = path.join(privateDir, 'memory');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(dir, 'memory.json'), JSON.stringify({ schemaVersion: 1, items: notes }), { mode: 0o600 });
+}
+const memNote = (id: string, content: string, over: any = {}) => ({
+  id, repoId: 'owner/repo', roleGroupId: 'worker-1', privacyDomain: 'account:unassigned', content, source: { kind: 'user', ref: 'panel', digest: null },
+  createdAt: '2026-10-20T00:00:00.000Z', verifiedAt: new Date().toISOString(), ttlMs: 86400000, sensitivity: 'normal', status: 'adopted', approvedBy: { kind: 'human', id: 'u' }, version: 2, ...over
+});
+const roleWithMemory = (mode: string) => { const record: any = makeRoleRecord('worker-1', 1, 'worker'); record.group.memoryScope = { mode }; return record; };
+
+test('shared notes of the role group are given to the agent when its memory scope asks for them, and counted (issue #306)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.'), memNote('mem_off', 'This one is switched off.', { disabled: true }), memNote('mem_other', 'Another domain note.', { privacyDomain: 'account:other' }), memNote('mem_cand', 'Only a suggestion.', { status: 'candidate' })]);
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-mem-12345678', privateDir });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const content = fs.readFileSync(result.argv[1], 'utf8');
+  assert.match(content, /Always run the whole suite before pushing\./);
+  for (const hidden of ['switched off', 'Another domain', 'Only a suggestion']) assert.equal(content.includes(hidden), false, hidden);
+  assert.deepEqual(result.snapshot.memoryBindings, [{ id: 'mem_a', version: 2 }]);
+  assert.equal(result.injectedCounts.memories, 1);
+  assert.ok(result.injectedCounts.rules >= 1);
+  assert.match(result.summaryText, /Shared memory: 1 reviewed note prepared/);
+  cleanupSessionPlan(result.plan);
+});
+
+test('a role group whose memory scope is off is given no shared notes, and the digest does not change with them', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('off'));
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.')]);
+  const off = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-off-12345678', privateDir });
+  assert.equal(off.ok, true);
+  if (!off.ok) return;
+  assert.equal(fs.readFileSync(off.argv[1], 'utf8').includes('whole suite'), false);
+  assert.equal(off.injectedCounts.memories, 0);
+  cleanupSessionPlan(off.plan);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  const on = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-on-123456789', privateDir });
+  assert.equal(on.ok, true);
+  if (on.ok) { assert.notEqual(on.digest, off.digest, 'the digest covers the notes'); cleanupSessionPlan(on.plan); }
+});
+
+test('a memory file that cannot be read stops the launch instead of starting without the notes', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  fs.mkdirSync(path.join(privateDir, 'memory'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(privateDir, 'memory', 'memory.json'), '{ not json', { mode: 0o600 });
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-bad-123456789', privateDir });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.code, 'memory-unavailable');
+});
+
+test('a snapshot is stale once a shared note changes, is switched off or is added', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.')]);
+  const prepared = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-stm-12345678', privateDir });
+  assert.equal(prepared.ok, true);
+  if (!prepared.ok) return;
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: false });
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.', { disabled: true, version: 3 })]);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: true, reason: 'memory-changed' });
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.'), memNote('mem_b', 'A second note.')]);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: true, reason: 'memory-changed' });
+  cleanupSessionPlan(prepared.plan);
+});
 const teamDoc = (version: number, texts: string[]) => ({ version, updatedAt: '2026-10-22T10:00:00.000Z', rules: texts.map((text, index) => ({ id: `team:${index + 1}`, type: 'instruction', text })) });
 
 test('team rules are given to every agent, ahead of its role group\'s rules, and the summary says so (issue #306)', async (t) => {
