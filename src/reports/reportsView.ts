@@ -6,6 +6,17 @@ import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
 import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
+import * as fsp from 'node:fs/promises';
+import * as nodePath from 'node:path';
+const { inspectWorktree } = require('../projects/gitEvidence') as { inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }> };
+const { patchRowFor, inlineCommentLinks, worktreeFor, isUsableWorktree, isInside, isLine } = require('./jump') as {
+  isUsableWorktree(entry: unknown, evidence: unknown): boolean;
+  patchRowFor(patch: unknown, line: unknown): number | null;
+  inlineCommentLinks(lines: string[], filenames: string[]): Array<{ lineNumber: number; filename: string; line: number; start: number; end: number }>;
+  worktreeFor(input: { filename: unknown; headSha: unknown; worktrees: unknown }): { folder: string; relative: string } | null;
+  isInside(folder: string, real: string): boolean;
+  isLine(value: unknown): boolean;
+};
 
 const { readFeedback, saveFeedback } = require('./feedback-store') as {
   readFeedback(store: unknown, target: Record<string, unknown>): { state: string; record?: { note: string; headSha: string | null; updatedAt: string; revision: number } };
@@ -18,7 +29,7 @@ const { classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS } = requ
   CATEGORY_LABELS: Record<string, string>;
 };
 
-type ReportFile = { filename: string; status: string; patch: string | null };
+type ReportFile = { filename: string; path?: string | null; status: string; patch: string | null };
 const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbour, render, line, fileBulletLines } = require('./report') as {
   summarizePullRequest(input: { repository: string; pullRequest: unknown; snapshot: unknown; comments: unknown }): PullRequestSummary;
   buildIssueReport(input: Record<string, unknown>): { title: string; lines: string[] };
@@ -70,6 +81,8 @@ export interface ReportDeps {
   repository(): Promise<string | null>;
   readerFor(repository: string): ReportReader | null;
   promptFeedback?(value: string): Thenable<string | undefined>;
+  /** The working folders (of this repository) that have no uncommitted changes, with the commit each has checked out. */
+  worktrees?(): Promise<Array<{ path: string; headSha: string }>>;
 }
 
 const realDeps: ReportDeps = {
@@ -85,7 +98,20 @@ const realDeps: ReportDeps = {
     }
   },
   readerFor: (repository) => githubReaderFor(repository) as unknown as ReportReader | null,
-  promptFeedback: (value) => vscode.window.showInputBox({ prompt: 'Feedback saved only on this machine; nothing is sent to GitHub', value, ignoreFocusOut: true })
+  promptFeedback: (value) => vscode.window.showInputBox({ prompt: 'Feedback saved only on this machine; nothing is sent to GitHub', value, ignoreFocusOut: true }),
+  async worktrees() {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || !vscode.workspace.isTrusted) return [];
+    try {
+      const project = await WorktreeService.open(folder.uri.fsPath);
+      const clean: Array<{ path: string; headSha: string }> = [];
+      for (const entry of (await project.list()).slice(0, 30)) {
+        if (typeof entry.path !== 'string' || typeof entry.headSha !== 'string') continue;
+        if (isUsableWorktree(entry, await inspectWorktree(entry.path))) clean.push({ path: entry.path, headSha: entry.headSha });
+      }
+      return clean;
+    } catch { return []; }
+  }
 };
 let deps: ReportDeps = realDeps;
 let readGeneration = 0;
@@ -451,7 +477,11 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
     if (!evidence || evidence.files.length === 0) return navigation;
     const lines: string[] = [];
     for (let i = 0; i < document.lineCount; i += 1) lines.push(document.lineAt(i).text);
-    return [...navigation, ...fileBulletLines(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename }) => {
+    const inline = inlineCommentLinks(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename, line: commentLine, start, end }) => new vscode.DocumentLink(
+      new vscode.Range(lineNumber, start, lineNumber, end),
+      vscode.Uri.parse(`command:${REPORT_COMMANDS.openFileDiff}?${encodeURIComponent(JSON.stringify({ reportUri: document.uri.toString(), filename, line: commentLine }))}`)
+    ));
+    return [...navigation, ...inline, ...fileBulletLines(lines, evidence.files.map((entry) => entry.filename)).map(({ lineNumber, filename }) => {
       const text = lines[lineNumber];
       const start = text.indexOf(filename);
       const range = new vscode.Range(lineNumber, start, lineNumber, start + filename.length);
@@ -462,16 +492,69 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
   }
 }
 
-async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: string }> {
-  const input = value && typeof value === 'object' ? (value as { reportUri?: unknown; filename?: unknown }) : {};
+let reportContent: ReportContent | undefined;
+
+/** A clean working folder that has exactly this pull request's head checked out, and the file in it; null if there is none. Never leaves the folder. */
+async function worktreeFile(filename: string, headSha: string | null): Promise<string | null> {
+  if (!deps.worktrees || !headSha) return null;
+  let found: { folder: string; relative: string } | null;
+  try { found = worktreeFor({ filename, headSha, worktrees: await deps.worktrees() }); } catch { return null; }
+  if (!found) return null;
+  try {
+    const folder = await fsp.realpath(found.folder);
+    const candidate = nodePath.join(folder, ...found.relative.split('/'));
+    if ((await fsp.lstat(candidate)).isSymbolicLink()) return null;
+    const real = await fsp.realpath(candidate);
+    if (!isInside(folder, real) || !(await fsp.stat(real)).isFile()) return null;
+    return real;
+  } catch { return null; }
+}
+
+/**
+ * Opens one changed file of the pull request being read, at a line when one is given. If an agent's working folder has exactly this
+ * pull request's head checked out and no uncommitted change, the file is opened from there; otherwise the patch GitHub returned is
+ * opened, scrolled to the line when the patch shows it. Only a file the open report listed can be opened, and only a repository-relative
+ * path inside a folder (checked after links are resolved).
+ */
+async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: string; source?: 'worktree' | 'patch'; row?: number }> {
+  const input = value && typeof value === 'object' ? (value as { reportUri?: unknown; filename?: unknown; line?: unknown }) : {};
   if (typeof input.reportUri !== 'string' || typeof input.filename !== 'string') return { ok: false, code: 'invalid-file-diff' };
+  if (input.line !== undefined && !isLine(input.line)) return { ok: false, code: 'invalid-file-diff' };
   let reportUri: vscode.Uri;
   try { reportUri = vscode.Uri.parse(input.reportUri); } catch { return { ok: false, code: 'invalid-file-diff' }; }
   if (reportUri.scheme !== REPORT_SCHEME) return { ok: false, code: 'invalid-file-diff' };
-  const document = await vscode.workspace.openTextDocument(diffUri(reportUri, input.filename));
-  await vscode.languages.setTextDocumentLanguage(document, 'diff');
-  await vscode.window.showTextDocument(document, { preview: true });
-  return { ok: true };
+  const line = input.line as number | undefined;
+  const evidence = reportContent?.evidenceFor(reportUri) ?? null;
+  const file = evidence?.files.find((entry) => entry.filename === input.filename) ?? null;
+  const patchTarget = async (): Promise<{ ok: boolean; code?: string; source?: 'worktree' | 'patch'; row?: number }> => {
+    const document = await vscode.workspace.openTextDocument(diffUri(reportUri, input.filename as string));
+    await vscode.languages.setTextDocumentLanguage(document, 'diff');
+    const editor = await vscode.window.showTextDocument(document, { preview: true });
+    if (line === undefined) return { ok: true, source: 'patch' };
+    const row = file ? patchRowFor(file.patch, line) : null;
+    if (row === null) {
+      void vscode.window.showInformationMessage(`Line ${line} is not part of the changed text GitHub returned for this file, so the patch is opened at the top.`);
+      return { ok: true, source: 'patch' };
+    }
+    // The patch is shown under a two-row header (the file line and a blank line).
+    const at = new vscode.Position(row + 2, 0);
+    editor.selection = new vscode.Selection(at, at);
+    editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
+    return { ok: true, source: 'patch', row: row + 2 };
+  };
+  const real = file && typeof file.path === 'string' ? await worktreeFile(file.path, evidence?.headSha ?? null) : null;
+  if (real) {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(real));
+    const editor = await vscode.window.showTextDocument(document, { preview: true });
+    if (line !== undefined && line <= document.lineCount) {
+      const at = new vscode.Position(line - 1, 0);
+      editor.selection = new vscode.Selection(at, at);
+      editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
+    }
+    void vscode.window.showInformationMessage('Opened the file from an agent\'s working folder that has exactly this pull request\'s head checked out and no uncommitted changes.', 'Show the patch instead').then((choice) => { if (choice) void patchTarget(); });
+    return { ok: true, source: 'worktree' };
+  }
+  return patchTarget();
 }
 
 function activeTarget(): { kind: Kind; number: number } | null {
@@ -514,6 +597,7 @@ export function reportBadgeForTests(kind: Kind): number | undefined {
 export function registerReports(context: vscode.ExtensionContext): void {
   setPublicFeedbackTestMode(context.extensionMode === vscode.ExtensionMode.Test);
   const content = new ReportContent();
+  reportContent = content;
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };
   testTrees = context.extensionMode === vscode.ExtensionMode.Test ? trees : undefined;
   const refresh = (): void => {

@@ -93,9 +93,15 @@ test('the structured file list exposed alongside the report matches exactly what
   const files = ok([{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }, { filename: 'README.md', status: 'added', additions: 1, deletions: 0 }]);
   const built = buildPr({ files });
   assert.deepEqual(built.files, [
-    { filename: 'src/x.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' },
-    { filename: 'README.md', status: 'added', patch: null }
+    { filename: 'src/x.ts', path: 'src/x.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' },
+    { filename: 'README.md', path: 'README.md', status: 'added', patch: null }
   ]);
+});
+
+test('a file has a real repository path only when showing its name changed nothing, so it can be looked up on disk', () => {
+  const longName = `${'d/'.repeat(130)}x.ts`;
+  const built = buildPr({ files: ok([{ filename: 'a/b.ts', status: 'modified', patch: '+x' }, { filename: 'a/b.ts', status: 'modified', patch: '+y' }, { filename: 'tab\there.ts', status: 'added', patch: '+z' }, { filename: longName, status: 'added', patch: '+w' }]) });
+  assert.deepEqual(built.files.map((entry) => entry.path), ['a/b.ts', 'a/b.ts', null, null], 'a name with a control character and a name cut for length have no path; a repeated name keeps its real path under a different display name');
 });
 
 test('the structured file list is empty whenever the plain-text diff itself is unknown or absent', () => {
