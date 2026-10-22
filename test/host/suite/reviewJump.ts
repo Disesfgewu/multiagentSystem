@@ -88,8 +88,7 @@ export async function runReviewJumpChecks(): Promise<void> {
   } finally {
     ui.showInformationMessage = original;
     setReportDepsForTests(undefined);
-    // Windows can still hold a just-closed editor's file for a moment (EBUSY): retry instead of failing the whole run.
-    fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    fs.rmSync(folder, { recursive: true, force: true });
   }
   console.log('host smoke: an inline review comment in a pull request report jumps to its line: in a clean working folder at exactly the head, else in the patch; links out of the folder and bad line numbers are refused');
 }
