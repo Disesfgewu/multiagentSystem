@@ -23,6 +23,9 @@ const CODENAME = /^(PM|[A-Z][a-z]{1,19})-([0-9]{2,4})$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{8,64}$/;
 const KNOWN_PREFIXES = Object.freeze({ pm: 'PM', worker: 'Worker', researcher: 'Researcher', reviewer: 'Reviewer' });
 const UNASSIGNED_PREFIX = 'Agent';
+// Roles whose name reads like the person in charge: a codename such as `Owner-01` would blur "an agent signed this" with "the owner
+// wrote this", so they get the plain `Agent` prefix (PM review of #344).
+const OWNER_LIKE = Object.freeze(['admin', 'administrator', 'owner', 'human', 'manager', 'maintainer', 'boss', 'user', 'me']);
 // Like a broadcast id, the codename rule's id is reserved: a typed or stored rule with it could push the real one out (the
 // resolver keeps one rule per id). Only the object `codenameRule` returns may carry it; it is registered here by identity.
 const CODENAME_RULE_ID = 'codename:agent';
@@ -35,6 +38,7 @@ const isPlain = (value) => value !== null && typeof value === 'object' && !Array
 function prefixForRole(role) {
   if (typeof role !== 'string') return UNASSIGNED_PREFIX;
   if (Object.hasOwn(KNOWN_PREFIXES, role)) return KNOWN_PREFIXES[role];
+  if (OWNER_LIKE.includes(role.toLowerCase())) return UNASSIGNED_PREFIX;
   return /^[a-z]{2,20}$/.test(role) ? `${role[0].toUpperCase()}${role.slice(1)}` : UNASSIGNED_PREFIX;
 }
 

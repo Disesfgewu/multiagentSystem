@@ -4,7 +4,7 @@ import { modelArguments, normalizeRequestedModel } from '../providers/modelSelec
 import { attributionArguments } from '../providers/attribution';
 const { promptIsSafe } = require('../broadcast/deliver') as { promptIsSafe(prompt: unknown): boolean };
 const { mergeSandboxArguments } = require('../roles/tool-permissions') as { mergeSandboxArguments(auto: string[], permission: string[]): string[] };
-import { formatShellCommandLine } from '../terminals/shellCommand';
+import { formatShellCommandLine, formatPathPrefix } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
 const { parseCodename } = require('./codenames') as { parseCodename(value: unknown): { prefix: string; number: number } | null };
 
@@ -402,6 +402,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     autoMode?: { args: string[]; label: string };
     /** The codename the caller assigned (issue #342); shown with the session and saved with it. */
     codename?: string;
+    /** A folder put first on PATH for the typed CLI command (issue #342: the session's gh wrapper). */
+    pathPrefix?: string;
   }): Promise<SessionView> {
     if (input.codename !== undefined && !parseCodename(input.codename)) throw new SessionError('invalid-codename');
     const executable = this.executableFor(input.provider);
@@ -427,7 +429,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs, input.pathPrefix);
       if (input.codename !== undefined) this.codenames.set(identity.id, input.codename);
       await this.persist();
       return this.view(identity.id);
@@ -461,7 +463,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] },
     attributionFile?: string,
     autoMode?: { args: string[]; label: string },
-    permissionArgs?: string[]
+    permissionArgs?: string[],
+    pathPrefix?: string
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
@@ -477,6 +480,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     // Decided before a terminal exists: an unrecognized shell gets no terminal, no text and no state.
     const shellType = launch ? this.deps.detectShellType?.() : undefined;
     if (shellType === null) throw new SessionError('unsupported-shell');
+    // The per-session gh wrapper goes first on PATH for the CLI (issue #342), also decided before a terminal exists: a shell it cannot
+    // be put in front for (cmd.exe) starts nothing.
+    let prefix = '';
+    if (launch && pathPrefix !== undefined) {
+      let made: string | null;
+      try { made = formatPathPrefix(pathPrefix, shellType ?? (process.platform === 'win32' ? 'powershell' : 'posix')); } catch { made = null; }
+      if (made === null) throw new SessionError('unsupported-shell');
+      prefix = made;
+    }
     // Decided before a terminal exists too: a refusal to wrap leaves no terminal, no text and no state.
     const wrapped = launch ? (wrap ? wrap(executable, allArgs) : { executable, args: allArgs }) : { executable, args: allArgs };
     const title = this.deps.terminalTitle ? this.deps.terminalTitle(name) : name;
@@ -517,7 +529,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const commandLine = formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
+      const commandLine = prefix + formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
     }
@@ -635,6 +647,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       permissionArgs?: string[];
       /** The codename the new session holds (issue #342). When it is the old session's, the old record stops holding it. */
       codename?: string;
+      /** The same PATH folder `start` takes. */
+      pathPrefix?: string;
     } = {}
   ): Promise<SessionView> {
     if (options.codename !== undefined && !parseCodename(options.codename)) throw new SessionError('invalid-codename');
@@ -664,7 +678,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs, options.pathPrefix);
       if (options.codename !== undefined) {
         if (this.codenames.get(id) === options.codename) this.codenames.delete(id);
         this.codenames.set(identity.id, options.codename);
@@ -718,6 +732,26 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       this.instructionLabels.set(id, 'CLI exited (instructions file cleaned up; reopen as new session to relaunch)');
     }
     return this.view(id);
+  }
+
+  /**
+   * Makes the saved codenames agree with the codename store (issue #342): a session the store no longer lists as the holder of its
+   * codename (it dropped the oldest holders, or the codename moved on) stops showing it. `holderOf` answers the codename the store
+   * holds for a session, null for none, or undefined when it could not tell, which changes nothing. Returns how many were dropped.
+   */
+  async reconcileCodenames(holderOf: (repoId: string, sessionId: string) => string | null | undefined): Promise<number> {
+    await this.ready();
+    let dropped = 0;
+    for (const [id, codename] of [...this.codenames]) {
+      const entry = this.registry.get(id);
+      if (!entry) { this.codenames.delete(id); continue; }
+      const held = holderOf(entry.repoId, id);
+      if (held === undefined || held === codename) continue;
+      this.codenames.delete(id);
+      dropped += 1;
+    }
+    if (dropped > 0) await this.persist();
+    return dropped;
   }
 
   get(id: string): SessionView | null {

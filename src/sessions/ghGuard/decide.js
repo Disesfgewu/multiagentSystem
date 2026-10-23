@@ -1,0 +1,312 @@
+'use strict';
+
+/**
+ * What the `gh` wrapper in an agent's terminal does with one call (issue #342). Pure: it reads no file and starts no program; the
+ * runner (`run.js`) gives it the body text it read and carries out the answer.
+ *
+ * Only the five commands that post text are looked at: `gh pr create|comment|review` and `gh issue create|comment`. For those:
+ *   - the body's first line becomes the session's signature (`— Worker-01`) when it is not already;
+ *   - a body or title that signs as another codename, or claims to be the owner, is refused;
+ *   - anything the wrapper cannot read for sure is refused (fail closed): an unknown flag, a flag given twice, a short-flag
+ *     cluster, an editor or browser that would let the text be written where the wrapper cannot see it, a body it was not given.
+ * Every other `gh` call is passed through unchanged.
+ *
+ * A signature is a claim, not proof: an agent that wants to can call the real `gh` by its full path. This is a guard against
+ * mistakes and casual impersonation, not access control.
+ */
+
+const CODENAME = /^(?:PM|[A-Z][a-z]{1,19})-[0-9]{2,4}$/;
+const MAX_BODY_CHARS = 65536; // GitHub's own limit for a body
+/** Where the runner puts the path of the file holding the signed body. */
+const BODY_FILE = Object.freeze({ bodyFile: true });
+
+// For each command: its flags, `true` for one that takes a value. Help is handled before this.
+const VALUE = true;
+const SWITCH = false;
+const COMMON = { repo: VALUE };
+const FLAGS = Object.freeze({
+  'pr create': { assignee: VALUE, base: VALUE, body: VALUE, 'body-file': VALUE, draft: SWITCH, 'dry-run': SWITCH, editor: SWITCH, fill: SWITCH, 'fill-first': SWITCH, 'fill-verbose': SWITCH, head: VALUE, label: VALUE, milestone: VALUE, 'no-maintainer-edit': SWITCH, project: VALUE, recover: VALUE, reviewer: VALUE, template: VALUE, title: VALUE, web: SWITCH, ...COMMON },
+  'pr comment': { body: VALUE, 'body-file': VALUE, 'create-if-none': SWITCH, 'delete-last': SWITCH, 'edit-last': SWITCH, editor: SWITCH, web: SWITCH, yes: SWITCH, ...COMMON },
+  'pr review': { approve: SWITCH, body: VALUE, 'body-file': VALUE, comment: SWITCH, 'request-changes': SWITCH, ...COMMON },
+  'issue create': { assignee: VALUE, body: VALUE, 'body-file': VALUE, editor: SWITCH, label: VALUE, milestone: VALUE, project: VALUE, recover: VALUE, template: VALUE, title: VALUE, web: SWITCH, ...COMMON },
+  'issue comment': { body: VALUE, 'body-file': VALUE, 'create-if-none': SWITCH, 'delete-last': SWITCH, 'edit-last': SWITCH, editor: SWITCH, web: SWITCH, yes: SWITCH, ...COMMON },
+  // Editing replaces the whole body, so a new body is signed like a new post; editing only other fields is passed on.
+  'pr edit': { 'add-assignee': VALUE, 'add-label': VALUE, 'add-project': VALUE, 'add-reviewer': VALUE, base: VALUE, body: VALUE, 'body-file': VALUE, milestone: VALUE, 'remove-assignee': VALUE, 'remove-label': VALUE, 'remove-milestone': SWITCH, 'remove-project': VALUE, 'remove-reviewer': VALUE, title: VALUE, ...COMMON },
+  'issue edit': { 'add-assignee': VALUE, 'add-label': VALUE, 'add-project': VALUE, body: VALUE, 'body-file': VALUE, milestone: VALUE, 'remove-assignee': VALUE, 'remove-label': VALUE, 'remove-milestone': SWITCH, 'remove-project': VALUE, title: VALUE, ...COMMON }
+});
+const EDITS = Object.freeze(['pr edit', 'issue edit']);
+const SHORT = Object.freeze({
+  'pr create': { a: 'assignee', B: 'base', b: 'body', F: 'body-file', d: 'draft', e: 'editor', f: 'fill', H: 'head', l: 'label', m: 'milestone', p: 'project', r: 'reviewer', T: 'template', t: 'title', w: 'web', R: 'repo' },
+  'pr comment': { b: 'body', F: 'body-file', e: 'editor', w: 'web', R: 'repo' },
+  'pr review': { a: 'approve', b: 'body', F: 'body-file', c: 'comment', r: 'request-changes', R: 'repo' },
+  'issue create': { a: 'assignee', b: 'body', F: 'body-file', e: 'editor', l: 'label', m: 'milestone', p: 'project', T: 'template', t: 'title', w: 'web', R: 'repo' },
+  'issue comment': { b: 'body', F: 'body-file', e: 'editor', w: 'web', R: 'repo' },
+  'pr edit': { B: 'base', b: 'body', F: 'body-file', m: 'milestone', t: 'title', R: 'repo' },
+  'issue edit': { b: 'body', F: 'body-file', m: 'milestone', t: 'title', R: 'repo' }
+});
+
+/**
+ * The first word of a call that is passed on: gh's own top-level commands (from `gh help` of gh 2.62). Anything else is an alias
+ * or an extension, which could stand for a posting command the wrapper would not recognize, so it is refused.
+ */
+const TOP_LEVEL = Object.freeze(['alias', 'api', 'attestation', 'auth', 'browse', 'cache', 'codespace', 'completion', 'config', 'extension', 'gist', 'gpg-key', 'help', 'issue', 'label', 'org', 'pr', 'preview', 'project', 'release', 'repo', 'ruleset', 'run', 'search', 'secret', 'ssh-key', 'status', 'variable', 'version', 'workflow']);
+/** Subcommands refused outright: they would let a later call mean something the wrapper cannot see, or change the sign-in. */
+const REFUSED = Object.freeze({
+  alias: { set: 'alias', import: 'alias', delete: 'alias' },
+  extension: { install: 'extension', exec: 'extension', upgrade: 'extension', create: 'extension' },
+  // Only `gh auth status` is passed on: an agent does not sign in, out, or read the sign-in's token through this terminal.
+  auth: { login: 'auth', logout: 'auth', refresh: 'auth', switch: 'auth', token: 'auth', 'setup-git': 'auth' }
+});
+// gh's own subcommands of `pr` and `issue` (gh 2.62), with the short names gh itself accepts for them: `gh pr new` IS `pr create`.
+const SUBCOMMANDS = Object.freeze({
+  pr: { checkout: 'checkout', co: 'checkout', checks: 'checks', close: 'close', comment: 'comment', create: 'create', new: 'create', diff: 'diff', edit: 'edit', list: 'list', ls: 'list', lock: 'lock', merge: 'merge', ready: 'ready', reopen: 'reopen', review: 'review', status: 'status', unlock: 'unlock', 'update-branch': 'update-branch', view: 'view' },
+  issue: { close: 'close', comment: 'comment', create: 'create', new: 'create', delete: 'delete', develop: 'develop', edit: 'edit', list: 'list', ls: 'list', lock: 'lock', pin: 'pin', reopen: 'reopen', status: 'status', transfer: 'transfer', unlock: 'unlock', unpin: 'unpin', view: 'view' }
+});
+// Closing or reopening with a comment posts that comment, which cannot be signed through a flag value.
+const CLOSE_WITH_COMMENT = Object.freeze(['pr close', 'pr reopen', 'issue close', 'issue reopen']);
+// The text would be written in an editor, a browser or a form the wrapper never sees.
+const UNSEEN = Object.freeze({ editor: 'editor', web: 'browser', recover: 'saved-input' });
+
+// `gh api`: its flags, so a value is never mistaken for a flag and the other way round. Only a call that reads is passed on.
+const API_FLAGS = Object.freeze({ method: VALUE, header: VALUE, 'raw-field': VALUE, field: VALUE, input: VALUE, jq: VALUE, template: VALUE, cache: VALUE, hostname: VALUE, preview: VALUE, include: SWITCH, paginate: SWITCH, silent: SWITCH, slurp: SWITCH, verbose: SWITCH });
+const API_SHORT = Object.freeze({ X: 'method', H: 'header', f: 'raw-field', F: 'field', q: 'jq', t: 'template', p: 'preview', i: 'include' });
+// Any of these makes gh send data (and switch to POST by itself).
+const API_SENDS = Object.freeze(['raw-field', 'field', 'input']);
+
+const pass = () => ({ action: 'pass' });
+const refuse = (reason, detail) => ({ action: 'refuse', reason, ...(detail ? { detail } : {}) });
+
+/** Reads the flags of a posting command into `{ flags: Map<name, value|true>, positional }`, or why it cannot. */
+function parseFlags(command, tokens) {
+  const known = FLAGS[command];
+  const short = SHORT[command];
+  const flags = new Map();
+  const positional = [];
+  const set = (name, value) => {
+    if (flags.has(name)) return refuse('flag-repeated', `--${name}`);
+    flags.set(name, value);
+    return null;
+  };
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === '--') { positional.push(...tokens.slice(i + 1)); break; }
+    if (token.startsWith('--')) {
+      const at = token.indexOf('=');
+      const name = at < 0 ? token.slice(2) : token.slice(2, at);
+      if (!Object.hasOwn(known, name)) return refuse('flag-unknown', `--${name}`);
+      let value = true;
+      if (known[name] === VALUE) {
+        if (at >= 0) value = token.slice(at + 1);
+        else if (i + 1 < tokens.length) value = tokens[(i += 1)];
+        else return refuse('flag-value-missing', `--${name}`);
+      } else if (at >= 0) {
+        // `--draft=false` and the like: one spelling per switch keeps the reading certain.
+        return refuse('flag-unknown', token.slice(0, Math.min(token.length, 40)));
+      }
+      const problem = set(name, value);
+      if (problem) return problem;
+      continue;
+    }
+    if (token.startsWith('-') && token.length > 1) {
+      const letter = token[1];
+      if (!Object.hasOwn(short, letter)) return refuse('flag-unknown', `-${letter}`);
+      const name = short[letter];
+      let value = true;
+      if (known[name] === VALUE) {
+        if (token.length > 2) value = token[2] === '=' ? token.slice(3) : token.slice(2);
+        else if (i + 1 < tokens.length) value = tokens[(i += 1)];
+        else return refuse('flag-value-missing', `-${letter}`);
+      } else if (token.length > 2) {
+        // A cluster such as `-db text`: refused rather than guessed.
+        return refuse('flag-cluster', token.slice(0, 8));
+      }
+      const problem = set(name, value);
+      if (problem) return problem;
+      continue;
+    }
+    positional.push(token);
+  }
+  return { flags, positional };
+}
+
+/** `gh api`: passed on only when it certainly reads (no method or GET, and nothing sent); anything else is refused. */
+function decideApi(tokens) {
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === '--') break;
+    let name = null;
+    let value = null;
+    if (token.startsWith('--')) {
+      const at = token.indexOf('=');
+      name = at < 0 ? token.slice(2) : token.slice(2, at);
+      if (!Object.hasOwn(API_FLAGS, name)) return refuse('api-flag-unknown', `--${name.slice(0, 30)}`);
+      if (API_FLAGS[name] === VALUE) value = at >= 0 ? token.slice(at + 1) : tokens[(i += 1)];
+      else if (at >= 0) return refuse('api-flag-unknown', token.slice(0, 40));
+    } else if (token.startsWith('-') && token.length > 1) {
+      if (!Object.hasOwn(API_SHORT, token[1])) return refuse('api-flag-unknown', `-${token[1]}`);
+      name = API_SHORT[token[1]];
+      if (API_FLAGS[name] === VALUE) value = token.length > 2 ? (token[2] === '=' ? token.slice(3) : token.slice(2)) : tokens[(i += 1)];
+      else if (token.length > 2) return refuse('flag-cluster', token.slice(0, 8));
+    } else continue;
+    if (API_FLAGS[name] === VALUE && value === undefined) return refuse('flag-value-missing', `--${name}`);
+    if (API_SENDS.includes(name)) return refuse('api-write', `--${name}`);
+    if (name === 'method' && String(value).toUpperCase() !== 'GET') return refuse('api-write', String(value).slice(0, 10));
+  }
+  return pass();
+}
+
+const fenced = (line) => /^\s*(?:```|~~~)/.test(line);
+// A line that is only a signature: a dash, maybe a space, and a name. `- item` lists have text after the name and do not match.
+const SIGNATURE_LINE = /^\s*(?:—|–|-{1,2})\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
+const OWNER_SIGNATURE = /^\s*(?:—|–|-{1,2})\s*(?:管理者|管理員|管理员|repo\s+owner|owner|maintainer|admin(?:istrator)?)\s*$/i;
+const OWNER_CLAIMS = [/我(?:就)?是(?:這個專案的|这个项目的)?管理(?:者|員|员)/, /以管理(?:者|員|员)(?:的)?身(?:分|份)/, /\b(?:i\s+am|i'm)\s+the\s+(?:repo(?:sitory)?\s+)?(?:owner|maintainer|admin(?:istrator)?)\b/i, /\bspeaking\s+as\s+the\s+(?:owner|maintainer)\b/i];
+
+/**
+ * Why `text` must not be posted under `own`, or null. Quoted lines (`>`) and fenced code are someone else's words and not checked.
+ */
+function impersonation(text, own) {
+  let inCode = false;
+  for (const raw of String(text).split(/\r?\n/)) {
+    if (fenced(raw)) { inCode = !inCode; continue; }
+    if (inCode || /^\s*>/.test(raw)) continue;
+    const signed = SIGNATURE_LINE.exec(raw);
+    if (signed && signed[1] !== own) return refuse('other-codename', signed[1].slice(0, 30));
+    if (OWNER_SIGNATURE.test(raw)) return refuse('owner-claim');
+    if (OWNER_CLAIMS.some((pattern) => pattern.test(raw))) return refuse('owner-claim');
+  }
+  return null;
+}
+
+/** The body with the signature as its first line. A first line that already signs as `own` (any dash) is written the one way. */
+function signBody(body, own) {
+  const text = String(body ?? '');
+  const lines = text.split(/\r?\n/);
+  const first = SIGNATURE_LINE.exec(lines[0] ?? '');
+  const signature = `— ${own}`;
+  if (first && first[1] === own) return [signature, ...lines.slice(1)].join('\n');
+  return text.trim() === '' ? signature : `${signature}\n\n${text}`;
+}
+
+/**
+ * @param {string[]} argv what was typed after `gh`
+ * @param {{ codename: string, body?: (source: { kind: 'text', text: string } | { kind: 'file', path: string } | { kind: 'stdin' }) => { ok: true, text: string } | { ok: false, reason: string } }} context
+ *   `body` reads a body the call points at (a file or standard input); without it, such a call is refused.
+ * @returns {{ action: 'pass' } | { action: 'refuse', reason: string, detail?: string } | { action: 'run', argv: Array<string | typeof BODY_FILE>, body: string }}
+ */
+function decide(argv, context = {}) {
+  const own = context.codename;
+  if (!Array.isArray(argv) || argv.some((token) => typeof token !== 'string')) return refuse('arguments-invalid');
+  if (typeof own !== 'string' || !CODENAME.test(own)) return refuse('no-codename');
+  const [first, second] = argv;
+  if (first === undefined) return pass();
+  if (first.startsWith('-')) {
+    // `gh --version`, `gh --help`: nothing is posted. A flag before the command hides which command it is, so a call that names
+    // a posting command anywhere is refused rather than guessed.
+    return argv.some((token) => token === 'pr' || token === 'issue') ? refuse('command-unclear') : pass();
+  }
+  if (!TOP_LEVEL.includes(first)) return refuse('command-not-allowed', first.slice(0, 30));
+  if (Object.hasOwn(SUBCOMMANDS, first) && second !== undefined && !second.startsWith('-')) {
+    if (!Object.hasOwn(SUBCOMMANDS[first], second)) return refuse('command-not-allowed', `${first} ${second.slice(0, 20)}`);
+    // The rest is judged under gh's own name for the subcommand.
+    if (SUBCOMMANDS[first][second] !== second) return decide([first, SUBCOMMANDS[first][second], ...argv.slice(2)], context);
+  }
+  if (Object.hasOwn(SUBCOMMANDS, first) && second !== undefined && second.startsWith('-') && argv.slice(1).some((token) => Object.hasOwn(SUBCOMMANDS[first], token) && ['create', 'comment', 'review', 'edit', 'close', 'reopen'].includes(SUBCOMMANDS[first][token]))) return refuse('command-unclear');
+  if (Object.hasOwn(REFUSED, first) && second !== undefined && Object.hasOwn(REFUSED[first], second)) return refuse('subcommand-refused', `${first} ${second}`);
+  if (first === 'auth' && second !== undefined && second !== 'status' && !second.startsWith('-')) return refuse('subcommand-refused', `auth ${second.slice(0, 20)}`);
+  if (CLOSE_WITH_COMMENT.includes(`${first} ${second}`) && argv.slice(2).some((token) => /^(?:--comment(?:=|$)|-c)/.test(token))) return refuse('comment-on-close');
+  if (first === 'api') {
+    const rest = argv.slice(1);
+    return rest.includes('--help') || rest.includes('-h') ? pass() : decideApi(rest);
+  }
+  const command = `${first} ${second ?? ''}`;
+  if (!Object.hasOwn(FLAGS, command)) return pass();
+  const rest = argv.slice(2);
+  if (rest.includes('--help') || rest.includes('-h')) return pass();
+  const parsed = parseFlags(command, rest);
+  if (parsed.action === 'refuse') return parsed;
+  const { flags } = parsed;
+  for (const [name, why] of Object.entries(UNSEEN)) if (flags.has(name)) return refuse('text-not-seen', why);
+
+  if (flags.has('title')) {
+    const problem = impersonation(flags.get('title'), own);
+    if (problem) return problem;
+  }
+  if (flags.has('body') && flags.has('body-file')) return refuse('flag-repeated', 'body');
+  // An edit that leaves the body alone posts no new text: the title was checked above.
+  if (EDITS.includes(command) && !flags.has('body') && !flags.has('body-file')) return pass();
+  // Deleting the last comment posts no text.
+  if (flags.has('delete-last')) return flags.has('body') || flags.has('body-file') ? refuse('flag-conflict', 'delete-last') : pass();
+
+  let body;
+  if (flags.has('body')) {
+    body = String(flags.get('body'));
+  } else if (flags.has('body-file')) {
+    const where = String(flags.get('body-file'));
+    if (typeof context.body !== 'function') return refuse('body-unreadable');
+    const read = context.body(where === '-' ? { kind: 'stdin' } : { kind: 'file', path: where });
+    if (!read || read.ok !== true || typeof read.text !== 'string') return refuse('body-unreadable', read && typeof read.reason === 'string' ? read.reason : undefined);
+    body = read.text;
+  } else if (command === 'pr review') {
+    // A review that only approves or requests changes still carries the signature; one with no action would ask interactively.
+    if (!flags.has('approve') && !flags.has('comment') && !flags.has('request-changes')) return refuse('text-not-seen', 'prompt');
+    body = '';
+  } else {
+    // Without a body gh asks for it (or, with --fill, writes one from the commits) where the wrapper cannot sign it.
+    return refuse('body-missing');
+  }
+  const problem = impersonation(body, own);
+  if (problem) return problem;
+  const signed = signBody(body, own);
+  if (signed.length > MAX_BODY_CHARS) return refuse('body-too-large');
+
+  // The signed body always travels in a file: it is never re-quoted for a shell and has no command-line length limit.
+  const out = [first, second];
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i];
+    if (token === '--') { out.push(...rest.slice(i)); break; }
+    const longName = token.startsWith('--') ? token.slice(2).split('=')[0] : null;
+    const shortName = !longName && token.startsWith('-') && token.length > 1 ? SHORT[command][token[1]] : null;
+    const name = longName ?? shortName;
+    if (name === 'body' || name === 'body-file') {
+      // Skip the flag and, when it was given separately, its value.
+      if (!token.includes('=') && (longName ? true : token.length === 2)) i += 1;
+      continue;
+    }
+    out.push(token);
+    if (name && FLAGS[command][name] === VALUE && !token.includes('=') && (longName ? true : token.length === 2)) out.push(rest[(i += 1)]);
+  }
+  const dashDash = out.indexOf('--');
+  const insertAt = dashDash < 0 ? out.length : dashDash;
+  out.splice(insertAt, 0, '--body-file', BODY_FILE);
+  return { action: 'run', argv: out, body: signed };
+}
+
+/** One sentence for the agent: why the call was refused and what to do instead. */
+function explain(reason, detail) {
+  const what = detail ? ` (${detail})` : '';
+  const texts = {
+    'no-codename': 'this terminal has no agent codename, so nothing can be signed',
+    'arguments-invalid': 'the arguments could not be read',
+    'command-unclear': 'put the command first, for example `gh pr comment 12 --body "..."`',
+    'flag-unknown': `the flag${what} is not one this wrapper reads for sure`,
+    'flag-repeated': `the flag${what} was given more than once`,
+    'flag-cluster': `short flags${what} must be given one at a time`,
+    'flag-value-missing': `the flag${what} has no value`,
+    'flag-conflict': `the flags${what} cannot be combined`,
+    'text-not-seen': `the text would be written in an ${detail === 'browser' ? 'browser' : detail === 'prompt' ? 'interactive prompt' : detail === 'saved-input' ? 'earlier, saved input' : 'editor'} the wrapper cannot sign; give it with --body or --body-file`,
+    'body-missing': 'give the text with --body or --body-file so it can be signed',
+    'body-unreadable': `the body file could not be read${what}`,
+    'body-too-large': 'the signed body is longer than GitHub accepts',
+    'other-codename': `the text signs as another agent${what}; sign only as yourself`,
+    'owner-claim': 'the text claims to be the owner; agents never sign or speak as the owner',
+    'real-gh-missing': 'the real gh program could not be found, so nothing was sent',
+    'api-write': `gh api may only read here${what}; post with \`gh issue comment\` or \`gh pr comment|review|create\`, which sign the text`,
+    'command-not-allowed': `\`gh ${detail}\` is not one of gh's own commands (an alias or an extension), so it is not passed on`,
+    'subcommand-refused': `\`gh ${detail}\` is not allowed in an agent's terminal`,
+    'comment-on-close': 'closing or reopening with --comment cannot be signed; post the comment with `gh issue comment` or `gh pr comment` first, then close without --comment',
+    'api-flag-unknown': `the gh api flag${what} is not one this wrapper reads for sure`
+  };
+  return `multiagent gh wrapper: refused: ${texts[reason] ?? reason}. Nothing was sent.`;
+}
+
+module.exports = { decide, explain, signBody, impersonation, BODY_FILE, MAX_BODY_CHARS, FLAGS, SHORT };

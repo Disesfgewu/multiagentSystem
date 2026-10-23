@@ -124,3 +124,18 @@ export function formatShellCommandLine(
   const formattedExe = quotePosix(executable);
   return `${formattedExe}${quotedArgs.length > 0 ? ' ' + quotedArgs.join(' ') : ''}`;
 }
+
+/**
+ * What goes in front of a typed command line so that `dir` comes first on PATH for that program (issue #342: the per-session `gh`
+ * wrapper). It is typed after the shell has read its profile, which may have reordered PATH (macOS login shells do). Null for cmd.exe,
+ * which the wrapper does not support.
+ * - POSIX: `PATH='<dir>':"$PATH" ` applies to the one program typed after it.
+ * - PowerShell: sets the terminal's own PATH and the process-only script policy (`RemoteSigned`, so the `gh.ps1` shim can run).
+ */
+export function formatPathPrefix(dir: string, shellType: ShellType): string | null {
+  assertNoControlChars(dir, 'path');
+  if (dir.trim() === '') throw new TypeError('path must not be empty');
+  if (shellType === 'posix') return `PATH=${quotePosix(dir)}:"$PATH" `;
+  if (shellType === 'powershell') return `$env:PSExecutionPolicyPreference = 'RemoteSigned'; $env:PATH = '${dir.replace(/['‘’‚‛]/g, '$&$&')};' + $env:PATH; `;
+  return null;
+}
