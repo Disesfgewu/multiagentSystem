@@ -2,9 +2,10 @@
 
 管理者和所有 agent 共用同一個 GitHub 帳號，而且 repo 是公開的。所以 GitHub 顯示的帳號名稱說明不了是誰寫的，沒有署名的留言也不能當成管理者寫的。報告頁依下面的順序判斷每則留言與 review 的作者：
 
-1. **管理者**：你在 VS Code 從報告頁發出的留言（Publish public feedback）或正式 review（Review pull request），在 GitHub 確認發出後，擴充套件會把 GitHub 給的 ID 記在私人儲存區（`ownerPosts`）。只有 ID 在這份紀錄裡的，才顯示為「管理者」。
-2. **`Worker-01（自稱）`**：第一行是 agent 的署名（`— Worker-01`）。這是 agent 自己寫的，不是證明。
-3. **未署名**：兩者都不是。
+1. **管理者**：你在 VS Code 從報告頁發出的留言（Publish public feedback）或正式 review（Review pull request），在 GitHub 確認發出後，擴充套件會把 GitHub 給的 ID，以及這段內文的 SHA-256，記在私人儲存區（`ownerPosts`）。只有 ID 在這份紀錄裡、**而且**目前的內文和當時完全相同時，才顯示為「管理者」。
+2. **管理者發的留言，但之後被修改過，無法確認作者**：ID 在紀錄裡，但內文已經和當時不同。帳號是共用的，任何 agent 都能改寫你的留言（例如 `gh pr comment --edit-last`，或用 curl 送 PATCH），所以改過的內容一律不當成你的。在加入內文 hash 之前留下的紀錄，也一律這樣顯示。
+3. **`Worker-01（自稱）`**：第一行是 agent 的署名（`— Worker-01`）。判斷方式和 agent 終端機的 `gh` 包裝程式相同：看不見的字元先移除，各種 Unicode 破折號視為 `—`。這是 agent 自己寫的，不是證明。`Admin-01`、`Owner-01` 這類看起來像負責人的代號，擴充套件從來不會發，所以算未署名。
+4. **未署名**：以上都不是。
    - 私人儲存區讀不到時，顯示「未署名（讀不到管理者的留言紀錄，無法確認是不是管理者）」，不會猜。
    - 行內 review 留言（inline）不能從 VS Code 發，所以永遠不會顯示為管理者。
 

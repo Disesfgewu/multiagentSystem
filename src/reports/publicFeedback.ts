@@ -4,7 +4,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor, GITHUB_AUTH_PROVIDER, GITHUB_SCOPES } from '../github/githubCommands';
 import { WorktreeService } from '../projects/worktrees';
 import { COLLECTIONS } from '../storage/extensionStorage';
-const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { record(input: { repository: string; kind: 'comment' | 'review'; id: number; number: number }): { ok: boolean } } };
+const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { record(input: { repository: string; kind: 'comment' | 'review'; id: number; number: number; body: string }): { ok: boolean } } };
 const { classifyWrite } = require('./writeOutcome') as { classifyWrite(response: { ok: boolean; status: number }, verified: boolean): 'done' | 'refused' | 'unknown' };
 const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> } };
 
@@ -341,8 +341,8 @@ export function installPublicFeedbackTestOverrides(next: Partial<Hooks>): void {
  * its id is in this record, since the GitHub account is shared with the agents. A record that cannot be written does not undo the
  * post (it is already on GitHub); the post is then shown as unsigned, never as the owner's, and the caller is told.
  */
-function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 'review', id: number | undefined, number: number): boolean {
-  try { return id !== undefined && new OwnerPostStore(store).record({ repository, kind, id, number }).ok === true; } catch { return false; }
+function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 'review', id: number | undefined, number: number, body: string): boolean {
+  try { return id !== undefined && new OwnerPostStore(store).record({ repository, kind, id, number, body }).ok === true; } catch { return false; }
 }
 
 export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
@@ -381,7 +381,7 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   } };
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
-    reader: {}, transport: { comment: async ({ number, body: sent }: any) => { const posted = await hooks.comment(auth, repository, number, sent); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'comment', posted.number, number); return posted; } }, audit,
+    reader: {}, transport: { comment: async ({ number, body: sent }: any) => { const posted = await hooks.comment(auth, repository, number, sent); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'comment', posted.number, number, sent); return posted; } }, audit,
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'comment', requestId, target: target.kind === 'issue' ? 'issue' : 'pr', number: target.number, body });
@@ -440,7 +440,7 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: (login: string) => typeof login === 'string' ? (loginIds.get(login.toLowerCase()) ?? null) : null },
     reader,
-    transport: { reviewPullRequest: async ({ number, decision, body: sent, expectedHeadSha }: any) => { const posted = await hooks.review(auth, repository, number, decision, sent, expectedHeadSha); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'review', posted.number, number); return posted; } },
+    transport: { reviewPullRequest: async ({ number, decision, body: sent, expectedHeadSha }: any) => { const posted = await hooks.review(auth, repository, number, decision, sent, expectedHeadSha); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'review', posted.number, number, sent); return posted; } },
     audit,
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });

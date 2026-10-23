@@ -4,7 +4,7 @@ import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, report
 import { closeIssueReport, deleteMergedBranchReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
-const { OwnerPostStore } = require('../../../src/reports/ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: boolean; comments?: Set<number>; reviews?: Set<number> } } };
+const { OwnerPostStore } = require('../../../src/reports/ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: boolean; comments?: Map<number, string | null>; reviews?: Map<number, string | null> } } };
 const { saveFeedback, readFeedback } = require('../../../src/reports/feedback-store') as {
   saveFeedback(store: unknown, target: unknown, input: { note: string; headSha: string | null }, expectedRevision: number | null): { ok: boolean; reason?: string; record?: { revision: number } };
   readFeedback(store: unknown, target: unknown): { state: string; record?: { note: string; revision: number } };

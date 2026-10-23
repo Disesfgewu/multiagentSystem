@@ -170,7 +170,7 @@ function pmReportLines(comments, repository, version) {
 }
 
 /**
- * @param {{ repository: string, issue: object, comments?: object, pullRequests?: object, ownerPosts?: { comments: Set<number>, reviews: Set<number> } | null }} input  `ownerPosts`: the private record of the owner's own posts (issue #342); null or left out when it could not be read.
+ * @param {{ repository: string, issue: object, comments?: object, pullRequests?: object, ownerPosts?: { comments: Map<number, string>, reviews: Map<number, string> } | null }} input  `ownerPosts`: the private record of the owner's own posts (issue #342); null or left out when it could not be read.
  *   `comments` and `pullRequests` are adapter results; `pullRequests` is the list of open pull requests
  */
 function buildIssueReport({ repository, issue, comments, pullRequests, ownerPosts = null }) {
@@ -198,7 +198,7 @@ function buildIssueReport({ repository, issue, comments, pullRequests, ownerPost
 }
 
 /**
- * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, reviewComments?: object, files?: object, filesHeadVerified?: boolean, ownerPosts?: { comments: Set<number>, reviews: Set<number> } | null }} input
+ * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, reviewComments?: object, files?: object, filesHeadVerified?: boolean, ownerPosts?: { comments: Map<number, string>, reviews: Map<number, string> } | null }} input
  */
 function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, reviewComments, files, filesHeadVerified, ownerPosts = null }) {
   const pr = pullRequest;

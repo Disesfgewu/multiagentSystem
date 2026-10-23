@@ -8,7 +8,7 @@ import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, co
 import { requireInteractive } from '../shared/testMode';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
-const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Set<number>; reviews: Set<number> } | { ok: false; reason: string } } };
+const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Map<number, string>; reviews: Map<number, string> } | { ok: false; reason: string } } };
 const { inspectWorktree, readPullRequestFileVersions } = require('../projects/gitEvidence') as {
   inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }>;
   readPullRequestFileVersions(folder: string, input: { headSha: string; baseRef: string; relativePath: string; status: string }): Promise<{ ok: true; left: string; right: string } | { ok: false; reason: string }>;
@@ -155,7 +155,7 @@ async function mergeAuthoritySection(repository: string): Promise<string> {
 }
 
 /** The private record of the owner's own GitHub posts for this repository (issue #342), or null when it cannot be read. */
-async function readOwnerPosts(repository: string): Promise<{ comments: Set<number>; reviews: Set<number> } | null> {
+async function readOwnerPosts(repository: string): Promise<{ comments: Map<number, string>; reviews: Map<number, string> } | null> {
   try {
     const opened = await privateStorage()?.use();
     if (!opened?.ok) return null;

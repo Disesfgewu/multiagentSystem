@@ -224,4 +224,4 @@ function withCodename(name, codename) {
   return parseCodename(codename) ? `${codename} · ${name}` : name;
 }
 
-module.exports = { withCodename, CodenameStore, COLLECTION, MAX_HOLDERS, CODENAME_RULE_ID, isIssuedCodenameRule, prefixForRole, formatCodename, parseCodename, codenameRule, validateDoc, docId };
+module.exports = { OWNER_LIKE, withCodename, CodenameStore, COLLECTION, MAX_HOLDERS, CODENAME_RULE_ID, isIssuedCodenameRule, prefixForRole, formatCodename, parseCodename, codenameRule, validateDoc, docId };

@@ -18,6 +18,8 @@ const MAX_PER_KIND = 5000;
 const REPOSITORY = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 
 const fail = (reason) => ({ ok: false, reason });
+/** The SHA-256 of a post's text exactly as GitHub returned it. */
+const bodyHash = (body) => createHash('sha256').update(String(body), 'utf8').digest('hex');
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 // GitHub compares repository names without case; the id has a fixed length whatever the name.
 const docId = (repository) => `repo-${createHash('sha256').update(repository.toLowerCase()).digest('hex')}`;
@@ -28,7 +30,10 @@ function validateDoc(raw) {
   for (const kind of KINDS) {
     if (!isPlain(raw[kind]) || Object.keys(raw[kind]).length > MAX_PER_KIND) return fail('invalid-owner-posts-record');
     for (const [id, entry] of Object.entries(raw[kind])) {
-      if (!/^[1-9][0-9]{0,15}$/.test(id) || !isPlain(entry) || Object.keys(entry).sort().join() !== 'at,number') return fail('invalid-owner-posts-record');
+      // An entry written before texts were hashed has no `sha256`: it is kept, and its post can never be shown as the owner's.
+      const keys = isPlain(entry) ? Object.keys(entry).sort().join() : '';
+      if (!/^[1-9][0-9]{0,15}$/.test(id) || (keys !== 'at,number,sha256' && keys !== 'at,number')) return fail('invalid-owner-posts-record');
+      if (keys === 'at,number,sha256' && (typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256))) return fail('invalid-owner-posts-record');
       if (!Number.isSafeInteger(entry.number) || entry.number < 1 || typeof entry.at !== 'string' || !Number.isFinite(Date.parse(entry.at))) return fail('invalid-owner-posts-record');
     }
   }
@@ -49,11 +54,15 @@ class OwnerPostStore {
     this.store = store;
   }
 
-  /** Records one post the owner published from VS Code. `id` is GitHub's id for the comment or review. */
-  record({ repository, kind, id, number, now = new Date() } = {}) {
+  /**
+   * Records one post the owner published from VS Code: GitHub's id for it and the SHA-256 of the exact text GitHub confirmed. The
+   * account is shared, so an agent can edit the owner's comment afterwards; only the text recorded here is the owner's.
+   */
+  record({ repository, kind, id, number, body, now = new Date() } = {}) {
     if (typeof repository !== 'string' || !REPOSITORY.test(repository)) return fail('invalid-repository');
     if (!KINDS.includes(kind)) return fail('invalid-kind');
     if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(number) || number < 1) return fail('invalid-id');
+    if (typeof body !== 'string') return fail('invalid-body');
     const at = now instanceof Date && Number.isFinite(now.getTime()) ? now.toISOString() : null;
     if (at === null) return fail('invalid-time');
     const key = docId(repository);
@@ -62,7 +71,7 @@ class OwnerPostStore {
       const checked = stored === null ? { ok: true, doc: emptyDoc() } : validateDoc(stored);
       if (!checked.ok) return { rejected: checked.reason };
       const doc = checked.doc;
-      doc[kind][String(id)] = { number, at };
+      doc[kind][String(id)] = { number, at, sha256: bodyHash(body) };
       doc[kind] = prune(doc[kind]);
       tx.put(COLLECTION, key, doc);
       return { recorded: true };
@@ -72,15 +81,16 @@ class OwnerPostStore {
     return { ok: true };
   }
 
-  /** The ids recorded for a repository, as two sets, or why they cannot be read. */
+  /** What was recorded for a repository: for comments and for reviews, each id with the SHA-256 of its text; or why it cannot be read. */
   read(repository) {
     if (typeof repository !== 'string' || !REPOSITORY.test(repository)) return fail('invalid-repository');
     const loaded = this.store.get(COLLECTION, docId(repository));
     if (!loaded.ok) return fail(loaded.reason || 'storage-unavailable');
     const checked = loaded.found ? validateDoc(loaded.value) : { ok: true, doc: emptyDoc() };
     if (!checked.ok) return checked;
-    return { ok: true, comments: new Set(Object.keys(checked.doc.comment).map(Number)), reviews: new Set(Object.keys(checked.doc.review).map(Number)) };
+    const hashes = (entries) => new Map(Object.entries(entries).map(([id, entry]) => [Number(id), entry.sha256 ?? null]));
+    return { ok: true, comments: hashes(checked.doc.comment), reviews: hashes(checked.doc.review) };
   }
 }
 
-module.exports = { OwnerPostStore, COLLECTION, MAX_PER_KIND, validateDoc, docId };
+module.exports = { OwnerPostStore, COLLECTION, MAX_PER_KIND, validateDoc, docId, bodyHash };
