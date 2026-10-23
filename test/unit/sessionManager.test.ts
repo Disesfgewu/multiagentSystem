@@ -980,3 +980,41 @@ test('a codename that is not one is refused before any terminal exists, in start
   assert.equal(r.manager.get(session.id)?.codename, 'Worker-01', 'and took nothing from the old session');
 });
 
+
+test('after a restart, a saved codename the codename store no longer lists for that session is dropped; one it cannot check is kept (issue #342)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const kept = await r.manager.start({ provider: 'claude', name: 'Kept', cwd: '/synthetic/project', codename: 'Worker-03' });
+  const pruned = await r.manager.start({ provider: 'claude', name: 'Pruned', cwd: '/synthetic/project', codename: 'Worker-01' });
+  const unknown = await r.manager.start({ provider: 'claude', name: 'Unknown', cwd: '/synthetic/project', codename: 'Worker-02' });
+  const restored = rig({}, r.store);
+  await restored.manager.initialize();
+  const answers: Record<string, string | null | undefined> = { [kept.id]: 'Worker-03', [pruned.id]: null, [unknown.id]: undefined };
+  assert.equal(await restored.manager.reconcileCodenames((_repo, id) => answers[id]), 1);
+  assert.equal(restored.manager.get(kept.id)?.codename, 'Worker-03');
+  assert.equal(restored.manager.get(pruned.id)?.codename, null, 'the store no longer lists it: it is not shown');
+  assert.equal(restored.manager.get(unknown.id)?.codename, 'Worker-02', 'a store that could not answer changes nothing');
+  assert.equal(r.store.saved?.find((record) => record.id === pruned.id)?.codename, undefined, 'and the snapshot agrees');
+  assert.equal(await restored.manager.reconcileCodenames((_repo, id) => (id === kept.id ? 'Worker-09' : answers[id])), 1, 'a different codename in the store wins as well');
+  assert.equal(restored.manager.get(kept.id)?.codename, null);
+});
+
+test('the session\'s gh wrapper folder is put first on PATH in the typed command, in start and reopen, in every supported shell; a folder cmd.exe would misread starts nothing (issue #342)', async () => {
+  let shell: 'posix' | 'powershell' | 'cmd' = 'posix';
+  const r = rig({ detectShellType: () => shell });
+  await r.manager.initialize();
+  const session = await r.manager.start({ provider: 'claude', name: 'Wrapped', cwd: '/synthetic/project', pathPrefix: '/private/gh wrapper/s1' });
+  assert.deepEqual(r.terminals[0].sent, [{ text: `PATH='/private/gh wrapper/s1':"$PATH" claude ${ATTRIBUTION}`, newline: true }]);
+  r.manager.stop(session.id);
+  shell = 'powershell';
+  await r.manager.reopen(session.id, { pathPrefix: 'C:\\priv\\s2' });
+  assert.match(r.terminals[1].sent[0].text, /^\$env:PSExecutionPolicyPreference = 'RemoteSigned'; \$env:PATH = 'C:\\priv\\s2;' \+ \$env:PATH; claude /);
+  shell = 'cmd';
+  await r.manager.start({ provider: 'claude', name: 'Cmd', cwd: '/synthetic/project', pathPrefix: 'C:\\priv\\s3' });
+  assert.match(r.terminals[r.terminals.length - 1].sent[0].text, /^set "PATH=C:\\priv\\s3;%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && /, 'the Windows default terminal (cmd.exe in CI) starts the agent too');
+  const before = r.terminals.length;
+  await assert.rejects(r.manager.start({ provider: 'claude', name: 'Cmd bad', cwd: '/synthetic/project', pathPrefix: 'C:\\100%\\s4' }), { code: 'unsupported-shell' });
+  assert.equal(r.terminals.length, before, 'no terminal was made for a folder cmd.exe would read differently');
+  const shellOnly = await r.manager.start({ provider: 'claude', name: 'Shell', cwd: '/synthetic/project', launch: false, pathPrefix: '/private/s4' });
+  assert.equal(shellOnly.state, 'terminal-open', 'a shell-only terminal types nothing, so it needs no prefix');
+});

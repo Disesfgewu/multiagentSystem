@@ -58,7 +58,7 @@ const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: 
 interface CodenameRequest { repoId: string; sessionId: string; prefix: string; from?: string }
 type CodenameAnswer = { ok: true; codename: string } | { ok: false; reason: string };
 const { CodenameStore, prefixForRole, withCodename } = require('./codenames') as {
-  CodenameStore: new (store: unknown) => { preview(request: CodenameRequest): CodenameAnswer; assign(request: CodenameRequest & { expect?: string }): CodenameAnswer; revert(request: { repoId: string; sessionId: string; from?: string }): { ok: boolean } };
+  CodenameStore: new (store: unknown) => { get(repoId: string, sessionId: string): { ok: true; codename: string | null } | { ok: false; reason: string }; preview(request: CodenameRequest): CodenameAnswer; assign(request: CodenameRequest & { expect?: string }): CodenameAnswer; revert(request: { repoId: string; sessionId: string; from?: string }): { ok: boolean } };
   prefixForRole(role: unknown): string;
   withCodename(name: string, codename: unknown): string;
 };
@@ -231,6 +231,29 @@ function codenameRequest(store: any, repoId: string, sessionId: string, roleGrou
   // A session id the store cannot hold never held a codename, so there is nothing to move from it.
   return { repoId, sessionId, prefix: prefixForRole(role), ...(from && /^[A-Za-z0-9_-]{8,64}$/.test(from) ? { from } : {}) };
 }
+const { findRealGh, writeShims, shimEnvironment, removeShims } = require('./ghGuard/shims') as {
+  findRealGh(input: { pathValue?: string; skip?: string }): string | null;
+  writeShims(input: { dir: string; node: string; script: string; codename: string | null; realGh: string | null }): { ok: true; dir: string } | { ok: false; reason: string };
+  shimEnvironment(input?: { platform?: string }): Record<string, string>;
+  removeShims(dir: string): boolean;
+};
+
+/**
+ * The session's own `gh` wrapper (issue #342): shims in the private folder, first on the terminal's PATH, that sign what the agent
+ * posts with its codename and refuse impersonation. The typed launch command puts the folder first on PATH for the CLI. Without a real gh on PATH the shims refuse every call. A wrapper that cannot be
+ * written stops the launch: an agent with a codename is not started without it.
+ */
+function prepareGhWrapper(privateDir: string, sessionId: string, codename: string, env: Record<string, string | null> | undefined): { ok: true; dir: string; env: Record<string, string | null> } | { ok: false; message: string } {
+  const dir = path.join(privateDir, 'gh-wrapper', sessionId);
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  for (const [name, value] of Object.entries(env ?? {})) { if (typeof value === 'string') base[name] = value; else delete base[name]; }
+  const pathKey = Object.keys(base).find((name) => name.toLowerCase() === 'path');
+  const realGh = findRealGh({ pathValue: pathKey ? base[pathKey] : undefined, skip: dir });
+  const written = writeShims({ dir, node: process.execPath, script: path.join(__dirname, 'ghGuard', 'run.js'), codename, realGh });
+  if (!written.ok) return { ok: false, message: `The gh wrapper for this agent could not be prepared (${written.reason}). The agent was not started.` };
+  return { ok: true, dir, env: { ...(env ?? {}), ...shimEnvironment() } };
+}
+
 const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
   ? 'The session codename was taken by another window during review. Please start again.'
   : `The session codename could not be prepared (${reason}). The agent was not started.`), { code: reason === 'codename-changed' ? 'stale-instructions' : 'codename-unavailable' });
@@ -371,6 +394,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     // Set once a codename is written for this session; undone if the session then does not start.
     let revertCodename: (() => void) | undefined;
     let codename: string | undefined;
+    let ghWrapperDir: string | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -541,6 +565,17 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           return failure(codenameFailure(committed.reason), interactive);
         }
         revertCodename = () => { codenames.revert({ repoId: codenameAsk.repoId, sessionId: codenameAsk.sessionId }); };
+        const wrapper = prepareGhWrapper(privateDir, targetSessionId, codename, env);
+        if (!wrapper.ok) {
+          cleanupSessionPlan(prep.plan);
+          if (release) { await release(); release = undefined; }
+          revertCodename();
+          revertCodename = undefined;
+          return failure(Object.assign(new Error(wrapper.message), { code: 'gh-wrapper-unavailable' }), interactive);
+        }
+        env = wrapper.env;
+        ghWrapperDir = wrapper.dir;
+        { const dir = wrapper.dir; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeShims(dir); } }; }
         instructions = prep;
       }
       // The settings file needs the role group's permissions, so it is written once the instructions are prepared. If it cannot be,
@@ -573,7 +608,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         ...(attributionFile ? { attributionFile } : {}),
         ...(provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}),
         ...(autoMode.auto ? { autoMode: autoMode.auto } : {}),
-        ...(codename !== undefined && revertCodename ? { codename } : {})
+        ...(codename !== undefined && revertCodename ? { codename } : {}),
+        ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {})
       });
       revertCodename = undefined;
       // No confirmation window was shown for this launch: say it on screen anyway, so nobody is surprised that the agent does not stop to ask.
@@ -742,6 +778,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         let codenameAsk: CodenameRequest | undefined;
         let codename: string | undefined;
         let revertCodename: (() => void) | undefined;
+        let ghWrapperDir: string | undefined;
         const openedStorage = await privateStorage()?.use();
         const isolation = await isolationForLaunch(interactive, input.launch, prior.worktree, openedStorage, prior.provider);
         if (isolation.kind === 'refused') {
@@ -838,6 +875,17 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           const ask = codenameAsk;
           const store2 = codenames;
           revertCodename = () => { store2.revert({ repoId: ask.repoId, sessionId: ask.sessionId, ...(ask.from ? { from: ask.from } : {}) }); };
+          const wrapper = prepareGhWrapper(privateDir, newSessionId, codename, env);
+          if (!wrapper.ok) {
+            cleanupSessionPlan(prep.plan);
+            if (release) { await release(); release = undefined; }
+            revertCodename();
+            revertCodename = undefined;
+            return failure(Object.assign(new Error(wrapper.message), { code: 'gh-wrapper-unavailable' }), interactive);
+          }
+          env = wrapper.env;
+          ghWrapperDir = wrapper.dir;
+          { const dir = wrapper.dir; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeShims(dir); } }; }
           instructions = prep;
         }
 
@@ -858,7 +906,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
         if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}), ...(codename !== undefined && revertCodename ? { codename } : {}) });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}), ...(codename !== undefined && revertCodename ? { codename } : {}), ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {}) });
           revertCodename = undefined;
           if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
         } catch (error) {
@@ -963,6 +1011,14 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.reopen, (value?: unknown) => act('reopen', withoutAcknowledge(requireInteractive(options(value)))))
   );
 
-  void manager.initialize().then(() => changed.fire()).catch((error) => failure(error, true));
+  void manager.initialize().then(async () => {
+    // The codename store is the authority: a saved session whose codename it no longer lists stops showing one (issue #342).
+    const opened = await privateStorage()?.use();
+    if (opened?.ok) {
+      const codenames = new CodenameStore(opened.store);
+      await manager.reconcileCodenames((repoId, sessionId) => { const held = codenames.get(repoId, sessionId); return held.ok ? held.codename : undefined; });
+    }
+    changed.fire();
+  }).catch((error) => failure(error, true));
   return { launch, launchWithAccount: startWithAccount, list: () => observations.enrich(manager.list()), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), onDidChange: (listener) => changed.event(listener) };
 }

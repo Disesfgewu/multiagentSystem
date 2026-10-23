@@ -819,7 +819,7 @@ async function agyFlow(workspace: string): Promise<void> {
     interactive: false, provider: 'agy', roleGroupId: 'host-agy', name, cwd: workspace, launch: true
   });
   const started = await command('Agy Fake');
-  assert.equal(started.ok, true);
+  assert.equal(started.ok, true, `the agent did not start: ${started.code ?? 'no code'} ${(started as { message?: string }).message ?? ''}`);
   assert.equal(started.session?.state, 'launch-requested', 'typing a CLI command is not proof it is working');
   assert.equal(started.session?.provider, 'agy');
   await waitFor(() => vscode.window.terminals.find((terminal) => terminal.name === 'Multiagent: Agy Fake'), 10000);
