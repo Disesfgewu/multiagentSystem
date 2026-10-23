@@ -45,7 +45,7 @@ const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbou
 };
 
 // Issue #342: the post is on GitHub, but its id could not be written to the private record of the owner's posts.
-const OWNER_NOT_RECORDED = ' It could not be recorded as yours in private storage, so the report will show it as unsigned rather than as the owner\'s.';
+export const OWNER_NOT_RECORDED = ' It could not be recorded as yours in private storage, so the report will show it as unsigned rather than as the owner\'s.';
 
 export const REPORT_SCHEME = 'multiagent-report';
 export const DIFF_SCHEME = 'multiagent-report-diff';
@@ -78,7 +78,7 @@ type Result = { kind: string; data?: any; reason?: string; authMode?: 'vscode-se
 export interface ReportReader {
   listIssues(filter: { state: 'open' | 'closed' }): Promise<Result>;
   getIssue(number: number): Promise<Result>;
-  getIssueComments(number: number): Promise<Result>;
+  getIssueComments(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
   listPullRequests(filter: { state: 'open' | 'closed' }): Promise<Result>;
   getPullRequest(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
   getPullRequestFiles(number: number, opts?: { forceRefresh?: boolean }): Promise<Result>;
@@ -132,6 +132,8 @@ const realDeps: ReportDeps = {
 };
 let deps: ReportDeps = realDeps;
 let readGeneration = 0;
+/** Where reports are read from right now: talking to the PM (#343) reads the same GitHub, so a test's synthetic one applies to both. */
+export function currentReportDeps(): Pick<ReportDeps, 'repository' | 'readerFor'> { return deps; }
 /** Replaces where reports are read from. Only the Extension Host test does this. */
 export function setReportDepsForTests(next: ReportDeps | undefined): void { deps = next ?? realDeps; readGeneration += 1; }
 

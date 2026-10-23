@@ -32,13 +32,14 @@ function signatureOf(body) {
  * @param {'comment' | 'review' | 'inline'} kind inline review comments cannot be posted from VS Code, so they are never the owner's
  * @param {{ comments: Map<number, string>, reviews: Map<number, string> } | null} owner the owner record (id to SHA-256 of the text),
  *   or null when it could not be read
- * @returns {{ who: 'owner' | 'modified' | 'agent' | 'unsigned' | 'unknown', codename: string | null, text: string }}
+ * @returns {{ who: 'owner' | 'modified' | 'legacy' | 'agent' | 'unsigned' | 'unknown', codename: string | null, text: string }}
  */
 function authorOf(item, kind, owner) {
   const id = item && Number.isSafeInteger(item.id) ? item.id : null;
   const recorded = owner && id !== null ? (kind === 'comment' ? owner.comments : kind === 'review' ? owner.reviews : null) : null;
   if (recorded && recorded.has(id)) {
-    // An entry from before texts were hashed has null here, which no hash equals: it cannot be confirmed either.
+    // An entry from before texts were hashed has no hash to compare: it is an old record that cannot be verified.
+    if (recorded.get(id) === null) return { who: 'legacy', codename: null, text: '舊紀錄（沒有內文雜湊），無法驗證是不是管理者' };
     const same = typeof item.body === 'string' && recorded.get(id) === bodyHash(item.body);
     if (same) return { who: 'owner', codename: null, text: '管理者' };
     return { who: 'modified', codename: null, text: '管理者發的留言，但之後被修改過，無法確認作者' };

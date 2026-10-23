@@ -184,7 +184,7 @@ async function dispatch(sessions: SessionCommands, mode: Mode, trusted: () => bo
   });
 }
 
-export type TypedTask = { prompt: string; kind: 'issue' | 'free' | 'discussion' | 'meeting'; issueNumber: number | null };
+export type TypedTask = { prompt: string; kind: 'issue' | 'free' | 'discussion' | 'meeting' | 'talk'; issueNumber: number | null };
 
 /**
  * The part every "type this into running agents" command shares: who can receive it now, one modal that shows the whole prompt and the

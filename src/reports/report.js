@@ -350,4 +350,4 @@ function neighbour(numbers, current, step) {
   return numbers[(at + step + numbers.length) % numbers.length];
 }
 
-module.exports = { buildIssueReport, buildPullRequestReport, summarizePullRequest, parseConclusion, neighbour, render, line, WHAT_IS_NOT_VERIFIED, APPLIES, fileBulletLines };
+module.exports = { buildIssueReport, buildPullRequestReport, summarizePullRequest, parseConclusion, neighbour, render, line, block, WHAT_IS_NOT_VERIFIED, APPLIES, fileBulletLines };

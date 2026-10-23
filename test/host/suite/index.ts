@@ -17,6 +17,7 @@ import { runCommandCenterChecks } from './commandCenter';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
+import { runTalkToPmChecks } from './talkToPm';
 import { runMemoryPanelChecks } from './memoryPanel';
 import { runReviewJumpChecks } from './reviewJump';
 import { runAutoModeConfirmChecks } from './autoModeConfirm';
@@ -1078,6 +1079,7 @@ export async function run(): Promise<void> {
   await runDispatchTaskChecks(workspace);
   await runMeetingChecks(workspace);
   await runDiscussWithPmChecks(workspace);
+  await runTalkToPmChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);
 

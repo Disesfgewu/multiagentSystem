@@ -52,7 +52,7 @@ test('a record that cannot be read is an error, never an empty one, and is never
   const read = store.read('o/r');
   assert.equal(read.ok, true, 'an entry without a hash is readable');
   assert.equal(read.comments.get(5), null);
-  assert.equal(authorOf({ id: 5, body: 'whatever it says' }, 'comment', read).who, 'modified', 'and can never be confirmed as the owner\'s');
+  assert.deepEqual(authorOf({ id: 5, body: 'whatever it says' }, 'comment', read), { who: 'legacy', codename: null, text: '舊紀錄（沒有內文雜湊），無法驗證是不是管理者' }, 'and can never be confirmed as the owner\'s');
   assert.equal(store.record({ repository: 'o/r', kind: 'comment', id: 6, number: 1, body: 'new' }).ok, true, 'new posts can still be recorded next to it');
   assert.equal(new OwnerPostStore({ get: () => ({ ok: false, reason: 'locked' }), transact: () => ({ ok: false }) }).read('o/r').reason, 'locked');
   assert.throws(() => new OwnerPostStore(null), /private-store-required/);
