@@ -17,6 +17,10 @@
 
 只有「服務端回報、仍在有效期限內、不是未來時間」的讀數（`isGateEligible`）。估算值、已過期（含已過重置時間）、缺漏或超出範圍的讀數只能提示（`window-unverified`、`unverified-reading-over-warning`），不能阻擋，也不能因此判定額度充足。所有時間窗都沒有可信資料時，額度為未知，依 `unknownQuota` 處理。尚無已驗證用量來源的 provider（目前如 `agy`，見 [Provider 登錄](PROVIDERS.md)）因此一律走「額度未知」，不做估算。
 
+**門檻只看 5 小時窗與整體一週窗**（#352）。Claude Code 的 status line 若回報依模型的週額度（`seven_day_opus`、`seven_day_sonnet` 等），帳號列與指揮台會顯示它們，例如 `7d Opus 71%`，但**不參與門檻判斷**：agent 實際使用的模型不一定是該時間窗計算的模型，例如 Opus 的週額度用完時，用 Sonnet 工作的 agent 不應被擋下。只有依模型的時間窗時，額度視為未知。
+
+帳號列的額度部分：5h 與 7d 永遠各佔一欄。有最新讀數時顯示百分比與重設時間；過期時標出「out of date, read …」；讀數沒有回報該時間窗，或數字不可用時，寫明原因。依模型的週額度接在後面顯示。
+
 ## 並行分派
 
 `QuotaDispatcher.reserve` 在同一個同步步驟內判斷並佔用名額，兩個同時要最後一個名額的請求不會都成功；`release` 可重複呼叫，重複釋放不影響結果。名額以呼叫端給的 `accountKey`（實際帳號）計算，指向同一實際帳號的多個設定檔應使用同一個 key，不得重複計算額度；`externalRunning` 讓呼叫端加上不在這個 dispatcher 內的執行中 agent。
