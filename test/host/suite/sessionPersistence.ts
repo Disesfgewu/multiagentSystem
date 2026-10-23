@@ -26,7 +26,7 @@ export async function runSessionPersistenceChecks(): Promise<string> {
     directoryExists: fs.existsSync
   });
   assert.equal((await restored.initialize()).restored, current.sessions.length, 'every real command-created session was saved');
-  const fixed = ({ id, name, provider, repoId, roleGroupId, accountProfileId, worktree, requestedModel }: SessionView) => ({ id, name, provider, repoId, roleGroupId, accountProfileId, worktree, requestedModel });
+  const fixed = ({ id, name, provider, repoId, roleGroupId, accountProfileId, worktree, requestedModel, codename }: SessionView) => ({ id, name, provider, repoId, roleGroupId, accountProfileId, worktree, requestedModel, codename });
   assert.deepEqual(restored.list().map(fixed), current.sessions.map(fixed));
   for (const session of restored.list()) assert.deepEqual([session.state, session.terminalOpen, session.observedAt], ['unknown', false, null]);
   await assert.rejects(restored.reopen(modelSession.id, { launch: false }), { code: 'confirm-unknown-reopen' });
@@ -59,6 +59,10 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   }
   const content = fs.readFileSync(expectedFile, 'utf8');
   assert.match(content, /Review the latest approved head\./);
+  // Issue #342: the session has a codename from its role, and the agent is told it and how to sign its GitHub posts.
+  const codename = startResult.session!.codename;
+  assert.match(codename ?? '', /^PM-[0-9]{2,4}$/, 'a PM role group gives a PM codename');
+  assert.ok(content.includes(`你的代號是 ${codename}。`) && content.includes(`第一行都必須是 \`— ${codename}\``), 'the injected instructions carry the codename and the signature line');
 
   // Verify honest state in sessions.list
   const listed = await vscode.commands.executeCommand<{ sessions: SessionView[] }>('multiagentSystem.sessions.list', { interactive: false });
@@ -89,6 +93,8 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   assert.equal(codexStart.ok, true);
   const codexSession = codexStart.session!;
   assert.equal(codexSession.instructionMethod, 'profile-developer-instructions');
+  assert.match(codexSession.codename ?? '', /^PM-[0-9]{2,4}$/);
+  assert.notEqual(codexSession.codename, codename, 'another session of the same role gets another number');
   assert.equal(codexSession.instructionState, 'prepared');
   const codexProfile = path.join(privateDir, 'codex-home', `mas-${codexSession.id}.config.toml`);
   assert.equal(fs.existsSync(codexProfile), true, 'registered Codex start writes its private injection profile');
@@ -117,6 +123,8 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
       { id: sessionId, interactive: true, launch: false }
     );
     assert.deepEqual([staleReopen.ok, staleReopen.code], [false, 'stale-instructions'], 'reopen must fail when instructions became stale during review');
+    const afterStale = await vscode.commands.executeCommand<{ sessions: SessionView[] }>('multiagentSystem.sessions.list', { interactive: false });
+    assert.equal(afterStale.sessions.find((entry) => entry.id === sessionId)?.codename, codename, 'a reopen that did not happen moves no codename');
   } finally {
     (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
     store.put('roleGroups', 'host-pm', roleRecord);
@@ -129,10 +137,14 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   );
   assert.equal(cleanReopen.ok, true, 'clean reopen must succeed');
   const reopenedSessionId = cleanReopen.session!.id;
+  assert.equal(cleanReopen.session!.codename, codename, 'the reopened session keeps the codename');
+  assert.ok(fs.readFileSync(path.join(privateDir, 'sessions', reopenedSessionId, 'claude-context.md'), 'utf8').includes(`你的代號是 ${codename}。`), 'and is told the same one');
+  const relisted = await vscode.commands.executeCommand<{ sessions: SessionView[] }>('multiagentSystem.sessions.list', { interactive: false });
+  assert.equal(relisted.sessions.find((entry) => entry.id === sessionId)?.codename, null, 'the old record no longer holds it');
   const reopenedFile = path.join(privateDir, 'sessions', reopenedSessionId, 'claude-context.md');
   assert.equal(fs.existsSync(reopenedFile), true, 'reopened session creates fresh private instruction file');
   await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: reopenedSessionId, interactive: false });
   assert.equal(fs.existsSync(reopenedFile), false, 'reopened instruction file cleaned up on stop');
 
-  return 'host smoke: managed Claude and Codex instructions generate private files, reject stale reopen, and clean up on session stop';
+  return 'host smoke: managed Claude and Codex instructions generate private files with the session codename, reject stale reopen without moving the codename, keep it on reopen, and clean up on session stop';
 }

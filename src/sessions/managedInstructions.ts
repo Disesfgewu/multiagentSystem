@@ -14,6 +14,7 @@ const { MemoryStore } = require('../memory/store') as { MemoryStore: new (option
 const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(accountProfileId: string): string };
 import { TeamRulesStore } from '../teamRules/store';
 import { teamRuleLayer, describeTeamRules } from '../teamRules/model';
+const { codenameRule, parseCodename } = require('./codenames') as { codenameRule(codename: string): { id: string; type: 'instruction'; text: string }; parseCodename(value: unknown): { prefix: string; number: number } | null };
 import { isLive, appliesTo, broadcastRule, broadcastPreviewLines } from '../broadcast/model';
 const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
   checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
@@ -41,6 +42,8 @@ export interface InstructionSnapshot {
   memoryBindings: Array<{ id: string; version: number }>;
   /** The version of the team rules this snapshot was composed with (0: none were written). A newer version makes the snapshot stale. */
   teamRulesVersion: number;
+  /** The session's codename (issue #342), which the agent is told to sign its GitHub posts with; null when it has none. */
+  codename: string | null;
   digest: string | null;
   createdAt: string;
 }
@@ -58,6 +61,8 @@ export interface PrepareInstructionsOptions {
   privateDir: string;
   codexHome?: string;
   context?: any;
+  /** The session's codename (issue #342). When given, the agent is told it and how to sign: an instruction ahead of the team rules. */
+  codename?: string;
 }
 
 export interface PreparedInstructions {
@@ -123,6 +128,9 @@ export async function prepareInstructionSnapshot(
   if (typeof privateDir !== 'string' || privateDir.trim() === '') {
     return { ok: false, code: 'invalid-private-dir', message: 'Private storage directory is required.' };
   }
+  if (options.codename !== undefined && !parseCodename(options.codename)) {
+    return { ok: false, code: 'invalid-codename', message: 'The session codename is not valid.' };
+  }
 
   let group: any = null;
   let layers: Record<string, any[]> = {};
@@ -167,7 +175,8 @@ export async function prepareInstructionSnapshot(
   if (!teamLoaded.ok) {
     return { ok: false, code: 'team-rules-unavailable', message: `Team rules could not be read (${teamLoaded.reason ?? 'unknown'}). The agent was not started.` };
   }
-  const teamRules: any[] = teamRuleLayer(teamLoaded.doc);
+  // The codename instruction comes first, then the team rules: both are `user`-layer instructions every agent is given.
+  const teamRules: any[] = [...(options.codename !== undefined ? [codenameRule(options.codename)] : []), ...teamRuleLayer(teamLoaded.doc)];
   const teamRulesVersion: number = teamLoaded.doc.version;
 
   // Step 3: Compose Effective Rules and Digest
@@ -316,6 +325,7 @@ export async function prepareInstructionSnapshot(
     broadcastBindings,
     memoryBindings: memories.map((item) => ({ id: item.id, version: item.version })),
     teamRulesVersion,
+    codename: options.codename ?? null,
     digest,
     createdAt: now.toISOString()
   };
@@ -458,6 +468,7 @@ export function formatInstructionSummary(
   const lines: string[] = [
     'PRIVATE — local agent instructions snapshot. Do not publish this document.',
     `Session ID: ${snapshot.targetSessionId}`,
+    `Codename: ${snapshot.codename ?? 'none'}${snapshot.codename ? ' (the agent is told to sign every GitHub post with it; a signature is a claim, not proof)' : ''}`,
     `Provider: ${snapshot.provider}`,
     `Role group: ${snapshot.roleGroupId}${snapshot.roleGroupVersion !== null ? ` (v${snapshot.roleGroupVersion})` : ' (none)'}`,
     `Account profile: ${snapshot.accountProfileId}`,

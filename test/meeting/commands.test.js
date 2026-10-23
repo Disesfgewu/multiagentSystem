@@ -52,3 +52,8 @@ test('no wording in the code or the documents names a button that no longer exis
   for (const label of ['Enter Replies', 'Make Minutes Now', 'Read Clipboard', 'No Reply', 'Record Reply', 'Record It Anyway']) assert.ok(source.includes(`'${label}'`) || source.includes(label), label);
   for (const label of ['Read Clipboard', 'Record Reply']) assert.ok(docs.includes(label), `${label} is in the document`);
 });
+
+test('the minutes and the agent picker name each agent with its codename in front, the way it signs on GitHub (issue #342)', () => {
+  assert.match(source, /const names = new Map\(open\.map\(\(session\) => \[session\.id, withCodename\(session\.name, session\.codename\)\]\)\);/);
+  assert.match(source, /label: withCodename\(session\.name, session\.codename\)/);
+});

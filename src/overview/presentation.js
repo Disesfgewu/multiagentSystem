@@ -6,6 +6,7 @@
 
 const { cleanTitle } = require('./model');
 const { describeEvidence } = require('../projects/gitEvidence');
+const { withCodename } = require('../sessions/codenames');
 
 const UNKNOWN = 'unknown';
 const HOOK_SOURCE = 'claude-hook-v1';
@@ -53,7 +54,8 @@ const PROVIDER_SESSION_TEXT = Object.freeze({
 });
 
 function presentAgent(row, session) {
-  const name = shown(session?.name, 'Session');
+  // The codename (issue #342) goes in front of the name; only a well-formed one is shown.
+  const name = withCodename(shown(session?.name, 'Session'), session?.codename);
   const role = row.role.state === 'known' ? shown(row.role.name) : UNKNOWN;
   const provider = shown(session?.providerLabel);
   const account = row.account.state === 'known' ? shown(row.account.label) : UNKNOWN;

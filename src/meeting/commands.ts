@@ -4,6 +4,7 @@ import { isExtensionTestMode } from '../shared/testMode';
 import { confirmAndType, openStore } from '../dispatch/commands';
 
 const { buildMeetingPrompt } = require('./topic') as { buildMeetingPrompt(input: unknown): { ok: true; prompt: string; topic: string } | { ok: false; reason: string; categories?: string[] } };
+const { withCodename } = require('../sessions/codenames') as { withCodename(name: string, codename: unknown): string };
 const { buildMinutes } = require('./minutes') as { buildMinutes(input: unknown): { ok: true; markdown: string; withheld: number; replied: number; total: number } | { ok: false; reason: string } };
 
 export const MEETING_COMMANDS = { start: 'multiagentSystem.meeting.start' } as const;
@@ -38,7 +39,7 @@ async function meeting(sessions: SessionCommands, seams: Seams = {}): Promise<vo
   if (!text) return;
   const built = buildMeetingPrompt({ topic: text });
   if (!built.ok) { const kinds = built.categories && built.categories.length > 0 ? ` (${built.categories.join(', ')})` : ''; void vscode.window.showErrorMessage(`This topic cannot be sent: ${REFUSALS[built.reason] ?? built.reason}${kinds}. Nothing was sent.`); return; }
-  const chosen = await vscode.window.showQuickPick(open.map((session) => ({ label: session.name, description: `${session.provider} · ${session.stateLabel}`, id: session.id })), { placeHolder: 'Which agents take part? (at least two)', canPickMany: true, ignoreFocusOut: true });
+  const chosen = await vscode.window.showQuickPick(open.map((session) => ({ label: withCodename(session.name, session.codename), description: `${session.provider} · ${session.stateLabel}`, id: session.id })), { placeHolder: 'Which agents take part? (at least two)', canPickMany: true, ignoreFocusOut: true });
   if (!chosen || chosen.length < 2) { if (chosen) void vscode.window.showInformationMessage('Choose at least two agents.'); return; }
   const opened = await openStore();
   if (!opened) return;
@@ -46,7 +47,8 @@ async function meeting(sessions: SessionCommands, seams: Seams = {}): Promise<vo
     if (!session.roleGroupId || session.roleGroupId === 'unassigned') return undefined;
     try { const loaded = opened.get('roleGroups', session.roleGroupId); return loaded?.ok && loaded.found ? loaded.value?.group?.role : undefined; } catch { return undefined; }
   };
-  const names = new Map(open.map((session) => [session.id, session.name]));
+  // The codename goes in front of the name in the minutes (issue #342), so a reply can be matched to what the agent signs on GitHub.
+  const names = new Map(open.map((session) => [session.id, withCodename(session.name, session.codename)]));
   const results = await confirmAndType({
     sessions, roleOf, task: { prompt: built.prompt, kind: 'meeting', issueNumber: null }, target: { scope: 'sessions', ids: chosen.map((entry) => entry.id) },
     title: 'Type this meeting topic into the chosen agents?'

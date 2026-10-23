@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { isSessionRow } from './sessionRows';
 import * as vscode from 'vscode';
 import { setExtensionTestMode } from '../../../src/shared/testMode';
 import { ACCOUNT_COMMANDS } from '../../../src/accounts/accountCommands';
@@ -68,7 +69,7 @@ export async function runCallerStopChecks(workspace: string): Promise<string> {
     }
 
     const rows = (await overviewTreeForTests().getChildren()) ?? [];
-    const row = rows.find((entry) => entry.label === 'Caller Stop Target');
+    const row = rows.find((entry) => isSessionRow(entry.label, 'Caller Stop Target'));
     assert.ok(row, 'the session has an overview row');
     // A copy of the row is a caller's object, not the row the person clicked.
     const copied = await outsideTestMode(() => run<Outcome>('multiagentSystem.sessions.stop', { ...row }));

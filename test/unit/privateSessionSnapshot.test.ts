@@ -157,3 +157,19 @@ test('a restored snapshot with a relative path, control characters or oversized 
     assert.deepEqual((opened.store.get('sessions', id) as any).value, damaged, `${label}: the original record is not overwritten`);
   }
 });
+
+test('a codename is saved and restored with its session; a malformed one, or one held by two sessions, never enters the snapshot (issue #342)', async (t) => {
+  const f = fixture(t);
+  const writer = f.adapter();
+  await writer.load();
+  await writer.save([{ ...record('session-a'), codename: 'Worker-01' }, record('session-b')]);
+  const reader = f.adapter();
+  const loaded = await reader.load() as SessionRecord[];
+  assert.equal(loaded.find((entry) => entry.id === 'session-a')?.codename, 'Worker-01');
+  assert.equal(loaded.find((entry) => entry.id === 'session-b')?.codename, undefined);
+  for (const bad of [[{ ...record('x'), codename: 'Worker-1' }], [{ ...record('x'), codename: 'PM-01\n' }], [{ ...record('x'), codename: 5 as never }], [{ ...record('x'), codename: 'Worker-01' }, { ...record('y'), codename: 'Worker-01' }]]) {
+    const another = f.adapter();
+    await another.load();
+    await assert.rejects(another.save(bad as SessionRecord[]), { code: 'invalid-session-snapshot' }, JSON.stringify(bad));
+  }
+});

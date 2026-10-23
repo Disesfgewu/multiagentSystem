@@ -64,6 +64,7 @@ const SCRIPT = String.raw`
     }
     var head = el('header', 'card-head');
     var title = el('div', 'card-title');
+    if (card.codename) title.appendChild(el('span', 'codename', card.codename + ' · '));
     title.appendChild(el('strong', null, card.name));
     title.appendChild(el('span', 'muted', ' · ' + card.roleName));
     head.appendChild(title);

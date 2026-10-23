@@ -399,3 +399,8 @@ test('the tooltip says what auto mode was requested for the session, and nothing
   assert.ok(withMode.tooltip.some((line) => line.startsWith('Auto mode: on')));
   assert.ok(!presentAgent(row({}), { name: 'Agent One' }).tooltip.some((line) => /^Auto mode/.test(line)));
 });
+
+test('a session row shows the codename in front of the name; a malformed one is left out (issue #342)', () => {
+  assert.equal(presentAgent(row({}), { name: 'Agent One', codename: 'Worker-01' }).label, 'Worker-01 · Agent One');
+  for (const codename of [undefined, 'Worker-1', 'Worker-01‮', 'PM-01 · fake']) assert.equal(presentAgent(row({}), { name: 'Agent One', codename }).label, 'Agent One', String(codename));
+});

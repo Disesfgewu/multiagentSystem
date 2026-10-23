@@ -6,6 +6,7 @@ const { promptIsSafe } = require('../broadcast/deliver') as { promptIsSafe(promp
 const { mergeSandboxArguments } = require('../roles/tool-permissions') as { mergeSandboxArguments(auto: string[], permission: string[]): string[] };
 import { formatShellCommandLine } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
+const { parseCodename } = require('./codenames') as { parseCodename(value: unknown): { prefix: string; number: number } | null };
 
 // Session lifecycle on top of SessionRegistry. It does not import `vscode`: native terminals and
 // persistence are injected, so the behaviour is tested with fakes. Nothing here is sent to GitHub;
@@ -38,6 +39,8 @@ export interface SessionRecord extends SessionIdentity {
   requestedModel?: string;
   instructionDigest?: string;
   instructionMethod?: string;
+  /** The session's codename (issue #342): what its agent signs GitHub posts with. Moves to the new session on reopen. */
+  codename?: string;
 }
 
 /**
@@ -66,6 +69,8 @@ export interface SessionInstructionsInput {
 
 export interface SessionView extends SessionIdentity {
   name: string;
+  /** The codename this session holds (issue #342), or null. A reopened session's old record no longer holds it. */
+  codename: string | null;
   /** A launch request, not a provider observation or an availability guarantee. */
   requestedModel?: string | null;
   state: SessionState;
@@ -184,6 +189,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly instructionDigests = new Map<string, string>();
   private readonly injectedCounts = new Map<string, { rules: number; memories: number }>();
   private readonly instructionMethods = new Map<string, string>();
+  private readonly codenames = new Map<string, string>();
   private readonly activePlans = new Map<string, any>();
   private readonly bound = new Map<T, { id: string; token: string }>();
   private readonly handles = new Map<string, T>();
@@ -247,7 +253,9 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.models.clear();
     this.instructionDigests.clear();
     this.instructionMethods.clear();
+    this.codenames.clear();
     for (const record of records) {
+      if (typeof record.id === 'string' && parseCodename(record.codename)) this.codenames.set(record.id, record.codename as string);
       const name = cleanName(record.name);
       if (typeof record.id === 'string' && name !== null) this.names.set(record.id, name);
       if (typeof record.id === 'string' && typeof record.requestedModel === 'string') this.models.set(record.id, record.requestedModel);
@@ -300,6 +308,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       accountProfileId: entry.accountProfileId,
       worktree: entry.worktree,
       name: this.names.get(entry.id) || `${entry.provider} session`,
+      codename: this.codenames.get(entry.id) ?? null,
       requestedModel: this.models.get(entry.id) ?? null,
       state: entry.state as SessionState,
       stateLabel: describeState(entry.state as SessionState),
@@ -331,7 +340,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       name: this.names.get(identity.id) ?? '',
       ...(this.models.has(identity.id) ? { requestedModel: this.models.get(identity.id)! } : {}),
       ...(this.instructionDigests.has(identity.id) ? { instructionDigest: this.instructionDigests.get(identity.id)! } : {}),
-      ...(this.instructionMethods.has(identity.id) ? { instructionMethod: this.instructionMethods.get(identity.id)! } : {})
+      ...(this.instructionMethods.has(identity.id) ? { instructionMethod: this.instructionMethods.get(identity.id)! } : {}),
+      ...(this.codenames.has(identity.id) ? { codename: this.codenames.get(identity.id)! } : {})
     }));
     try {
       await store.save(records);
@@ -390,7 +400,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     permissionArgs?: string[];
     /** Auto mode for the CLI (issue #296): the arguments to pass and the label to show. Resolved by the caller from the person's settings. */
     autoMode?: { args: string[]; label: string };
+    /** The codename the caller assigned (issue #342); shown with the session and saved with it. */
+    codename?: string;
   }): Promise<SessionView> {
+    if (input.codename !== undefined && !parseCodename(input.codename)) throw new SessionError('invalid-codename');
     const executable = this.executableFor(input.provider);
     const requestedModel = normalizeRequestedModel(input.provider, input.requestedModel);
     const name = cleanName(input.name);
@@ -415,6 +428,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
       this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs);
+      if (input.codename !== undefined) this.codenames.set(identity.id, input.codename);
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -619,8 +633,11 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       autoMode?: { args: string[]; label: string };
       /** The same permission arguments `start` takes. */
       permissionArgs?: string[];
+      /** The codename the new session holds (issue #342). When it is the old session's, the old record stops holding it. */
+      codename?: string;
     } = {}
   ): Promise<SessionView> {
+    if (options.codename !== undefined && !parseCodename(options.codename)) throw new SessionError('invalid-codename');
     await this.ready();
     this.inFlight += 1;
     let identity: SessionIdentity | undefined;
@@ -648,6 +665,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
       this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs);
+      if (options.codename !== undefined) {
+        if (this.codenames.get(id) === options.codename) this.codenames.delete(id);
+        this.codenames.set(identity.id, options.codename);
+      }
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

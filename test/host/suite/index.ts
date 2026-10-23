@@ -1,4 +1,5 @@
 import { runAgentSkillChecks } from './agentSkills';
+import { isSessionRow } from './sessionRows';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { strict as assert } from 'node:assert';
@@ -82,7 +83,7 @@ function sameDirectory(actual: string, expected: string): boolean {
 interface SessionOutcome {
   ok: boolean;
   code?: string;
-  session?: { id: string; name: string; provider: string; state: string; terminalOpen: boolean; accountProfileId: string; worktree: string; stateLabel: string };
+  session?: { id: string; name: string; provider: string; state: string; terminalOpen: boolean; accountProfileId: string; worktree: string; stateLabel: string; codename?: string | null };
   sessions?: Array<{ id: string; name: string; state: string; terminalOpen: boolean }>;
 }
 
@@ -132,6 +133,8 @@ async function sessionFlow(workspace: string): Promise<void> {
 
   // Interactive focus on a closed session offers 'Reopen as New Session' and reopens it cleanly.
   const realShowWarningMessage = vscode.window.showWarningMessage;
+  const realShowInformationMessage = vscode.window.showInformationMessage;
+  const instructionPrompts: string[] = [];
   try {
     (vscode.window as { showWarningMessage: typeof vscode.window.showWarningMessage }).showWarningMessage = (async (message: string, ...rest: unknown[]) => {
       if (typeof message === 'string' && message.includes('no open terminal in this window')) {
@@ -139,15 +142,26 @@ async function sessionFlow(workspace: string): Promise<void> {
       }
       return (realShowWarningMessage as any)(message, ...rest);
     }) as typeof vscode.window.showWarningMessage;
+    // Every session now has instructions to confirm, its codename at least (issue #342): the person is shown them before the reopen.
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = (async (message: string, ...rest: unknown[]) => {
+      if (typeof message === 'string' && message.includes('Reopening session with effective instructions')) {
+        instructionPrompts.push(message);
+        return 'Reopen Session';
+      }
+      return (realShowInformationMessage as any)(message, ...rest);
+    }) as typeof vscode.window.showInformationMessage;
     const focusedClosed = await vscode.commands.executeCommand<SessionOutcome>('multiagentSystem.sessions.focus', { id: b.session?.id, interactive: true, launch: false });
     assert.equal(focusedClosed.ok, true, 'focusing a closed session interactively and choosing Reopen as New Session reopens it');
     assert.notEqual(focusedClosed.session?.id, b.session?.id, 'reopened session has a new id');
     assert.equal(focusedClosed.session?.terminalOpen, true);
+    assert.equal(instructionPrompts.length, 1, 'the instructions (with the codename) were shown once before reopening');
+    assert.equal(focusedClosed.session?.codename, b.session?.codename, 'the reopened session keeps the codename');
     if (focusedClosed.session?.id) {
       await command('multiagentSystem.sessions.stop', { id: focusedClosed.session.id });
     }
   } finally {
     (vscode.window as { showWarningMessage: typeof vscode.window.showWarningMessage }).showWarningMessage = realShowWarningMessage;
+    (vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage }).showInformationMessage = realShowInformationMessage;
   }
 
   for (const terminal of vscode.window.terminals.filter((candidate) => candidate.name.startsWith('Multiagent: Session'))) terminal.dispose();
@@ -218,7 +232,7 @@ async function accountFlow(workspace: string): Promise<void> {
   });
   assert.deepEqual([wrongProvider.ok, wrongProvider.code], [false, 'provider-mismatch']);
 
-  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string; requestedModel: string | null } }>('multiagentSystem.sessions.start', {
+  const started = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string; requestedModel: string | null; codename: string | null } }>('multiagentSystem.sessions.start', {
     interactive: false, provider: 'claude', name: 'Account Bound Session', cwd: workspace,
     accountProfileId: created.profile.id, requestedModel: 'sonnet', launch: false
   });
@@ -229,7 +243,9 @@ async function accountFlow(workspace: string): Promise<void> {
   const agentsHeading = orderedOverview.findIndex((entry) => entry.label === 'Agents');
   const accountsHeading = orderedOverview.findIndex((entry) => entry.label === 'Accounts');
   assert.ok(agentsHeading >= 0 && accountsHeading > agentsHeading, 'running agents remain ahead of account usage in the default overview');
-  const modelAgent = orderedOverview.find((entry) => entry.label === 'Account Bound Session');
+  // The row shows the session's codename in front of its name (issue #342).
+  const boundLabel = `${started.session?.codename} · Account Bound Session`;
+  const modelAgent = orderedOverview.find((entry) => entry.label === boundLabel);
   assert.match(String(modelAgent?.tooltip), /Requested model: sonnet \(not confirmed\)/);
   assert.match(String(modelAgent?.tooltip), /Actual model: unknown/);
 
@@ -246,7 +262,7 @@ async function accountFlow(workspace: string): Promise<void> {
       const timer = setTimeout(() => { subscription?.dispose(); resolve(false); }, timeoutMs);
       const subscription = tree.onDidChangeTreeData?.(() => { clearTimeout(timer); subscription?.dispose(); resolve(true); });
     });
-    const agentTooltip = async (): Promise<string> => String(((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Account Bound Session')?.tooltip);
+    const agentTooltip = async (): Promise<string> => String(((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === boundLabel)?.tooltip);
     const writeRecord = (ageMs: number): void => {
       const observedAt = new Date(Date.now() - ageMs).toISOString();
       fs.mkdirSync(path.dirname(observationFile), { recursive: true });
@@ -584,7 +600,7 @@ async function roleFlow(workspace: string): Promise<void> {
   assert.equal(vscode.window.terminals.some((terminal) => terminal.name === 'Multiagent: Role Bypass Attempt'), false);
   try {
     const rows = (await overviewTreeForTests().getChildren()) ?? [];
-    const row = rows.find((entry) => entry.label === 'Role Session');
+    const row = rows.find((entry) => isSessionRow(entry.label, 'Role Session'));
     assert.ok(row, 'the assigned session is in the overview');
     assert.match(String(row?.description ?? ''), /^Host PM · /, 'the overview shows the role group name');
     assert.match(String(row?.tooltip ?? ''), /not sent to the CLI yet/);
