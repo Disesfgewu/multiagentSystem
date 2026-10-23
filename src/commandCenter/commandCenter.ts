@@ -21,6 +21,7 @@ const model = require('./model') as {
   applyLayoutMessage(layout: Layout, message: Message): Layout;
 };
 const { renderPage } = require('./page') as { renderPage(input: { nonce: string }): string };
+const { createRefreshLoop } = require('./refreshLoop') as { createRefreshLoop(run: () => Promise<void>): { request(): Promise<void>; running(): boolean } };
 
 export const COMMAND_CENTER_COMMAND = 'multiagentSystem.commandCenter.open';
 export const COMMAND_CENTER_VIEW_TYPE = 'multiagentSystem.commandCenter';
@@ -86,7 +87,6 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[] } | undefined;
   let layout: Layout = model.normalizeLayout(context.workspaceState.get(LAYOUT_KEY));
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let generation = 0;
 
   const knownIds = (): Set<string> => new Set([...(cached?.pm ?? []), ...(cached?.agents ?? [])].map((card) => card.id as string));
   const knownAccountIds = (): Set<string> => new Set((cached?.accounts ?? []).map((row) => row.id as string));
@@ -96,25 +96,35 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
   const post = (): void => { const state = payload(); if (panel && state) void panel.webview.postMessage({ type: 'state', state }); };
 
-  const refresh = async (): Promise<void> => {
-    const mine = ++generation;
+  // What the slow parts last read, so the first step of a refresh shows the cards with them instead of blanks.
+  let lastReports: Record<string, unknown> = {};
+  let lastAssignments: Record<string, unknown> = {};
+  const publish = (next: NonNullable<typeof cached>): void => { cached = next; post(); };
+  /**
+   * One refresh, published in two steps (#368): first the cards from the sessions as they are now (with the pull request reports,
+   * accounts and team rules last read), then again once the slower reads have answered. Nothing it worked out is thrown away.
+   */
+  const refreshOnce = async (): Promise<void> => {
     const live = sessions.list().map((entry) => ({ ...entry, providerLabel: builtIn.get(entry.provider)?.label }));
     const [snapshot, roles] = await Promise.all([collectOverview(sessions), roleGroups()]);
-    // A newer refresh started while this one was reading: only the newest answer is shown.
-    if (mine !== generation) return;
+    const notesWith = (teamRules: string | undefined) => [...(teamRules ? [teamRules] : []), ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240));
+    const first = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports: lastReports, assignments: lastAssignments });
+    publish({ pm: first.pm, agents: first.agents, accounts: cached?.accounts ?? [], alerts: cached?.alerts ?? [], decisions: model.describeDecisions(decisionCountsSnapshot()), notes: cached ? cached.notes : notesWith(undefined) });
     // The latest report of each agent's pull request: read a few at a time and kept for a minute by the report module.
     const numbers = [...new Set(snapshot.agents.map((agent) => agent.pullRequestNumber).filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0))].slice(0, 12);
     const reports: Record<string, unknown> = {};
     await Promise.all(numbers.map(async (number) => { reports[String(number)] = await pullRequestSummary(number); }));
-    if (mine !== generation) return;
     const assignments = Object.fromEntries(await readAssignments());
+    lastReports = reports;
+    lastAssignments = assignments;
     const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments });
     const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
-    if (mine !== generation) return;
-    cached = { pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: [teamRules, ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240)) };
-    post();
+    publish({ pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: notesWith(teamRules) });
   };
+  // At most one refresh at a time; a request meanwhile runs one more afterwards (#368).
+  const loop = createRefreshLoop(refreshOnce);
+  const refresh = (): Promise<void> => loop.request();
   const scheduleRefresh = (): void => {
     if (!panel) return;
     if (timer) clearTimeout(timer);
