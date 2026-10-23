@@ -210,33 +210,47 @@ const isPlainObject = (value) => value !== null && typeof value === 'object' && 
 /**
  * The platform module with its `probe` watched: how each channel's probe ended. `collectProbes` turns a probe that throws or answers
  * nonsense into "no evidence" (unknown), which is right for the product but would let a broken probe pass a test unnoticed.
+ *
+ * `collectProbes` gives up on a channel when its own limit runs out or the overall deadline fires, and aborts that channel's signal
+ * (#349). A probe that ends after that is "abandoned": whatever it answered was not kept, so it is no evidence, but it is not a broken
+ * probe either. (Before, a probe that answered after its limit was recorded as "answered", and a channel with no evidence that had
+ * "answered" failed the test.)
  */
 function watched(module) {
   const status = {};
-  const settle = (channel, value) => { status[channel] = isPlainObject(value) && typeof value.control === 'boolean' ? 'answered' : `answered something that is not a probe result (${String(JSON.stringify(value)).slice(0, 60)})`; return value; };
+  const describeError = (error) => String(error && error.message ? error.message : error).slice(0, 80);
   const probe = (channel, context) => {
     status[channel] = 'running';
+    const abandoned = () => Boolean(context && context.signal && context.signal.aborted);
+    const settle = (value) => {
+      status[channel] = abandoned() ? 'abandoned' : isPlainObject(value) && typeof value.control === 'boolean' ? 'answered' : `answered something that is not a probe result (${String(JSON.stringify(value)).slice(0, 60)})`;
+      return value;
+    };
+    const fail = (error) => { status[channel] = abandoned() ? 'abandoned' : `threw (${describeError(error)})`; throw error; };
     let pending;
-    try { pending = Promise.resolve(module.probe(channel, context)); } catch (error) { status[channel] = `threw (${String(error && error.message ? error.message : error).slice(0, 80)})`; throw error; }
-    return pending.then((value) => settle(channel, value), (error) => { status[channel] = `threw (${String(error && error.message ? error.message : error).slice(0, 80)})`; throw error; });
+    try { pending = Promise.resolve(module.probe(channel, context)); } catch (error) { return fail(error); }
+    return pending.then(settle, fail);
   };
   return { module: { platform: module.platform, probe }, status };
 }
 
 /**
- * What a measurement may leave out, and what it may not: a probe that threw or answered nonsense always fails, naming the channel; a
- * channel with no evidence is allowed only when the overall deadline fired (its probe still running, or never started). Without the
- * deadline every channel must have its evidence.
+ * What a measurement may leave out, and what it may not: a probe that threw or answered nonsense always fails, naming the channel. A
+ * channel with no evidence is allowed when `collectProbes` gave up on it (its own limit ran out: "abandoned", or still "running"
+ * when the measurement ended) or when the overall deadline fired (also those never started). A channel that answered in time must
+ * have its evidence. The caller checks that no channel without evidence is called enforced.
  * @returns {{ measured: string[], missing: string[] }}
  */
 function checkMeasurement({ probes, status, deadlineFired }) {
   const channels = Object.keys(CHANNELS);
-  const broken = channels.filter((channel) => typeof status[channel] === 'string' && status[channel] !== 'answered' && status[channel] !== 'running');
+  const broken = channels.filter((channel) => typeof status[channel] === 'string' && !['answered', 'running', 'abandoned'].includes(status[channel]));
   if (broken.length > 0) assert.fail(`probes that failed: ${broken.map((channel) => `${channel} ${status[channel]}`).join('; ')}`);
   const measured = channels.filter((channel) => isPlainObject(probes[channel]) && typeof probes[channel].control === 'boolean');
   const missing = channels.filter((channel) => !measured.includes(channel));
   if (!deadlineFired) {
-    assert.deepEqual(missing, [], `the deadline did not fire, yet these channels have no evidence: ${missing.map((channel) => `${channel} (${status[channel] ?? 'never started'})`).join(', ')}`);
+    // Without the deadline every channel was started; one that answered in time and still has no evidence is a real failure.
+    const unexplained = missing.filter((channel) => status[channel] !== 'abandoned' && status[channel] !== 'running');
+    assert.deepEqual(unexplained, [], `the deadline did not fire, yet these channels have no evidence: ${unexplained.map((channel) => `${channel} (${status[channel] ?? 'never started'})`).join(', ')}`);
     assert.ok(measured.length > 0, 'at least one channel was measured');
   }
   return { measured, missing };
@@ -294,10 +308,32 @@ test('a measurement that runs out of time ends on time; only channels the deadli
   for (const channel of missing) assert.notEqual(assessment.channels.find((entry) => entry.channel === channel).state, 'enforced', channel);
   assert.equal(assessment.mode, 'advisory');
 
-  // The same slow channel without the deadline firing (only its own limit ran out): that is a failure, not an excuse.
-  const own = await measure(fake(slow), { channelMs: 50 });
+  // #349: a channel whose own limit ran out (here 50 ms) answers later (80 ms) while the deadline does not fire. `collectProbes` gave up
+  // on it, so it has no evidence; that is not a broken probe: it is abandoned, unknown, and never enforced.
+  const late80 = (channel) => (channel === channels[1] ? new Promise((resolve) => setTimeout(() => resolve(answer(channel)), 80)) : answer(channel));
+  const own = await measure(fake(late80), { channelMs: 50 });
   assert.equal(own.deadlineFired, false);
-  assert.throws(() => checkMeasurement(own), (error) => error instanceof assert.AssertionError && error.message.includes(channels[1]));
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(own.status[channels[1]], 'abandoned', 'an answer after the limit is recorded as abandoned, not as answered');
+  const ownCheck = checkMeasurement(own);
+  assert.deepEqual(ownCheck.missing, [channels[1]]);
+  const ownAssessment = assessIsolation({ platform: 'win32', probes: own.probes });
+  assert.notEqual(ownAssessment.channels.find((entry) => entry.channel === channels[1]).state, 'enforced');
+  // Still running when the measurement ended, its own limit already past: also no evidence, also never enforced.
+  const stillRunning = await measure(fake(slow), { channelMs: 50 });
+  assert.equal(stillRunning.status[channels[1]], 'running');
+  assert.deepEqual(checkMeasurement(stillRunning).missing, [channels[1]]);
+  // A probe that throws or answers nonsense before it is given up on still fails, without the deadline too.
+  const brokenInTime = await measure(fake((channel) => (channel === channels[3] ? 'yes' : answer(channel))), { channelMs: 50 });
+  assert.throws(() => checkMeasurement(brokenInTime), (error) => error instanceof assert.AssertionError && error.message.includes(channels[3]));
+  // A probe that fails only because it was given up on (it rejects after its limit, as an aborted probe does) is abandoned too.
+  const abortedLate = await measure(fake((channel) => (channel === channels[2] ? new Promise((_, reject) => setTimeout(() => reject(new Error('aborted')), 80)) : answer(channel))), { channelMs: 50 });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(abortedLate.status[channels[2]], 'abandoned');
+  assert.deepEqual(checkMeasurement(abortedLate).missing, [channels[2]]);
+  // An answer that came in time but has no evidence would be a real failure: it is never excused.
+  const dropped = { ...all, probes: Object.fromEntries(Object.entries(all.probes).filter(([channel]) => channel !== channels[4])) };
+  assert.throws(() => checkMeasurement(dropped), (error) => error instanceof assert.AssertionError && error.message.includes(`${channels[4]} (answered)`));
 });
 
 test('on Windows: every channel is tried against a control, and the results are printed for the log', onlyWindows, async () => {
