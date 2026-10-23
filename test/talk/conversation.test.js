@@ -86,6 +86,7 @@ test('the commands take no argument, need a trusted workspace, and tell the PM o
   assert.match(send, /if \(!sent\.ok\) \{[\s\S]*?return \{ ok: false, code: sent\.code \};/, 'nothing is told when the comment was not posted');
   assert.match(send, /await deps\.send\(\{ repository, kind: target\.kind, number: target\.number, version \}, \{ interactive: true, conversation: true \}\)/, 'each message is its own comment, not the report page\'s one-per-version feedback');
   assert.match(send, /if \(!there\) \{[\s\S]*?return \{ ok: false, code: 'not-read-back' \};/, 'nor when it cannot be read back');
+  assert.match(send, /if \(sent\.ownerRecorded === false && sent\.commentId !== undefined\) void vscode\.window\.showWarningMessage\(`Your comment was posted\.\$\{OWNER_NOT_RECORDED\}`\);/, 'a comment not recorded as the owner\'s is said to show as unsigned');
   assert.equal([...source.matchAll(/sendPrompt\(/g)].length, 0, 'this view never types by itself');
   assert.equal([...source.matchAll(/confirmAndType\(/g)].length, 1, 'one place types, behind its own confirmation');
   const reading = source.slice(source.indexOf('read(uri: vscode.Uri, options'), source.indexOf('/** The next reading'));

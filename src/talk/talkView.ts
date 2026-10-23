@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { isExtensionTestMode } from '../shared/testMode';
 import { confirmAndType, openStore } from '../dispatch/commands';
-import { currentReportDeps, REPORT_SCHEME } from '../reports/reportsView';
+import { currentReportDeps, OWNER_NOT_RECORDED, REPORT_SCHEME } from '../reports/reportsView';
 import { sendPublicFeedback } from '../reports/publicFeedback';
 import { privateStorage } from '../storage/storageCommands';
 
@@ -236,6 +236,8 @@ async function sendMessage(sessions: SessionCommands, uri: vscode.Uri | undefine
     if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The message was not sent (${sent.code ?? 'unknown'}). The PM was not told.`);
     return { ok: false, code: sent.code };
   }
+  // Posted, but not recorded as the owner's (#346): the report will show it as unsigned. Said once, whatever happens next.
+  if (sent.ownerRecorded === false && sent.commentId !== undefined) void vscode.window.showWarningMessage(`Your comment was posted.${OWNER_NOT_RECORDED}`);
   if (sent.commentId === undefined || typeof sent.body !== 'string') {
     void vscode.window.showInformationMessage('This exact message was already sent before; the PM was not told again.');
     return { ok: true, code: 'already-sent' };

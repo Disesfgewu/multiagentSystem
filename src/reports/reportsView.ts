@@ -45,7 +45,7 @@ const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbou
 };
 
 // Issue #342: the post is on GitHub, but its id could not be written to the private record of the owner's posts.
-const OWNER_NOT_RECORDED = ' It could not be recorded as yours in private storage, so the report will show it as unsigned rather than as the owner\'s.';
+export const OWNER_NOT_RECORDED = ' It could not be recorded as yours in private storage, so the report will show it as unsigned rather than as the owner\'s.';
 
 export const REPORT_SCHEME = 'multiagent-report';
 export const DIFF_SCHEME = 'multiagent-report-diff';
