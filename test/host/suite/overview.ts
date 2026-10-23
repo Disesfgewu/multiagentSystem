@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { isSessionRow } from './sessionRows';
 import * as vscode from 'vscode';
 import { overviewTreeForTests, setJoinDepsForTests, setGitEvidenceReaderForTests, OVERVIEW_VIEW, OVERVIEW_REFRESH, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT, OVERVIEW_SHOW_DIFF } from '../../../src/overview/overviewView';
 import { setReportDepsForTests } from '../../../src/reports/reportsView';
@@ -28,7 +29,10 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
   assert.equal(started?.ok, true);
   try {
     const rows = (await tree.getChildren()) ?? [];
-    const agent = rows.find((row) => row.label === 'Overview Session');
+    // Without a role group the session's codename is an Agent one (issue #342), shown in front of the name.
+    const codename = (started as { session?: { codename?: string | null } }).session?.codename;
+    assert.match(codename ?? '', /^Agent-[0-9]{2,4}$/);
+    const agent = rows.find((row) => row.label === `${codename} · Overview Session`);
     assert.ok(agent, 'a started session is one row in the overview');
     const text = String(agent?.description ?? '');
     assert.match(text, /terminal open, CLI not started/, 'a shell alone is not described as an agent working');
@@ -58,7 +62,7 @@ export async function runOverviewChecks(workspace: string): Promise<string> {
         getPullRequestSnapshot: async () => ({ status: 'complete', checksSummary: { state: 'passing', requiredState: 'passing', headSha: sha } })
       })
     });
-    const rowNow = async () => ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => entry.label === 'Overview Session');
+    const rowNow = async () => ((await overviewTreeForTests().getChildren()) ?? []).find((entry) => isSessionRow(entry.label, 'Overview Session'));
     try {
       // The working folder of this host run is not the subject of the PR checks below: a clean, known state keeps them exact.
       setGitEvidenceReaderForTests(async () => ({ state: 'known', source: 'local git', changed: 0, untracked: 0, dirty: false, head: 'abcdef123456', branch: 'feat/host', upstream: { ahead: 0, behind: 0 } }));

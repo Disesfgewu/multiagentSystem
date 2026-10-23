@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { cleanName, SessionRecord, SessionSnapshotStore } from './manager';
 import { SessionRegistry } from './registry';
 import { normalizeRequestedModel } from '../providers/modelSelection';
+const { parseCodename } = require('./codenames') as { parseCodename(value: unknown): { prefix: string; number: number } | null };
 
 interface Store {
   get(collection: string, id: string): { ok: boolean; found?: boolean; value?: unknown };
@@ -15,7 +16,7 @@ interface Access {
 }
 interface Envelope { scope: string; revision: number; records: SessionRecord[] }
 const COLLECTION = 'sessions';
-const KEYS = new Set(['id', 'repoId', 'roleGroupId', 'provider', 'accountProfileId', 'worktree', 'name', 'requestedModel', 'instructionDigest', 'instructionMethod']);
+const KEYS = new Set(['id', 'repoId', 'roleGroupId', 'provider', 'accountProfileId', 'worktree', 'name', 'requestedModel', 'instructionDigest', 'instructionMethod', 'codename']);
 const fail = (code: string): never => { throw Object.assign(new Error(code), { code }); };
 const plain = (value: any): boolean => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -45,7 +46,11 @@ function validRecords(records: unknown): records is SessionRecord[] {
       normalizeRequestedModel(record.provider, record.requestedModel);
       if (record.instructionDigest !== undefined && (typeof record.instructionDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(record.instructionDigest))) return false;
       if (record.instructionMethod !== undefined && (typeof record.instructionMethod !== 'string' || !/^[a-z0-9-]+$/.test(record.instructionMethod))) return false;
+      if (record.codename !== undefined && !parseCodename(record.codename)) return false;
     }
+    // One holder per codename: a snapshot where two sessions hold the same one was not written by this extension.
+    const held = records.map((record) => record.codename).filter((codename) => codename !== undefined);
+    if (new Set(held).size !== held.length) return false;
     SessionRegistry.restore(records);
     return true;
   } catch { return false; }

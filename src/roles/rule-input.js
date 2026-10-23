@@ -11,6 +11,7 @@ const RULE_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 // a rule that is typed in cannot collide with or imitate one.
 const RESERVED_ID_PREFIX = 'rg:';
 const { BROADCAST_ID_PREFIX, isIssuedBroadcastRule } = require('../broadcast/issued');
+const { CODENAME_RULE_ID, isIssuedCodenameRule } = require('../sessions/codenames');
 const ALLOWED_FIELDS = Object.freeze(['id', 'type', 'key', 'text', 'version', 'replaces', 'layer']);
 
 // Characters that make text look different from how it is stored, or that cannot be seen:
@@ -61,6 +62,8 @@ function validateRule(rule, { layer, path }) {
   else if (rule.id.startsWith(RESERVED_ID_PREFIX)) add('reserved-id', 'id');
   // Only a rule built by broadcastRule() may carry a broadcast id, and only in the user layer.
   else if (rule.id.startsWith(BROADCAST_ID_PREFIX) && !(layer === 'user' && isIssuedBroadcastRule(rule))) add('reserved-id', 'id');
+  // Only the rule built by codenameRule() may carry the codename id (issue #342), and only in the user layer.
+  else if (rule.id.startsWith('codename:') && !(layer === 'user' && rule.id === CODENAME_RULE_ID && isIssuedCodenameRule(rule))) add('reserved-id', 'id');
 
   if (!TYPES.includes(rule.type)) {
     add('invalid-type', 'type');

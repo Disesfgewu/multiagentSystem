@@ -31,6 +31,13 @@ export async function runQuotaDispatchChecks(workspace: string, accountProfileId
     if (message === 'Account limits are holding back new agents.') return 'Override and Start';
     throw new Error(`Unexpected quota test dialog: ${message}`);
   }) as typeof vscode.window.showWarningMessage;
+  // An interactive start shows the prepared instructions (the session's codename at least, issue #342) before it starts.
+  const originalInformation = vscode.window.showInformationMessage;
+  const info = vscode.window as { showInformationMessage: typeof vscode.window.showInformationMessage };
+  info.showInformationMessage = (async (message: string, ...rest: unknown[]) => {
+    if (typeof message === 'string' && message.startsWith('Effective agent instructions prepared')) return 'Start Agent';
+    return (originalInformation as any)(message, ...rest);
+  }) as typeof vscode.window.showInformationMessage;
   const policy = async (clear = false, unknownQuota = 'require-confirmation') => {
     const result = await command(ACCOUNT_COMMANDS.limits, { id: accountProfileId, interactive: false, clear, max: '1', unknownQuota });
     assert.ok(result.ok);
@@ -162,6 +169,7 @@ export async function runQuotaDispatchChecks(workspace: string, accountProfileId
     }
   } finally {
     ui.showWarningMessage = originalWarning;
+    info.showInformationMessage = originalInformation;
     for (const entry of await sessions()) if (ids.has(entry.id) && entry.terminalOpen) await stop(entry.id);
     await policy(true);
   }

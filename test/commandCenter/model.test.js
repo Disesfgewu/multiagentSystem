@@ -302,3 +302,8 @@ test('a card says how many rules and shared notes were prepared for the agent, a
   assert.match(card({ rules: 1, memories: 2 }).injected, /1 rule and 2 shared notes/);
   for (const bad of [undefined, null, 5, {}, { rules: -1, memories: 0 }, { rules: 1.5, memories: 0 }, { rules: 'x', memories: 0 }]) assert.match(card(bad).injected, /^Rules and notes given to this agent: unknown/, JSON.stringify(bad));
 });
+
+test('a card carries the agent\'s codename when it is a well-formed one, and nothing else in its place (issue #342)', () => {
+  assert.equal(build([session({ codename: 'Worker-01' })]).agents[0].codename, 'Worker-01');
+  for (const codename of [undefined, null, 'Worker-1', '<b>PM-01</b>', 'PM-01\n', 7]) assert.equal(build([session({ codename })]).agents[0].codename, null, String(codename));
+});

@@ -99,6 +99,8 @@ function buildCards(input) {
     cards.push({
       id: session.id,
       name: line(session.name, 'Session'),
+      // The agent's codename (issue #342), what it signs GitHub posts with; only a well-formed one is shown.
+      codename: parseCodename(session.codename) ? session.codename : null,
       role,
       roleName: line(roleInfo && roleInfo.name, role ? role : session.roleGroupId === 'unassigned' || !session.roleGroupId ? 'no role group' : UNKNOWN),
       provider: line(session.providerLabel ?? session.provider),
@@ -136,6 +138,7 @@ function buildCards(input) {
 // ---- accounts and their quota (issue #304) ----
 
 const { UNKNOWN_REASONS } = require('../accounts/quota-gate');
+const { parseCodename } = require('../sessions/codenames');
 const WINDOW_LABELS = Object.freeze({ five_hour: '5-hour', seven_day: 'Weekly' });
 const ACCOUNT_ACTIONS = Object.freeze(['create', 'login', 'check', 'limits', 'usageLog', 'configureStatusLine', 'details']);
 // What a person can do about a missing reading, where there is something to click. Codes not listed have only the explanation.

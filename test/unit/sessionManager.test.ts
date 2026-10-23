@@ -946,3 +946,37 @@ test('a role group\'s sandbox arguments replace the auto mode\'s sandbox and kee
   await r.manager.reopen(first.id, { autoMode: auto, permissionArgs: ['--sandbox', 'read-only'] });
   assert.equal(r.terminals[r.terminals.length - 1].sent[0].text, 'codex --ask-for-approval never --sandbox read-only');
 });
+
+test('a codename is shown with its session, saved with it, restored after a restart, and moved to the new session on reopen (issue #342)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const session = await r.manager.start({ provider: 'claude', name: 'Coder', cwd: '/synthetic/project', codename: 'Worker-01' });
+  assert.equal(session.codename, 'Worker-01');
+  assert.equal(r.store.saved?.find((record) => record.id === session.id)?.codename, 'Worker-01', 'saved with the session record');
+  const other = await r.manager.start({ provider: 'claude', name: 'Plain', cwd: '/synthetic/project' });
+  assert.equal(other.codename, null, 'a session started without one has none');
+  assert.equal(r.store.saved?.find((record) => record.id === other.id)?.codename, undefined);
+  r.manager.stop(session.id);
+  const reopened = await r.manager.reopen(session.id, { codename: 'Worker-01' });
+  assert.equal(reopened.codename, 'Worker-01');
+  assert.equal(r.manager.get(session.id)?.codename, null, 'the old record is history and no longer holds it');
+  const restored = rig({}, r.store);
+  await restored.manager.initialize();
+  assert.equal(restored.manager.get(reopened.id)?.codename, 'Worker-01', 'kept after a restart');
+  assert.equal(restored.manager.get(session.id)?.codename, null);
+});
+
+test('a codename that is not one is refused before any terminal exists, in start and reopen (issue #342)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  for (const codename of ['worker-01', 'Worker-1', 'PM-01\n', '']) {
+    await assert.rejects(r.manager.start({ provider: 'claude', name: 'Bad', cwd: '/synthetic/project', codename }), { code: 'invalid-codename' }, codename);
+  }
+  assert.equal(r.terminals.length, 0);
+  const session = await r.manager.start({ provider: 'claude', name: 'Ok', cwd: '/synthetic/project', codename: 'Worker-01' });
+  r.manager.stop(session.id);
+  await assert.rejects(r.manager.reopen(session.id, { codename: 'Worker_01' }), { code: 'invalid-codename' });
+  assert.equal(r.terminals.length, 1, 'the refused reopen made no terminal');
+  assert.equal(r.manager.get(session.id)?.codename, 'Worker-01', 'and took nothing from the old session');
+});
+

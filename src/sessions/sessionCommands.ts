@@ -55,6 +55,13 @@ export const SESSION_COMMANDS = {
 } as const;
 
 const { REASONS: ROLE_REASONS } = require('../roles/launch-role') as { REASONS: Record<string, string> };
+interface CodenameRequest { repoId: string; sessionId: string; prefix: string; from?: string }
+type CodenameAnswer = { ok: true; codename: string } | { ok: false; reason: string };
+const { CodenameStore, prefixForRole, withCodename } = require('./codenames') as {
+  CodenameStore: new (store: unknown) => { preview(request: CodenameRequest): CodenameAnswer; assign(request: CodenameRequest & { expect?: string }): CodenameAnswer; revert(request: { repoId: string; sessionId: string; from?: string }): { ok: boolean } };
+  prefixForRole(role: unknown): string;
+  withCodename(name: string, codename: unknown): string;
+};
 
 const MESSAGES: Record<string, string> = {
   ...ROLE_REASONS,
@@ -212,7 +219,21 @@ export async function confirmAutoModeOnce(context: vscode.ExtensionContext, auto
 }
 
 export const INSTRUCTION_PREVIEW_SCHEME = 'multiagent-session-instructions';
-const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice.';
+const NOTICES_UNREADABLE_WARNING = 'Private storage is unavailable, so administrator notices could not be checked. This agent starts without any live notice, and without a codename: it is not told how to sign its GitHub posts.';
+
+/** What to ask the codename store for a session (issue #342): the prefix comes from the role group's role, `Agent` without one. */
+function codenameRequest(store: any, repoId: string, sessionId: string, roleGroupId: string | undefined, from?: string): CodenameRequest {
+  let role: unknown;
+  if (roleGroupId && roleGroupId !== 'unassigned') {
+    const loaded = store.get('roleGroups', roleGroupId);
+    role = loaded?.ok && loaded.found ? loaded.value?.group?.role : undefined;
+  }
+  // A session id the store cannot hold never held a codename, so there is nothing to move from it.
+  return { repoId, sessionId, prefix: prefixForRole(role), ...(from && /^[A-Za-z0-9_-]{8,64}$/.test(from) ? { from } : {}) };
+}
+const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
+  ? 'The session codename was taken by another window during review. Please start again.'
+  : `The session codename could not be prepared (${reason}). The agent was not started.`), { code: reason === 'codename-changed' ? 'stale-instructions' : 'codename-unavailable' });
 
 class InstructionPreviewProvider implements vscode.TextDocumentContentProvider {
   private readonly docs = new Map<string, string>();
@@ -347,6 +368,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     let release: (() => Promise<void>) | undefined;
     let isolationDispose: (() => Promise<void>) | undefined;
     let targetSessionId: string | undefined;
+    // Set once a codename is written for this session; undone if the session then does not start.
+    let revertCodename: (() => void) | undefined;
+    let codename: string | undefined;
     try {
       const cwd = input.cwd ?? workspaceFolder();
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
@@ -447,6 +471,15 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const codexHome = provider === 'codex' ? (env?.CODEX_HOME ?? path.join(privateDir, 'codex-home')) : undefined;
         if (codexHome && !env?.CODEX_HOME) env = { ...(env ?? {}), CODEX_HOME: codexHome };
         const project = await resolveProject(cwd);
+        // The codename is worked out before the instructions (they tell it to the agent) but written only once they are confirmed.
+        const codenames = new CodenameStore(store);
+        const codenameAsk = codenameRequest(store, project.repoId, targetSessionId, input.roleGroupId);
+        const previewed = codenames.preview(codenameAsk);
+        if (!previewed.ok) {
+          if (release) { await release(); release = undefined; }
+          return failure(codenameFailure(previewed.reason), interactive);
+        }
+        codename = previewed.codename;
         const prep = await prepareInstructionSnapshot({
           store,
           repoRoot: cwd,
@@ -457,7 +490,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           requestedModel,
           targetSessionId,
           privateDir,
-          codexHome
+          codexHome,
+          codename
         });
         if (!prep.ok) {
           if (release) { await release(); release = undefined; }
@@ -500,6 +534,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (interactive) void vscode.window.showErrorMessage(msg);
           return { ok: false, code: 'stale-instructions', message: msg };
         }
+        const committed = codenames.assign({ ...codenameAsk, expect: codename });
+        if (!committed.ok) {
+          cleanupSessionPlan(prep.plan);
+          if (release) { await release(); release = undefined; }
+          return failure(codenameFailure(committed.reason), interactive);
+        }
+        revertCodename = () => { codenames.revert({ repoId: codenameAsk.repoId, sessionId: codenameAsk.sessionId }); };
         instructions = prep;
       }
       // The settings file needs the role group's permissions, so it is written once the instructions are prepared. If it cannot be,
@@ -531,8 +572,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}),
         ...(attributionFile ? { attributionFile } : {}),
         ...(provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}),
-        ...(autoMode.auto ? { autoMode: autoMode.auto } : {})
+        ...(autoMode.auto ? { autoMode: autoMode.auto } : {}),
+        ...(codename !== undefined && revertCodename ? { codename } : {})
       });
+      revertCodename = undefined;
       // No confirmation window was shown for this launch: say it on screen anyway, so nobody is surprised that the agent does not stop to ask.
       if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
       if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
@@ -541,6 +584,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       return { ok: true, session };
     } catch (error) {
       if (typeof targetSessionId !== 'undefined') observations.release(targetSessionId);
+      try { revertCodename?.(); } catch { /* the number stays used either way */ }
       return failure(error, interactive);
     } finally {
       // Release if creation failed/cancelled, or if its terminal closed before snapshot saving
@@ -559,7 +603,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
     const picked = await vscode.window.showQuickPick(
       sessions.map((session) => ({
-        label: session.name,
+        label: withCodename(session.name, session.codename),
         description: `${session.provider} · ${session.stateLabel}`,
         detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'} · ${session.worktree}`,
         session
@@ -694,6 +738,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
         let instructions: any;
         const newSessionId = randomUUID();
+        let codenames: InstanceType<typeof CodenameStore> | undefined;
+        let codenameAsk: CodenameRequest | undefined;
+        let codename: string | undefined;
+        let revertCodename: (() => void) | undefined;
         const openedStorage = await privateStorage()?.use();
         const isolation = await isolationForLaunch(interactive, input.launch, prior.worktree, openedStorage, prior.provider);
         if (isolation.kind === 'refused') {
@@ -718,6 +766,15 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           const codexHome = prior.provider === 'codex' ? (env?.CODEX_HOME ?? path.join(privateDir, 'codex-home')) : undefined;
           if (codexHome && !env?.CODEX_HOME) env = { ...(env ?? {}), CODEX_HOME: codexHome };
           const project = await resolveProject(prior.worktree);
+          // The reopened session takes over the old one's codename (issue #342); written only once the instructions are confirmed.
+          codenames = new CodenameStore(store);
+          codenameAsk = codenameRequest(store, project.repoId, newSessionId, prior.roleGroupId, id);
+          const previewed = codenames.preview(codenameAsk);
+          if (!previewed.ok) {
+            if (release) { await release(); release = undefined; }
+            return failure(codenameFailure(previewed.reason), interactive);
+          }
+          codename = previewed.codename;
           const prep = await prepareInstructionSnapshot({
             store,
             repoRoot: prior.worktree,
@@ -728,7 +785,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             requestedModel: prior.requestedModel,
             targetSessionId: newSessionId,
             privateDir,
-            codexHome
+            codexHome,
+            codename
           });
           if (!prep.ok) {
             if (release) { await release(); release = undefined; }
@@ -771,6 +829,15 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (interactive) void vscode.window.showErrorMessage(msg);
             return { ok: false, code: 'stale-instructions', message: msg };
           }
+          const committed = codenames.assign({ ...codenameAsk, expect: codename });
+          if (!committed.ok) {
+            cleanupSessionPlan(prep.plan);
+            if (release) { await release(); release = undefined; }
+            return failure(codenameFailure(committed.reason), interactive);
+          }
+          const ask = codenameAsk;
+          const store2 = codenames;
+          revertCodename = () => { store2.revert({ repoId: ask.repoId, sessionId: ask.sessionId, ...(ask.from ? { from: ask.from } : {}) }); };
           instructions = prep;
         }
 
@@ -784,16 +851,19 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         try {
           attributionFile = attributionFileFor(prior.provider, input.launch, openedStorage, newSessionId, instructions?.toolPermissions);
         } catch (error) {
+          try { revertCodename?.(); } catch { /* the number stays used either way */ }
           if (instructions?.plan) cleanupSessionPlan(instructions.plan);
           observations.release(newSessionId);
           throw error;
         }
         if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}) });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}), ...(codename !== undefined && revertCodename ? { codename } : {}) });
+          revertCodename = undefined;
           if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
         } catch (error) {
           observations.release(newSessionId);
+          try { revertCodename?.(); } catch { /* the number stays used either way */ }
           throw error;
         }
         if (isolationDispose && manager.get(session.id)?.terminalOpen) { isolations.set(session.id, isolationDispose); isolationDispose = undefined; }
