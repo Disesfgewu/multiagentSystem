@@ -204,7 +204,43 @@ test('on Windows: the time limit ends a program that does not stop, and what it 
 // `assessIsolation` makes of a channel with no evidence. Nothing here can make a channel look enforced.
 const BUDGET_MS = 105000;
 const PHASE_MS = { describe: 20000, variants: 25000, facilities: 10000 };
-const CHANNEL_MS = 12000;
+const CHANNEL_MS = 20000;
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * The platform module with its `probe` watched: how each channel's probe ended. `collectProbes` turns a probe that throws or answers
+ * nonsense into "no evidence" (unknown), which is right for the product but would let a broken probe pass a test unnoticed.
+ */
+function watched(module) {
+  const status = {};
+  const settle = (channel, value) => { status[channel] = isPlainObject(value) && typeof value.control === 'boolean' ? 'answered' : `answered something that is not a probe result (${String(JSON.stringify(value)).slice(0, 60)})`; return value; };
+  const probe = (channel, context) => {
+    status[channel] = 'running';
+    let pending;
+    try { pending = Promise.resolve(module.probe(channel, context)); } catch (error) { status[channel] = `threw (${String(error && error.message ? error.message : error).slice(0, 80)})`; throw error; }
+    return pending.then((value) => settle(channel, value), (error) => { status[channel] = `threw (${String(error && error.message ? error.message : error).slice(0, 80)})`; throw error; });
+  };
+  return { module: { platform: module.platform, probe }, status };
+}
+
+/**
+ * What a measurement may leave out, and what it may not: a probe that threw or answered nonsense always fails, naming the channel; a
+ * channel with no evidence is allowed only when the overall deadline fired (its probe still running, or never started). Without the
+ * deadline every channel must have its evidence.
+ * @returns {{ measured: string[], missing: string[] }}
+ */
+function checkMeasurement({ probes, status, deadlineFired }) {
+  const channels = Object.keys(CHANNELS);
+  const broken = channels.filter((channel) => typeof status[channel] === 'string' && status[channel] !== 'answered' && status[channel] !== 'running');
+  if (broken.length > 0) assert.fail(`probes that failed: ${broken.map((channel) => `${channel} ${status[channel]}`).join('; ')}`);
+  const measured = channels.filter((channel) => isPlainObject(probes[channel]) && typeof probes[channel].control === 'boolean');
+  const missing = channels.filter((channel) => !measured.includes(channel));
+  if (!deadlineFired) {
+    assert.deepEqual(missing, [], `the deadline did not fire, yet these channels have no evidence: ${missing.map((channel) => `${channel} (${status[channel] ?? 'never started'})`).join(', ')}`);
+    assert.ok(measured.length > 0, 'at least one channel was measured');
+  }
+  return { measured, missing };
+}
 
 /** The value, or `{ timedOut: true }` once `ms` have passed (the work itself goes on in the background and is disposed of at the end). */
 async function withLimit(work, ms) {
@@ -214,23 +250,54 @@ async function withLimit(work, ms) {
   } finally { clearTimeout(timer); }
 }
 
-test('a measurement that runs out of time ends on time: each channel has its own limit, the deadline stops the rest, and unfinished channels are unknown, never enforced (issue #349)', async () => {
+test('a measurement that runs out of time ends on time; only channels the deadline stopped may lack evidence, never one whose probe broke (issue #349)', async () => {
   assert.deepEqual(await withLimit(new Promise((resolve) => setTimeout(() => resolve('late'), 200)), 20), { timedOut: true });
   assert.deepEqual(await withLimit(Promise.resolve('on time'), 1000), { timedOut: false, value: 'on time' });
-  const blocked = { achieved: false, can: true };
-  const got = { achieved: true, can: true };
-  const slow = () => new Promise((resolve) => setTimeout(() => resolve(got), 5000));
-  const attempts = Object.fromEntries(Object.keys(CHANNELS).map((channel, index) => [channel, async (restricted) => (index === 1 ? slow() : restricted ? blocked : got)]));
-  const deadline = new AbortController();
-  const started = Date.now();
-  setTimeout(() => deadline.abort(), 300);
-  const { probes } = await collectProbes(createWindowsModule({ attempts }), { timeoutMs: 100, signal: deadline.signal });
-  assert.ok(Date.now() - started < 2000, 'it ended on time instead of waiting for the slow channel');
   const channels = Object.keys(CHANNELS);
-  assert.equal(probes[channels[1]], undefined, 'the channel that ran out of its own time has no evidence');
-  const assessment = assessIsolation({ platform: 'win32', probes });
-  for (const channel of channels.filter((name) => !probes[name])) assert.notEqual(assessment.channels.find((entry) => entry.channel === channel).state, 'enforced', channel);
+  const answer = (channel) => ({ control: true, outcome: CHANNELS[channel].kind === 'bypass' ? 'open' : 'works' });
+  const fake = (behave) => ({ platform: 'win32', probe: async (channel) => behave(channel) });
+  const measure = async (module, { channelMs = 100, deadlineMs } = {}) => {
+    const deadline = new AbortController();
+    const timer = deadlineMs === undefined ? undefined : setTimeout(() => deadline.abort(), deadlineMs);
+    const watch = watched(module);
+    const { probes } = await collectProbes(watch.module, { timeoutMs: channelMs, signal: deadline.signal });
+    clearTimeout(timer);
+    return { probes, status: watch.status, deadlineFired: deadline.signal.aborted };
+  };
+
+  // Every probe answers: all measured, nothing missing.
+  const all = await measure(fake(answer));
+  assert.deepEqual(checkMeasurement(all), { measured: channels, missing: [] });
+
+  // A probe that throws, answers something that is not a result, or answers a result without a control: the test fails, naming it.
+  for (const [label, behave] of [
+    ['throws', (channel) => { if (channel === channels[2]) throw new Error('broken probe'); return answer(channel); }],
+    ['rejects', (channel) => (channel === channels[2] ? Promise.reject(new Error('broken probe')) : answer(channel))],
+    ['not an object', (channel) => (channel === channels[2] ? 'yes' : answer(channel))],
+    ['no control', (channel) => (channel === channels[2] ? { outcome: 'open' } : answer(channel))]
+  ]) {
+    const result = await measure(fake(behave));
+    assert.throws(() => checkMeasurement(result), (error) => error instanceof assert.AssertionError && error.message.includes(channels[2]), label);
+    // Even when the deadline also fired: a broken probe is never excused as "out of time".
+    assert.throws(() => checkMeasurement({ ...result, deadlineFired: true }), assert.AssertionError, `${label}, deadline fired`);
+  }
+
+  // A slow channel while the deadline fires: the measurement ends on time and the channels without evidence are unknown, never enforced.
+  const slow = (channel) => (channel === channels[1] ? new Promise((resolve) => setTimeout(() => resolve(answer(channel)), 5000)) : { control: true, outcome: CHANNELS[channel].kind === 'bypass' ? 'blocked' : 'works' });
+  const started = Date.now();
+  const late = await measure(fake(slow), { deadlineMs: 50, channelMs: 2000 });
+  assert.ok(Date.now() - started < 3000, 'it ended on time instead of waiting for the slow channel');
+  assert.equal(late.deadlineFired, true);
+  const { missing } = checkMeasurement(late);
+  assert.ok(missing.includes(channels[1]), 'the slow channel has no evidence');
+  const assessment = assessIsolation({ platform: 'win32', probes: late.probes });
+  for (const channel of missing) assert.notEqual(assessment.channels.find((entry) => entry.channel === channel).state, 'enforced', channel);
   assert.equal(assessment.mode, 'advisory');
+
+  // The same slow channel without the deadline firing (only its own limit ran out): that is a failure, not an excuse.
+  const own = await measure(fake(slow), { channelMs: 50 });
+  assert.equal(own.deadlineFired, false);
+  assert.throws(() => checkMeasurement(own), (error) => error instanceof assert.AssertionError && error.message.includes(channels[1]));
 });
 
 test('on Windows: every channel is tried against a control, and the results are printed for the log', onlyWindows, async () => {
@@ -254,11 +321,12 @@ test('on Windows: every channel is tried against a control, and the results are 
       else for (const line of result.value) console.log(`windows isolation: ${line}`);
     }
     // Each channel has its own limit; the overall deadline stops the rest. A channel not probed in time has no evidence: unknown.
-    const { probes } = await collectProbes(module, { timeoutMs: CHANNEL_MS, signal: deadline.signal });
+    const watch = watched(module);
+    const { probes } = await collectProbes(watch.module, { timeoutMs: CHANNEL_MS, signal: deadline.signal });
     const assessment = assessIsolation({ platform: 'win32', probes });
     for (const line of describeAssessment(assessment)) console.log(`windows isolation: ${line}`);
-    const measured = Object.keys(CHANNELS).filter((channel) => probes[channel] && typeof probes[channel].control === 'boolean');
-    const missing = Object.keys(CHANNELS).filter((channel) => !measured.includes(channel));
+    console.log(`windows isolation: probe status ${JSON.stringify(watch.status)}`);
+    const { measured, missing } = checkMeasurement({ probes, status: watch.status, deadlineFired: deadline.signal.aborted });
     console.log(`windows isolation: probes ${JSON.stringify(Object.fromEntries(Object.entries(probes).map(([channel, probe]) => [channel, { control: probe.control, outcome: probe.outcome }])))}`);
     if (missing.length > 0) console.log(`windows isolation: not probed in time (unknown): ${missing.join(', ')} · ${Math.round((Date.now() - startedAt) / 1000)} s used of ${BUDGET_MS / 1000} s`);
     for (const channel of measured) if (probes[channel].control === false) assert.equal(probes[channel].outcome, undefined, `${channel}: no outcome without a control`);
