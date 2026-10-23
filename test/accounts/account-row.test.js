@@ -20,10 +20,21 @@ test('the usage part: current numbers with their reset, an out-of-date one marke
   assert.match(quotaSummary({ ok: true, windows: [], unknownReason: 'bridge-no-data' }, NOW).text, /no agent has run on this account yet: start one and its usage appears/);
   assert.equal(quotaSummary({ ok: true, windows: [], unknownReason: 'bridge-not-enabled' }, NOW).attention, true, 'a status line that is not set up needs the person');
   const stale = quotaSummary({ ok: true, windows: [{ window: 'five_hour', usedPercent: 80, fresh: false, observedAt: '2026-10-23T03:00:00Z' }], unknownReason: 'reading-expired' }, NOW);
-  assert.equal(stale.text, 'usage unknown: last reading is out of date: it refreshes while an agent runs on this account · 5h 80% (out of date, read 7 h ago)');
+  assert.equal(stale.text, 'usage unknown: last reading is out of date: it refreshes while an agent runs on this account · 5h 80% (out of date, read 7 h ago) · 7d: not reported in the last reading');
   assert.equal(quotaSummary({ ok: true, windows: [], unknownReason: 'something-new' }, NOW).text, 'usage unknown: no usage reading for this account yet');
   for (const detail of [null, { ok: false }, { ok: true, windows: 'x' }]) assert.deepEqual(quotaSummary(detail, NOW), { text: 'usage could not be read', attention: true });
   assert.ok(!quotaSummary({ ok: true, windows: [], unknownReason: 'bridge-no-data' }, NOW).text.includes('unknown.'), 'never only "unknown"');
+});
+
+test('5h and 7d always have a place: a current 5h never hides a missing, unusable or out-of-date 7d (#352)', () => {
+  const five = { window: 'five_hour', usedPercent: 32, fresh: true, resetsAt: '2026-10-23T12:00:00Z' };
+  const at = (seven, extra = []) => quotaSummary({ ok: true, windows: [five, ...(seven ? [seven] : []), ...extra], unknownReason: null }, NOW);
+  assert.deepEqual(at({ window: 'seven_day', usedPercent: 50, fresh: false, observedAt: '2026-10-23T07:00:00Z' }), { text: '5h 32% (resets in 2h) · 7d 50% (out of date, read 3 h ago)', attention: false });
+  assert.equal(at(null).text, '5h 32% (resets in 2h) · 7d: not reported in the last reading');
+  assert.equal(at({ window: 'seven_day', usedPercent: null, fresh: false }).text, '5h 32% (resets in 2h) · 7d: the last reading has no usable number');
+  assert.equal(at({ window: 'seven_day', usedPercent: 10, fresh: true }, [{ window: 'seven_day_sonnet', usedPercent: 12, fresh: true }, { window: 'seven_day_opus', usedPercent: 71, fresh: true }, { window: 'seven_day_new_model', usedPercent: 3, fresh: true }]).text,
+    '5h 32% (resets in 2h) · 7d 10% · 7d New Model 3% · 7d Opus 71% · 7d Sonnet 12%', 'per-model weekly windows follow, each named');
+  assert.equal(quotaSummary({ ok: true, windows: [{ window: 'seven_day', usedPercent: 10, fresh: true }], unknownReason: null }, NOW).text, '5h: not reported in the last reading · 7d 10%');
 });
 
 test('which account it is: the e-mail and organization when this window has them, the plan, sign-in and when it was checked (#352)', () => {
@@ -42,6 +53,8 @@ test('which account it is: the e-mail and organization when this window has them
   assert.deepEqual([failed.text, failed.signedIn, failed.attention], ['sign-in unknown · checked 2 min ago', null, true]);
   assert.match(failed.lines.join('\n'), /could not be started[\s\S]*Next: Check that the CLI is installed/);
   assert.deepEqual([identitySummary({}).text, identitySummary({ checking: true }).text], ['sign-in not checked yet', 'checking sign-in…']);
+  assert.equal(accountsOverview([identitySummary({}), identitySummary({ check: signedIn(), display: { email: EMAIL }, now: NOW })]), '2 accounts · 1 signed in · 1 needs attention', 'an account not checked yet needs attention');
+  assert.equal(identitySummary({ checking: true }).attention, false, 'one being checked does not, yet');
 });
 
 test('the line above all accounts, and the words for two folders signed in to one real account (#352)', () => {

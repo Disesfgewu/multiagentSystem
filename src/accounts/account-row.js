@@ -10,6 +10,9 @@ const { REASONS } = require('./identity-check');
  */
 
 const WINDOW_NAMES = Object.freeze({ five_hour: '5h', seven_day: '7d', seven_day_opus: '7d Opus', seven_day_sonnet: '7d Sonnet' });
+// The 5-hour and weekly windows always have a place in the row, read or not; per-model weekly windows follow when there are any.
+const BASE_WINDOWS = Object.freeze(['five_hour', 'seven_day']);
+const SEVEN_DAY_MODEL = /^seven_day_[a-z][a-z0-9_]{0,39}$/;
 // What to do when there is no current usage number, for the reasons a person can act on; the rest say what the reason says.
 const NEXT_STEPS = Object.freeze({
   'bridge-not-enabled': 'status line not set up: use Configure Claude Status Line Bridge',
@@ -24,30 +27,41 @@ const NEXT_STEPS = Object.freeze({
 });
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const windowName = (window) => (typeof window === 'string' && Object.hasOwn(WINDOW_NAMES, window) ? WINDOW_NAMES[window] : 'usage');
+const capital = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+function windowName(window) {
+  if (typeof window === 'string' && Object.hasOwn(WINDOW_NAMES, window)) return WINDOW_NAMES[window];
+  if (typeof window === 'string' && SEVEN_DAY_MODEL.test(window)) return `7d ${window.slice('seven_day_'.length).split('_').filter(Boolean).map(capital).join(' ')}`;
+  return 'usage';
+}
 
 /**
- * The usage part of the row from `quotaDetail`. `attention` when the person should do something.
+ * The usage part of the row from `quotaDetail`. `attention` when the person should do something. 5h and 7d always have a part:
+ * the current number with its reset, an out-of-date number with when it was read, or why there is none.
  * @returns {{ text: string, attention: boolean }}
  */
 function quotaSummary(detail, now = new Date()) {
   if (!isPlain(detail) || detail.ok !== true || !Array.isArray(detail.windows)) return { text: 'usage could not be read', attention: true };
-  const shown = detail.windows.filter((window) => isPlain(window) && Number.isFinite(window.usedPercent));
-  const current = shown.filter((window) => window.fresh === true);
-  if (current.length > 0) {
-    return {
-      text: current.map((window) => {
-        const reset = typeof window.resetsAt === 'string' ? formatResetTime(window.resetsAt, now) : null;
-        return `${windowName(window.window)} ${window.usedPercent}%${reset && reset !== 'reset time unknown' ? ` (${reset})` : ''}`;
-      }).join(' · '),
-      attention: false
-    };
-  }
+  const byName = new Map(detail.windows.filter((window) => isPlain(window) && typeof window.window === 'string').map((window) => [window.window, window]));
   const reason = typeof detail.unknownReason === 'string' ? detail.unknownReason : null;
   const step = reason && Object.hasOwn(NEXT_STEPS, reason) ? NEXT_STEPS[reason] : reason && Object.hasOwn(UNKNOWN_REASONS, reason) ? UNKNOWN_REASONS[reason].short : 'no usage reading for this account yet';
-  // An out-of-date number is shown as such, beside why there is no current one.
-  const stale = shown.map((window) => `${windowName(window.window)} ${window.usedPercent}% (out of date, ${formatReadTime(window.observedAt, now)})`);
-  return { text: [`usage unknown: ${step}`, ...stale].join(' · '), attention: reason === 'bridge-not-enabled' || reason === 'bridge-other-statusline' || reason === 'file-unreadable' || reason === 'bridge-state-unknown' };
+  const attention = reason === 'bridge-not-enabled' || reason === 'bridge-other-statusline' || reason === 'file-unreadable' || reason === 'bridge-state-unknown';
+  const numbered = [...byName.values()].filter((window) => Number.isFinite(window.usedPercent));
+  // No number at all: one reason for the whole account, with what to do.
+  if (numbered.length === 0) return { text: `usage unknown: ${step}`, attention };
+  const names = [...BASE_WINDOWS, ...[...byName.keys()].filter((name) => SEVEN_DAY_MODEL.test(name)).sort()];
+  const parts = names.map((name) => {
+    const window = byName.get(name);
+    const label = windowName(name);
+    if (!window) return `${label}: not reported in the last reading`;
+    if (!Number.isFinite(window.usedPercent)) return `${label}: the last reading has no usable number`;
+    if (window.fresh === true) {
+      const reset = typeof window.resetsAt === 'string' ? formatResetTime(window.resetsAt, now) : null;
+      return `${label} ${window.usedPercent}%${reset && reset !== 'reset time unknown' ? ` (${reset})` : ''}`;
+    }
+    return `${label} ${window.usedPercent}% (out of date, ${formatReadTime(window.observedAt, now)})`;
+  });
+  const current = numbered.some((window) => window.fresh === true);
+  return current ? { text: parts.join(' · '), attention: false } : { text: [`usage unknown: ${step}`, ...parts].join(' · '), attention };
 }
 
 const PLAN_LABELS = Object.freeze({ free: 'Free', pro: 'Pro', max: 'Max', team: 'Team', enterprise: 'Enterprise' });

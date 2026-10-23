@@ -289,3 +289,13 @@ test('Codex readings end at the reset whichever unit the value uses', () => {
   );
   assert.equal(field(passed.observations, 'quota.default.primary.used_percent').reason, 'window-reset-passed');
 });
+
+test('Claude status line quota reads the per-model weekly windows the reading has, and only those (#352)', () => {
+  const { observations } = claudeQuotaFromStatusLine({ rate_limits: { five_hour: { used_percentage: 5, resets_at: nowSeconds + 3600 }, seven_day_opus: { used_percentage: 71, resets_at: nowSeconds + 86400 }, 'seven_day_<b>': { used_percentage: 1 } } }, { profileId: 'p1', observedAt });
+  const byField = Object.fromEntries(observations.map((entry) => [entry.field, entry]));
+  assert.equal(byField['quota.seven_day_opus.used_percent'].value, 71);
+  assert.equal(byField['quota.seven_day_opus.used_percent'].scope, '7-day opus window reported by service');
+  assert.equal(byField['quota.seven_day.used_percent'].confidence, CONFIDENCE.UNKNOWN, 'the weekly window is still there, as unknown');
+  assert.equal(byField['quota.seven_day_<b>.used_percent'], undefined);
+  assert.equal(byField['quota.seven_day_sonnet.used_percent'], undefined, 'a per-model window the reading does not have is not made up');
+});

@@ -139,7 +139,7 @@ function buildCards(input) {
 
 const { UNKNOWN_REASONS } = require('../accounts/quota-gate');
 const { parseCodename } = require('../sessions/codenames');
-const WINDOW_LABELS = Object.freeze({ five_hour: '5-hour', seven_day: 'Weekly' });
+const WINDOW_LABELS = Object.freeze({ five_hour: '5-hour', seven_day: 'Weekly', seven_day_opus: 'Weekly (Opus)', seven_day_sonnet: 'Weekly (Sonnet)' });
 const ACCOUNT_ACTIONS = Object.freeze(['create', 'login', 'check', 'limits', 'usageLog', 'configureStatusLine', 'details']);
 // What a person can do about a missing reading, where there is something to click. Codes not listed have only the explanation.
 const NEXT_STEP = Object.freeze({

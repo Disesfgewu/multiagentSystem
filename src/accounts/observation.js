@@ -12,6 +12,9 @@ const CONFIDENCE = Object.freeze({
 // Default lifetime of a service-reported quota reading. Anything older is shown
 // as stale and cannot be used as a hard dispatch gate.
 const QUOTA_TTL_MS = 10 * 60 * 1000;
+// A per-model weekly window of the status line's `rate_limits` (for example `seven_day_opus`).
+const SEVEN_DAY_MODEL = /^seven_day_[a-z][a-z0-9_]{0,39}$/;
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function toIso(value) {
   return new Date(value).toISOString();
@@ -156,7 +159,10 @@ function claudeQuotaFromStatusLine(payload, { profileId, observedAt, ttlMs = QUO
   const limits = payload && payload.rate_limits;
   const windows = [
     ['five_hour', '5-hour window reported by service'],
-    ['seven_day', '7-day window reported by service']
+    ['seven_day', '7-day window reported by service'],
+    // Per-model weekly windows (`seven_day_opus`, `seven_day_sonnet`, ...) only when the reading has them.
+    ...(isPlainObject(limits) ? Object.keys(limits).filter((key) => SEVEN_DAY_MODEL.test(key)).sort().slice(0, 6) : [])
+      .map((key) => [key, `7-day ${key.slice('seven_day_'.length).replace(/_/g, ' ')} window reported by service`])
   ];
   const out = [];
 
