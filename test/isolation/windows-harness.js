@@ -89,12 +89,15 @@ function summarizeGroups({ ok, stdout, launchFailed }) {
 }
 
 /**
- * @param {{ platform?: string, tmpRoot?: string, parentEnv?: object, script?: string, powershell?: string | null, timeoutMs?: number }} [options]
+ * `runInside` replaces the restricted-token launch (issue #289 runs the same attempts inside an AppContainer); it takes the
+ * request `runRestricted` takes and answers the same way. `openSids` are also granted the folders that are open to everyone,
+ * because an AppContainer is not part of Everyone.
+ * @param {{ platform?: string, tmpRoot?: string, parentEnv?: object, script?: string, powershell?: string | null, timeoutMs?: number, runInside?: Function, openSids?: string[] }} [options]
  */
-function createWindowsModule({ attempts: injected, platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS } = {}) {
+function createWindowsModule({ attempts: injected, platform = process.platform, tmpRoot = os.tmpdir(), parentEnv = process.env, script = win32.join(path.resolve(__dirname, '..', '..'), 'resources', 'isolation', 'restricted-launch.ps1'), powershell = powershellPath(parentEnv), timeoutMs = ATTEMPT_MS, runInside, openSids = [] } = {}) {
   let fixture;
   let preparationError = null;
-  const supported = platform === 'win32' && typeof powershell === 'string' && fs.existsSync(powershell) && fs.existsSync(script);
+  const supported = platform === 'win32' && typeof powershell === 'string' && fs.existsSync(powershell) && (runInside !== undefined || fs.existsSync(script));
 
   async function prepare() {
     if (fixture) return fixture;
@@ -104,7 +107,10 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
     const sid = /"(S-1-[0-9-]+)"/.exec(who.stdout)?.[1];
     if (!sid) throw new Error('whoami /user did not name the user SID');
     const icacls = win32.join(parentEnv.SystemRoot, 'System32', 'icacls.exe');
-    const grantEveryone = async (target) => mustWork(`icacls grant Everyone on ${path.basename(target)}`, await run(icacls, [target, '/grant', '*S-1-1-0:(OI)(CI)F']));
+    const grantEveryone = async (target) => {
+      mustWork(`icacls grant Everyone on ${path.basename(target)}`, await run(icacls, [target, '/grant', '*S-1-1-0:(OI)(CI)F']));
+      for (const extra of openSids) mustWork(`icacls grant the container on ${path.basename(target)}`, await run(icacls, [target, '/grant', `*${extra}:(OI)(CI)F`]));
+    };
     // As a real user folder is: the user, SYSTEM and Administrators, and nobody else.
     const userOnly = async (target) => mustWork(`icacls restrict ${path.basename(target)}`, await run(icacls, [target, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F']));
 
@@ -141,7 +147,8 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
   /** Runs inside the restriction, or (spec null) outside it as the control. */
   async function launch(restricted, exe, args, { cwd, env = baseEnv(), input, restriction } = {}) {
     if (!restricted) return run(exe, args, { cwd, env, input, timeoutMs });
-    const reply = await runRestricted({ exe, args, cwd: cwd ?? fixture.shared, env: environmentPairs(env), stdin: input ?? '', timeoutMs, ...(restriction ? { restriction } : {}) }, { script, powershell });
+    const request = { exe, args, cwd: cwd ?? fixture.shared, env: environmentPairs(env), stdin: input ?? '', timeoutMs, ...(restriction ? { restriction } : {}) };
+    const reply = runInside ? await runInside(request) : await runRestricted(request, { script, powershell });
     if (!reply.ok) return { ok: false, stdout: '', stderr: '', launchFailed: reply.reason };
     return { ok: reply.exitCode === 0 && !reply.timedOut, stdout: reply.output, stderr: '', launchFailed: null, elevated: reply.elevated };
   }
@@ -357,6 +364,8 @@ function createWindowsModule({ attempts: injected, platform = process.platform, 
       await Promise.all([github.close(), provider.close()]);
       try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* a temporary folder; the runner cleans up */ }
     },
+    /** The fixture's stand-in endpoints on 127.0.0.1: `provider` is the open one (the CLI's own service), `github` must stay unreachable. */
+    async endpoints() { await prepare(); return { github: fixture.github.port, provider: fixture.provider.port, shared: fixture.shared, root: fixture.root }; },
     /** Why the fixture could not be built, or null: a run whose setup failed says so instead of reporting results about nothing. */
     preparationError: () => preparationError,
     credentialLocationsFor: () => credentialLocations(fixture ? fixture.root : ''),

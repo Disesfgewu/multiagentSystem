@@ -1,0 +1,37 @@
+name: Windows isolation prototype
+
+# Issue #289: an AppContainer with a loopback exemption and firewall rules, measured on the Windows runner. It changes the
+# runner's firewall and network-isolation settings (and undoes them), so it runs only here, never in an ordinary test run.
+on:
+  pull_request:
+    paths:
+      - src/isolation/**
+      - test/isolation/**
+      - resources/isolation/**
+      - .github/workflows/isolation-windows-prototype.yml
+  push:
+    branches: [main]
+    paths:
+      - src/isolation/**
+      - test/isolation/**
+      - resources/isolation/**
+      - .github/workflows/isolation-windows-prototype.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prototype:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: node --test --test-reporter=spec --test-timeout=600000 test/isolation/appcontainer.test.js
+        env:
+          MAS_ISOLATION_PROTOTYPE: '1'
