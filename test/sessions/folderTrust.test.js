@@ -171,6 +171,7 @@ test('Codex: a config.toml whose projects are written so that a table cannot be 
 test('Codex: every file it writes parses, with exactly this folder trusted; an existing entry is found whatever the quoting (#362)', (t) => {
   const dir = temp(t);
   const file = path.join(dir, 'config.toml');
+  // Every key written by hand below goes through tomlString, so a Windows path (backslashes) stays valid TOML.
   // Dotted keys may define `projects`: TOML lets a [projects."<folder>"] header add a sub-table to it, so that is written.
   for (const text of ['', 'model = "a"', '[projects]\n', 'projects."/w/z".trust_level = "trusted"\n', `[projects.${tomlString(`${folder}/longer`)}]\ntrust_level = "trusted"\n`, 'a.b = 1\n[tui]\nx = true\n']) {
     fs.writeFileSync(file, text);
