@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildOverview } = require('../../src/overview/model');
+const { REASONS } = require('../../src/sessions/ideBridge');
 const { presentAgent, presentAccount, onboardingSteps, guideVisible, countRunningAgents, STATE_TEXT } = require('../../src/overview/presentation');
 
 const session = (over = {}) => ({ id: 's1', roleGroupId: 'worker', accountProfileId: 'a1', worktree: '/private/place/wt', state: 'terminal-open', observedAt: null, ...over });
@@ -403,4 +404,10 @@ test('the tooltip says what auto mode was requested for the session, and nothing
 test('a session row shows the codename in front of the name; a malformed one is left out (issue #342)', () => {
   assert.equal(presentAgent(row({}), { name: 'Agent One', codename: 'Worker-01' }).label, 'Worker-01 · Agent One');
   for (const codename of [undefined, 'Worker-1', 'Worker-01‮', 'PM-01 · fake']) assert.equal(presentAgent(row({}), { name: 'Agent One', codename }).label, 'Agent One', String(codename));
+});
+
+test('the agent tooltip carries whether its Claude Code reaches this VS Code window (#354)', () => {
+  const shown = presentAgent(row(), { name: 'Agent One', providerLabel: 'Claude Code', terminalOpen: true, ideLabel: `VS Code: not connected (${REASONS['no-match']})` });
+  assert.ok(shown.tooltip.includes(`VS Code: not connected (${REASONS['no-match']})`), 'the whole reason, with what to do, is shown');
+  assert.equal(view().tooltip.some((line) => /^VS Code:/.test(line)), false);
 });
