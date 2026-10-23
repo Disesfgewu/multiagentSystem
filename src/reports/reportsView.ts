@@ -8,6 +8,7 @@ import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, co
 import { requireInteractive } from '../shared/testMode';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
+const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Set<number>; reviews: Set<number> } | { ok: false; reason: string } } };
 const { inspectWorktree, readPullRequestFileVersions } = require('../projects/gitEvidence') as {
   inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }>;
   readPullRequestFileVersions(folder: string, input: { headSha: string; baseRef: string; relativePath: string; status: string }): Promise<{ ok: true; left: string; right: string } | { ok: false; reason: string }>;
@@ -42,6 +43,9 @@ const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbou
   line(value: unknown, limit?: number): string;
   fileBulletLines(lines: string[], filenames: string[]): Array<{ lineNumber: number; filename: string }>;
 };
+
+// Issue #342: the post is on GitHub, but its id could not be written to the private record of the owner's posts.
+const OWNER_NOT_RECORDED = ' It could not be recorded as yours in private storage, so the report will show it as unsigned rather than as the owner\'s.';
 
 export const REPORT_SCHEME = 'multiagent-report';
 export const DIFF_SCHEME = 'multiagent-report-diff';
@@ -148,6 +152,16 @@ async function mergeAuthoritySection(repository: string): Promise<string> {
   if (mode === 'pm') return '\nMERGE AUTHORITY\nPM allowed: guarded merge requires current-head PM approval, passing CI, resolved threads, supported branch rules, and a clear publication scan.\n';
   if (mode === 'human') return '\nMERGE AUTHORITY\nHuman only (default): PM merge is refused.\n';
   return '\nMERGE AUTHORITY\nUnknown: merge authority policy could not be read from private storage (fails closed).\n';
+}
+
+/** The private record of the owner's own GitHub posts for this repository (issue #342), or null when it cannot be read. */
+async function readOwnerPosts(repository: string): Promise<{ comments: Set<number>; reviews: Set<number> } | null> {
+  try {
+    const opened = await privateStorage()?.use();
+    if (!opened?.ok) return null;
+    const read = new OwnerPostStore(opened.store).read(repository);
+    return read.ok ? { comments: read.comments, reviews: read.reviews } : null;
+  } catch { return null; }
 }
 
 async function withFeedback(report: string, repository: string, kind: Kind, number: number, currentHead: string | null): Promise<string> {
@@ -389,7 +403,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       const [issue, comments, pullRequests] = await Promise.all([reader.getIssue(number), reader.getIssueComments(number), reader.listPullRequests({ state: 'open' })]);
       if (issue.kind !== 'ok' || !issue.data) return { text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
       const version = createHash('sha256').update(`${issue.data.title}\0${issue.data.body ?? ''}`).digest('hex');
-      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, version, files: [] } };
+      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests, ownerPosts: await readOwnerPosts(repository) })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, version, files: [] } };
     }
     const [pullRequest, snapshot, reviews, comments, reviewComments] = await Promise.all([
       reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number),
@@ -411,7 +425,7 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
       afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
     const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
-    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified });
+    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified, ownerPosts: await readOwnerPosts(repository) });
     return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, baseRef: typeof pullRequest.data.baseRef === 'string' ? pullRequest.data.baseRef : null, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
   } catch {
     return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
@@ -724,7 +738,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const result = await sendPublicFeedback({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { body: input.body, interactive });
       if (result.ok) {
         refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-sent' ? 'This exact public feedback was already sent.' : 'Public feedback sent and verified for this report.');
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-sent' ? 'This exact public feedback was already sent.' : `Public feedback sent and verified for this report.${result.ownerRecorded === false ? OWNER_NOT_RECORDED : ''}`);
       } else if (interactive && result.code !== 'cancelled') {
         if (result.code === 'publisher-not-configured' || result.code === 'publisher-identity-changed') {
           void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code}.`, 'Configure PM Publisher').then((picked) => {
@@ -745,7 +759,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const result = await reviewPullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { decision: input.decision, body: input.body, interactive });
       if (result.ok) {
         refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : 'Formal pull request review submitted and verified for this head.');
+        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : `Formal pull request review submitted and verified for this head.${result.ownerRecorded === false ? OWNER_NOT_RECORDED : ''}`);
       } else if (interactive && result.code !== 'cancelled') {
         void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
       }
