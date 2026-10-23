@@ -2,16 +2,16 @@
 
 在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
-## 下載最新測試版：0.0.3 Beta 7
+## 下載最新測試版：0.0.3 Beta 8
 
-**[下載 VSIX 安裝檔（Beta 7）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.7/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.7) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.7/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
+**[下載 VSIX 安裝檔（Beta 8）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.8/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.8) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.8/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)
 
 | 項目 | 值 |
 |---|---|
-| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.7`） |
-| 來源 commit | `f14d4edae2bc4e0c779d2a241e7df00662d88b39` |
-| 檔案 | `multiagentsystem.vsix`，867312 bytes，內含 234 個檔案 |
-| SHA-256 | `dece6eb23727467df9a457c5f3f5d79fd2d76f583439c2efd6856ea1421ac6e5` |
+| 版本 | `0.0.3`（prerelease，tag `v0.0.3-beta.8`） |
+| 來源 commit | `be622b579f199b6dace515c9d07a7d0206baa537` |
+| 檔案 | `multiagentsystem.vsix`，903651 bytes，內含 242 個檔案 |
+| SHA-256 | `28ba0812b7a382bfd774850d8cd818c65f4737f2c19581be0312ff247a85df84` |
 | 需求 | VS Code 1.95 以上；macOS 或 Windows |
 
 **安裝前請核對雜湊**：
@@ -25,20 +25,41 @@ Get-FileHash .\multiagentsystem.vsix -Algorithm SHA256
 
 結果必須和上表完全相同，也必須等於 `release-candidate.json` 中的 `artifact.sha256`。核對後，在 VS Code 的 Extensions 選單選擇 **Install from VSIX…**，選取這個檔案，然後重新載入視窗。
 
-這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 6](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6)（SHA-256 `aa869fe0fbdde7da886770b7ce7128cfbc33a990288ac66956324f3bd69cd144`）、[Beta 5](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)（SHA-256 `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`）、[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
+這是供試用的 prerelease，**不代表完整產品已驗收**：真實 CLI、真實帳號，以及 macOS／原生 Windows 的實機流程，仍在 [Issue #135](https://github.com/Disesfgewu/multiagentSystem/issues/135) 進行 Beta 後驗收。較舊的版本保留供回復：[Beta 7](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.7)（SHA-256 `dece6eb23727467df9a457c5f3f5d79fd2d76f583439c2efd6856ea1421ac6e5`）、[Beta 6](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6)（SHA-256 `aa869fe0fbdde7da886770b7ce7128cfbc33a990288ac66956324f3bd69cd144`）、[Beta 5](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.5)（SHA-256 `fd938e107e6770b3f39f4b775d04402b54f9d262f7774aba518e12a871bb1509`）、[Beta 4](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.4)、[Beta 3](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.3)、[Beta 2](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.2)、[第一版 Beta](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta)。
 
-### Beta 7 的新內容（相對 Beta 6）
+### Beta 8 的新內容（相對 Beta 7）
 
-- **agent 自己提出的建議記憶**（#333）：agent 可以在自己的工作資料夾留下 `.multiagent-memory-suggestions.json`。在 Shared Memory 面板按 **Collect Memory Suggestions from Agents** 會把建議收成候選，再用 **Review Suggested Memory** 審核，通過後才採納。
-  - 只讀取執行中 agent 自己的資料夾；資料夾或檔案是連結、檔案過大、格式不對時一律拒絕。
-  - 建議記到哪個身份組、哪個帳號的隱私域，依 session 紀錄決定，建議檔本身無法指定。
-- **測試補強**（#337、#339）：只改測試，功能沒有變動。
+這一版是**管理者第一次發行版測試**要用的版本，請照 #135 的 T311、T342、T343 逐項走查。
 
-其餘功能和 Beta 6 相同，見 [Beta 6 Release](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.6)。
+- **每個 agent 有自己的代號**（#344）：例如 `PM-01`、`Worker-01`、`Researcher-03`。
+  - 代號依身份組分配，重新啟動後沿用；號碼不會重複，也不會重用。
+  - 指揮台、總覽、session 清單與會議紀錄都會顯示代號。
+  - 啟動時會告訴 agent 它的代號與署名格式。這段指示會出現在預覽裡，所以每次互動式啟動都會先確認。
+  - 自訂角色名稱是 admin、owner、manager 這類時，代號改用 `Agent`。
+  - 詳見 [Agent 代號與 GitHub 署名](docs/AGENT_CODENAMES.md)。
+- **agent 發到 GitHub 的內容自動署名**（#345、#348）：擴充套件在 agent 的終端機放一個 `gh` 包裝程式。
+  - `gh pr|issue create|comment|edit` 與 `gh pr review`：沒有署名時，在第一行補上；冒用別人代號或冒充管理者時拒絕。比對前會先正規化全形字、相似字母、零寬字元與 Unicode 換行。
+  - `gh api` 只放行唯讀呼叫；alias、extension、`auth token` 由允許清單擋下；找不到真正的 gh 時一律拒絕。
+  - macOS／Linux、PowerShell、cmd 都能啟動；Windows 上不放 `gh.cmd`。
+  - **限制**：只開 shell、沒有啟動 CLI 的終端機沒有包裝程式。agent 若用 curl，或直接呼叫真正的 gh，仍能繞過，所以署名屬於自稱，不是身分驗證。
+- **報告頁分清作者**（#346）：
+  - 你從 VS Code 發的留言或 review，GitHub 確認後會記下 ID 與內文雜湊；兩者都相符，才顯示「管理者」。
+  - agent 的留言顯示「Worker-01（自稱）」。
+  - 其他留言一律顯示「未署名」；這個 repo 是公開的，陌生人的留言不會被當成管理者。
+  - 詳見 [GitHub 留言的作者](docs/GITHUB_AUTHORSHIP.md)。
+- **在 VS Code 透過 GitHub 留言和 PM 對話**（#347）：選一張 Issue 或 PR，開啟 **Talk to PM via GitHub**。
+  - 送出的訊息會發成留言；讀回確認之後，經你確認才通知 PM。
+  - 畫面開著時，每 45 秒讀一次回覆；有新留言時跳出通知。
+  - GitHub 上的任何文字都不會觸發打字。
+  - 尚未提供「建立會議 Issue」，請先選一張現有的 Issue 或 PR。
+  - 詳見 [透過 GitHub 留言和 PM 對話](docs/TALK_TO_PM.md)。
+- **測試穩定度**（#350）：修正兩個 CI 偶發失敗：meeting 的 host 測試，以及 Windows 隔離量測。
 
-尚未在實機上走過：#311 列的總負責人流程，以及各 CLI 是否真的讀到規則、記憶、任務與會議內容，屬於實機項目（#135）。身份組的工具權限並非完全強制，各 CLI 的強制程度說明同 Beta 5。Windows 受管隔離（#289）依管理者決定暫緩，不在這一版。
+其餘功能和 Beta 7 相同。
 
-完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.7)。
+尚未在實機上走過：真實的 Claude Code 與 Codex 是否走到 `gh` 包裝程式、是否照指示署名；Windows PowerShell 5.1 的參數傳遞；真實 PM CLI 透過 GitHub 的一來一回。這些都列在 #135 的 T342、T343。身份組的工具權限並非完全強制，各 CLI 的強制程度說明同 Beta 5。Windows 受管隔離（#289）依管理者決定暫緩，不在這一版。
+
+完整清單見 [Release 說明](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.8)。
 
 ## 第一次使用
 
