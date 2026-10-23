@@ -5,19 +5,21 @@ const assert = require('node:assert/strict');
 const { zipSync } = require('fflate');
 const { createCandidate } = require('../../scripts/release-candidate');
 
-const lock = { packages: { '': { version: '0.0.3' }, 'node_modules/fflate': { version: '0.8.3', license: 'MIT' } } };
+const lock = { packages: { '': { version: '0.0.3' }, 'node_modules/fflate': { version: '0.8.3', license: 'MIT' }, 'node_modules/smol-toml': { version: '1.9.1', license: 'BSD-3-Clause' } } };
 const files = {
   '[Content_Types].xml': '<Types/>',
   'extension.vsixmanifest': '<PackageManifest/>',
-  'extension/package.json': JSON.stringify({ name: 'multiagentsystem', version: '0.0.3', main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '0.8.3' } }),
+  'extension/package.json': JSON.stringify({ name: 'multiagentsystem', version: '0.0.3', main: './out/src/extension.js', license: 'MIT', dependencies: { fflate: '0.8.3', 'smol-toml': '1.9.1' } }),
   'extension/readme.md': 'Multiagent extension',
   'extension/LICENSE.txt': 'MIT License',
-  'extension/THIRD_PARTY_NOTICES.md': 'fflate 0.8.3\nMIT License',
+  'extension/THIRD_PARTY_NOTICES.md': 'fflate 0.8.3\nMIT License\nsmol-toml 1.9.1\nBSD 3-Clause License',
   'extension/media/multiagent.svg': '<svg/>',
   'extension/out/src/extension.js': 'module.exports = {};',
   'extension/out/packages/github-read-adapter/src/index.js': 'module.exports = {};',
   'extension/node_modules/fflate/LICENSE': 'MIT License',
-  'extension/node_modules/fflate/lib/node.cjs': 'module.exports = {};'
+  'extension/node_modules/fflate/lib/node.cjs': 'module.exports = {};',
+  'extension/node_modules/smol-toml/LICENSE': 'BSD 3-Clause License',
+  'extension/node_modules/smol-toml/dist/index.cjs': 'module.exports = {};'
 };
 
 test('candidate binds verified package version, full source commit and VSIX SHA-256', () => {
@@ -28,7 +30,7 @@ test('candidate binds verified package version, full source commit and VSIX SHA-
   assert.match(candidate.artifact.sha256, /^[0-9a-f]{64}$/);
   assert.equal(candidate.artifact.bytes, archive.length);
   assert.equal(candidate.artifact.verifiedFileCount, Object.keys(files).length);
-  assert.deepEqual(candidate.runtimeDependencies, ['fflate 0.8.3 (MIT)']);
+  assert.deepEqual(candidate.runtimeDependencies, ['fflate 0.8.3 (MIT)', 'smol-toml 1.9.1 (BSD-3-Clause)']);
 });
 
 test('candidate refuses ambiguous commits, paths and packages that fail VSIX verification', () => {

@@ -76,7 +76,8 @@ function findIdePort({ folders, workspaceFolders, platform = process.platform, a
   for (const folder of Array.isArray(folders) ? folders : []) {
     let names;
     try { names = readDir(folder); sawFolder = true; } catch { continue; }
-    for (const name of names.slice(0, MAX_LOCKS)) {
+    // Only lock files count towards the limit, so other files in the folder cannot push this window's lock out.
+    for (const name of names.map(String).filter((entry) => LOCK.test(entry)).slice(0, MAX_LOCKS)) {
       const lock = readLock(path.join(folder, String(name)), { ...(readFile ? { readFile } : {}), ...(statFile ? { statFile } : {}) });
       if (lock) locks.push(lock);
     }

@@ -93,6 +93,7 @@ function presentAgent(row, session) {
       `Actual model: ${actualModel}`,
       ...(session && typeof session.autoModeLabel === 'string' ? [shown(session.autoModeLabel)] : []),
       ...(session && typeof session.ideLabel === 'string' ? [Array.from(cleanTitle(session.ideLabel)).slice(0, 300).join('')] : []),
+      ...(session && typeof session.trustLabel === 'string' ? [Array.from(cleanTitle(session.trustLabel)).slice(0, 300).join('')] : []),
       ...(session && 'gitEvidence' in session ? [describeEvidence(session.gitEvidence)] : []),
       ...(providerObservation?.providerSession ? [`Provider session: ${PROVIDER_SESSION_TEXT[providerObservation.providerSession] ?? UNKNOWN}`] : []),
       `Session cost: ${costText}`,

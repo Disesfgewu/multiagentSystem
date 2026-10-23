@@ -411,3 +411,8 @@ test('the agent tooltip carries whether its Claude Code reaches this VS Code win
   assert.ok(shown.tooltip.includes(`VS Code: not connected (${REASONS['no-match']})`), 'the whole reason, with what to do, is shown');
   assert.equal(view().tooltip.some((line) => /^VS Code:/.test(line)), false);
 });
+
+test('the agent tooltip carries whether its CLI will stop to ask to trust its worktree (#362)', () => {
+  const shown = presentAgent(row(), { name: 'Agent One', providerLabel: 'Claude Code', terminalOpen: true, trustLabel: 'Folder trust: Claude Code will not ask to trust this worktree (already trusted)' });
+  assert.ok(shown.tooltip.includes('Folder trust: Claude Code will not ask to trust this worktree (already trusted)'));
+});

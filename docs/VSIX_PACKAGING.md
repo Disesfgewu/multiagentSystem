@@ -6,11 +6,12 @@
 
 macOS 與 Windows CI 各自從鎖定的依賴重新建置、打包、檢查封存內容，再保存 14 天供審查。各平台的 ZIP 封裝 metadata 可能不同，審查時必須以同一份 artifact 內的 JSON 雜湊核對同一份 VSIX，不能拿另一個 job 的雜湊代替。雙平台 CI 打包也不等於乾淨機器已完成安裝、升級或移除。
 
-封裝只允許 extension manifest、README、MIT 授權、第三方聲明、圖示、編譯後 `out/src`／`out/packages` JavaScript，以及唯一的執行期 npm 相依 `fflate`。`src`、測試、文件、腳本、source map、開發設定與本機產物均排除。`scripts/verify-vsix.js` 直接解開產出的 VSIX，確認入口檔與相依授權檔存在、manifest 的執行期相依與鎖檔一致、沒有額外路徑，並對套件自有文字使用 #23 的 `scanPublication`。掃描器自身兩個實作檔含刻意的敏感路徑／憑證測試字串，第三方 `fflate` 檔案由 `npm ci` 鎖檔完整性保障；這些檔案不接受文字掃描的「clear」宣稱。封裝掃描不等於證明不存在未知型態、編碼或二進位秘密，發佈仍需人工審查。
+封裝只允許 extension manifest、README、MIT 授權、第三方聲明、圖示、編譯後 `out/src`／`out/packages` JavaScript，以及兩個執行期 npm 相依：`fflate`，以及 `smol-toml`（#362，用來在寫入 Codex 的 `config.toml` 前後解析驗證）。`src`、測試、文件、腳本、source map、開發設定與本機產物均排除。`scripts/verify-vsix.js` 直接解開產出的 VSIX，確認入口檔與相依授權檔存在、manifest 的執行期相依與鎖檔一致、沒有額外路徑，並對套件自有文字使用 #23 的 `scanPublication`。掃描器自身兩個實作檔含刻意的敏感路徑／憑證測試字串，第三方 `fflate`、`smol-toml` 檔案由 `npm ci` 鎖檔完整性保障；這些檔案不接受文字掃描的「clear」宣稱。封裝掃描不等於證明不存在未知型態、編碼或二進位秘密，發佈仍需人工審查。
 
 | 進入 VSIX 的執行期相依 | 固定版本 | 授權 | 證據 |
 | --- | --- | --- | --- |
 | `fflate` | `0.8.3` | MIT | `package-lock.json`、VSIX 內 `node_modules/fflate/LICENSE`、`THIRD_PARTY_NOTICES.md` |
+| `smol-toml` | `1.9.1` | BSD-3-Clause | `package-lock.json`、VSIX 內 `node_modules/smol-toml/LICENSE`、`THIRD_PARTY_NOTICES.md`；沒有其他相依 |
 
 `@vscode/vsce` 固定為開發工具 `4.0.0`（MIT），只在建置環境執行，不收入 VSIX。Git／gh／Claude Code／Codex CLI／agy 均不隨 VSIX 打包；其官方來源與部署限制見 [工具來源矩陣](TOOL_SOURCE_MATRIX.md)。
 
