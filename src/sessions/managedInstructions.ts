@@ -14,7 +14,7 @@ const { MemoryStore } = require('../memory/store') as { MemoryStore: new (option
 const { defaultDomainFor } = require('../memory/domains') as { defaultDomainFor(accountProfileId: string): string };
 import { TeamRulesStore } from '../teamRules/store';
 import { teamRuleLayer, describeTeamRules } from '../teamRules/model';
-const { codenameRule, parseCodename } = require('./codenames') as { codenameRule(codename: string): { id: string; type: 'instruction'; text: string }; parseCodename(value: unknown): { prefix: string; number: number } | null };
+const { codenameRule, parseCodename, CODENAME_RULE_ID } = require('./codenames') as { codenameRule(codename: string): { id: string; type: 'instruction'; text: string }; parseCodename(value: unknown): { prefix: string; number: number } | null; CODENAME_RULE_ID: string };
 import { isLive, appliesTo, broadcastRule, broadcastPreviewLines } from '../broadcast/model';
 const { checkPromptInjection, validateResearchDeliverable } = require('../research/ethics') as {
   checkPromptInjection(text: string): { hasInjection: boolean; matches: string[] };
@@ -257,11 +257,15 @@ export async function prepareInstructionSnapshot(
     }
   }
 
-  // What the person reviews, without the one thing that differs for every session: its codename (it is shown in the dialog anyway).
+  // What the person reviews, without the one rule that differs for every session: the codename instruction (its id is fixed; the
+  // codename itself is shown in the dialog anyway). Every other part counts: the provider, the role group (with its tool
+  // permissions), each composed rule and the shared notes. The effective permissions follow from the role group and the rules.
   let reviewDigest: string | null = null;
   if (digest !== null) {
-    let reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, permissions, memories: memories.map((item) => [item.id, item.version]) });
-    if (options.codename !== undefined) reviewed = reviewed.split(options.codename).join('\u0000codename\u0000');
+    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]) }, (_key, value) => {
+      if (Array.isArray(value)) return value.filter((entry) => !(entry && typeof entry === 'object' && (entry as { id?: unknown }).id === CODENAME_RULE_ID));
+      return value;
+    });
     reviewDigest = `sha256:${crypto.createHash('sha256').update(reviewed).digest('hex')}`;
   }
 

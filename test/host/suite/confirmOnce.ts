@@ -45,7 +45,15 @@ export async function runConfirmOnceChecks(workspace: string): Promise<void> {
 
     const second = await start(agree);
     assert.equal(second.result?.ok, true, JSON.stringify(second));
-    assert.equal(second.prompts.some((prompt) => prompt.startsWith(ASKED)), false, `the same instructions are not asked again: ${JSON.stringify(second.prompts)}`);
+    // What each start was given, to say which part differed when the second one asked again.
+    const digests = async () => {
+      const listed = await vscode.commands.executeCommand<{ sessions: Array<{ id: string; instructionDigest?: string | null; instructionReviewDigest?: string | null }> }>('multiagentSystem.sessions.list', { interactive: false });
+      return started.map((id) => listed.sessions.find((entry) => entry.id === id)).map((entry) => ({ digest: entry?.instructionDigest ?? null, review: entry?.instructionReviewDigest ?? null }));
+    };
+    const seen = await digests();
+    assert.match(seen[0]?.review ?? '', /^sha256:[0-9a-f]{64}$/, `the review digest is kept: ${JSON.stringify(seen)}`);
+    assert.equal(seen[1]?.review, seen[0]?.review, `the same instructions have the same review digest: ${JSON.stringify(seen)}`);
+    assert.equal(second.prompts.some((prompt) => prompt.startsWith(ASKED)), false, `the same instructions are not asked again: ${JSON.stringify(second.prompts)} ${JSON.stringify(seen)}`);
     assert.ok(second.prompts.some((prompt) => prompt.startsWith(SAME)), 'it says why nothing was asked');
 
     const opened = await privateStorage()?.use();

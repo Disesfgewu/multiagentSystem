@@ -60,6 +60,7 @@ export type SessionInstructionState = 'prepared' | 'launch-requested' | 'cli-obs
 export interface SessionInstructionsInput {
   plan?: any;
   digest?: string | null;
+  reviewDigest?: string | null;
   method?: string;
   argv?: string[];
   injectionState?: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
@@ -84,6 +85,7 @@ export interface SessionView extends SessionIdentity {
   autoModeLabel?: string;
   requestedAutoMode?: string | null;
   instructionDigest?: string | null;
+  instructionReviewDigest?: string | null;
   /** What was put into the prepared instructions of this session (prepared, not proof that the CLI read it); null when unknown. */
   injectedCounts?: { rules: number; memories: number } | null;
   instructionMethod?: string | null;
@@ -190,6 +192,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   // The mode the CLI was asked to start in (#362): 'on' (auto), 'off' (ask), 'unknown'; compared with what the CLI reports.
   private readonly autoModeStates = new Map<string, string>();
   private readonly instructionDigests = new Map<string, string>();
+  // The digest of what the person reviewed (#362): the instructions without this session's codename. This window only.
+  private readonly reviewDigests = new Map<string, string>();
   private readonly injectedCounts = new Map<string, { rules: number; memories: number }>();
   private readonly instructionMethods = new Map<string, string>();
   private readonly codenames = new Map<string, string>();
@@ -322,6 +326,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       autoModeLabel: this.autoModeLabels.get(entry.id) ?? 'Auto mode: unknown (not started in this window)',
       requestedAutoMode: this.autoModeStates.get(entry.id) ?? null,
       instructionDigest: this.instructionDigests.get(entry.id) ?? null,
+      instructionReviewDigest: this.reviewDigests.get(entry.id) ?? null,
       injectedCounts: this.injectedCounts.get(entry.id) ?? null,
       instructionMethod: this.instructionMethods.get(entry.id) ?? null
     };
@@ -510,6 +515,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (autoMode && launch && typeof autoMode.state === 'string') this.autoModeStates.set(identity.id, autoMode.state); else this.autoModeStates.delete(identity.id);
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
+    if (instructions?.reviewDigest) this.reviewDigests.set(identity.id, instructions.reviewDigest);
     if (instructions?.injectedCounts) this.injectedCounts.set(identity.id, instructions.injectedCounts);
     if (instructions?.method && instructions.method !== 'none') this.instructionMethods.set(identity.id, instructions.method);
     if (instructions?.plan) this.activePlans.set(identity.id, instructions.plan);
