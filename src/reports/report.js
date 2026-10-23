@@ -9,6 +9,7 @@
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const HEAD = /head\s*[`'"]?([0-9a-f]{7,40})[`'"]?/i;
 const VERDICT = /(?:結論[：:]\s*|verdict[：:]\s*)?(Needs changes|Pass)\b/i;
+const { authorOf } = require('./authorship');
 const { pmReport, issueEvidenceVersion, FIELDS } = require('./decision-queue');
 
 // Text that came from GitHub is shown as plain lines: control, bidirectional and separator characters are
@@ -33,6 +34,7 @@ const WHAT_IS_NOT_VERIFIED = Object.freeze([
   'This report is read-only. Nothing in it was approved, merged or changed by you or by this extension.',
   'Only an explicitly marked, complete report by the repository owner is shown as a PM report; other comments remain comments.',
   'GitHub comments from the same GitHub account as the author are technical comments, not a formal approval.',
+  'Who wrote a comment: "管理者" only when the owner published it from VS Code and its id is in the private record; "Worker-01（自稱）" is a signature the agent wrote itself, not proof; anything else is "未署名" (the GitHub account is shared and the repository is public).',
   'The look and usability of this screen have not been confirmed on a real macOS or Windows machine.'
 ]);
 
@@ -66,7 +68,10 @@ const APPLIES = Object.freeze({
   'head-not-stated': 'does not say which head it covers'
 });
 
-function commentLines(comments, currentHead, { limit = 100000, owner = '' } = {}) {
+/** The author field of a comment or review line (issue #342): who wrote it, then the GitHub login in brackets. Never contains " · ". */
+const authorField = (item, kind, ownerPosts, login) => `${authorOf(item, kind, ownerPosts).text} [GitHub ${line(login ?? 'unknown', 60)}]`;
+
+function commentLines(comments, currentHead, { limit = 100000, owner = '', ownerPosts = null } = {}) {
   const items = dataOf(comments);
   if (items === null) return [];
   const lines = [];
@@ -76,7 +81,7 @@ function commentLines(comments, currentHead, { limit = 100000, owner = '' } = {}
     const byOwner = typeof item.author === 'string' && owner !== '' && item.author.toLowerCase() === owner.toLowerCase();
     // Anyone can type "Pass" and a commit id: only the repository owner's words are read as a verdict.
     const verdict = conclusion ? (byOwner ? ` · verdict "${conclusion.verdict}" ${APPLIES[conclusion.applies]}` : ` · says "${conclusion.verdict}" but is not the repository owner, so this is not a review result`) : '';
-    lines.push(`- ${line(item.author ?? 'unknown', 60)}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}${verdict}`);
+    lines.push(`- ${authorField(item, 'comment', ownerPosts, item.author)}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}${verdict}`);
     lines.push(`  ${block(item.body, limit).split('\n').join('\n  ')}`);
   }
   return lines;
@@ -165,10 +170,10 @@ function pmReportLines(comments, repository, version) {
 }
 
 /**
- * @param {{ repository: string, issue: object, comments?: object, pullRequests?: object }} input
+ * @param {{ repository: string, issue: object, comments?: object, pullRequests?: object, ownerPosts?: { comments: Map<number, string>, reviews: Map<number, string> } | null }} input  `ownerPosts`: the private record of the owner's own posts (issue #342); null or left out when it could not be read.
  *   `comments` and `pullRequests` are adapter results; `pullRequests` is the list of open pull requests
  */
-function buildIssueReport({ repository, issue, comments, pullRequests }) {
+function buildIssueReport({ repository, issue, comments, pullRequests, ownerPosts = null }) {
   const lines = [...header('Issue', repository, issue), '', 'OPEN DISCUSSION (click to jump)'];
   lines.push(`Labels: ${(Array.isArray(issue.labels) ? issue.labels : []).map((name) => line(name, 60)).join(', ') || '(none)'}`);
   lines.push(`Assigned to: ${(Array.isArray(issue.assignees) ? issue.assignees : []).map((name) => line(name, 60)).join(', ') || '(nobody)'}`);
@@ -186,16 +191,16 @@ function buildIssueReport({ repository, issue, comments, pullRequests }) {
   const notes = readNote('Comments', comments);
   if (notes) lines.push(notes);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
-  else lines.push(...commentLines(comments, null));
+  else lines.push(...commentLines(comments, null, { ownerPosts }));
   lines.push('', 'DECISIONS', 'A private note can be saved locally with Save Local Feedback. Nothing is sent to GitHub.');
   lines.push('', 'NOT VERIFIED', ...WHAT_IS_NOT_VERIFIED.map((text) => `- ${text}`));
   return { title: `Issue #${issue.number}`, lines };
 }
 
 /**
- * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, reviewComments?: object, files?: object, filesHeadVerified?: boolean }} input
+ * @param {{ repository: string, pullRequest: object, snapshot?: object, reviews?: object, comments?: object, reviewComments?: object, files?: object, filesHeadVerified?: boolean, ownerPosts?: { comments: Map<number, string>, reviews: Map<number, string> } | null }} input
  */
-function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, reviewComments, files, filesHeadVerified }) {
+function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, comments, reviewComments, files, filesHeadVerified, ownerPosts = null }) {
   const pr = pullRequest;
   const head = typeof pr.headSha === 'string' ? pr.headSha : null;
   const lines = [...header('Pull request', repository, pr), '', 'OPEN CODE CHANGES (click to jump)', 'OPEN DISCUSSION (click to jump)'];
@@ -267,13 +272,13 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
   else if (reviewItems.length === 0) lines.push('No formal reviews.');
   else for (const review of reviewItems) {
     const sameHead = head && typeof review.commitId === 'string' ? (review.commitId.toLowerCase() === head.toLowerCase() ? 'on the latest head' : 'on an OLDER head') : 'head unknown';
-    lines.push(`- ${line(review.reviewer ?? review.author ?? 'unknown', 60)} · ${line(review.state, 30)} · ${sameHead}${review.body ? `\n  ${block(review.body, 100000).split('\n').join('\n  ')}` : ''}`);
+    lines.push(`- ${authorField(review, 'review', ownerPosts, review.reviewer ?? review.author)} · ${line(review.state, 30)} · ${sameHead}${review.body ? `\n  ${block(review.body, 100000).split('\n').join('\n  ')}` : ''}`);
   }
   lines.push('', 'PM AND REVIEWER COMMENTS');
   const commentNote = readNote('Comments', comments);
   if (commentNote) lines.push(commentNote);
   else if ((dataOf(comments) ?? []).length === 0) lines.push('No comments.');
-  else lines.push(...commentLines(comments, head, { owner: String(repository).split('/')[0] }));
+  else lines.push(...commentLines(comments, head, { owner: String(repository).split('/')[0], ownerPosts }));
   lines.push('', 'INLINE REVIEW DISCUSSION');
   const inlineNote = readNote('Inline review comments', reviewComments);
   const inlineItems = dataOf(reviewComments);
@@ -286,7 +291,7 @@ function buildPullRequestReport({ repository, pullRequest, snapshot, reviews, co
       : 'head unknown';
     const location = `${line(item.path ?? 'file unknown', 240)}:${Number.isSafeInteger(item.line) ? item.line : 'line unknown'}`;
     const reply = Number.isSafeInteger(item.inReplyToId) ? ` · reply to #${item.inReplyToId}` : '';
-    lines.push(`- ${line(item.author ?? 'unknown', 60)} · ${location} · ${commit}${reply}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}`);
+    lines.push(`- ${authorField(item, 'inline', ownerPosts, item.author)} · ${location} · ${commit}${reply}${item.createdAt ? ` · ${line(item.createdAt, 30)}` : ''}`);
     lines.push(`  ${block(item.body, 100000).split('\n').join('\n  ')}`);
   }
   lines.push('', 'DECISIONS', 'A private note can be saved locally. It cannot approve, request changes or merge; nothing is sent to GitHub.');

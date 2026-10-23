@@ -327,4 +327,5 @@ function explain(reason, detail) {
   return `multiagent gh wrapper: refused: ${texts[reason] ?? reason}. Nothing was sent.`;
 }
 
-module.exports = { decide, explain, signBody, impersonation, BODY_FILE, MAX_BODY_CHARS, FLAGS, SHORT };
+// `signedAs` and `normalizeLine` are also how the report page reads a signature (`src/reports/authorship.js`), so the two never disagree.
+module.exports = { decide, explain, signBody, impersonation, signedAs, normalizeLine, BODY_FILE, MAX_BODY_CHARS, FLAGS, SHORT };

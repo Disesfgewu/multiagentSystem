@@ -4,6 +4,7 @@ import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, report
 import { closeIssueReport, deleteMergedBranchReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
+const { OwnerPostStore } = require('../../../src/reports/ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: boolean; comments?: Map<number, string | null>; reviews?: Map<number, string | null> } } };
 const { saveFeedback, readFeedback } = require('../../../src/reports/feedback-store') as {
   saveFeedback(store: unknown, target: unknown, input: { note: string; headSha: string | null }, expectedRevision: number | null): { ok: boolean; reason?: string; record?: { revision: number } };
   readFeedback(store: unknown, target: unknown): { state: string; record?: { note: string; revision: number } };
@@ -291,7 +292,10 @@ export async function runReportChecks(): Promise<string> {
       comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
     });
     const publicResult = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'Please add a public regression test.', interactive: false });
-    assert.deepEqual(publicResult, { ok: true });
+    assert.deepEqual(publicResult, { ok: true, ownerRecorded: true });
+    // Issue #342: what the owner publishes from VS Code is recorded by GitHub's id for it, so the report can show it as the owner's.
+    const ownerRecord = async () => { const opened = await privateStorage()?.use(); assert.ok(opened?.ok); return new OwnerPostStore(opened.store).read('host/repo'); };
+    assert.equal((await ownerRecord()).comments?.has(9001), true, 'the published comment\'s id is in the owner record');
     assert.deepEqual(published, [{ number: 7, body: 'Please add a public regression test.' }], 'only the separate public draft reaches the broker transport');
     assert.equal(JSON.stringify(published).includes('Please add a second test'), false, 'the private local note is never copied into public feedback');
     const replay = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'changed retry text', interactive: false });
@@ -366,7 +370,8 @@ export async function runReportChecks(): Promise<string> {
       }
     });
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Leaking private note: Please add a second test', interactive: false }), { ok: false, code: 'content-blocked' });
-    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', interactive: false }), { ok: true });
+    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', interactive: false }), { ok: true, ownerRecorded: true });
+    assert.equal((await ownerRecord()).reviews?.has(501), true, 'the submitted review\'s id is in the owner record');
     assert.deepEqual(reviewsSent, [{ number: 7, decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', expectedHeadSha: HEAD }]);
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Duplicate review attempt.', interactive: false }), { ok: true, code: 'already-reviewed' });
     assert.equal(reviewsSent.length, 1);

@@ -4,6 +4,7 @@ import { privateStorage } from '../storage/storageCommands';
 import { githubReaderFor, GITHUB_AUTH_PROVIDER, GITHUB_SCOPES } from '../github/githubCommands';
 import { WorktreeService } from '../projects/worktrees';
 import { COLLECTIONS } from '../storage/extensionStorage';
+const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { record(input: { repository: string; kind: 'comment' | 'review'; id: number; number: number; body: string }): { ok: boolean } } };
 const { classifyWrite } = require('./writeOutcome') as { classifyWrite(response: { ok: boolean; status: number }, verified: boolean): 'done' | 'refused' | 'unknown' };
 const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> } };
 
@@ -335,7 +336,17 @@ export function installPublicFeedbackTestOverrides(next: Partial<Hooks>): void {
   hooks = { ...realHooks, ...next };
 }
 
-export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
+/**
+ * What the owner publishes here is recorded by GitHub's id for it (issue #342): the report shows a post as the owner's only when
+ * its id is in this record, since the GitHub account is shared with the agents. A record that cannot be written does not undo the
+ * post (it is already on GitHub); the post is then shown as unsigned, never as the owner's, and the caller is told.
+ */
+function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 'review', id: number | undefined, number: number, body: string): boolean {
+  try { return id !== undefined && new OwnerPostStore(store).record({ repository, kind, id, number, body }).ok === true; } catch { return false; }
+}
+
+export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
+  let ownerRecorded = false;
   if (!REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
@@ -370,14 +381,15 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   } };
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
-    reader: {}, transport: { comment: ({ number, body: sent }: any) => hooks.comment(auth, repository, number, sent) }, audit,
+    reader: {}, transport: { comment: async ({ number, body: sent }: any) => { const posted = await hooks.comment(auth, repository, number, sent); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'comment', posted.number, number, sent); return posted; } }, audit,
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'comment', requestId, target: target.kind === 'issue' ? 'issue' : 'pr', number: target.number, body });
-  return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
+  return result.ok ? { ok: true, ownerRecorded } : { ok: false, code: result.reason ?? 'write-refused' };
 }
 
-export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
+export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
+  let ownerRecorded = false;
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
@@ -428,12 +440,12 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: (login: string) => typeof login === 'string' ? (loginIds.get(login.toLowerCase()) ?? null) : null },
     reader,
-    transport: { reviewPullRequest: ({ number, decision, body: sent, expectedHeadSha }: any) => hooks.review(auth, repository, number, decision, sent, expectedHeadSha) },
+    transport: { reviewPullRequest: async ({ number, decision, body: sent, expectedHeadSha }: any) => { const posted = await hooks.review(auth, repository, number, decision, sent, expectedHeadSha); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'review', posted.number, number, sent); return posted; } },
     audit,
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'reviewPr', requestId, number: target.number, decision: pickedDecision, body, expectedHeadSha: target.version.toLowerCase() });
-  return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
+  return result.ok ? { ok: true, ownerRecorded } : { ok: false, code: result.reason ?? 'write-refused' };
 }
 
 export async function mergePullRequestReport(target: PublicTarget, input?: { interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
