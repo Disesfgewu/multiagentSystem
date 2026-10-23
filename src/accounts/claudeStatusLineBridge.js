@@ -92,7 +92,7 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
           sanitizedRateLimits = {};
           // The 5-hour and weekly windows, and the per-model weekly ones (`seven_day_opus`, `seven_day_sonnet`, ...): only the
           // percent and the reset time of each are kept.
-          const windowKeys = Object.keys(payload.rate_limits).filter((key) => key === 'five_hour' || key === 'seven_day' || SEVEN_DAY_MODEL.test(key)).slice(0, MAX_WINDOWS);
+          const windowKeys = [...['five_hour', 'seven_day'].filter((key) => Object.hasOwn(payload.rate_limits, key)), ...Object.keys(payload.rate_limits).filter((key) => SEVEN_DAY_MODEL.test(key)).sort()].slice(0, MAX_WINDOWS);
           for (const windowKey of windowKeys) {
             const entry = payload.rate_limits[windowKey];
             if (entry && typeof entry === 'object') {
