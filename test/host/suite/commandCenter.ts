@@ -153,3 +153,29 @@ export async function runCommandCenterChecks(workspace: string): Promise<void> {
   } finally { setReportDepsForTests(undefined); }
   console.log('host smoke: the Command Center opens as one editor tab with a strict content security policy, shows a card with unknown where nothing is known, keeps the layout, and refuses every message that is not on the whitelist');
 }
+
+/**
+ * #368 in a real Extension Host: five agents started one after another, each start firing its own change, all have a card after
+ * the refresh: requests made while a refresh runs make one more run instead of throwing the result away.
+ */
+export async function runCommandCenterManyAgentsChecks(workspace: string): Promise<void> {
+  const ids: string[] = [];
+  try {
+    await vscode.commands.executeCommand(COMMAND_CENTER_COMMAND);
+    const center = commandCenterForTests();
+    const running: Array<Promise<void>> = [];
+    for (let index = 0; index < 5; index += 1) {
+      const started = await vscode.commands.executeCommand<{ ok: boolean; session?: Session }>('multiagentSystem.sessions.start', { provider: 'claude', name: `Many Agents ${index}`, cwd: workspace, interactive: false, launch: false });
+      assert.ok(started.ok && started.session);
+      ids.push(started.session!.id);
+      // A refresh is asked for after every start, while the earlier ones may still be running.
+      running.push(center.refresh());
+    }
+    await Promise.all(running);
+    const cards = ((center.state() as { agents: Array<{ id: string }>; pm: Array<{ id: string }> }).agents ?? []).map((card) => card.id);
+    for (const id of ids) assert.ok(cards.includes(id), `a card for every agent (missing ${id}; cards: ${JSON.stringify(cards)})`);
+  } finally {
+    for (const id of ids) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id, interactive: false });
+  }
+  console.log('host smoke: five agents started in a row all have a card once the refreshes asked for meanwhile have run');
+}

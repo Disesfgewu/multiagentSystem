@@ -16,7 +16,7 @@ import { runPermissionModeChecks } from './permissionMode';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
-import { runCommandCenterChecks } from './commandCenter';
+import { runCommandCenterChecks, runCommandCenterManyAgentsChecks } from './commandCenter';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
@@ -1074,6 +1074,7 @@ export async function run(): Promise<void> {
   await runBroadcastChecks(workspace);
   await runCodexQuotaChecks(workspace);
   await runCommandCenterChecks(workspace);
+  await runCommandCenterManyAgentsChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
   await runMemoryPanelChecks(workspace);
   await runReviewJumpChecks();
