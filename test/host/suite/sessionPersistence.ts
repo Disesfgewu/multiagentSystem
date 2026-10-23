@@ -63,6 +63,18 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   const codename = startResult.session!.codename;
   assert.match(codename ?? '', /^PM-[0-9]{2,4}$/, 'a PM role group gives a PM codename');
   assert.ok(content.includes(`你的代號是 ${codename}。`) && content.includes(`第一行都必須是 \`— ${codename}\``), 'the injected instructions carry the codename and the signature line');
+  // The session's gh wrapper: shims in the private folder with this codename written into them, first on the terminal's PATH.
+  const shimDir = path.join(privateDir, 'gh-wrapper', sessionId);
+  const shim = fs.readFileSync(path.join(shimDir, 'gh'), 'utf8');
+  assert.ok(shim.includes('multiagentSystem gh wrapper') && shim.includes(`'--mas-codename' '${codename}'`), 'the gh shim carries the codename');
+  assert.equal(fs.existsSync(path.join(shimDir, 'gh.cmd')), false, 'there is never a gh.cmd');
+  assert.equal(fs.existsSync(path.join(shimDir, 'gh.ps1')), process.platform === 'win32', 'a PowerShell shim on Windows only');
+  const sessionTerminal = vscode.window.terminals.find((terminal) => terminal.name.includes('Managed Instruction Session'));
+  const terminalEnv = (sessionTerminal?.creationOptions as vscode.TerminalOptions | undefined)?.env ?? {};
+  // PATH is not set in the terminal's options (it would replace the person's own terminal PATH setting): the typed launch command
+  // puts the shim folder first; the unit tests check that text.
+  assert.equal(Object.keys(terminalEnv).some((name) => name.toLowerCase() === 'path' && String(terminalEnv[name]).includes(shimDir)), false);
+  if (process.platform === 'win32') assert.equal(terminalEnv.PSExecutionPolicyPreference, 'RemoteSigned');
 
   // Verify honest state in sessions.list
   const listed = await vscode.commands.executeCommand<{ sessions: SessionView[] }>('multiagentSystem.sessions.list', { interactive: false });
@@ -78,6 +90,7 @@ export async function runManagedInstructionsChecks(workspace: string): Promise<s
   );
   assert.equal(stopResult.ok, true);
   assert.equal(fs.existsSync(expectedFile), false, 'instruction file must be cleaned up on session stop');
+  assert.equal(fs.existsSync(shimDir), false, 'the gh shims are removed with the session');
 
   // 3. Exercise the registered Codex start command. The unit synthetic terminal test separately
   // verifies that this prepared profile is launched with `-p` and the same CODEX_HOME.
