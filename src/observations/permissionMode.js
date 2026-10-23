@@ -24,8 +24,9 @@ const isPlain = (value) => value !== null && typeof value === 'object' && !Array
  */
 function describePermissionMode({ provider, requested = null, reported = null } = {}) {
   if (provider !== 'claude') return null;
-  if (!isPlain(reported) || !Object.hasOwn(MODE_WORDS, reported.mode)) {
-    return { text: 'Permission mode: not reported yet (Claude Code reports it with its first action)', attention: false, lines: [] };
+  if (!isPlain(reported)) return { text: 'Permission mode: not reported yet (Claude Code reports it with its first action)', attention: false, lines: [] };
+  if (!Object.hasOwn(MODE_WORDS, reported.mode)) {
+    return { text: 'Permission mode: unknown (Claude Code reported a mode this version of the extension does not know)', attention: false, lines: [] };
   }
   const words = MODE_WORDS[reported.mode];
   if (requested === 'on' && reported.mode !== 'auto') {
@@ -35,7 +36,7 @@ function describePermissionMode({ provider, requested = null, reported = null } 
       lines: [
         'Claude Code was started with --permission-mode auto, but it is in another mode now, so the agent stops to ask.',
         'Claude Code does this when auto mode is not available to this account, plan or model, when its classifier cannot be used, or when the conversation has become too long for the classifier.',
-        'Next: reopen the session (Stop & Reopen) to start a fresh conversation; if it happens again, check that this account can use auto mode (/permissions in the agent\'s terminal).'
+        'Next: reopen the session (Multiagent: Sessions, then Stop & Reopen) to start a fresh conversation; if it happens again, check that this account can use auto mode (/permissions in the agent\'s terminal).'
       ]
     };
   }

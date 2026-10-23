@@ -28,23 +28,26 @@ export async function runPermissionModeChecks(workspace: string): Promise<void> 
     assert.equal(started?.ok, true, JSON.stringify(started));
     sessionId = started!.session!.id;
     // The newest read of the panel is the one kept, and the page starts reads of its own: wait until this session's card shows `want`.
+    // A refresh that a newer one overtakes keeps the older answer, so a new refresh is started only every few seconds (a slow
+    // machine would otherwise never finish one); in between, the newest answer is read.
     const card = async (want: string) => {
       const center = commandCenterForTests();
       let found: Card | undefined;
-      const deadline = Date.now() + 15000;
+      let state: { agents?: Card[]; pm?: Card[] } | undefined;
+      const deadline = Date.now() + 40000;
+      let nextRefresh = 0;
       do {
-        await center.refresh();
-        found = ((center.state() as { agents: Card[] } | undefined)?.agents ?? []).find((entry) => entry.id === sessionId);
+        if (Date.now() >= nextRefresh) { await center.refresh(); nextRefresh = Date.now() + 3000; }
+        state = center.state() as typeof state;
+        found = [...(state?.agents ?? []), ...(state?.pm ?? [])].find((entry) => entry.id === sessionId);
         if (found?.permission?.text === want) return found;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 200));
       } while (Date.now() < deadline);
-      return found;
+      assert.fail(`the card did not show "${want}" in time; cards: ${JSON.stringify([...(state?.agents ?? []), ...(state?.pm ?? [])].map((entry) => ({ id: entry.id, permission: entry.permission })))}; session ${sessionId}`);
     };
     await vscode.commands.executeCommand(COMMAND_CENTER_COMMAND);
     const before = 'Permission mode: not reported yet (Claude Code reports it with its first action)';
-    const first = await card(before);
-    assert.ok(first, 'a card for the session');
-    assert.equal(first?.permission?.text, before);
+    assert.equal((await card(before)).permission?.text, before);
 
     const terminal = vscode.window.terminals.find((entry) => entry.name.includes('Permission Mode Subject'));
     const env = (terminal?.creationOptions as vscode.TerminalOptions | undefined)?.env ?? {};
@@ -58,8 +61,7 @@ export async function runPermissionModeChecks(workspace: string): Promise<void> 
     assert.equal(listed.sessions.find((entry) => entry.id === sessionId)?.reportedPermissionMode?.mode, 'default');
     const want = 'Permission mode: default (asks before actions), reported by Claude Code';
     const shown = await card(want);
-    assert.equal(shown?.permission?.text, want);
-    assert.equal(shown?.permission?.attention, false, 'no auto mode was asked for (a shell only), so nothing fell back');
+    assert.equal(shown.permission?.attention, false, 'no auto mode was asked for (a shell only), so nothing fell back');
   } finally {
     if (sessionId) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: sessionId, interactive: false });
     await accounts.service.remove(account.profile.id);
