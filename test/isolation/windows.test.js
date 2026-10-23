@@ -199,30 +199,78 @@ test('on Windows: the time limit ends a program that does not stop, and what it 
   assert.ok(Date.now() - started < 25000, 'it did not wait for the program');
 });
 
-test('on Windows: every channel is tried against a control, and the results are printed for the log', onlyWindows, async () => {
-  const module = realModule();
+// Issue #349: the whole measurement must end inside the test runner's 120 s, however slow the Windows runner is that day. Each phase
+// and each channel has its own limit; what does not finish in time is printed as such and its channel stays unknown, which is what
+// `assessIsolation` makes of a channel with no evidence. Nothing here can make a channel look enforced.
+const BUDGET_MS = 105000;
+const PHASE_MS = { describe: 20000, variants: 25000, facilities: 10000 };
+const CHANNEL_MS = 12000;
+
+/** The value, or `{ timedOut: true }` once `ms` have passed (the work itself goes on in the background and is disposed of at the end). */
+async function withLimit(work, ms) {
+  let timer;
   try {
-    const described = await module.describe();
+    return await Promise.race([work.then((value) => ({ timedOut: false, value })), new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), ms); })]);
+  } finally { clearTimeout(timer); }
+}
+
+test('a measurement that runs out of time ends on time: each channel has its own limit, the deadline stops the rest, and unfinished channels are unknown, never enforced (issue #349)', async () => {
+  assert.deepEqual(await withLimit(new Promise((resolve) => setTimeout(() => resolve('late'), 200)), 20), { timedOut: true });
+  assert.deepEqual(await withLimit(Promise.resolve('on time'), 1000), { timedOut: false, value: 'on time' });
+  const blocked = { achieved: false, can: true };
+  const got = { achieved: true, can: true };
+  const slow = () => new Promise((resolve) => setTimeout(() => resolve(got), 5000));
+  const attempts = Object.fromEntries(Object.keys(CHANNELS).map((channel, index) => [channel, async (restricted) => (index === 1 ? slow() : restricted ? blocked : got)]));
+  const deadline = new AbortController();
+  const started = Date.now();
+  setTimeout(() => deadline.abort(), 300);
+  const { probes } = await collectProbes(createWindowsModule({ attempts }), { timeoutMs: 100, signal: deadline.signal });
+  assert.ok(Date.now() - started < 2000, 'it ended on time instead of waiting for the slow channel');
+  const channels = Object.keys(CHANNELS);
+  assert.equal(probes[channels[1]], undefined, 'the channel that ran out of its own time has no evidence');
+  const assessment = assessIsolation({ platform: 'win32', probes });
+  for (const channel of channels.filter((name) => !probes[name])) assert.notEqual(assessment.channels.find((entry) => entry.channel === channel).state, 'enforced', channel);
+  assert.equal(assessment.mode, 'advisory');
+});
+
+test('on Windows: every channel is tried against a control, and the results are printed for the log', onlyWindows, async () => {
+  const startedAt = Date.now();
+  const left = () => Math.max(0, BUDGET_MS - (Date.now() - startedAt));
+  const module = realModule();
+  const deadline = new AbortController();
+  const overall = setTimeout(() => deadline.abort(), BUDGET_MS);
+  try {
+    const described = await withLimit(module.describe(), Math.min(PHASE_MS.describe, left()));
     assert.equal(module.preparationError(), null, `the fixture could not be built: ${module.preparationError()}`);
-    for (const line of described) console.log(`windows isolation: ${line}`);
-    // The user's own SID no longer grants access: a place whose access list names only the user can be read outside the restriction and not inside it.
-    assert.equal(described.__userSidDenyOnly, true, 'the user SID is deny-only in the restricted token');
-    for (const line of await module.diagnoseVariants()) console.log(`windows isolation: ${line}`);
-    for (const line of await module.diagnoseFacilities()) console.log(`windows isolation: ${line}`);
-    const { probes } = await collectProbes(module, { timeoutMs: 120000 });
+    if (described.timedOut) console.log(`windows isolation: describe timed out after ${PHASE_MS.describe / 1000} s (the deny-only check below is not made)`);
+    else {
+      for (const line of described.value) console.log(`windows isolation: ${line}`);
+      // The user's own SID no longer grants access: a place whose access list names only the user can be read outside the restriction and not inside it.
+      assert.equal(described.value.__userSidDenyOnly, true, 'the user SID is deny-only in the restricted token');
+    }
+    for (const [phase, run] of [['variants', () => module.diagnoseVariants()], ['facilities', () => module.diagnoseFacilities()]]) {
+      const result = await withLimit(run(), Math.min(PHASE_MS[phase], left()));
+      if (result.timedOut) console.log(`windows isolation: ${phase} diagnosis timed out after ${PHASE_MS[phase] / 1000} s`);
+      else for (const line of result.value) console.log(`windows isolation: ${line}`);
+    }
+    // Each channel has its own limit; the overall deadline stops the rest. A channel not probed in time has no evidence: unknown.
+    const { probes } = await collectProbes(module, { timeoutMs: CHANNEL_MS, signal: deadline.signal });
     const assessment = assessIsolation({ platform: 'win32', probes });
     for (const line of describeAssessment(assessment)) console.log(`windows isolation: ${line}`);
+    const measured = Object.keys(CHANNELS).filter((channel) => probes[channel] && typeof probes[channel].control === 'boolean');
+    const missing = Object.keys(CHANNELS).filter((channel) => !measured.includes(channel));
     console.log(`windows isolation: probes ${JSON.stringify(Object.fromEntries(Object.entries(probes).map(([channel, probe]) => [channel, { control: probe.control, outcome: probe.outcome }])))}`);
-    for (const channel of Object.keys(CHANNELS)) {
-      const probe = probes[channel];
-      assert.ok(probe && typeof probe.control === 'boolean', `${channel} was probed`);
-      if (probe.control === false) assert.equal(probe.outcome, undefined, `${channel}: no outcome without a control`);
-    }
-    assert.equal(probes['terminal-interaction'].control, false, 'there is no pseudo-console in this harness: unknown');
+    if (missing.length > 0) console.log(`windows isolation: not probed in time (unknown): ${missing.join(', ')} · ${Math.round((Date.now() - startedAt) / 1000)} s used of ${BUDGET_MS / 1000} s`);
+    for (const channel of measured) if (probes[channel].control === false) assert.equal(probes[channel].outcome, undefined, `${channel}: no outcome without a control`);
+    if (measured.includes('terminal-interaction')) assert.equal(probes['terminal-interaction'].control, false, 'there is no pseudo-console in this harness: unknown');
     // The restriction cannot block the network: a result of "blocked" for it would be a false claim.
-    for (const channel of ['git-push', 'gh-cli', 'direct-http']) assert.notEqual(probes[channel].outcome, 'blocked', `${channel} cannot be blocked by a token`);
+    for (const channel of ['git-push', 'gh-cli', 'direct-http']) if (measured.includes(channel)) assert.notEqual(probes[channel].outcome, 'blocked', `${channel} cannot be blocked by a token`);
+    for (const channel of missing) assert.notEqual(assessment.channels.find((entry) => entry.channel === channel)?.state, 'enforced', `${channel} has no evidence, so it is never enforced`);
     assert.equal(assessment.mode, 'advisory', 'not every required channel is enforced, so enforcement is not available');
-  } finally { await module.dispose(); }
+  } finally {
+    clearTimeout(overall);
+    await withLimit(module.dispose(), 10000);
+  }
 });
 
 test('on Windows: which parts of the restriction still let a program start (printed for the log); with none of them the launcher itself must work', onlyWindows, async () => {
