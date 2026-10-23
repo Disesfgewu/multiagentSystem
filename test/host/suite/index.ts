@@ -18,6 +18,7 @@ import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
 import { runTalkToPmChecks } from './talkToPm';
+import { runAccountsViewChecks } from './accountsView';
 import { runMemoryPanelChecks } from './memoryPanel';
 import { runReviewJumpChecks } from './reviewJump';
 import { runAutoModeConfirmChecks } from './autoModeConfirm';
@@ -195,7 +196,7 @@ async function accountFlow(workspace: string): Promise<void> {
   if (!entries) return;
   const item = entries.find((entry) => entry.label === 'Host Work Account');
   assert.ok(item, 'the persistent account view lists the created profile');
-  assert.match(String(item?.description ?? ''), /Claude Code · identity unknown/);
+  assert.match(String(item?.description ?? ''), /Claude Code · sign-in not checked yet · usage unknown: status line not set up/, 'the row says it is not checked and why there is no usage (#352)');
   assert.match(String(item?.description ?? ''), /limits not set/);
   assert.match(String(item?.tooltip ?? ''), /Limits: none set/);
   assert.match(String(item?.tooltip ?? ''), /Set Account Limits/);
@@ -311,9 +312,9 @@ async function accountFlow(workspace: string): Promise<void> {
   }
   const afterCheck = (await accountTreeForTests().getChildren()) ?? [];
   const checkedItem = afterCheck.find((entry) => entry.label === 'Host Work Account');
-  assert.match(String(checkedItem?.description ?? ''), /identity unknown/);
+  assert.match(String(checkedItem?.description ?? ''), /sign-in unknown · checked/);
   assert.doesNotMatch(String(checkedItem?.description ?? ''), /ready/);
-  assert.match(String(checkedItem?.tooltip ?? ''), /could not confirm the sign-in/);
+  assert.match(String(checkedItem?.tooltip ?? ''), /Sign-in: unknown\./);
   await vscode.commands.executeCommand(ACCOUNT_COMMANDS.details, created.profile.id);
   const detailText = vscode.window.activeTextEditor?.document.getText() ?? '';
   assert.match(detailText, /Subscription plan: unknown/);
@@ -1080,6 +1081,7 @@ export async function run(): Promise<void> {
   await runMeetingChecks(workspace);
   await runDiscussWithPmChecks(workspace);
   await runTalkToPmChecks(workspace);
+  await runAccountsViewChecks();
   console.log(await runManagedInstructionsChecks(workspace));
   await agyFlow(workspace);
 

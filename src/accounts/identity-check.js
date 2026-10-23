@@ -42,6 +42,18 @@ const REASONS = Object.freeze({
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+// What the account view shows on this computer so the person can tell accounts apart (#352, at the owner's request): the e-mail
+// address and organization the CLI reported. Only well-formed, short, single-line values are kept; anything else is dropped. This
+// object is never stored, logged, exported, sent to GitHub or put into an agent's instructions: it lives in this window's memory and
+// is shown on the account rows and details only. See docs/ACCOUNT_PROFILES.md.
+const EMAIL = /^[^\s@\p{Cc}\p{Cf}]{1,64}@[^\s@\p{Cc}\p{Cf}]{1,190}$/u;
+const plainText = (value, max) => typeof value === 'string' && value.trim() !== '' && value.length <= max && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) ? value.trim() : null;
+function displayFromStatus(status) {
+  const email = typeof status.email === 'string' && EMAIL.test(status.email) ? status.email : null;
+  const organization = plainText(status.orgName ?? status.organizationName ?? status.organization ?? null, 100);
+  return { email, organization };
+}
+
 const unknownResult = (reason, checkedAt, source) => ({ ok: false, state: 'unknown', reason, checkedAt, source, identity: null });
 
 /**
@@ -99,7 +111,7 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   if (identity.plan && identity.plan.value !== null && !(typeof identity.plan.value === 'string' && PLAN_NAMES.includes(identity.plan.value))) {
     identity.plan = unknown('plan', { source: spec.source, observedAt: checkedAt, reason: 'unusable-value' });
   }
-  return { ok: true, state: 'checked', reason: 'checked', checkedAt, source: spec.source, identity };
+  return { ok: true, state: 'checked', reason: 'checked', checkedAt, source: spec.source, identity, display: displayFromStatus(status) };
 }
 
 // Two different things the account view can say about the configuration folder: whether it passes this
@@ -123,9 +135,9 @@ function describeCheck(result) {
   const identity = result.identity;
   if (!identity.loggedIn) return { summary: 'The CLI says this account is not signed in.', hint: 'Open the login terminal and sign in, then check again.' };
   if (identity.subject && identity.subject.confidence === 'actual') {
-    return { summary: 'Signed in. The CLI confirmed an account (shown here only as a short fingerprint).', hint: identity.anomalies.length > 0 ? 'Something looks wrong: see the problems listed for this account.' : 'You can start a session with this account.' };
+    return { summary: 'Signed in. The CLI confirmed which account this is.', hint: identity.anomalies.length > 0 ? 'Something looks wrong: see the problems listed for this account.' : 'You can start a session with this account.' };
   }
   return { summary: 'Signed in, but the CLI did not confirm who the account is.', hint: 'The identity stays unknown, so this account cannot be used for a managed launch.' };
 }
 
-module.exports = { checkAccountIdentity, describeCheck, splitFolderIssues, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES, HARD_LIMIT_MS };
+module.exports = { checkAccountIdentity, displayFromStatus, describeCheck, splitFolderIssues, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES, HARD_LIMIT_MS };
