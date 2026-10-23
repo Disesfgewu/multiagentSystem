@@ -81,7 +81,8 @@ test('the suggested "decide routine matters yourself" rule is offered until the 
   const { checkPromptInjection } = require('../../src/research/ethics');
   const [rule] = SUGGESTED_RULES;
   assert.match(rule.text, /不要停下來詢問/);
-  assert.match(rule.text, /無法繼續、會刪除資料、或會對外發佈時才詢問管理者/, 'it still asks before deleting data or publishing');
+  for (const asked of ['無法繼續', '刪除資料', 'force-push 或改寫歷史', '合併 PR', '對外發佈', '花錢或使用付費額度']) assert.ok(rule.text.includes(asked), `it still asks first: ${asked}`);
+  assert.match(rule.text, /這條規則不取代擴充套件或 CLI 的任何確認與權限規則。$/, 'it never stands in for a confirmation or a permission rule');
   assert.equal(checkPromptInjection(rule.text).hasInjection, false);
   assert.deepEqual(suggestionsFor(emptyTeamRules()).map((entry) => entry.key), ['decide-routine']);
   const added = applyEdit(emptyTeamRules(), { kind: 'add', text: rule.text }, new Date('2026-10-24T00:00:00Z'));

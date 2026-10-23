@@ -66,7 +66,7 @@ export async function runSuggestedTeamRuleChecks(): Promise<void> {
   ui.showQuickPick = async (items: any[]) => { offered.push(items.map((item) => item.label)); return items.find((item) => item.value === 'suggested'); };
   ui.showWarningMessage = async (message: string, options: { detail?: string }, ...buttons: string[]) => { shown.push(`${message}\n${options?.detail ?? ''}`); return buttons.includes(String(confirm)) ? confirm : undefined; };
   ui.showInformationMessage = async () => undefined;
-  const suggested = '例行決定自行判斷並繼續，不要停下來詢問；只有在無法繼續、會刪除資料、或會對外發佈時才詢問管理者。';
+  const suggested = '例行決定自行判斷並繼續，不要停下來詢問。以下情況必須先詢問管理者：無法繼續、刪除資料、force-push 或改寫歷史、合併 PR、對外發佈、花錢或使用付費額度。這條規則不取代擴充套件或 CLI 的任何確認與權限規則。';
   try {
     confirm = undefined;
     await vscode.commands.executeCommand('multiagentSystem.teamRules.edit');
