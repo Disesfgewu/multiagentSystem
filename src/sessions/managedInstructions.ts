@@ -70,6 +70,11 @@ export interface PreparedInstructions {
   snapshot: InstructionSnapshot;
   plan: any | null;
   digest: string | null;
+  /**
+   * The digest of what the person reviews (#362): the same inputs as `digest` but with this session's codename taken out, so two
+   * agents of one role group with the same rules, notices and notes have the same review digest although each has its own codename.
+   */
+  reviewDigest: string | null;
   method: string;
   argv: string[];
   injectionState: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
@@ -252,6 +257,14 @@ export async function prepareInstructionSnapshot(
     }
   }
 
+  // What the person reviews, without the one thing that differs for every session: its codename (it is shown in the dialog anyway).
+  let reviewDigest: string | null = null;
+  if (digest !== null) {
+    let reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, permissions, memories: memories.map((item) => [item.id, item.version]) });
+    if (options.codename !== undefined) reviewed = reviewed.split(options.codename).join('\u0000codename\u0000');
+    reviewDigest = `sha256:${crypto.createHash('sha256').update(reviewed).digest('hex')}`;
+  }
+
   // Step 4: Plan and Write Injection Files (strictly in owner directory outside repo)
   let plan: any = null;
   let method = 'none';
@@ -348,6 +361,7 @@ export async function prepareInstructionSnapshot(
     snapshot,
     plan,
     digest,
+    reviewDigest,
     method,
     argv,
     injectionState,

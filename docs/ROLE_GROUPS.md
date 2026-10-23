@@ -86,6 +86,17 @@
 
 `formatPreview(preview)` 產生給人看的純文字（含指示文字，僅限本機顯示）；失敗時只列代碼與位置。
 
+## 5.1 同一份指示只確認一次（#362）
+
+互動式啟動或重新開啟 agent 時，擴充套件會先跳出「Effective agent instructions prepared」視窗，請管理者確認這次要給 agent 的指示。現在的規則：
+
+- **同一份指示只確認一次**：管理者在視窗裡按了 **Start Agent**（或 **Reopen Session**）之後，同一個 provider、同一個身份組再用完全相同的指示啟動 agent，就不再跳出這個視窗，只會顯示一則訊息「Starting with the same instructions you confirmed before (…). You are asked again when they change.」。
+- **怎麼判斷「相同」**：比對 review digest。它涵蓋身份組、角色規則、團隊規則、管理者廣播與共享記憶，但不含每個 session 各自的代號；代號每次都不同，在視窗裡也會顯示。
+- **指示變了就再問**：只要規則、廣播或共享記憶有任何改變，review digest 就會改變，下次啟動會再跳出確認視窗。
+- **按取消不會被記住**：只有管理者在視窗裡按下同意才會記住；呼叫參數不能冒充同意（#183 的規則不變）。
+- **記錄存在哪裡**：記在 VS Code 的 globalState（`multiagentSystem.confirmedInstructionDigests`），每個 provider 與身份組只記最新的一筆，最多 200 筆；只存 digest，不存指示內容。
+- **auto mode 的說明照常出現**：略過確認視窗時，auto mode 的說明會改用一般訊息顯示。
+
 ## 6. 注入路徑（只描述）
 
 預覽的 `roleGroup` 與 `rules` 即 `renderContext({ roleGroup, rules, memories })` 的輸入，之後由 #5 的 `planInjection` 把內容寫入**私人目錄**的檔案，命令列只帶檔案路徑（Claude Code：`--append-system-prompt-file`）或設定檔名稱（Codex：`-p mas-<token>`）。本模組自己不寫檔，也不會在 repo 中建立 `AGENTS.md`／`CLAUDE.md`；測試以靜態檢查確認 `src/roles/` 沒有引入檔案、行程或網路模組。測試只確認資料形狀相容，**不是**對真實 CLI 的注入驗證。

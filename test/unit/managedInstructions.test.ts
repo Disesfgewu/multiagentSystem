@@ -893,3 +893,26 @@ test('a rule typed into a role group cannot take the codename rule\'s id and pus
   const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-spoof-1234', privateDir, codename: 'Worker-01' });
   assert.equal(result.ok, false, 'the launch is refused rather than started with someone else\'s codename');
 });
+
+test('the review digest leaves the codename out: two agents of one role group share it, a rule change does not (#362)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('teamRules', 'team', teamDoc(1, ['TEAM rule one.']));
+  store.put('roleGroups', 'worker-1', makeRoleRecord('worker-1', 1, 'worker'));
+  const prepare = async (codename: string, session: string) => {
+    const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: session, privateDir, codename });
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error('not prepared');
+    cleanupSessionPlan(result.plan);
+    return result;
+  };
+  const first = await prepare('Worker-01', 'session-review-0001');
+  const second = await prepare('Worker-02', 'session-review-0002');
+  assert.notEqual(first.digest, second.digest, 'the full digest includes the codename instruction');
+  assert.match(first.reviewDigest ?? '', /^sha256:[0-9a-f]{64}$/);
+  assert.equal(first.reviewDigest, second.reviewDigest, 'what the person reviews is the same');
+  store.put('teamRules', 'team', teamDoc(2, ['TEAM rule one, changed.']));
+  const changed = await prepare('Worker-03', 'session-review-0003');
+  assert.notEqual(changed.reviewDigest, first.reviewDigest, 'a changed rule is asked again');
+  const other = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'codex', roleGroupId: undefined, targetSessionId: 'session-review-0004', privateDir, codexHome: privateDir, codename: 'Worker-04' });
+  if (other.ok) { assert.notEqual(other.reviewDigest, changed.reviewDigest, 'another provider or role group has its own'); cleanupSessionPlan(other.plan); }
+});
