@@ -172,7 +172,7 @@ test('Codex: every file it writes parses, with exactly this folder trusted; an e
   const dir = temp(t);
   const file = path.join(dir, 'config.toml');
   // Dotted keys may define `projects`: TOML lets a [projects."<folder>"] header add a sub-table to it, so that is written.
-  for (const text of ['', 'model = "a"', '[projects]\n', 'projects."/w/z".trust_level = "trusted"\n', `[projects."${folder}/longer"]\ntrust_level = "trusted"\n`, 'a.b = 1\n[tui]\nx = true\n']) {
+  for (const text of ['', 'model = "a"', '[projects]\n', 'projects."/w/z".trust_level = "trusted"\n', `[projects.${tomlString(`${folder}/longer`)}]\ntrust_level = "trusted"\n`, 'a.b = 1\n[tui]\nx = true\n']) {
     fs.writeFileSync(file, text);
     assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: true, changed: true }, JSON.stringify(text));
     const parsed = parseToml(fs.readFileSync(file, 'utf8'));
