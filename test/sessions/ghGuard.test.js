@@ -312,3 +312,31 @@ test('cmd.exe sets the PATH and the script policy for the program it starts; a f
   assert.equal(formatPathPrefix('C:\\Users\\me\\AppData\\gh-wrapper\\s1', 'cmd'), 'set "PATH=C:\\Users\\me\\AppData\\gh-wrapper\\s1;%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && ');
   for (const dir of ['C:\\100%\\s1', 'C:\\a^b', 'C:\\a"b', 'C:\\a&b', 'C:\\a|b', 'C:\\a<b', 'C:\\a!b']) assert.equal(formatPathPrefix(dir, 'cmd'), null, dir);
 });
+
+test('look-alikes beyond dashes are the same signature too: full-width and styled characters, combining marks, Greek and Cyrillic letters, Unicode line separators (PM follow-up on #345)', () => {
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  const em = cp(0x2014);
+  for (const body of [
+    `${em} ${cp(0x420, 0x41c)}-01`, // Cyrillic Er and Em
+    `${em} ${cp(0x3a1)}M-01`, // Greek Rho
+    `${em} PM${cp(0xff0d)}${cp(0xff10, 0xff11)}`, // full-width hyphen and digits
+    `${em} ${cp(0xff30, 0xff2d)}-01`, // full-width letters
+    `${em} ${cp(0x1d40f)}M-01`, // mathematical bold P
+    `${em} P${cp(0x301)}M-01`, // combining acute accent
+    `${em} PM${cp(0x2010)}01`, // hyphen inside the codename
+    `${cp(0xff0d)} PM-01 hi`, // a full-width hyphen that starts the line
+    `ok${cp(0x2028)}${em} PM-01`, // line separator
+    `ok${cp(0x2029)}${em} PM-01`, // paragraph separator
+    `ok${cp(0x85)}${em} PM-01`, // next line
+    `ok\r${em} PM-01` // a lone carriage return
+  ]) assert.equal(run(['pr', 'comment', '1', '--body', body]).reason, 'other-codename', JSON.stringify(body));
+  assert.equal(run(['pr', 'comment', '1', '--body', `${em} ${cp(0x41e)}wner-01`]).reason, 'other-codename', 'a Cyrillic O in Owner still reads as a codename');
+  assert.equal(run(['pr', 'comment', '1', '--body', `${em} ${cp(0x43e)}wner`]).reason, 'owner-claim', 'a Cyrillic o in an owner word is caught');
+  // What the session writes in its own name, or ordinary text in other scripts, is not refused, and the posted text is never changed.
+  for (const body of [`${cp(0x41f, 0x440, 0x438, 0x432, 0x435, 0x442)} PM-01`, '- PM-01 reviewed the first part', `${cp(0x3b1, 0x3b2)}`, `${em} Worker${cp(0x2011)}01 also me`]) {
+    const answer = run(['pr', 'comment', '1', '--body', body]);
+    assert.equal(answer.action, 'run', JSON.stringify(body));
+    assert.ok(answer.body.endsWith(body), 'the text is posted as typed');
+  }
+  assert.equal(signed(['pr', 'comment', '1', '--body', `${cp(0xff0d)} ${cp(0xff37)}orker-01\nDone.`]).body, `${em} Worker-01\nDone.`, 'its own signature in full-width letters is written the one way');
+});

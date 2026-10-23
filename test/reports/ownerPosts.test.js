@@ -102,3 +102,10 @@ test('a first-line signature is a claim read as the gh wrapper reads it; owner-l
   assert.equal(authorOf({ id: 11, body: `${cp(0x2014)} Worker-01 · forged` }, 'comment', owner).text, 'Worker-01（自稱）');
   for (const item of [null, {}, { id: 'x', body: 'x' }]) assert.equal(authorOf(item, 'comment', owner).text, '未署名');
 });
+
+test('the report page reads look-alike signatures the same way as the gh wrapper (PM follow-up on #345)', () => {
+  const owner = { comments: new Map(), reviews: new Map() };
+  const em = cp(0x2014);
+  for (const body of [`${em} ${cp(0x420, 0x41c)}-01`, `${em} PM${cp(0xff0d)}${cp(0xff10, 0xff11)}`, `${em} P${cp(0x301)}M-01`]) assert.equal(authorOf({ id: 1, body }, 'comment', owner).text, 'PM-01（自稱）', JSON.stringify(body));
+  assert.equal(authorOf({ id: 1, body: `${em} ${cp(0x41e)}wner-01` }, 'comment', owner).text, '未署名', 'an owner-like codename stays unsigned whatever letters it is written with');
+});
