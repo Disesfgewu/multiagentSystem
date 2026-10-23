@@ -25,7 +25,7 @@ import { runAccountsViewChecks } from './accountsView';
 import { runMemoryPanelChecks } from './memoryPanel';
 import { runReviewJumpChecks } from './reviewJump';
 import { runAutoModeConfirmChecks } from './autoModeConfirm';
-import { runTeamRulesChecks } from './teamRules';
+import { runTeamRulesChecks, runSuggestedTeamRuleChecks } from './teamRules';
 import { runExportReportChecks } from './exportReport';
 import { runDispatchTaskChecks } from './dispatchTask';
 import { outsideTestMode, runCallerStopChecks, runNonInteractiveGateChecks } from './nonInteractiveGate';
@@ -1079,6 +1079,7 @@ export async function run(): Promise<void> {
   await runReviewJumpChecks();
   await runAutoModeConfirmChecks();
   await runTeamRulesChecks();
+  await runSuggestedTeamRuleChecks();
   await runExportReportChecks(workspace);
   await runDispatchTaskChecks(workspace);
   await runMeetingChecks(workspace);

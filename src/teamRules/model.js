@@ -12,6 +12,15 @@ const { locateSensitive } = require('../memory/sensitive');
  */
 
 const MAX_RULES = 50;
+// A rule the extension suggests (#362): agents stopped to ask about routine choices although auto mode was on. It is only offered
+// in Edit Team Rules; it applies once the person adds it there (and can be edited or removed like any other rule).
+const SUGGESTED_RULES = Object.freeze([
+  Object.freeze({
+    key: 'decide-routine',
+    label: 'Decide routine matters yourself',
+    text: '例行決定自行判斷並繼續，不要停下來詢問；只有在無法繼續、會刪除資料、或會對外發佈時才詢問管理者。'
+  })
+]);
 const MAX_TEXT_CHARS = 1000;
 const ID_PREFIX = 'team:';
 const ID = /^team:[1-9][0-9]{0,5}$/;
@@ -82,6 +91,14 @@ const looksPrivate = (text) => { try { return locateSensitive(text).length > 0; 
 /** The rules as the `user` layer takes them, ahead of everything the role group adds there. */
 const teamRuleLayer = (doc) => (validateTeamRules(doc).ok ? doc.rules.map((rule) => ({ id: rule.id, type: 'instruction', text: rule.text })) : []);
 
+/** The suggested rules not in the list yet (compared by their exact text), so each is offered until it has been added. */
+function suggestionsFor(doc) {
+  const checked = validateTeamRules(doc);
+  if (!checked.ok) return [];
+  const texts = new Set(checked.doc.rules.map((rule) => rule.text.trim()));
+  return SUGGESTED_RULES.filter((rule) => !texts.has(rule.text));
+}
+
 /** A line for previews and cards: what applies to every agent, and from which version. */
 function describeTeamRules(doc) {
   const checked = validateTeamRules(doc);
@@ -90,4 +107,4 @@ function describeTeamRules(doc) {
   return `Team rules (v${checked.doc.version}): ${checked.doc.rules.length} instruction${checked.doc.rules.length === 1 ? '' : 's'} given to every agent started after this version, ahead of its role group's rules. The CLI is told; nothing here enforces them.`;
 }
 
-module.exports = { validateTeamRules, applyEdit, teamRuleLayer, describeTeamRules, emptyTeamRules, MAX_RULES, MAX_TEXT_CHARS, ID_PREFIX };
+module.exports = { validateTeamRules, applyEdit, teamRuleLayer, describeTeamRules, emptyTeamRules, suggestionsFor, SUGGESTED_RULES, MAX_RULES, MAX_TEXT_CHARS, ID_PREFIX };
