@@ -160,29 +160,62 @@ const fenced = (line) => /^\s*(?:```|~~~)/.test(line);
 // removed, and every Unicode dash or minus becomes the em dash. `― PM-01` and `— PM` + zero-width + `-01` are then `— PM-01`.
 const INVISIBLE = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
 const DASHES = /[\u2010-\u2015\u2212\u2e3a\u2e3b\ufe58\ufe63\uff0d]/g;
-const normalizeLine = (line) => String(line).replace(INVISIBLE, '').replace(DASHES, '\u2014');
+// Greek and Cyrillic letters that look like the Latin ones a codename is written with: a Cyrillic "Er" and "Em" make a line read
+// "PM-01" to a person and something else to a computer.
+const CONFUSABLES = new Map([[0x0410, 'A'], [0x0412, 'B'], [0x0415, 'E'], [0x041a, 'K'], [0x041c, 'M'], [0x041d, 'H'], [0x041e, 'O'], [0x0420, 'P'], [0x0421, 'C'], [0x0422, 'T'], [0x0425, 'X'], [0x0405, 'S'], [0x0406, 'I'], [0x0408, 'J'], [0x0430, 'a'], [0x0435, 'e'], [0x043e, 'o'], [0x0440, 'p'], [0x0441, 'c'], [0x0443, 'y'], [0x0445, 'x'], [0x0455, 's'], [0x0456, 'i'], [0x0458, 'j'], [0x04bb, 'h'], [0x0501, 'd'], [0x051b, 'q'], [0x051d, 'w'], [0x0391, 'A'], [0x0392, 'B'], [0x0395, 'E'], [0x0396, 'Z'], [0x0397, 'H'], [0x0399, 'I'], [0x039a, 'K'], [0x039c, 'M'], [0x039d, 'N'], [0x039f, 'O'], [0x03a1, 'P'], [0x03a4, 'T'], [0x03a5, 'Y'], [0x03a7, 'X'], [0x03bf, 'o'], [0x03b1, 'a'], [0x03bd, 'v'], [0x03c1, 'p'], [0x03b9, 'i'], [0x03ba, 'k']]);
+const LOOKALIKE = /[\u0370-\u03ff\u0400-\u052f]/g;
+const LEADING_DASH = new RegExp(`^(\\s*)${DASHES.source}`);
+// Every dash after the first one of the line, and the em dash put there, matched in one pass.
+const OTHER_DASHES = new RegExp(`^(\\s*\u2014)|${DASHES.source}`, 'g');
+/**
+ * One form for every check, only for comparing (the posted text is never changed by it):
+ *  1. invisible marks removed;
+ *  2. a dash of any kind that starts the line becomes the em dash (the signature's);
+ *  3. compatibility forms folded and combining marks removed (decomposed, marks dropped, composed again): full-width and styled
+ *     letters and digits become plain ones, an accented P is a P;
+ *  4. Greek and Cyrillic look-alikes of Latin letters replaced;
+ *  5. every other dash becomes the ASCII hyphen, as in a codename.
+ */
+const normalizeLine = (line) => String(line)
+  .replace(INVISIBLE, '')
+  .replace(LEADING_DASH, '$1\u2014')
+  .normalize('NFKD').replace(/\p{M}/gu, '').normalize('NFKC')
+  .replace(LOOKALIKE, (char) => CONFUSABLES.get(char.codePointAt(0)) ?? char)
+  .replace(OTHER_DASHES, (match, lead) => lead ?? '-');
+// Every line break GitHub shows as one, including the Unicode line and paragraph separators.
+const LINES = /\r\n|[\n\r\u0085\u2028\u2029]/;
 // A signature: after a Unicode dash, a name at the start of the line (anything may follow); after the ASCII hyphen, only a line that
 // is nothing else, because `- item` is a Markdown list.
 const SIGNED_DASH = /^\s*\u2014\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})(?![0-9])/;
 const SIGNED_HYPHEN = /^\s*-{1,2}\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
 const OWNER_WORDS = '(?:\u7ba1\u7406\u8005|\u7ba1\u7406\u54e1|\u7ba1\u7406\u5458|repo\\s+owner|owner|maintainer|admin(?:istrator)?)';
 const OWNER_DASH = new RegExp(`^\\s*\u2014\\s*${OWNER_WORDS}(?![A-Za-z])`, 'i');
+const OWNER_STANDALONE = new RegExp(`^\\s*\u2014\\s*${OWNER_WORDS}\\s*$`, 'i');
 const OWNER_HYPHEN = new RegExp(`^\\s*-{1,2}\\s*${OWNER_WORDS}\\s*$`, 'i');
 const OWNER_CLAIMS = [/\u6211(?:\u5c31)?\u662f(?:\u9019\u500b\u5c08\u6848\u7684|\u8fd9\u4e2a\u9879\u76ee\u7684)?\u7ba1\u7406(?:\u8005|\u54e1|\u5458)/, /\u4ee5\u7ba1\u7406(?:\u8005|\u54e1|\u5458)(?:\u7684)?\u8eab(?:\u5206|\u4efd)/, /\b(?:i\s+am|i'm)\s+the\s+(?:repo(?:sitory)?\s+)?(?:owner|maintainer|admin(?:istrator)?)\b/i, /\bspeaking\s+as\s+the\s+(?:owner|maintainer)\b/i];
 const signedAs = (line) => { const normal = normalizeLine(line); const match = SIGNED_DASH.exec(normal) ?? SIGNED_HYPHEN.exec(normal); return match ? match[1] : null; };
+// A line that is a signature and nothing else: how a sign-off written further down a comment looks. A list item that starts with a
+// dash and names an agent ("- PM-01 please check") is not one.
+const STANDALONE = /^\s*(?:\u2014|-{1,2})\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
+const standaloneAs = (line) => { const match = STANDALONE.exec(normalizeLine(line)); return match ? match[1] : null; };
 
 /**
  * Why `text` must not be posted under `own`, or null. Quoted lines (`>`) and fenced code are someone else's words and not checked.
+ * The first line is where a signature is read (by the report page too), so there a dash and a codename at the start count whatever
+ * follows; further down only a line that is a signature and nothing else does, so a list that names an agent is still allowed.
+ * Claims to be the owner are refused on any line.
  */
 function impersonation(text, own) {
   let inCode = false;
-  for (const raw of String(text).split(/\r?\n/)) {
+  let index = -1;
+  for (const raw of String(text).split(LINES)) {
+    index += 1;
     if (fenced(raw)) { inCode = !inCode; continue; }
     if (inCode || /^\s*>/.test(normalizeLine(raw))) continue;
-    const signed = signedAs(raw);
+    const signed = index === 0 ? signedAs(raw) : standaloneAs(raw);
     if (signed && signed !== own) return refuse('other-codename', signed.slice(0, 30));
     const normal = normalizeLine(raw);
-    if (OWNER_DASH.test(normal) || OWNER_HYPHEN.test(normal)) return refuse('owner-claim');
+    if ((index === 0 && OWNER_DASH.test(normal)) || OWNER_HYPHEN.test(normal) || OWNER_STANDALONE.test(normal)) return refuse('owner-claim');
     if (OWNER_CLAIMS.some((pattern) => pattern.test(normal))) return refuse('owner-claim');
   }
   return null;
@@ -190,14 +223,16 @@ function impersonation(text, own) {
 
 /**
  * The body with the signature as its first line. A first line that is only the session's own signature (any dash, invisible marks
- * removed) is written the one way; anything else gets the signature in front of it.
+ * removed) is written the one way and nothing else is touched: everything from the first line break on is kept byte for byte, with
+ * its own kind of line breaks. Anything else gets the signature in front of it.
  */
 function signBody(body, own) {
   const text = String(body ?? '');
-  const lines = text.split(/\r?\n/);
   const signature = `\u2014 ${own}`;
-  const first = lines[0] === undefined ? '' : normalizeLine(lines[0]).trim();
-  if (first === signature || (SIGNED_HYPHEN.test(first) && signedAs(first) === own)) return [signature, ...lines.slice(1)].join('\n');
+  const breakAt = text.search(LINES);
+  const firstLine = breakAt < 0 ? text : text.slice(0, breakAt);
+  const first = normalizeLine(firstLine).trim();
+  if (first === signature || (SIGNED_HYPHEN.test(first) && signedAs(first) === own)) return breakAt < 0 ? signature : `${signature}${text.slice(breakAt)}`;
   return text.trim() === '' ? signature : `${signature}\n\n${text}`;
 }
 
@@ -328,4 +363,4 @@ function explain(reason, detail) {
 }
 
 // `signedAs` and `normalizeLine` are also how the report page reads a signature (`src/reports/authorship.js`), so the two never disagree.
-module.exports = { decide, explain, signBody, impersonation, signedAs, normalizeLine, BODY_FILE, MAX_BODY_CHARS, FLAGS, SHORT };
+module.exports = { decide, explain, signBody, impersonation, signedAs, normalizeLine, LINES, BODY_FILE, MAX_BODY_CHARS, FLAGS, SHORT };
