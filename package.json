@@ -158,6 +158,13 @@
           "scope": "application",
           "description": "Start each agent CLI so that it does not stop to ask for approval of every action (user settings only; workspace values are ignored). on (default): Claude Code is started with --permission-mode auto and Codex with --sandbox workspace-write --ask-for-approval never; a provider with no documented flag gets none and is shown as unknown. off: the CLI asks as usual. This is a request to the CLI; whether it is honoured is not verified. With auto mode on, the agent can run commands and change files without asking: enforced isolation (macOS) is recommended."
         },
+        "multiagentSystem.agents.preTrustManagedWorktrees": {
+          "type": "string",
+          "enum": ["ask", "on", "off"],
+          "default": "ask",
+          "scope": "application",
+          "description": "Whether Claude Code and Codex may start in this project's managed worktrees (the <repo>-worktrees folder) without asking to trust each new one (user settings only). ask (default): the first interactive start in a managed worktree asks once and saves the answer here. on: the trust of each managed worktree is written into the account's own .claude.json (Claude Code) or config.toml (Codex) before the agent starts; nothing else in the file changes, and ~/.claude.json is never touched. off: the CLI asks as usual."
+        },
         "multiagentSystem.agents.autoModeOverrides": {
           "type": "object",
           "default": {},

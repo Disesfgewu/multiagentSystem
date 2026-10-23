@@ -95,3 +95,11 @@ test('lock folders: the home folder, and the account folder when one is set', ()
   assert.deepEqual(lockFolders({ home: '/h', configDir: '/acct' }), [path.resolve('/h/.claude/ide'), path.resolve('/acct/ide')]);
   assert.deepEqual(lockFolders({ home: '/h', configDir: '/h/.claude' }), [path.resolve('/h/.claude/ide')]);
 });
+
+test('other files in the lock folder do not count towards the limit of lock files read', (t) => {
+  const { ide, write } = setup(t);
+  write(40020, lock(['/work/project']));
+  // The folder lists 80 other files first, then the lock.
+  const readDir = (folder) => [...Array.from({ length: 80 }, (_, index) => `other-${index}.txt`), ...fs.readdirSync(folder)];
+  assert.deepEqual(findIdePort({ folders: [ide], workspaceFolders: ['/work/project'], platform: 'linux', alive, readDir }), { ok: true, port: 40020 });
+});

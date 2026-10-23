@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { resolveRoleForLaunch, pickRoleForLaunch } from '../roles/roleLaunch';
 import { PROVIDERS, errorMessage, terminalTitle } from '../agents';
 import { WorktreeService } from '../projects/worktrees';
+import { isInsideAllowedRoots, managedWorktreeRoot } from '../projects/worktreeController';
 import { SessionManager, SessionView, cleanName } from './manager';
 import { accountService, launchEnvironment } from '../accounts/accountRuntime';
 import { builtIn } from '../providers/registry';
@@ -267,7 +268,68 @@ export function setIdeLockFoldersForTests(folders: string[] | undefined): void {
   if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
   ideFolders = folders ? () => folders : (configDir?: string) => lockFolders({ configDir });
 }
-const withIdeLabels = <T extends { id: string }>(entries: T[]): Array<T & { ideLabel?: string }> => entries.map((entry) => (ideStatus.has(entry.id) ? { ...entry, ideLabel: ideStatus.get(entry.id) } : entry));
+const withIdeLabels = <T extends { id: string }>(entries: T[]): Array<T & { ideLabel?: string; trustLabel?: string }> => entries.map((entry) => ({
+  ...entry,
+  ...(ideStatus.has(entry.id) ? { ideLabel: ideStatus.get(entry.id) } : {}),
+  ...(trustStatus.has(entry.id) ? { trustLabel: trustStatus.get(entry.id) } : {})
+}));
+
+const { trustClaudeFolder, trustCodexFolder, describeTrust } = require('./folderTrust') as {
+  trustClaudeFolder(input: { configDir: string | undefined; folder: string }): { ok: true; changed: boolean } | { ok: false; reason: string };
+  trustCodexFolder(input: { codexHome: string | undefined; folder: string }): { ok: true; changed: boolean } | { ok: false; reason: string };
+  describeTrust(result: unknown, cliName: string): string | null;
+};
+// Whether the CLI will stop to ask to trust the agent's worktree (#362): shown on its card and in its details.
+const trustStatus = new Map<string, string>();
+const TRUST_SETTING = 'agents.preTrustManagedWorktrees';
+const TRUST_CLI: Record<string, string> = Object.freeze({ claude: 'Claude Code', codex: 'Codex' });
+
+/** The managed worktree folders of this window's projects: `<repo>-worktrees` next to each open folder (#362). */
+function managedRootsOfWindow(): string[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) => managedWorktreeRoot(folder.uri.fsPath));
+}
+
+/**
+ * Before an agent starts in one of this project's managed worktrees, its trust is written into the account's own CLI settings, so the
+ * CLI does not stop to ask whether to trust the folder (#362). Only for a folder inside `<repo>-worktrees` of an open folder (the
+ * folder the extension creates worktrees in), only for an account folder of its own (Claude Code's `~/.claude.json` is never
+ * touched), and only once the person agreed: the user setting multiagentSystem.agents.preTrustManagedWorktrees is "on", or is "ask"
+ * and they answered once (the answer is saved there). A start that cannot pre-trust still starts; the CLI then asks as usual.
+ */
+async function preTrustWorktree(provider: string, sessionId: string, cwd: string, env: Record<string, string | null> | undefined, interactive: boolean): Promise<void> {
+  trustStatus.delete(sessionId);
+  const cliName = TRUST_CLI[provider];
+  if (!cliName || !isInsideAllowedRoots(cwd, managedRootsOfWindow())) return;
+  const settings = vscode.workspace.getConfiguration('multiagentSystem');
+  let choice = readUserLevel(settings.inspect(TRUST_SETTING)).value ?? 'ask';
+  if (choice === 'ask' && interactive) {
+    const answer = await vscode.window.showWarningMessage(
+      `Let ${cliName} start in this project's worktrees without asking to trust each one?`,
+      { modal: true, detail: `Each agent works in a new worktree under ${path.dirname(cwd)}, and ${cliName} asks once per folder whether to trust it, which stops the agent until you answer. If you agree, the extension writes the trust for each new managed worktree into that account's own ${provider === 'claude' ? '.claude.json' : 'config.toml'} (nothing else in the file changes). Only worktrees in this folder are trusted. You can change this later in the setting multiagentSystem.agents.preTrustManagedWorktrees.` },
+      'Trust Managed Worktrees',
+      'Never'
+    );
+    if (answer === 'Trust Managed Worktrees' || answer === 'Never') {
+      choice = answer === 'Never' ? 'off' : 'on';
+      try { await settings.update(TRUST_SETTING, choice, vscode.ConfigurationTarget.Global); } catch { /* used for this start either way */ }
+    }
+  }
+  if (choice !== 'on') {
+    trustStatus.set(sessionId, describeTrust({ ok: false, reason: choice === 'off' ? 'turned-off' : 'no-consent' }, cliName) ?? '');
+    return;
+  }
+  // The CLI may key the folder by the path as given or by its real path: both are written when they differ.
+  let real = cwd;
+  try { real = fs.realpathSync.native(cwd); } catch { /* the given path is used */ }
+  let result: ReturnType<typeof trustClaudeFolder> = { ok: false, reason: 'folder-invalid' };
+  for (const folder of [...new Set([path.resolve(cwd), real])]) {
+    result = provider === 'claude'
+      ? trustClaudeFolder({ configDir: typeof env?.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR : undefined, folder })
+      : trustCodexFolder({ codexHome: typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME : undefined, folder });
+    if (!result.ok) break;
+  }
+  trustStatus.set(sessionId, describeTrust(result, cliName) ?? '');
+}
 
 /**
  * Claude Code's connection to this window (#354): the port of this window's lock file, set as CLAUDE_CODE_SSE_PORT for the agent's
@@ -617,6 +679,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         throw error;
       }
       if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
+      await preTrustWorktree(provider, targetSessionId, cwd, env, interactive);
       const session = await manager.start({
         id: targetSessionId,
         provider,
@@ -670,7 +733,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       sessions.map((session) => ({
         label: withCodename(session.name, session.codename),
         description: `${session.provider} · ${session.stateLabel}`,
-        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'}${session.ideLabel ? ` · ${session.ideLabel}` : ''} · ${session.worktree}`,
+        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'}${session.ideLabel ? ` · ${session.ideLabel}` : ''}${session.trustLabel ? ` · ${session.trustLabel}` : ''} · ${session.worktree}`,
         session
       })),
       { placeHolder: placeholder, matchOnDescription: true, matchOnDetail: true }
@@ -734,6 +797,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         await releaseReservation(id);
         observations.release(id);
         ideStatus.delete(id);
+        trustStatus.delete(id);
       } else {
         let prior = manager.get(id) ?? undefined;
         if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
@@ -751,6 +815,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
             ideStatus.delete(id);
+            trustStatus.delete(id);
             await releaseReservation(id);
             observations.release(id);
             changed.fire();
@@ -920,6 +985,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           instructions = prep;
         }
 
+        await preTrustWorktree(prior.provider, newSessionId, prior.worktree, env, interactive);
         const observedLaunch = observations.prepare({
           sessionId: newSessionId,
           provider: prior.provider,

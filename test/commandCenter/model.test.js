@@ -314,3 +314,9 @@ test('a card says whether its Claude Code reaches this VS Code window, and nothi
   const [unchecked] = build([session()]).agents;
   assert.equal(unchecked.ide, null);
 });
+
+test('a card says whether its CLI will stop to ask to trust its worktree (#362)', () => {
+  const [card] = build([session({ trustLabel: 'Folder trust: not pre-written, so Claude Code asks once (x)' })]).agents;
+  assert.equal(card.trust, 'Folder trust: not pre-written, so Claude Code asks once (x)');
+  assert.equal(build([session()]).agents[0].trust, null);
+});
