@@ -893,3 +893,87 @@ test('a rule typed into a role group cannot take the codename rule\'s id and pus
   const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-spoof-1234', privateDir, codename: 'Worker-01' });
   assert.equal(result.ok, false, 'the launch is refused rather than started with someone else\'s codename');
 });
+
+test('the review digest leaves the codename out: two agents of one role group share it, a rule change does not (#362)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('teamRules', 'team', teamDoc(1, ['TEAM rule one.']));
+  store.put('roleGroups', 'worker-1', makeRoleRecord('worker-1', 1, 'worker'));
+  const prepare = async (codename: string, session: string) => {
+    const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: session, privateDir, codename });
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error('not prepared');
+    cleanupSessionPlan(result.plan);
+    return result;
+  };
+  const first = await prepare('Worker-01', 'session-review-0001');
+  const second = await prepare('Worker-02', 'session-review-0002');
+  assert.notEqual(first.digest, second.digest, 'the full digest includes the codename instruction');
+  assert.match(first.reviewDigest ?? '', /^sha256:[0-9a-f]{64}$/);
+  assert.equal(first.reviewDigest, second.reviewDigest, 'what the person reviews is the same');
+  store.put('teamRules', 'team', teamDoc(2, ['TEAM rule one, changed.']));
+  const changed = await prepare('Worker-03', 'session-review-0003');
+  assert.notEqual(changed.reviewDigest, first.reviewDigest, 'a changed rule is asked again');
+  const other = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'codex', roleGroupId: undefined, targetSessionId: 'session-review-0004', privateDir, codexHome: privateDir, codename: 'Worker-04' });
+  if (other.ok) { assert.notEqual(other.reviewDigest, changed.reviewDigest, 'another provider or role group has its own'); cleanupSessionPlan(other.plan); }
+});
+
+test('the review digest changes with every part the person reviews: permissions, shared notes, the role group and the provider (#362)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  let session = 0;
+  const review = async (provider = 'claude') => {
+    session += 1;
+    const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider, roleGroupId: 'worker-1', targetSessionId: `session-part-${String(session).padStart(4, '0')}`, privateDir, codename: `Worker-${String(session).padStart(2, '0')}`, ...(provider === 'codex' ? { codexHome: privateDir } : {}) });
+    assert.equal(result.ok, true, result.ok ? '' : `${(result as any).code}`);
+    if (!result.ok) throw new Error('not prepared');
+    cleanupSessionPlan(result.plan);
+    return result.reviewDigest;
+  };
+  const record: any = roleWithMemory('role-group');
+  store.put('roleGroups', 'worker-1', record);
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.')]);
+  const base = await review();
+  assert.equal(await review(), base, 'nothing changed: the same, although the codename differs');
+
+  // Permissions: the role group lets the agent push.
+  const permitted: any = structuredClone(record);
+  permitted.group.toolPermissions.gitPush = permitted.group.toolPermissions.gitPush === 'allow' ? 'deny' : 'allow';
+  store.put('roleGroups', 'worker-1', permitted);
+  const withPermission = await review();
+  assert.notEqual(withPermission, base, 'a changed permission is asked again');
+  store.put('roleGroups', 'worker-1', record);
+  assert.equal(await review(), base);
+
+  // Shared notes: one more note, then a newer version of the same note.
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.'), memNote('mem_b', 'Keep commits small.')]);
+  assert.notEqual(await review(), base, 'another shared note is asked again');
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.', { version: 3 })]);
+  assert.notEqual(await review(), base, 'a newer version of a note is asked again');
+  memoryFile(privateDir, [memNote('mem_a', 'Always run the whole suite before pushing.')]);
+  assert.equal(await review(), base);
+
+  // The role group itself (its name) and the provider.
+  const renamed: any = structuredClone(record);
+  renamed.group.name = 'Renamed Worker Role';
+  store.put('roleGroups', 'worker-1', renamed);
+  assert.notEqual(await review(), base, 'a changed role group is asked again');
+  store.put('roleGroups', 'worker-1', record);
+  const codexRecord: any = structuredClone(record);
+  codexRecord.group.provider = 'codex';
+  store.put('roleGroups', 'worker-1', codexRecord);
+  assert.notEqual(await review('codex'), base, 'another provider has its own');
+});
+
+test('without a role group, the provider still makes its own review digest (#362)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('teamRules', 'team', teamDoc(1, ['TEAM rule one.']));
+  const review = async (provider: string, session: string) => {
+    const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider, targetSessionId: session, privateDir, codename: 'Worker-07', ...(provider === 'codex' ? { codexHome: privateDir } : {}) });
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error('not prepared');
+    cleanupSessionPlan(result.plan);
+    return result.reviewDigest;
+  };
+  const claude = await review('claude', 'session-noGroup-0001');
+  assert.match(claude ?? '', /^sha256:/);
+  assert.notEqual(await review('codex', 'session-noGroup-0002'), claude);
+});

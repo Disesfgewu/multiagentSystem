@@ -200,6 +200,21 @@ function autoModeFor(provider: string, launch: boolean | undefined, isolationKin
 }
 
 const AUTO_MODE_ACKNOWLEDGED_KEY = 'multiagentSystem.autoModeAcknowledged';
+const CONFIRMED_INSTRUCTIONS_KEY = 'multiagentSystem.confirmedInstructionDigests';
+const { confirmationKey, alreadyConfirmed, remember } = require('./confirmedInstructions') as {
+  confirmationKey(provider: unknown, roleGroupId: unknown): string | null;
+  alreadyConfirmed(map: unknown, key: string | null, digest: unknown): boolean;
+  remember(map: unknown, key: string | null, digest: unknown): Record<string, string>;
+};
+/** Whether the person already confirmed exactly these instructions for this provider and role group (#362). */
+function instructionsConfirmed(context: vscode.ExtensionContext, provider: string, roleGroupId: string | undefined, digest: string): boolean {
+  return alreadyConfirmed(context.globalState.get(CONFIRMED_INSTRUCTIONS_KEY), confirmationKey(provider, roleGroupId), digest);
+}
+/** Remembers a confirmation the person gave in the dialog. Best effort: a failure only means the next start asks again. */
+async function rememberInstructions(context: vscode.ExtensionContext, provider: string, roleGroupId: string | undefined, digest: string): Promise<void> {
+  try { await context.globalState.update(CONFIRMED_INSTRUCTIONS_KEY, remember(context.globalState.get(CONFIRMED_INSTRUCTIONS_KEY), confirmationKey(provider, roleGroupId), digest)); } catch { /* asked again next time */ }
+}
+const SAME_INSTRUCTIONS = (digest: string) => `Starting with the same instructions you confirmed before (${digest.slice(0, 16)}...). You are asked again when they change.`;
 
 /**
  * The first time an agent is started with auto mode on, a window the person must answer says what it means; the answer is remembered
@@ -613,7 +628,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (release) { await release(); release = undefined; }
           return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
         }
-        if (interactive && prep.digest) {
+        if (interactive && prep.digest && prep.reviewDigest && instructionsConfirmed(context, provider, input.roleGroupId, prep.reviewDigest)) {
+          void vscode.window.showInformationMessage(SAME_INSTRUCTIONS(prep.digest));
+        } else if (interactive && prep.digest) {
           autoModeShown = true;
           const answer = await vscode.window.showInformationMessage(
             `Effective agent instructions prepared (${prep.digest.slice(0, 16)}...).`,
@@ -641,6 +658,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
               return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             }
           }
+          // The person agreed to these instructions in the dialog: the next agent of this role group with the same ones is not asked.
+          if (prep.reviewDigest) await rememberInstructions(context, provider, input.roleGroupId, prep.reviewDigest);
         }
         const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: cwd });
         if (staleCheck.stale) {
@@ -926,7 +945,10 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             if (release) { await release(); release = undefined; }
             return failure(Object.assign(new Error(prep.message), { code: prep.code }), interactive);
           }
-          if (interactive && prep.digest) {
+          const priorRole = prior.roleGroupId !== 'unassigned' ? prior.roleGroupId : undefined;
+          if (interactive && prep.digest && prep.reviewDigest && instructionsConfirmed(context, prior.provider, priorRole, prep.reviewDigest)) {
+            void vscode.window.showInformationMessage(SAME_INSTRUCTIONS(prep.digest));
+          } else if (interactive && prep.digest) {
             autoModeShown = true;
             const answer = await vscode.window.showInformationMessage(
               `Reopening session with effective instructions (${prep.digest.slice(0, 16)}...).`,
@@ -954,6 +976,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
                 return { ok: false, code: 'cancelled', message: 'Cancelled.' };
               }
             }
+            if (prep.reviewDigest) await rememberInstructions(context, prior.provider, priorRole, prep.reviewDigest);
           }
           const staleCheck = await isSnapshotStale(prep.snapshot, { store, repoRoot: prior.worktree });
           if (staleCheck.stale) {

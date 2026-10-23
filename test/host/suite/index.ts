@@ -13,6 +13,7 @@ import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './ses
 import { runIdeBridgeChecks } from './ideBridge';
 import { runFolderTrustChecks } from './folderTrust';
 import { runPermissionModeChecks } from './permissionMode';
+import { runConfirmOnceChecks } from './confirmOnce';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
@@ -1090,6 +1091,7 @@ export async function run(): Promise<void> {
   await runIdeBridgeChecks(workspace);
   await runFolderTrustChecks(workspace);
   await runPermissionModeChecks(workspace);
+  await runConfirmOnceChecks(workspace);
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;
