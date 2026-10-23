@@ -999,7 +999,7 @@ test('after a restart, a saved codename the codename store no longer lists for t
   assert.equal(restored.manager.get(kept.id)?.codename, null);
 });
 
-test('the session\'s gh wrapper folder is put first on PATH in the typed command, in start and reopen; cmd.exe starts nothing (issue #342)', async () => {
+test('the session\'s gh wrapper folder is put first on PATH in the typed command, in start and reopen, in every supported shell; a folder cmd.exe would misread starts nothing (issue #342)', async () => {
   let shell: 'posix' | 'powershell' | 'cmd' = 'posix';
   const r = rig({ detectShellType: () => shell });
   await r.manager.initialize();
@@ -1010,9 +1010,11 @@ test('the session\'s gh wrapper folder is put first on PATH in the typed command
   await r.manager.reopen(session.id, { pathPrefix: 'C:\\priv\\s2' });
   assert.match(r.terminals[1].sent[0].text, /^\$env:PSExecutionPolicyPreference = 'RemoteSigned'; \$env:PATH = 'C:\\priv\\s2;' \+ \$env:PATH; claude /);
   shell = 'cmd';
+  await r.manager.start({ provider: 'claude', name: 'Cmd', cwd: '/synthetic/project', pathPrefix: 'C:\\priv\\s3' });
+  assert.match(r.terminals[r.terminals.length - 1].sent[0].text, /^set "PATH=C:\\priv\\s3;%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && /, 'the Windows default terminal (cmd.exe in CI) starts the agent too');
   const before = r.terminals.length;
-  await assert.rejects(r.manager.start({ provider: 'claude', name: 'Cmd', cwd: '/synthetic/project', pathPrefix: 'C:\\priv\\s3' }), { code: 'unsupported-shell' });
-  assert.equal(r.terminals.length, before, 'no terminal was made for a shell the wrapper does not support');
+  await assert.rejects(r.manager.start({ provider: 'claude', name: 'Cmd bad', cwd: '/synthetic/project', pathPrefix: 'C:\\100%\\s4' }), { code: 'unsupported-shell' });
+  assert.equal(r.terminals.length, before, 'no terminal was made for a folder cmd.exe would read differently');
   const shellOnly = await r.manager.start({ provider: 'claude', name: 'Shell', cwd: '/synthetic/project', launch: false, pathPrefix: '/private/s4' });
   assert.equal(shellOnly.state, 'terminal-open', 'a shell-only terminal types nothing, so it needs no prefix');
 });

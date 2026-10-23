@@ -40,13 +40,14 @@
 
 - macOS／Linux：`PATH='<資料夾>':"$PATH" claude …`
 - PowerShell：`$env:PSExecutionPolicyPreference = 'RemoteSigned'; $env:PATH = '<資料夾>;' + $env:PATH; …`
+- cmd.exe：`set "PATH=<資料夾>;%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && …`。agent 的 CLI 會用自己的 Git Bash 或 PowerShell 執行指令，這些 shell 繼承這個 PATH，所以找得到包裝程式；只有你自己在 cmd.exe 視窗裡手動打的 `gh` 不會經過包裝程式。資料夾路徑含有 `%`、`^`、`"`、`&`、`|`、`<`、`>`、`!` 這類 cmd.exe 會另外解讀的字元時，拒絕啟動。
 - 終端機選項裡**不設定 PATH**：那會蓋掉你自己的 `terminal.integrated.env.*` 設定。所以只開 shell、不啟動 CLI 的終端機，沒有這個包裝程式。
 
 資料夾裡的檔案：
 
 - `gh`：sh 腳本，給 macOS、Linux，以及 Windows 上的 Git Bash（Claude Code 在 Windows 透過它執行指令）使用。
 - `gh.ps1`（只在 Windows）：給 PowerShell 使用。只對這個終端機的行程設定 `PSExecutionPolicyPreference=RemoteSigned`，不改使用者或電腦的執行原則。如果 PowerShell 仍然擋下這個腳本，`gh` 就完全不會執行。
-- **沒有 `gh.cmd`**：cmd.exe 會用 `%*` 重新解讀參數，`a&calc` 這樣的內文會被當成指令執行。**cmd.exe 不支援**：在 cmd.exe 裡啟動有代號的 agent 會被拒絕。
+- **沒有 `gh.cmd`**：cmd.exe 會用 `%*` 重新解讀參數，`a&calc` 這樣的內文會被當成指令執行。所以 cmd.exe 本身不經過包裝程式；它只用來啟動 agent 的 CLI（見上一段）。
 
 代號與真正 `gh` 的路徑寫在包裝程式裡，改環境變數不會改變它們。由擴充套件自己的執行環境（`ELECTRON_RUN_AS_NODE`）執行，不安裝任何東西。
 
@@ -55,6 +56,8 @@
 - `gh pr create|comment|review|edit`、`gh issue create|comment|edit`：
   - 內文第一行不是自己的署名時，自動補上 `— <代號>`。
   - 內文或標題用了別的代號（例如另起一行寫 `— PM-01`），或自稱管理者（`— 管理者`、`我是管理者`、`I am the owner` 等），一律拒絕。引用（`>` 開頭）和程式碼區塊裡的文字不算。
+  - 比對前先移除看不見的字元（零寬字元、方向控制字元、軟連字號），並把各種 Unicode 破折號、減號一律當成 `—`：`― PM-01`、`— PM` 中間夾零寬字元的 `-01`、`— PM-01 你好` 都算冒用。
+  - 內文或標題含 NUL 字元時拒絕。
   - 內文可以用 `--body`、`-b`、`--body-file`、`-F`（含 `-` 代表從標準輸入讀）給。簽好的內文一律放進只有自己能讀的暫存檔交給真正的 `gh`，用完就刪。
   - `pr review --approve` 這類沒有內文的審查也會帶上署名。
   - `edit` 只改標題、標籤等其他欄位時，照樣轉交。

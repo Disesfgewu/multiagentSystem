@@ -127,15 +127,18 @@ export function formatShellCommandLine(
 
 /**
  * What goes in front of a typed command line so that `dir` comes first on PATH for that program (issue #342: the per-session `gh`
- * wrapper). It is typed after the shell has read its profile, which may have reordered PATH (macOS login shells do). Null for cmd.exe,
- * which the wrapper does not support.
+ * wrapper). It is typed after the shell has read its profile, which may have reordered PATH (macOS login shells do).
  * - POSIX: `PATH='<dir>':"$PATH" ` applies to the one program typed after it.
  * - PowerShell: sets the terminal's own PATH and the process-only script policy (`RemoteSigned`, so the `gh.ps1` shim can run).
+ * - cmd.exe: the same two for the program started after it. The CLI runs its own commands through Git Bash or PowerShell, which
+ *   inherit them and find the shims; only `gh` typed into cmd.exe itself is not wrapped. Null for a folder cmd.exe would read
+ *   differently (`%`, `^`, `"` and the like), which is refused rather than quoted.
  */
 export function formatPathPrefix(dir: string, shellType: ShellType): string | null {
   assertNoControlChars(dir, 'path');
   if (dir.trim() === '') throw new TypeError('path must not be empty');
   if (shellType === 'posix') return `PATH=${quotePosix(dir)}:"$PATH" `;
-  if (shellType === 'powershell') return `$env:PSExecutionPolicyPreference = 'RemoteSigned'; $env:PATH = '${dir.replace(/['‘’‚‛]/g, '$&$&')};' + $env:PATH; `;
-  return null;
+  if (shellType === 'powershell') return `$env:PSExecutionPolicyPreference = 'RemoteSigned'; $env:PATH = '${dir.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')};' + $env:PATH; `;
+  if (/[%^"&|<>!]/.test(dir)) return null;
+  return `set "PATH=${dir};%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && `;
 }

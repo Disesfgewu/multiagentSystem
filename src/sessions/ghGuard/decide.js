@@ -156,10 +156,20 @@ function decideApi(tokens) {
 }
 
 const fenced = (line) => /^\s*(?:```|~~~)/.test(line);
-// A line that is only a signature: a dash, maybe a space, and a name. `- item` lists have text after the name and do not match.
-const SIGNATURE_LINE = /^\s*(?:—|–|-{1,2})\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
-const OWNER_SIGNATURE = /^\s*(?:—|–|-{1,2})\s*(?:管理者|管理員|管理员|repo\s+owner|owner|maintainer|admin(?:istrator)?)\s*$/i;
-const OWNER_CLAIMS = [/我(?:就)?是(?:這個專案的|这个项目的)?管理(?:者|員|员)/, /以管理(?:者|員|员)(?:的)?身(?:分|份)/, /\b(?:i\s+am|i'm)\s+the\s+(?:repo(?:sitory)?\s+)?(?:owner|maintainer|admin(?:istrator)?)\b/i, /\bspeaking\s+as\s+the\s+(?:owner|maintainer)\b/i];
+// Before any check a line is put in one form: characters that cannot be seen (zero-width, direction and soft-hyphen marks) are
+// removed, and every Unicode dash or minus becomes the em dash. `― PM-01` and `— PM` + zero-width + `-01` are then `— PM-01`.
+const INVISIBLE = /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+const DASHES = /[\u2010-\u2015\u2212\u2e3a\u2e3b\ufe58\ufe63\uff0d]/g;
+const normalizeLine = (line) => String(line).replace(INVISIBLE, '').replace(DASHES, '\u2014');
+// A signature: after a Unicode dash, a name at the start of the line (anything may follow); after the ASCII hyphen, only a line that
+// is nothing else, because `- item` is a Markdown list.
+const SIGNED_DASH = /^\s*\u2014\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})(?![0-9])/;
+const SIGNED_HYPHEN = /^\s*-{1,2}\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
+const OWNER_WORDS = '(?:\u7ba1\u7406\u8005|\u7ba1\u7406\u54e1|\u7ba1\u7406\u5458|repo\\s+owner|owner|maintainer|admin(?:istrator)?)';
+const OWNER_DASH = new RegExp(`^\\s*\u2014\\s*${OWNER_WORDS}(?![A-Za-z])`, 'i');
+const OWNER_HYPHEN = new RegExp(`^\\s*-{1,2}\\s*${OWNER_WORDS}\\s*$`, 'i');
+const OWNER_CLAIMS = [/\u6211(?:\u5c31)?\u662f(?:\u9019\u500b\u5c08\u6848\u7684|\u8fd9\u4e2a\u9879\u76ee\u7684)?\u7ba1\u7406(?:\u8005|\u54e1|\u5458)/, /\u4ee5\u7ba1\u7406(?:\u8005|\u54e1|\u5458)(?:\u7684)?\u8eab(?:\u5206|\u4efd)/, /\b(?:i\s+am|i'm)\s+the\s+(?:repo(?:sitory)?\s+)?(?:owner|maintainer|admin(?:istrator)?)\b/i, /\bspeaking\s+as\s+the\s+(?:owner|maintainer)\b/i];
+const signedAs = (line) => { const normal = normalizeLine(line); const match = SIGNED_DASH.exec(normal) ?? SIGNED_HYPHEN.exec(normal); return match ? match[1] : null; };
 
 /**
  * Why `text` must not be posted under `own`, or null. Quoted lines (`>`) and fenced code are someone else's words and not checked.
@@ -168,22 +178,26 @@ function impersonation(text, own) {
   let inCode = false;
   for (const raw of String(text).split(/\r?\n/)) {
     if (fenced(raw)) { inCode = !inCode; continue; }
-    if (inCode || /^\s*>/.test(raw)) continue;
-    const signed = SIGNATURE_LINE.exec(raw);
-    if (signed && signed[1] !== own) return refuse('other-codename', signed[1].slice(0, 30));
-    if (OWNER_SIGNATURE.test(raw)) return refuse('owner-claim');
-    if (OWNER_CLAIMS.some((pattern) => pattern.test(raw))) return refuse('owner-claim');
+    if (inCode || /^\s*>/.test(normalizeLine(raw))) continue;
+    const signed = signedAs(raw);
+    if (signed && signed !== own) return refuse('other-codename', signed.slice(0, 30));
+    const normal = normalizeLine(raw);
+    if (OWNER_DASH.test(normal) || OWNER_HYPHEN.test(normal)) return refuse('owner-claim');
+    if (OWNER_CLAIMS.some((pattern) => pattern.test(normal))) return refuse('owner-claim');
   }
   return null;
 }
 
-/** The body with the signature as its first line. A first line that already signs as `own` (any dash) is written the one way. */
+/**
+ * The body with the signature as its first line. A first line that is only the session's own signature (any dash, invisible marks
+ * removed) is written the one way; anything else gets the signature in front of it.
+ */
 function signBody(body, own) {
   const text = String(body ?? '');
   const lines = text.split(/\r?\n/);
-  const first = SIGNATURE_LINE.exec(lines[0] ?? '');
-  const signature = `— ${own}`;
-  if (first && first[1] === own) return [signature, ...lines.slice(1)].join('\n');
+  const signature = `\u2014 ${own}`;
+  const first = lines[0] === undefined ? '' : normalizeLine(lines[0]).trim();
+  if (first === signature || (SIGNED_HYPHEN.test(first) && signedAs(first) === own)) return [signature, ...lines.slice(1)].join('\n');
   return text.trim() === '' ? signature : `${signature}\n\n${text}`;
 }
 
@@ -227,6 +241,8 @@ function decide(argv, context = {}) {
   const { flags } = parsed;
   for (const [name, why] of Object.entries(UNSEEN)) if (flags.has(name)) return refuse('text-not-seen', why);
 
+  // A NUL character cannot be posted as text and could cut what gh reads short of what was checked.
+  for (const name of ['title', 'body']) if (flags.has(name) && String(flags.get(name)).includes('\u0000')) return refuse('text-invalid', name);
   if (flags.has('title')) {
     const problem = impersonation(flags.get('title'), own);
     if (problem) return problem;
@@ -254,6 +270,7 @@ function decide(argv, context = {}) {
     // Without a body gh asks for it (or, with --fill, writes one from the commits) where the wrapper cannot sign it.
     return refuse('body-missing');
   }
+  if (body.includes('\u0000')) return refuse('text-invalid', 'body');
   const problem = impersonation(body, own);
   if (problem) return problem;
   const signed = signBody(body, own);
@@ -295,6 +312,7 @@ function explain(reason, detail) {
     'flag-conflict': `the flags${what} cannot be combined`,
     'text-not-seen': `the text would be written in an ${detail === 'browser' ? 'browser' : detail === 'prompt' ? 'interactive prompt' : detail === 'saved-input' ? 'earlier, saved input' : 'editor'} the wrapper cannot sign; give it with --body or --body-file`,
     'body-missing': 'give the text with --body or --body-file so it can be signed',
+    'text-invalid': `the ${detail === 'title' ? 'title' : 'body'} contains a NUL character`,
     'body-unreadable': `the body file could not be read${what}`,
     'body-too-large': 'the signed body is longer than GitHub accepts',
     'other-codename': `the text signs as another agent${what}; sign only as yourself`,

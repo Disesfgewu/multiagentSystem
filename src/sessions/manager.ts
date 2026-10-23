@@ -481,7 +481,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     const shellType = launch ? this.deps.detectShellType?.() : undefined;
     if (shellType === null) throw new SessionError('unsupported-shell');
     // The per-session gh wrapper goes first on PATH for the CLI (issue #342), also decided before a terminal exists: a shell it cannot
-    // be put in front for (cmd.exe) starts nothing.
+    // be put in front for (a folder cmd.exe would read differently) starts nothing.
     let prefix = '';
     if (launch && pathPrefix !== undefined) {
       let made: string | null;

@@ -9,8 +9,8 @@ const { SHIM_MARKER, realGhUsable } = require('./run');
  *   - `gh`: a sh script, for macOS and Linux shells and for Git Bash on Windows (which is how Claude Code runs commands there);
  *   - `gh.ps1` on Windows: for PowerShell. The terminal is given `PSExecutionPolicyPreference=RemoteSigned`, which applies to that
  *     process only and changes no user or machine policy. If PowerShell still refuses the script, gh does not run at all.
- * There is no `gh.cmd`: cmd.exe would read the arguments again (`%*`), and text such as `a&calc` would run as a command. cmd.exe is
- * not supported.
+ * There is no `gh.cmd`: cmd.exe would read the arguments again (`%*`), and text such as `a&calc` would run as a command. cmd.exe
+ * itself is not wrapped; it only starts the CLI, whose own Git Bash or PowerShell finds these shims.
  *
  * Each shim runs `run.js` with the codename and the real gh written into it, so changing an environment variable in the terminal
  * does not change them. The extension's own runtime (`process.execPath` with ELECTRON_RUN_AS_NODE) runs it; nothing is installed.
@@ -24,7 +24,7 @@ const absolute = (value, platform) => (platform === 'win32' ? path.win32 : path.
 
 const quoteSh = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
 // PowerShell treats the typographic single quotes like the ASCII one, so all of them are doubled.
-const quotePs = (value) => `'${String(value).replace(/['‘’‚‛]/g, '$&$&')}'`;
+const quotePs = (value) => `'${String(value).replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`;
 // Git Bash reads a Windows path with forward slashes as it is; backslashes would be escapes.
 const forSh = (value, platform) => (platform === 'win32' ? String(value).replace(/\\/g, '/') : String(value));
 

@@ -211,7 +211,7 @@ test('shims carry the codename and the real gh in their own text, quote every va
   assert.ok(win.files.gh.includes("'C:/Code/Code.exe'") && win.files.gh.includes("'C:/Program Files/GitHub CLI/gh.exe'"), 'Git Bash gets forward slashes');
   assert.ok(win.files['gh.ps1'].includes("& 'C:\\Code\\Code.exe' 'C:\\ext\\run.js' '--mas-codename' 'PM-01' '--mas-real' 'C:\\Program Files\\GitHub CLI\\gh.exe' '--' @args"));
   assert.match(win.files['gh.ps1'], /finally \{ \$env:ELECTRON_RUN_AS_NODE = \$previous \}/, 'the terminal\'s own variable is put back');
-  assert.ok(shimTexts({ node: 'C:\\a.exe', script: 'C:\\b.js', codename: 'PM-01', realGh: "C:\\it’s\\gh.exe", platform: 'win32' }).files['gh.ps1'].includes("'C:\\it’’s\\gh.exe'"), 'typographic quotes are doubled for PowerShell');
+  assert.ok(shimTexts({ node: 'C:\\a.exe', script: 'C:\\b.js', codename: 'PM-01', realGh: "C:\\it\u2019s\\gh.exe", platform: 'win32' }).files['gh.ps1'].includes("'C:\\it\u2019\u2019s\\gh.exe'"), 'typographic quotes are doubled for PowerShell');
   assert.ok(shimTexts({ node: '/n', script: '/s', codename: 'Worker-01', realGh: null, platform: 'linux' }).files.gh.includes("'--mas-real' 'none'"), 'no real gh: the shim refuses everything');
   for (const bad of [{ node: 'relative' }, { script: '/s\n; rm -rf /' }, { codename: 'worker-01' }, { realGh: 'relative/gh' }]) {
     assert.equal(shimTexts({ node: '/n', script: '/s', codename: 'Worker-01', realGh: '/g', platform: 'linux', ...bad }).ok, false, JSON.stringify(bad));
@@ -223,7 +223,6 @@ test('the typed command puts the shim folder first on PATH after the shell profi
   assert.deepEqual(shimEnvironment({ platform: 'win32' }), { PSExecutionPolicyPreference: 'RemoteSigned' });
   assert.equal(formatPathPrefix('/priv/gh wrapper/s1', 'posix'), "PATH='/priv/gh wrapper/s1':\"$PATH\" ");
   assert.equal(formatPathPrefix("C:\\it's\\s1", 'powershell'), "$env:PSExecutionPolicyPreference = 'RemoteSigned'; $env:PATH = 'C:\\it''s\\s1;' + $env:PATH; ");
-  assert.equal(formatPathPrefix('C:\\s1', 'cmd'), null, 'cmd.exe is not supported');
   assert.throws(() => formatPathPrefix('/x\n; rm', 'posix'), /control/);
 });
 
@@ -278,4 +277,38 @@ test('end to end on POSIX: the agent types gh, the shim on PATH signs the body a
   assert.equal(JSON.parse(fs.readFileSync(log, 'utf8')).body, '— Worker-01\n\nhi');
   assert.equal(removeShims(shimDir), true);
   assert.equal(fs.existsSync(shimDir), false);
+});
+
+test('signatures are compared after invisible marks are removed and every Unicode dash is made one: look-alikes are refused (PM review of #345)', () => {
+  const cp = (...codes) => String.fromCodePoint(...codes);
+  const looksLike = [
+    `${cp(0x2015)} PM-01`, // horizontal bar
+    `${cp(0x2212)} PM-01`, // minus sign
+    `${cp(0xff0d)} PM-01`, // full-width hyphen
+    `${cp(0x2014)} PM${cp(0x200b)}-01`, // zero-width space inside the codename
+    `${cp(0x2014)} ${cp(0x202e)}PM-01`, // direction override before it
+    `${cp(0x2014)} PM-01 hi`, // text after the codename
+    `${cp(0x2014)}PM-01:`,
+    `ok\n${cp(0x2013)} Researcher-03`
+  ];
+  for (const body of looksLike) assert.deepEqual(run(['pr', 'comment', '1', '--body', body]).reason, 'other-codename', JSON.stringify(body));
+  for (const body of [`${cp(0x2015)} ${cp(0x7ba1, 0x7406, 0x8005)}`, `${cp(0x2014)} owner here`, `${cp(0x2014)} Owner`]) assert.equal(run(['pr', 'comment', '1', '--body', body]).reason, 'owner-claim', JSON.stringify(body));
+  // The session's own signature written with a look-alike dash or an invisible mark is rewritten the one way, not doubled.
+  assert.equal(signed(['pr', 'comment', '1', '--body', `${cp(0x2015)} Worker${cp(0x200b)}-01\nDone.`]).body, `${cp(0x2014)} Worker-01\nDone.`);
+  assert.equal(signed(['pr', 'comment', '1', '--body', `${cp(0x2014)} Worker-01 and more`]).body, `${cp(0x2014)} Worker-01\n\n${cp(0x2014)} Worker-01 and more`, 'own codename with text after it is content: the signature goes in front');
+  assert.equal(run(['pr', 'comment', '1', '--body', '- PM-01 reviewed this part']).action, 'run', 'a Markdown list item that names an agent is still allowed');
+  assert.equal(run(['pr', 'comment', '1', '--body', '- Worker-012 is not me']).action, 'run');
+});
+
+test('a body or title with a NUL character is refused before anything else is read from it (PM review of #345)', () => {
+  const nul = String.fromCodePoint(0);
+  refused(['pr', 'comment', '1', '--body', `hi${nul}— PM-01`], 'text-invalid');
+  refused(['issue', 'create', '--title', `T${nul}`, '--body', 'x'], 'text-invalid');
+  refused(['pr', 'comment', '1', '--body-file', 'x.md'], 'text-invalid', { ...OWN, body: () => ({ ok: true, text: `a${nul}b` }) });
+  assert.match(explain('text-invalid', 'title'), /title contains a NUL character/);
+});
+
+test('cmd.exe sets the PATH and the script policy for the program it starts; a folder cmd.exe would misread is refused (Windows CI)', () => {
+  assert.equal(formatPathPrefix('C:\\Users\\me\\AppData\\gh-wrapper\\s1', 'cmd'), 'set "PATH=C:\\Users\\me\\AppData\\gh-wrapper\\s1;%PATH%" && set "PSExecutionPolicyPreference=RemoteSigned" && ');
+  for (const dir of ['C:\\100%\\s1', 'C:\\a^b', 'C:\\a"b', 'C:\\a&b', 'C:\\a|b', 'C:\\a<b', 'C:\\a!b']) assert.equal(formatPathPrefix(dir, 'cmd'), null, dir);
 });
