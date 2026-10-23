@@ -77,6 +77,7 @@ const SCRIPT = String.raw`
       body.appendChild(el('div', 'muted', 'Model: ' + card.model + ' (' + card.modelNote + ')'));
       body.appendChild(el('div', null, 'Working on: ' + card.task.text));
       if (card.injected) body.appendChild(el('div', 'muted', card.injected));
+      if (card.ide) body.appendChild(el('div', /not connected/.test(card.ide) ? 'alert' : 'muted', card.ide));
       if (card.assigned) body.appendChild(el('div', 'muted', 'Handed: ' + card.assigned));
       body.appendChild(el('div', null, 'Worktree: ' + card.worktree));
       var report = el('div', 'report');

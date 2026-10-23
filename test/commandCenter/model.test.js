@@ -307,3 +307,10 @@ test('a card carries the agent\'s codename when it is a well-formed one, and not
   assert.equal(build([session({ codename: 'Worker-01' })]).agents[0].codename, 'Worker-01');
   for (const codename of [undefined, null, 'Worker-1', '<b>PM-01</b>', 'PM-01\n', 7]) assert.equal(build([session({ codename })]).agents[0].codename, null, String(codename));
 });
+
+test('a card says whether its Claude Code reaches this VS Code window, and nothing when that was not checked (#354)', () => {
+  const [connected] = build([session({ ideLabel: "VS Code: connected through this window's Claude Code port (40002)" })]).agents;
+  assert.equal(connected.ide, "VS Code: connected through this window's Claude Code port (40002)");
+  const [unchecked] = build([session()]).agents;
+  assert.equal(unchecked.ide, null);
+});

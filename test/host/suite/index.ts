@@ -10,6 +10,7 @@ import { runOverviewChecks } from './overview';
 import { runReportChecks } from './reports';
 import { runCustomProviderChecks } from './customProviders';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
+import { runIdeBridgeChecks } from './ideBridge';
 import { runQuotaDispatchChecks } from './quotaDispatch';
 import { runBroadcastChecks } from './broadcasts';
 import { runCodexQuotaChecks } from './codexQuota';
@@ -1081,6 +1082,7 @@ export async function run(): Promise<void> {
   await runDiscussWithPmChecks(workspace);
   await runTalkToPmChecks(workspace);
   console.log(await runManagedInstructionsChecks(workspace));
+  await runIdeBridgeChecks(workspace);
   await agyFlow(workspace);
 
   const worktreeTarget = process.env.MULTIAGENT_TEST_WORKTREE;

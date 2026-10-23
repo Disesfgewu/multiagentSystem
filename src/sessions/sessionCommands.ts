@@ -254,6 +254,35 @@ function prepareGhWrapper(privateDir: string, sessionId: string, codename: strin
   return { ok: true, dir, env: { ...(env ?? {}), ...shimEnvironment() } };
 }
 
+const { findIdePort, lockFolders, describeIde } = require('./ideBridge') as {
+  findIdePort(input: { folders: string[]; workspaceFolders: string[] }): { ok: true; port: number } | { ok: false; reason: string; text: string };
+  lockFolders(input: { configDir?: string }): string[];
+  describeIde(result: unknown): string;
+};
+// What each Claude Code session was given to reach this VS Code window (#354): shown on its card and in its details.
+const ideStatus = new Map<string, string>();
+// Where the lock files are read from; only the extension's own host tests point it at a temporary folder (never the real ~/.claude).
+let ideFolders = (configDir?: string): string[] => lockFolders({ configDir });
+export function setIdeLockFoldersForTests(folders: string[] | undefined): void {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  ideFolders = folders ? () => folders : (configDir?: string) => lockFolders({ configDir });
+}
+const withIdeLabels = <T extends { id: string }>(entries: T[]): Array<T & { ideLabel?: string }> => entries.map((entry) => (ideStatus.has(entry.id) ? { ...entry, ideLabel: ideStatus.get(entry.id) } : entry));
+
+/**
+ * Claude Code's connection to this window (#354): the port of this window's lock file, set as CLAUDE_CODE_SSE_PORT for the agent's
+ * terminal, because its worktree is usually not one of the window's folders. Only the port is passed on, never the lock's token.
+ * A launch that finds no port still starts; the reason is shown with the session.
+ */
+function withIdePort(provider: string, sessionId: string, env: Record<string, string | null> | undefined): Record<string, string | null> | undefined {
+  if (provider !== 'claude') return env;
+  const configDir = typeof env?.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR : undefined;
+  let found: ReturnType<typeof findIdePort>;
+  try { found = findIdePort({ folders: ideFolders(configDir), workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath) }); } catch { found = { ok: false, reason: 'no-lock', text: 'the lock files could not be read' }; }
+  ideStatus.set(sessionId, describeIde(found));
+  return found.ok ? { ...(env ?? {}), CLAUDE_CODE_SSE_PORT: String(found.port) } : env;
+}
+
 const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
   ? 'The session codename was taken by another window during review. Please start again.'
   : `The session codename could not be prepared (${reason}). The agent was not started.`), { code: reason === 'codename-changed' ? 'stale-instructions' : 'codename-unavailable' });
@@ -600,7 +629,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           sessionId: targetSessionId,
           provider,
           accountProfileId: input.accountProfileId ?? 'unassigned',
-          env
+          env: withIdePort(provider, targetSessionId, env)
         }).env,
         launch: input.launch,
         instructions,
@@ -632,7 +661,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   }
 
   async function pickSession(placeholder: string, filter: (session: SessionView) => boolean): Promise<SessionView | undefined> {
-    const sessions = manager.list().filter(filter);
+    const sessions = withIdeLabels(manager.list()).filter(filter);
     if (sessions.length === 0) {
       void vscode.window.showInformationMessage('No matching sessions.');
       return undefined;
@@ -641,7 +670,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       sessions.map((session) => ({
         label: withCodename(session.name, session.codename),
         description: `${session.provider} · ${session.stateLabel}`,
-        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'} · ${session.worktree}`,
+        detail: `account: ${session.accountProfileId} · requested model: ${session.requestedModel ?? 'CLI default'} · instructions: ${session.instructionStatusLabel ?? 'unknown'}${session.ideLabel ? ` · ${session.ideLabel}` : ''} · ${session.worktree}`,
         session
       })),
       { placeHolder: placeholder, matchOnDescription: true, matchOnDetail: true }
@@ -704,6 +733,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         session = manager.stop(id);
         await releaseReservation(id);
         observations.release(id);
+        ideStatus.delete(id);
       } else {
         let prior = manager.get(id) ?? undefined;
         if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
@@ -720,6 +750,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             );
             if (answer !== 'Stop & Reopen') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
             prior = manager.stop(id);
+            ideStatus.delete(id);
             await releaseReservation(id);
             observations.release(id);
             changed.fire();
@@ -893,7 +924,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           sessionId: newSessionId,
           provider: prior.provider,
           accountProfileId: prior.accountProfileId,
-          env
+          env: withIdePort(prior.provider, newSessionId, env)
         });
         let attributionFile: string | undefined;
         try {
@@ -958,7 +989,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
 
   async function list(value: unknown): Promise<SessionOutcome> {
     const input = options(value);
-    if (input.interactive === false) return { ok: true, sessions: observations.enrich(manager.list()) };
+    if (input.interactive === false) return { ok: true, sessions: withIdeLabels(observations.enrich(manager.list())) };
     const picked = await pickSession('Sessions in this window (state is shown only when there is evidence)', () => true);
     if (!picked) return { ok: true, sessions: manager.list() };
     const actions = picked.terminalOpen
@@ -1020,5 +1051,5 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
     changed.fire();
   }).catch((error) => failure(error, true));
-  return { launch, launchWithAccount: startWithAccount, list: () => observations.enrich(manager.list()), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), onDidChange: (listener) => changed.event(listener) };
+  return { launch, launchWithAccount: startWithAccount, list: () => withIdeLabels(observations.enrich(manager.list())), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), onDidChange: (listener) => changed.event(listener) };
 }

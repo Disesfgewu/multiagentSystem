@@ -56,3 +56,16 @@ The `sessions.start|focus|stop|reopen` commands are internal: they are not in th
 ### Not verified
 
 Interactive prompts and the session picker, typing into the CLI, Ctrl+C, four sessions on real macOS and Windows machines, real CLI launch, terminal profile and inherited-environment checks, and managed-launch blocking for unsafe credential sources are not covered by CI. They stay in #11 and the P0 matrix of #1 and #3.
+
+## Connecting a Claude Code agent to this VS Code window (Issue #354)
+
+Claude Code finds its IDE through lock files: `~/.claude/ide/<port>.lock`, and `<CLAUDE_CONFIG_DIR>/ide/<port>.lock` for an account folder. The CLI accepts a lock when the terminal's `CLAUDE_CODE_SSE_PORT` is its port, or when the CLI's folder is one of the lock's `workspaceFolders`. An agent runs in its worktree, which is usually not one of the window's folders, and the port the VS Code Claude Code extension sets for its own terminals does not reach terminals this extension opens, so without help the agent showed "VS Code disconnected".
+
+When a Claude Code session is started or reopened, `src/sessions/ideBridge.js` reads those lock folders and picks the port of the one lock that has one of this window's folders open and whose VS Code process is still running. That port is set as `CLAUDE_CODE_SSE_PORT` in the agent's terminal. Only the port (the file name) and `workspaceFolders` are taken from a lock: the `authToken` is never read into the extension's results, logged, shown or passed on (the CLI reads it from the file itself).
+
+Where to see it: the agent's card in the Command Center, the agent's tooltip in the Overview, and the session picker each carry one line:
+
+- `VS Code: connected through this window's Claude Code port (<port>)`
+- `VS Code: not connected (<reason>: <what to do>)`, shown as an alert on the card. The reasons: no lock folder or no lock file (the Claude Code extension for VS Code is not installed or not enabled), no lock for this project's folder, more than one running window has this folder open (no port is guessed), or this window has no folder open. After fixing it, reopen the session.
+
+A session that is not connected still starts; only the connection to VS Code (diffs, selection, diagnostics) is missing. Not verified: a real Claude Code CLI and the real VS Code Claude Code extension connecting through the chosen port, and a sandboxed agent (#224 isolation) reaching the port on loopback.

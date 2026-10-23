@@ -121,6 +121,8 @@ function buildCards(input) {
       report: { lines: reportLines(pullRequest, pullRequest !== null && isPlain(reports) && Object.hasOwn(reports, String(pullRequest)) ? reports[String(pullRequest)] : undefined) },
       quota: account ? { lines: lines(account.usage).slice(0, 2), policy: line(account.policy, '', 160), gate } : { lines: [], policy: '', gate: null },
       autoMode: line(session.autoModeLabel, '', 140) || null,
+      // Whether its Claude Code was given this window's port (#354); shown as the extension worded it, only for sessions that have one.
+      ide: line(session.ideLabel, '', 260) || null,
       injected: isPlain(session.injectedCounts) && Number.isSafeInteger(session.injectedCounts.rules) && Number.isSafeInteger(session.injectedCounts.memories) && session.injectedCounts.rules >= 0 && session.injectedCounts.memories >= 0
         ? `Prepared for this agent: ${session.injectedCounts.rules} rule${session.injectedCounts.rules === 1 ? '' : 's'} and ${session.injectedCounts.memories} shared note${session.injectedCounts.memories === 1 ? '' : 's'} (the CLI is told; not proof it read them)`
         : 'Rules and notes given to this agent: unknown (not started in this window)',
