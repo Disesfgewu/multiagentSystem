@@ -245,3 +245,13 @@ test('the summary treats a window without a usable value as unknown whatever its
   const [row] = summarizeQuota([crafted], NOW);
   assert.deepEqual([row.usedPercent, row.confidence, row.fresh, row.gateEligible], [null, 'unknown', false, false]);
 });
+
+test('per-model weekly windows are shown but never gate: the gate reads 5h and the overall 7d only (#352)', () => {
+  const full = decide({ observations: [reading('five_hour', 10), reading('seven_day', 20), reading('seven_day_opus', 100), reading('seven_day_sonnet', 95)] });
+  assert.equal(full.decision, 'allow', 'a full Opus week does not hold back an agent');
+  assert.equal(full.reasons.some((reason) => /^seven_day_/.test(String(reason.window))), false);
+  const onlyModel = decide({ observations: [reading('seven_day_opus', 10)] });
+  assert.ok(codes(onlyModel).includes('quota-unknown'), 'a per-model window alone is not a usable reading for the gate');
+  assert.equal(decide({ observations: [reading('seven_day', 95)] }).decision, 'block', 'the overall week still gates');
+  assert.deepEqual(summarizeQuota([reading('seven_day_opus', 71)], NOW).map((entry) => [entry.window, entry.usedPercent]), [['seven_day_opus', 71]], 'and is still shown');
+});

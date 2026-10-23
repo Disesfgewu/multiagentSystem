@@ -5,7 +5,7 @@ import { builtIn } from '../providers/registry';
 import { accountService, launchEnvironment } from './accountRuntime';
 import { chooseConfigFolder, settleChosenFolder, ChooserUi, ChosenFolder, Explained } from './folderChooser';
 import { runCommand, childEnvironment } from './identityRunner';
-import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState, recordVerifiedIdentity, setIdentityProbe } from './quotaGateUi';
+import { editLimits, clearLimits, offerSlotRecovery, limitLines, currentGateState, recordVerifiedIdentity, setIdentityProbe, quotaDetail } from './quotaGateUi';
 import { isExtensionTestMode, requireInteractive, allowNonInteractive } from '../shared/testMode';
 import { configureHooksWizard, describeHookEnable, inspectHookConfig, getHookBridgeScriptPath, HookUi } from './claudeHooks';
 import { configureStatusLineWizard, inspectStatusLineConfig, getBridgeScriptPath, StatusLineUi } from './claudeStatusLine';
@@ -15,9 +15,10 @@ const { accountProviderChoices } = require('./provider-choices') as {
 };
 const { describeProviderCapabilities } = require('../providers/capability-text') as { describeProviderCapabilities(id: unknown): string[] };
 const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
-const { checkAccountIdentity, describeCheck, splitFolderIssues } = require('./identity-check') as {
+const { checkAccountIdentity, describeCheck, splitFolderIssues, CHECKS } = require('./identity-check') as {
+  CHECKS: Record<string, unknown>;
   splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
-  checkAccountIdentity(input: Record<string, unknown>): Promise<{ ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any }>;
+  checkAccountIdentity(input: Record<string, unknown>): Promise<{ ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any; display?: { email: string | null; organization: string | null } }>;
   describeCheck(result: unknown): { summary: string; hint: string };
 };
 const { describeAccounts } = require('./profile-view') as { describeAccounts(input: { profiles: any[]; observations?: Map<string, unknown>; context: { repoRoot: string } }): any[] };
@@ -57,10 +58,33 @@ export function openLoginTerminal(provider: string, profile: Record<string, any>
   return { terminal, command };
 }
 
-type CheckResult = { ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any };
-// Results of the sign-in checks, kept only while this window is open. They hold a fingerprint and
-// a login method, never the CLI's output or an email address.
+type CheckResult = { ok: boolean; state: string; reason: string; checkedAt: string; source: string | null; identity: any; restored?: boolean };
+type Display = { email: string | null; organization: string | null };
+// Results of the sign-in checks: a fingerprint, a login method and a plan, never the CLI's output or an e-mail address. They are
+// also saved in the private store (account-checks.js) so the view shows them after a reload (#352).
 const checkResults = new Map<string, CheckResult>();
+// The e-mail address and organization the CLI reported, so the person can tell accounts apart (#352). In this window's memory only:
+// never stored, logged, exported, sent to GitHub or put in an agent's instructions. After a reload they come back from the check
+// that runs on start.
+const checkDisplays = new Map<string, Display>();
+const checking = new Set<string>();
+let checksRestored = false;
+const { AccountCheckStore } = require('./account-checks') as { AccountCheckStore: new (store: unknown) => { save(id: string, result: unknown): { ok: boolean }; load(ids: string[]): Map<string, CheckResult> } };
+const { quotaSummary, identitySummary, accountsOverview, duplicateLine } = require('./account-row') as {
+  quotaSummary(detail: unknown, now?: Date): { text: string; attention: boolean };
+  identitySummary(input: { check?: unknown; display?: unknown; now?: Date; checking?: boolean }): { text: string; signedIn: boolean | null; attention: boolean; lines: string[] };
+  accountsOverview(rows: Array<{ signedIn: boolean | null; attention: boolean }>): string;
+  duplicateLine(labels: string[]): string | null;
+};
+
+/** The saved checks, read once per window into the in-memory results (a check made in this window is kept over a saved one). */
+function restoreChecks(store: unknown, profiles: Array<{ id: string }>): void {
+  if (checksRestored) return;
+  checksRestored = true;
+  try {
+    for (const [id, saved] of new AccountCheckStore(store).load(profiles.map((profile) => profile.id))) if (!checkResults.has(id)) checkResults.set(id, saved);
+  } catch { /* nothing saved can be read: every account shows "not checked yet" */ }
+}
 
 export function observationsFor(profiles: Array<{ id: string }>): Map<string, { identity: unknown }> {
   const observed = new Map<string, { identity: unknown }>();
@@ -149,28 +173,38 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
     if (!loaded.ok) return [new AccountMessage(loaded.message), ...liveSessions.map((entry) => new SessionItem(entry.id, entry.name, entry.provider, entry.accountProfileId, entry.stateLabel, entry.terminalOpen))];
     const rows: AccountTreeItem[] = [];
     if (loaded.profiles.length === 0) rows.push(new AccountMessage('No account profiles. Use Create Profile to add one.'));
+    restoreChecks(result.store, loaded.profiles);
     const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
     const limitText = await Promise.all(loaded.profiles.map((profile: any) => limitLines(profile.id, () => sessions?.list() ?? [])));
     const gateStates = await Promise.all(loaded.profiles.map((profile: any) => currentGateState(profile.id, () => sessions?.list() ?? [])));
-    rows.push(...loaded.profiles.map((profile: any, index: number) => {
+    const quotas = await Promise.all(loaded.profiles.map((profile: any) => quotaDetail(profile.id, () => sessions?.list() ?? []).catch(() => null)));
+    const labels0 = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
+    const now = new Date();
+    const summaries: Array<{ signedIn: boolean | null; attention: boolean }> = [];
+    const accountRows = loaded.profiles.map((profile: any, index: number) => {
       const status = described[index];
       const provider = builtIn.get(profile.provider)?.label ?? profile.provider;
-      const identity = status.verifiedIdentity.state === 'verified'
-        ? `identity ${status.verifiedIdentity.fingerprint}`
-        : 'identity unknown';
-      const issues = status.issues.map((issue: { hint: string }) => issue.hint);
+      // #352: which account it is (e-mail and organization, this window only), plan, sign-in with its check time, and usage.
+      const who = identitySummary({ check: checkResults.get(profile.id), display: checkDisplays.get(profile.id), now, checking: checking.has(profile.id) });
+      const usage = quotaSummary(quotas[index], now);
+      const duplicate = duplicateLine((status.duplicateOf ?? []).map((other: string) => labels0.get(other) ?? other));
+      const issues = [...who.lines, `Usage: ${usage.text}`, ...(duplicate ? [duplicate] : []), ...status.issues.map((issue: { hint: string }) => issue.hint)];
       if (builtIn.capability(profile.provider, 'accountIsolation') !== 'verified') issues.push('Account isolation is not verified for this provider on this machine.');
-      issues.push(lastCheckedText(profile.id));
       issues.push(...limitText[index]);
       const gateState = gateStates[index];
-      const item = new AccountItem(profile.id, profile.label, provider, status.health, identity, issues, gateState?.action ?? null);
+      const attention = who.attention || usage.attention || duplicate !== null || status.health === 'attention';
+      summaries.push({ signedIn: who.signedIn, attention });
+      const item = new AccountItem(profile.id, profile.label, provider, attention ? 'needs attention' : status.health, '', issues, gateState?.action ?? null);
       const policyLine = limitText[index][0] ?? 'Limits: could not be read.';
-      item.description += policyLine.startsWith('Limits: none set.') ? ' · limits not set' : policyLine.startsWith('Limits: could not be read.') ? ' · limits unknown' : ' · limits set';
+      const limits = policyLine.startsWith('Limits: none set.') ? 'limits not set' : policyLine.startsWith('Limits: could not be read.') ? 'limits unknown' : 'limits set';
+      item.description = [provider, who.text, usage.text.startsWith('usage') ? usage.text : `usage ${usage.text}`, limits, ...(duplicate ? ['DUPLICATE ACCOUNT'] : [])].join(' · ');
       if (gateState?.action === 'block') item.description += ' · BLOCKED NOW';
       else if (gateState?.action === 'confirm') item.description += ' · needs confirmation';
       else if (gateState?.action === 'warn') item.description += ' · near limit';
       return item;
-    }));
+    });
+    if (loaded.profiles.length > 0) rows.push(new AccountMessage(accountsOverview(summaries)));
+    rows.push(...accountRows);
     const labels = new Map<string, string>(loaded.profiles.map((profile: any) => [profile.id, profile.label]));
     rows.push(...liveSessions.map((entry) => new SessionItem(
       entry.id, entry.name, builtIn.get(entry.provider)?.label ?? entry.provider,
@@ -274,7 +308,8 @@ async function probeIdentity(profileId: string): Promise<unknown> {
   const repoRoot = (result.store as { repoRoot: string }).repoRoot;
   const prepared = await launchEnvironment(loaded.profile.id, loaded.profile.provider, () => sessions?.list() ?? []);
   if (!prepared.ok) return null;
-  return checkAccountIdentity({ profile: loaded.profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: runCommand });
+  const { display: _display, ...outcome } = await checkAccountIdentity({ profile: loaded.profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: identityRunner });
+  return outcome;
 }
 
 export function registerAccountCommands(context: vscode.ExtensionContext, sessionCommands: SessionCommands): void {
@@ -284,6 +319,8 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
   context.subscriptions.push({ dispose: () => setIdentityProbe(undefined) });
   const tree = new AccountTree();
   currentTree = tree;
+  // Every account that has a check is checked once when the window opens, so the view says who is signed in (#352).
+  setTimeout(() => { void checkAllOnStart().catch(() => undefined); }, 1500);
   treeForTest = context.extensionMode === vscode.ExtensionMode.Test ? tree : undefined;
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(ACCOUNT_DETAIL_SCHEME, { provideTextDocumentContent: (uri) => detailDocs.get(uri.query) ?? 'These details are no longer available. Open them again from the account list.' }),
@@ -344,8 +381,19 @@ async function showDetails(value: unknown, tree?: AccountTree): Promise<void> {
     : `Service identity: unknown${checked && !checked.ok ? ` (${describeCheck(checked).summary})` : checked?.identity && !checked.identity.loggedIn ? ' (the CLI says it is not signed in)' : ' (not checked yet, or the CLI did not confirm it)'}`;
   const plan = checked?.ok && checked.identity?.plan?.value ? String(checked.identity.plan.value) : null;
   const { folder: folderProblems, confirmation } = splitFolderIssues(described.issues);
+  // #352: who the account is, its usage, a duplicate, and which agents use it, at the top.
+  const who = identitySummary({ check: checked, display: checkDisplays.get(id), checking: checking.has(id) });
+  const usage = quotaSummary(await quotaDetail(id, () => sessions?.list() ?? []).catch(() => null));
+  const allProfiles = result.service.list();
+  const labelOf = new Map<string, string>(allProfiles.ok ? allProfiles.profiles.map((other: any) => [other.id, other.label]) : []);
+  const duplicate = duplicateLine((described.duplicateOf ?? []).map((other: string) => labelOf.get(other) ?? other));
+  const users = (sessions?.list() ?? []).filter((entry) => entry.accountProfileId === id);
   const lines = [
     `Account profile: ${profile.label}`,
+    ...who.lines,
+    `Usage: ${usage.text}`,
+    ...(duplicate ? [duplicate] : []),
+    users.length === 0 ? 'Agents using this account: none right now.' : `Agents using this account: ${users.map((entry) => `${entry.codename ? `${entry.codename} · ` : ''}${entry.name} (${entry.stateLabel})`).join('; ')}`,
     `Provider: ${provider?.label ?? profile.provider}`,
     `Configuration folder: ${folderProblems.length === 0 ? 'passes the safety checks' : `rejected: ${folderProblems.join(' ')}`}`,
     `CLI confirmation of this folder: ${confirmation.length === 0 ? (checked?.ok && checked.identity?.configDirMatches === true ? 'confirmed' : 'unverified (the CLI has not said which folder it uses)') : `unverified: ${confirmation.join(' ')}`}`,
@@ -497,6 +545,53 @@ async function login(value: unknown): Promise<void> {
   if (next === 'I have signed in — check now') void check(loaded.profile.id);
 }
 
+// The runner of the provider's status command; only the extension's own host tests replace it (a synthetic `claude auth status`).
+let identityRunner: typeof runCommand = runCommand;
+export function setIdentityRunnerForTests(runner: typeof runCommand | undefined): void {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  identityRunner = runner ?? runCommand;
+}
+
+/**
+ * Checks one account with no window of its own: runs the status command in the profile's environment, keeps the e-mail address and
+ * organization in memory only, saves the rest (account-checks.js) and refreshes the view. Returns the result without the display part.
+ */
+async function runCheck(accounts: any, profile: any): Promise<CheckResult> {
+  const repoRoot = (accounts.store as { repoRoot: string }).repoRoot;
+  checking.add(profile.id);
+  currentTree?.refresh();
+  let outcome: CheckResult & { display?: Display };
+  try {
+    const prepared = await launchEnvironment(profile.id, profile.provider, () => sessions?.list() ?? []);
+    outcome = !prepared.ok
+      ? { ok: false, state: 'unknown', reason: 'profile-rejected', checkedAt: new Date().toISOString(), source: null, identity: null }
+      : await checkAccountIdentity({ profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: identityRunner });
+  } finally { checking.delete(profile.id); }
+  const { display, ...result } = outcome;
+  checkResults.set(profile.id, result);
+  if (display && (display.email || display.organization)) checkDisplays.set(profile.id, { email: display.email ?? null, organization: display.organization ?? null });
+  else checkDisplays.delete(profile.id);
+  try { new AccountCheckStore(accounts.store).save(profile.id, result); } catch { /* the view still shows this window's result */ }
+  // What a successful check verified is saved in the shared private store, so the profile's account group
+  // is the same in every window and after a restart. A failed or signed-out check never removes it.
+  if (result.ok && result.identity) recordVerifiedIdentity(accounts.store, profile.id, result.identity, new Date());
+  currentTree?.refresh();
+  return result;
+}
+
+/** Checks every account whose provider has a check, once, when the window opens (#352), one after another and without windows. */
+async function checkAllOnStart(): Promise<void> {
+  const accounts = await accountService(() => sessions?.list() ?? []);
+  if (!accounts.ok) return;
+  const listed = accounts.service.list();
+  if (!listed.ok) return;
+  restoreChecks(accounts.store, listed.profiles);
+  for (const profile of listed.profiles) {
+    if (!Object.hasOwn(CHECKS, profile.provider) || process.platform === 'win32') continue;
+    try { await runCheck(accounts, profile); } catch { /* one account that cannot be checked does not stop the others */ }
+  }
+}
+
 /** Runs the provider's own status command in this profile's environment and shows the result in plain words. */
 async function check(value: unknown): Promise<CheckResult | undefined> {
   // It runs the provider's CLI: outside test mode it always shows its progress and result.
@@ -510,22 +605,10 @@ async function check(value: unknown): Promise<CheckResult | undefined> {
   if (!result.ok) { if (interactive) void vscode.window.showErrorMessage(result.message); return undefined; }
   const loaded = result.service.get(selected.id);
   if (!loaded.ok) { if (interactive) void vscode.window.showErrorMessage(errorFor(loaded)); return undefined; }
-  const repoRoot = (result.store as { repoRoot: string }).repoRoot;
-  const prepared = await launchEnvironment(loaded.profile.id, loaded.profile.provider, () => sessions?.list() ?? []);
-  let outcome: CheckResult;
-  if (!prepared.ok) {
-    outcome = { ok: false, state: 'unknown', reason: 'profile-rejected', checkedAt: new Date().toISOString(), source: null, identity: null };
-  } else {
-    const run = () => checkAccountIdentity({ profile: loaded.profile, context: { repoRoot }, env: childEnvironment(prepared.env), runner: runCommand });
-    outcome = interactive
-      ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking sign-in for “${loaded.profile.label}”…` }, run)
-      : await run();
-  }
-  checkResults.set(loaded.profile.id, outcome);
-  // What a successful check verified is saved in the shared private store, so the profile's account group
-  // is the same in every window and after a restart. A failed or signed-out check never removes it.
-  if (outcome.ok && outcome.identity) recordVerifiedIdentity(result.store, loaded.profile.id, outcome.identity, new Date());
-  currentTree?.refresh();
+  const run = () => runCheck(result, loaded.profile);
+  const outcome = interactive
+    ? await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking sign-in for “${loaded.profile.label}”…` }, run)
+    : await run();
   if (!interactive) return outcome;
   const words = describeCheck(outcome);
   const confirmed = outcome.ok && outcome.identity?.loggedIn === true && outcome.identity?.subject?.confidence === 'actual' && outcome.identity.anomalies.length === 0;

@@ -18,6 +18,9 @@ const UNKNOWN_QUOTA = Object.freeze(['require-confirmation', 'block']);
 const POLICY_KEYS = new Set(['warnAtPercent', 'blockAtPercent', 'maxConcurrent', 'unknownQuota']);
 const USED = /^quota\.(.+)\.used_percent$/;
 const RESETS = (window) => `quota.${window}.resets_at`;
+// Per-model weekly windows (`seven_day_opus`, ...) are shown but never gate: the model an agent really uses need not be the one
+// the window counts, so a full Opus week must not hold back an agent working with Sonnet. The gate reads 5h and the overall 7d.
+const DISPLAY_ONLY_WINDOW = /^seven_day_./;
 const MAX_CONCURRENT_LIMIT = 64;
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -111,7 +114,7 @@ function decideDispatch({ policy, observations, now, running = 0, approval } = {
     raise('block', { code: 'concurrency-limit', running, limit: rules.maxConcurrent, overridable: false });
   }
 
-  const windows = windowsOf(observations);
+  const windows = new Map([...windowsOf(observations)].filter(([window]) => !DISPLAY_ONLY_WINDOW.test(window)));
   let gated = 0;
   for (const [window, item] of [...windows].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (item.unit !== 'percent' || !isGateEligible(item, at)) {

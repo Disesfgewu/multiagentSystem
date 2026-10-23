@@ -221,3 +221,48 @@ test('bridge rejects oversized input in a single chunk and does not persist a va
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('Claude status line bridge: keeps every per-model weekly window, only its percent and reset time (#352)', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-test-'));
+  try {
+    const quotaPath = path.join(tempDir, 'statusline-quota.json');
+    const rateLimits: Record<string, unknown> = {
+      five_hour: { used_percentage: 24.5, resets_at: 1774999577, note: 'dropped' },
+      seven_day: { used_percentage: 52, resets_at: 1775500000 },
+      seven_day_opus: { used_percentage: 71, resets_at: 1775500000, extra: 'dropped' },
+      seven_day_sonnet: { used_percentage: 12, resets_at: 1775500000 },
+      'seven_day_../x': { used_percentage: 1 },
+      SEVEN_DAY_OPUS: { used_percentage: 2 },
+      other_window: { used_percentage: 3 }
+    };
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const result = spawnSync('node', [bridgeScript, quotaPath], { input: JSON.stringify({ rate_limits: rateLimits }), encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    const content = JSON.parse(fs.readFileSync(quotaPath, 'utf8'));
+    assert.deepEqual(Object.keys(content.rate_limits).sort(), ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']);
+    assert.deepEqual(content.rate_limits.seven_day_opus, { used_percentage: 71, resets_at: 1775500000 });
+    assert.deepEqual(content.rate_limits.five_hour, { used_percentage: 24.5, resets_at: 1774999577 });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Claude status line bridge: keeps at most eight windows however many the reading has (#352)', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-statusline-test-'));
+  try {
+    const quotaPath = path.join(tempDir, 'statusline-quota.json');
+    // The 5-hour and weekly windows come last in the reading, after twenty per-model ones.
+    const rateLimits: Record<string, unknown> = {};
+    for (let index = 0; index < 20; index += 1) rateLimits[`seven_day_model_${index}`] = { used_percentage: index, resets_at: 1775500000 };
+    rateLimits.five_hour = { used_percentage: 1, resets_at: 1774999577 };
+    rateLimits.seven_day = { used_percentage: 2, resets_at: 1775500000 };
+    const bridgeScript = path.resolve(__dirname, '../../../src/accounts/claudeStatusLineBridge.js');
+    const result = spawnSync('node', [bridgeScript, quotaPath], { input: JSON.stringify({ rate_limits: rateLimits }), encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    const kept = Object.keys(JSON.parse(fs.readFileSync(quotaPath, 'utf8')).rate_limits);
+    assert.equal(kept.length, 8);
+    assert.ok(kept.includes('five_hour') && kept.includes('seven_day'), 'the 5-hour and weekly windows are always among them');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

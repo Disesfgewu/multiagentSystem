@@ -43,8 +43,11 @@ function fake(mode: string, extraEnv: Record<string, string | null> = {}, seen: 
 const PLATFORM = process.platform === 'win32' ? 'linux' : process.platform;
 const run = (w: ReturnType<typeof world>, mode: string, extra: Record<string, unknown> = {}) =>
   checkAccountIdentity({ profile: w.profile, context: w.context, platform: PLATFORM, env: { PATH: process.env.PATH }, runner: fake(mode).runner, now: () => new Date('2026-10-16T01:02:03.000Z'), ...extra });
+// The e-mail address and organization are kept only in `display` (#352: shown on this computer's screen, never stored): everything
+// else of a result, which is what gets stored, holds neither.
 const nothingSecret = (value: unknown) => {
-  const text = JSON.stringify(value);
+  const { display: _display, ...rest } = (value !== null && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const text = JSON.stringify(value !== null && typeof value === 'object' ? rest : value);
   assert.equal(text.includes(EMAIL), false, 'the email is nowhere in the result');
   assert.equal(text.includes('example.test'), false);
   assert.equal(text.includes('org-synthetic'), false, 'no raw organisation id');
@@ -60,6 +63,7 @@ test('a signed-in account gives a short fingerprint, the login method and a plan
   assert.match(result.identity.subject.value, /^[0-9a-f]{32}$/, 'a one-way key, not an email');
   assert.equal(result.identity.plan.value, 'max');
   nothingSecret(result);
+  assert.equal((result as any).display.email, EMAIL, 'the e-mail address is only in the display part, for the screen');
   assert.match(describeCheck(result).summary, /Signed in/);
   nothingSecret(describeCheck(result));
 });

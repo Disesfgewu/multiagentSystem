@@ -9,6 +9,9 @@ const SESSION_ID_ENV = 'MULTIAGENT_CLAUDE_SESSION_ID';
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
 // Claude Code's own session id, as documented for the status line input: an opaque, short token.
 const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+// A per-model weekly window of `rate_limits` (for example `seven_day_opus`), and how many windows are kept at most.
+const SEVEN_DAY_MODEL = /^seven_day_[a-z][a-z0-9_]{0,39}$/;
+const MAX_WINDOWS = 8;
 
 /**
  * Claude Code statusLine bridge script.
@@ -87,7 +90,10 @@ function runBridge(args = process.argv.slice(2), stdinStream = process.stdin, st
         let sanitizedRateLimits = null;
         if (payload.rate_limits && typeof payload.rate_limits === 'object') {
           sanitizedRateLimits = {};
-          for (const windowKey of ['five_hour', 'seven_day']) {
+          // The 5-hour and weekly windows, and the per-model weekly ones (`seven_day_opus`, `seven_day_sonnet`, ...): only the
+          // percent and the reset time of each are kept.
+          const windowKeys = [...['five_hour', 'seven_day'].filter((key) => Object.hasOwn(payload.rate_limits, key)), ...Object.keys(payload.rate_limits).filter((key) => SEVEN_DAY_MODEL.test(key)).sort()].slice(0, MAX_WINDOWS);
+          for (const windowKey of windowKeys) {
             const entry = payload.rate_limits[windowKey];
             if (entry && typeof entry === 'object') {
               sanitizedRateLimits[windowKey] = {
