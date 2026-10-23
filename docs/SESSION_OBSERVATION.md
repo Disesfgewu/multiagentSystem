@@ -59,3 +59,27 @@ app-server notification 沒有觀測時間、遞增 sequence 或 event id，這�
 - Codex `thread/tokenUsage/updated`、訂閱 rate limit、API 成本、模型與 account identity 對照；沒有證據時全部是 unknown。
 - Codex app-server schema 升級策略；非 0.162.1 版本目前 fail closed。
 - Windows 實機上的 Codex app-server transport；CI 只執行平台無關的合成 notification。
+
+## CLI 實際的權限模式（#362）
+
+Claude Code 每一次的 hook 輸入都帶有當下的權限模式 `permission_mode`。Claude Code 文件列出的值有 `default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`。
+
+- **hook 橋接**：除了原有的兩個欄位，現在也保留這個欄位，但只保留上述的已文件化值，其他值一律丟掉。
+- **runtime**：讀取 hook 紀錄時，遇到其他值或其他欄位，整筆紀錄視為無法讀取。
+- **`SessionObservationRuntime.permissionMode`**：依「送達狀態」的同一套規則讀取：
+  - 只接受屬於這個 session 的 CLI。
+  - 不接受未來時間。
+  - 不接受超過 12 小時的紀錄。
+- **session 清單**：以 `reportedPermissionMode` 提供這個值，旁邊是 `requestedAutoMode`，也就是擴充套件請 CLI 用哪個模式啟動。
+
+指揮台的 agent 卡片與 Overview 提示框會比對這兩個值：
+
+- **一致，或沒有要求特定模式**：`Permission mode: auto (a classifier approves actions instead of you), reported by Claude Code`，或顯示實際所在的模式。
+- **要求 auto，但 CLI 在別的模式**：以警示樣式顯示 `Auto mode is not in effect: Claude Code reports default (asks before actions)`。下方寫明原因與下一步：
+  - 原因：這個帳號、方案或模型不能用 auto mode；classifier 無法使用；對話太長，超出 classifier 的範圍。
+  - 下一步：重新開啟 session；或在 agent 的終端機用 `/permissions` 確認。
+- **第一個 hook 事件之前**：`Permission mode: not reported yet (Claude Code reports it with its first action)`。
+
+Codex 與 agy 不回報權限模式，所以它們的卡片沒有這一行。
+
+**未驗證**：真實的 Claude Code 從 auto mode 退回後，實際回報的是哪個模式（列入 #135）。

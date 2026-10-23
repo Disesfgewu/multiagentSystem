@@ -92,6 +92,7 @@ function presentAgent(row, session) {
       `Requested model: ${shown(session?.requestedModel, 'CLI default')} (not confirmed)`,
       `Actual model: ${actualModel}`,
       ...(session && typeof session.autoModeLabel === 'string' ? [shown(session.autoModeLabel)] : []),
+      ...(session && typeof session.permissionLabel === 'string' ? [Array.from(cleanTitle(session.permissionLabel)).slice(0, 300).join('')] : []),
       ...(session && typeof session.ideLabel === 'string' ? [Array.from(cleanTitle(session.ideLabel)).slice(0, 300).join('')] : []),
       ...(session && typeof session.trustLabel === 'string' ? [Array.from(cleanTitle(session.trustLabel)).slice(0, 300).join('')] : []),
       ...(session && 'gitEvidence' in session ? [describeEvidence(session.gitEvidence)] : []),

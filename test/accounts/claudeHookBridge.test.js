@@ -38,19 +38,19 @@ async function feed(input, env, extra = {}) {
 
 const filesBelow = (dir) => fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => path.join(entry.parentPath ?? entry.path, entry.name));
 
-test('every documented example keeps only the session id and the event name', async () => {
+test('every documented example keeps only the session id, the event name and the permission mode', async () => {
   for (const [event, payload] of Object.entries(DOC_EXAMPLES)) {
     const ctx = setup();
     try {
       await feed(JSON.stringify(payload), ctx.env);
       const record = JSON.parse(fs.readFileSync(ctx.file, 'utf8'));
       assert.deepEqual(Object.keys(record).sort(), ['eventId', 'hook', 'observedAt', 'providerSessionId', 'schemaVersion', 'sequence']);
-      assert.deepEqual(record.hook, { hookEventName: event });
+      assert.deepEqual(record.hook, { hookEventName: event, permissionMode: 'default' });
       assert.equal(record.providerSessionId, 'abc123');
       // Every file written (records, temporaries) is scanned for anything private from the input.
       for (const file of filesBelow(ctx.root)) {
         const text = fs.readFileSync(file, 'utf8');
-        for (const secret of ['transcript', '/Users', 'my-project', 'factorial', 'npm test', 'file content', 'permission', 'completed the refactoring', 'tail -f', 'check the build', 'jsonl']) {
+        for (const secret of ['transcript', '/Users', 'my-project', 'factorial', 'npm test', 'file content', 'needs your permission', 'Permission needed', 'completed the refactoring', 'tail -f', 'check the build', 'jsonl']) {
           assert.equal(text.includes(secret), false, `${event}: ${file} must not contain ${secret}`);
         }
       }
@@ -199,4 +199,15 @@ test('the real script writes the record for a managed session', async () => {
     assert.equal(result.code, 0);
     assert.equal(JSON.parse(fs.readFileSync(ctx.file, 'utf8')).hook.hookEventName, 'Notification');
   } finally { ctx.cleanup(); }
+});
+
+test('the permission mode is kept only when it is one Claude Code documents (#362)', async () => {
+  for (const [mode, kept] of [['auto', 'auto'], ['bypassPermissions', 'bypassPermissions'], ['plan', 'plan'], ['Auto', undefined], ['auto; rm -rf /', undefined], [7, undefined], [undefined, undefined], ['__proto__', undefined]]) {
+    const ctx = setup();
+    try {
+      await feed(JSON.stringify({ session_id: 'abc123', hook_event_name: 'Stop', ...(mode === undefined ? {} : { permission_mode: mode }) }), ctx.env);
+      const record = JSON.parse(fs.readFileSync(ctx.file, 'utf8'));
+      assert.deepEqual(record.hook, { hookEventName: 'Stop', ...(kept ? { permissionMode: kept } : {}) }, String(mode));
+    } finally { ctx.cleanup(); }
+  }
 });

@@ -86,6 +86,10 @@ const SCRIPT = String.raw`
       body.appendChild(report);
       body.appendChild(el('div', 'muted', 'State: ' + card.status.source));
       if (card.autoMode) body.appendChild(el('div', 'muted', card.autoMode));
+      if (card.permission) {
+        body.appendChild(el('div', card.permission.attention ? 'alert' : 'muted', card.permission.text));
+        card.permission.lines.forEach(function (text) { body.appendChild(el('div', 'detail', text)); });
+      }
       body.appendChild(quotaBlock(card));
       if (card.details.length > 0) {
         var details = el('details');

@@ -11,6 +11,7 @@ const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/;
 const RECORD_KEYS = new Set(['schemaVersion', 'eventId', 'observedAt', 'sequence', 'statusLine', 'hook', 'providerSessionId']);
 // The hook events a record may name (the six the hook bridge writes); the state each means is decided in claude.js.
 const HOOK_EVENT_NAMES = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd']);
+const { PERMISSION_MODES } = require('../accounts/claudeHookBridge');
 // The status line bridge and the hook bridge write different files: both fire often and independently, so
 // sharing one file would let each overwrite the other's evidence.
 const HOOK_SUFFIX = '.hook';
@@ -67,9 +68,10 @@ function readRecord(file, kind = 'statusLine') {
         !Number.isSafeInteger(parsed.sequence) ||
         (parsed.providerSessionId !== undefined && !(typeof parsed.providerSessionId === 'string' && PROVIDER_SESSION_ID.test(parsed.providerSessionId)))) return null;
     if (kind === 'hook') {
-      // A hook record is exactly an event name and the CLI's session id, nothing else.
+      // A hook record is exactly an event name, the CLI's session id and, when the CLI reported one, its permission mode.
       if (parsed.statusLine !== undefined || typeof parsed.providerSessionId !== 'string' || !isPlain(parsed.hook) ||
-          Object.keys(parsed.hook).length !== 1 || !HOOK_EVENT_NAMES.has(parsed.hook.hookEventName)) return null;
+          Object.keys(parsed.hook).some((key) => key !== 'hookEventName' && key !== 'permissionMode') || !HOOK_EVENT_NAMES.has(parsed.hook.hookEventName) ||
+          (parsed.hook.permissionMode !== undefined && !PERMISSION_MODES.includes(parsed.hook.permissionMode))) return null;
     } else if (parsed.hook !== undefined || !isPlain(parsed.statusLine) ||
         Object.keys(parsed.statusLine).some(key => !STATUS_KEYS.has(key))) {
       return null;
@@ -281,6 +283,24 @@ class SessionObservationRuntime {
     return { state, reason: 'last-hook-event', since: new Date(observed).toISOString() };
   }
 
+  /**
+   * The permission mode the CLI itself last reported (#362), from the same hook record as `deliveryState` and under the same
+   * rules (bound to this session's CLI, not from the future, not older than DELIVERY_STATE_MAX_MS), or null.
+   * @returns {{ mode: string, since: string } | null}
+   */
+  permissionMode(sessionId, nowMs = this.nowMs()) {
+    if (this.unobservable.has(sessionId)) return null;
+    const binding = this.bindings.get(sessionId);
+    if (!binding) return null;
+    const record = readRecord(binding.watches.hook.file, 'hook');
+    if (!record || typeof record.hook.permissionMode !== 'string') return null;
+    this.#judgeProvider(sessionId, binding, record);
+    if (binding.providerSession === 'mismatch') return null;
+    const observed = Date.parse(record.observedAt);
+    if (!Number.isFinite(observed) || observed > nowMs + 60_000 || nowMs - observed > DELIVERY_STATE_MAX_MS) return null;
+    return { mode: record.hook.permissionMode, since: new Date(observed).toISOString() };
+  }
+
   snapshot(sessionId, at = new Date().toISOString()) {
     const unobservable = this.unobservable.get(sessionId);
     if (unobservable) {
@@ -320,7 +340,7 @@ class SessionObservationRuntime {
   }
 
   enrich(sessions, at = new Date().toISOString()) {
-    return sessions.map(session => ({ ...session, providerObservation: this.snapshot(session.id, at), deliveryState: this.deliveryState(session.id, Date.parse(at)) }));
+    return sessions.map(session => ({ ...session, providerObservation: this.snapshot(session.id, at), deliveryState: this.deliveryState(session.id, Date.parse(at)), reportedPermissionMode: this.permissionMode(session.id, Date.parse(at)) }));
   }
 
   release(sessionId) {

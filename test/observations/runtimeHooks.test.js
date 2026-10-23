@@ -343,3 +343,28 @@ test('enrich carries the delivery state next to the observation, for every sessi
     assert.ok('providerObservation' in enriched);
   });
 });
+
+test('the permission mode the CLI reports is read from its hook record, under the same binding and age rules (#362)', () => {
+  const { runtime, at, hookFile, cleanup } = setup();
+  try {
+    const write = (hook, offset, id = 'abc123') => fs.writeFileSync(hookFile, JSON.stringify({ schemaVersion: 1, eventId: `p-${offset}`, observedAt: iso(offset), sequence: T0 + offset, providerSessionId: id, hook }));
+    assert.equal(runtime.permissionMode('session-a'), null, 'nothing reported yet');
+    write({ hookEventName: 'PreToolUse' }, 0);
+    assert.equal(runtime.permissionMode('session-a'), null, 'an event without a mode says nothing about it');
+    write({ hookEventName: 'PreToolUse', permissionMode: 'default' }, 1000);
+    at(2000);
+    assert.deepEqual(runtime.permissionMode('session-a'), { mode: 'default', since: iso(1000) });
+    write({ hookEventName: 'PreToolUse', permissionMode: 'made-up' }, 3000);
+    assert.equal(runtime.permissionMode('session-a'), null, 'an undocumented mode makes the record unreadable');
+    assert.equal(readRecord(hookFile, 'hook'), null);
+    write({ hookEventName: 'PreToolUse', permissionMode: 'auto', extra: 1 }, 4000);
+    assert.equal(readRecord(hookFile, 'hook'), null, 'no other field is accepted');
+    write({ hookEventName: 'Stop', permissionMode: 'auto' }, 5000);
+    at(5000 + 13 * 60 * 60 * 1000);
+    assert.equal(runtime.permissionMode('session-a'), null, 'too old');
+    at(6000);
+    write({ hookEventName: 'Stop', permissionMode: 'auto' }, 6000, 'another-cli');
+    assert.equal(runtime.permissionMode('session-a'), null, 'another CLI session is not this one');
+    assert.equal(runtime.permissionMode('no-such-session'), null);
+  } finally { cleanup(); }
+});

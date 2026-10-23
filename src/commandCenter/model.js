@@ -8,6 +8,8 @@
  * as text by the page, never as HTML.
  */
 
+const { describePermissionMode } = require('../observations/permissionMode');
+
 const SHOWN_LIMIT = 120;
 const MAX_LINES = 24;
 const MAX_CARDS = 200;
@@ -121,6 +123,8 @@ function buildCards(input) {
       report: { lines: reportLines(pullRequest, pullRequest !== null && isPlain(reports) && Object.hasOwn(reports, String(pullRequest)) ? reports[String(pullRequest)] : undefined) },
       quota: account ? { lines: lines(account.usage).slice(0, 2), policy: line(account.policy, '', 160), gate } : { lines: [], policy: '', gate: null },
       autoMode: line(session.autoModeLabel, '', 140) || null,
+      // The mode the CLI itself reports, against the one asked for (#362): an agent that fell back to asking is an alert.
+      permission: (() => { const mode = describePermissionMode({ provider: session.provider, requested: session.requestedAutoMode ?? null, reported: session.reportedPermissionMode ?? null }); return mode ? { text: line(mode.text, '', 200), attention: mode.attention, lines: mode.lines.map((entry) => line(entry, '', 300)) } : null; })(),
       // Whether its Claude Code was given this window's port (#354); shown as the extension worded it, only for sessions that have one.
       ide: line(session.ideLabel, '', 260) || null,
       trust: line(session.trustLabel, '', 260) || null,

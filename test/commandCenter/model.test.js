@@ -320,3 +320,11 @@ test('a card says whether its CLI will stop to ask to trust its worktree (#362)'
   assert.equal(card.trust, 'Folder trust: not pre-written, so Claude Code asks once (x)');
   assert.equal(build([session()]).agents[0].trust, null);
 });
+
+test('a card says which permission mode Claude Code reports, and an alert when auto mode fell back (#362)', () => {
+  const [fell] = build([session({ requestedAutoMode: 'on', reportedPermissionMode: { mode: 'default', since: '2026-10-24T00:00:00.000Z' } })]).agents;
+  assert.equal(fell.permission.text, 'Auto mode is not in effect: Claude Code reports default (asks before actions)');
+  assert.equal(fell.permission.attention, true);
+  assert.ok(fell.permission.lines.length > 0);
+  assert.equal(build([session({ provider: 'codex' })]).agents[0].permission, null);
+});
