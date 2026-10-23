@@ -109,3 +109,12 @@ test('the report page reads look-alike signatures the same way as the gh wrapper
   for (const body of [`${em} ${cp(0x420, 0x41c)}-01`, `${em} PM${cp(0xff0d)}${cp(0xff10, 0xff11)}`, `${em} P${cp(0x301)}M-01`]) assert.equal(authorOf({ id: 1, body }, 'comment', owner).text, 'PM-01（自稱）', JSON.stringify(body));
   assert.equal(authorOf({ id: 1, body: `${em} ${cp(0x41e)}wner-01` }, 'comment', owner).text, '未署名', 'an owner-like codename stays unsigned whatever letters it is written with');
 });
+
+test('the report page splits lines the same way as the gh wrapper: a Unicode line separator ends the first line (PM review of #348)', () => {
+  const owner = { comments: new Map(), reviews: new Map() };
+  assert.equal(authorOf({ id: 1, body: `${cp(0x2014)} PM-01${cp(0x2028)}text` }, 'comment', owner).text, 'PM-01（自稱）');
+  assert.equal(authorOf({ id: 1, body: `${cp(0x2014)} PM-01${cp(0x85)}text` }, 'comment', owner).text, 'PM-01（自稱）');
+  assert.equal(authorOf({ id: 1, body: `${cp(0x2014)} PM-01\rtext` }, 'comment', owner).text, 'PM-01（自稱）');
+  // With the ASCII hyphen the whole first line must be the signature: here only splitting at U+2028 makes it one.
+  assert.equal(authorOf({ id: 1, body: `-- PM-01${cp(0x2028)}text` }, 'comment', owner).text, 'PM-01（自稱）');
+});

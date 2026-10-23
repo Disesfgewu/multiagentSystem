@@ -14,7 +14,7 @@
  */
 
 // The same reading of a signature as the agents' gh wrapper (`decide.js`): invisible marks removed, every Unicode dash made one.
-const { signedAs } = require('../sessions/ghGuard/decide');
+const { signedAs, LINES } = require('../sessions/ghGuard/decide');
 const { OWNER_LIKE } = require('../sessions/codenames');
 const { bodyHash } = require('./ownerPosts');
 const CODENAME = /^(PM|[A-Z][a-z]{1,19})-[0-9]{2,4}$/;
@@ -22,7 +22,7 @@ const CODENAME = /^(PM|[A-Z][a-z]{1,19})-[0-9]{2,4}$/;
 /** The codename a body signs with on its first line, or null. Only a codename this extension could have given out counts. */
 function signatureOf(body) {
   if (typeof body !== 'string') return null;
-  const codename = signedAs(body.split(/\r?\n/, 1)[0]);
+  const codename = signedAs(body.split(LINES, 1)[0]);
   const match = codename === null ? null : CODENAME.exec(codename);
   return match && !OWNER_LIKE.includes(match[1].toLowerCase()) ? codename : null;
 }

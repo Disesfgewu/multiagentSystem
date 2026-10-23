@@ -190,22 +190,32 @@ const SIGNED_DASH = /^\s*\u2014\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})(?![0-9])/;
 const SIGNED_HYPHEN = /^\s*-{1,2}\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
 const OWNER_WORDS = '(?:\u7ba1\u7406\u8005|\u7ba1\u7406\u54e1|\u7ba1\u7406\u5458|repo\\s+owner|owner|maintainer|admin(?:istrator)?)';
 const OWNER_DASH = new RegExp(`^\\s*\u2014\\s*${OWNER_WORDS}(?![A-Za-z])`, 'i');
+const OWNER_STANDALONE = new RegExp(`^\\s*\u2014\\s*${OWNER_WORDS}\\s*$`, 'i');
 const OWNER_HYPHEN = new RegExp(`^\\s*-{1,2}\\s*${OWNER_WORDS}\\s*$`, 'i');
 const OWNER_CLAIMS = [/\u6211(?:\u5c31)?\u662f(?:\u9019\u500b\u5c08\u6848\u7684|\u8fd9\u4e2a\u9879\u76ee\u7684)?\u7ba1\u7406(?:\u8005|\u54e1|\u5458)/, /\u4ee5\u7ba1\u7406(?:\u8005|\u54e1|\u5458)(?:\u7684)?\u8eab(?:\u5206|\u4efd)/, /\b(?:i\s+am|i'm)\s+the\s+(?:repo(?:sitory)?\s+)?(?:owner|maintainer|admin(?:istrator)?)\b/i, /\bspeaking\s+as\s+the\s+(?:owner|maintainer)\b/i];
 const signedAs = (line) => { const normal = normalizeLine(line); const match = SIGNED_DASH.exec(normal) ?? SIGNED_HYPHEN.exec(normal); return match ? match[1] : null; };
+// A line that is a signature and nothing else: how a sign-off written further down a comment looks. A list item that starts with a
+// dash and names an agent ("- PM-01 please check") is not one.
+const STANDALONE = /^\s*(?:\u2014|-{1,2})\s*([A-Za-z][A-Za-z]{0,19}-[0-9]{1,4})\s*$/;
+const standaloneAs = (line) => { const match = STANDALONE.exec(normalizeLine(line)); return match ? match[1] : null; };
 
 /**
  * Why `text` must not be posted under `own`, or null. Quoted lines (`>`) and fenced code are someone else's words and not checked.
+ * The first line is where a signature is read (by the report page too), so there a dash and a codename at the start count whatever
+ * follows; further down only a line that is a signature and nothing else does, so a list that names an agent is still allowed.
+ * Claims to be the owner are refused on any line.
  */
 function impersonation(text, own) {
   let inCode = false;
+  let index = -1;
   for (const raw of String(text).split(LINES)) {
+    index += 1;
     if (fenced(raw)) { inCode = !inCode; continue; }
     if (inCode || /^\s*>/.test(normalizeLine(raw))) continue;
-    const signed = signedAs(raw);
+    const signed = index === 0 ? signedAs(raw) : standaloneAs(raw);
     if (signed && signed !== own) return refuse('other-codename', signed.slice(0, 30));
     const normal = normalizeLine(raw);
-    if (OWNER_DASH.test(normal) || OWNER_HYPHEN.test(normal)) return refuse('owner-claim');
+    if ((index === 0 && OWNER_DASH.test(normal)) || OWNER_HYPHEN.test(normal) || OWNER_STANDALONE.test(normal)) return refuse('owner-claim');
     if (OWNER_CLAIMS.some((pattern) => pattern.test(normal))) return refuse('owner-claim');
   }
   return null;
@@ -213,14 +223,16 @@ function impersonation(text, own) {
 
 /**
  * The body with the signature as its first line. A first line that is only the session's own signature (any dash, invisible marks
- * removed) is written the one way; anything else gets the signature in front of it.
+ * removed) is written the one way and nothing else is touched: everything from the first line break on is kept byte for byte, with
+ * its own kind of line breaks. Anything else gets the signature in front of it.
  */
 function signBody(body, own) {
   const text = String(body ?? '');
-  const lines = text.split(LINES);
   const signature = `\u2014 ${own}`;
-  const first = lines[0] === undefined ? '' : normalizeLine(lines[0]).trim();
-  if (first === signature || (SIGNED_HYPHEN.test(first) && signedAs(first) === own)) return [signature, ...lines.slice(1)].join('\n');
+  const breakAt = text.search(LINES);
+  const firstLine = breakAt < 0 ? text : text.slice(0, breakAt);
+  const first = normalizeLine(firstLine).trim();
+  if (first === signature || (SIGNED_HYPHEN.test(first) && signedAs(first) === own)) return breakAt < 0 ? signature : `${signature}${text.slice(breakAt)}`;
   return text.trim() === '' ? signature : `${signature}\n\n${text}`;
 }
 
