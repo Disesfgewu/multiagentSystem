@@ -12,6 +12,9 @@ const PROVIDER_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 // The hook events this bridge understands (https://code.claude.com/docs/en/hooks, "Hook lifecycle").
 // Anything else is ignored: an event we cannot map to a state is not evidence of one.
 const HOOK_EVENTS = Object.freeze(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd']);
+// The permission modes Claude Code documents (https://code.claude.com/docs/en/permission-modes; the `permission_mode` field of
+// every hook input). Any other value is not kept.
+const PERMISSION_MODES = Object.freeze(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']);
 const HOOK_FILE_SUFFIX = '.hook.json';
 // A Stop payload carries the last assistant message, so it may be long. Beyond this it is not read.
 const MAX_STDIN_BYTES = 1024 * 1024;
@@ -22,13 +25,16 @@ function hookRecordPath(configDir, managedSessionId) {
   return path.join(configDir, 'session-observations', `${managedSessionId}${HOOK_FILE_SUFFIX}`);
 }
 
-/** The event name and session id of a hook input, or null. Everything else in the input is dropped here. */
+/**
+ * The event name, session id and permission mode of a hook input, or null. Everything else in the input is dropped here. The
+ * permission mode (#362) is the mode the CLI is really in, kept only when it is one of the documented values.
+ */
 function extractHookFields(payload) {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
-  const { session_id: sessionId, hook_event_name: eventName } = payload;
+  const { session_id: sessionId, hook_event_name: eventName, permission_mode: permissionMode } = payload;
   if (typeof sessionId !== 'string' || !PROVIDER_SESSION_ID.test(sessionId)) return null;
   if (typeof eventName !== 'string' || !HOOK_EVENTS.includes(eventName)) return null;
-  return { sessionId, eventName };
+  return { sessionId, eventName, ...(PERMISSION_MODES.includes(permissionMode) ? { permissionMode } : {}) };
 }
 
 /** The sequence of the record already on disk (so a new one is always later), or 0. Never follows a link. */
@@ -58,7 +64,7 @@ function writeHookRecord(configDir, managedSessionId, fields, now) {
     observedAt,
     sequence: Math.max(Date.parse(observedAt), readExistingSequence(file) + 1),
     providerSessionId: fields.sessionId,
-    hook: { hookEventName: fields.eventName }
+    hook: { hookEventName: fields.eventName, ...(fields.permissionMode ? { permissionMode: fields.permissionMode } : {}) }
   };
   const temp = `${file}.tmp.${randomUUID()}`;
   try {
@@ -74,8 +80,8 @@ function writeHookRecord(configDir, managedSessionId, fields, now) {
 /**
  * Claude Code hook bridge, run as a `command` hook (https://code.claude.com/docs/en/hooks).
  *
- * It reads the hook input from stdin and keeps exactly two fields of it, `session_id` and
- * `hook_event_name`, after checking their shape. `transcript_path`, `cwd`, prompts, tool input and
+ * It reads the hook input from stdin and keeps exactly three fields of it, `session_id`,
+ * `hook_event_name` and `permission_mode` (only a documented value), after checking their shape. `transcript_path`, `cwd`, prompts, tool input and
  * everything else are dropped without being stored. It prints nothing, and always finishes with exit
  * code 0 (a hook that prints text on some events changes what Claude sees, and a non-zero exit shows an
  * error or, for exit 2, blocks the prompt, the tool call or the stop), whatever the input is.
@@ -134,4 +140,4 @@ if (require.main === module) {
   runHookBridge().then(() => process.exit(0), () => process.exit(0));
 }
 
-module.exports = { runHookBridge, extractHookFields, hookRecordPath, HOOK_EVENTS, HOOK_FILE_SUFFIX, SESSION_ID_ENV };
+module.exports = { runHookBridge, extractHookFields, hookRecordPath, HOOK_EVENTS, HOOK_FILE_SUFFIX, SESSION_ID_ENV, PERMISSION_MODES };

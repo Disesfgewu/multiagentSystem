@@ -10,6 +10,7 @@ import { inspectWorktree } from '../projects/gitEvidence';
 import { collectGitHub, worktreeInfoFor, JoinDeps } from './githubJoin';
 import { isGitHubWebUrl } from '../github/controller';
 import { markOwnUiItem } from '../shared/uiOrigin';
+const { describePermissionMode } = require('../observations/permissionMode') as { describePermissionMode(input: { provider?: string; requested?: string | null; reported?: { mode: string; since: string } | null }): { text: string; attention: boolean; lines: string[] } | null };
 
 const { buildOverview } = require('./model') as { buildOverview(input: Record<string, unknown>): { rows: any[]; problems: number } };
 const { cleanTitle } = require('./model') as { cleanTitle(value: unknown): string };
@@ -174,7 +175,7 @@ export async function collectOverview(sessions: SessionCommands): Promise<Overvi
   }
   const rest = live.filter((entry) => !grouped.has(entry.id));
   if (rest.length > 0) build(rest, {});
-  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, codename: entry.codename, ideLabel: (entry as { ideLabel?: string }).ideLabel, trustLabel: (entry as { trustLabel?: string }).trustLabel, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel, autoModeLabel: entry.autoModeLabel, ...(gitEvidence.has(entry.id) ? { gitEvidence: gitEvidence.get(entry.id) } : {}) }));
+  const agents = live.map((entry) => presentAgent(rowsById.get(entry.id) ?? buildOverview({ sessions: [entry], accounts: described, roleGroups: roleNames }).rows[0], { name: entry.name, codename: entry.codename, ideLabel: (entry as { ideLabel?: string }).ideLabel, trustLabel: (entry as { trustLabel?: string }).trustLabel, providerLabel: builtIn.get(entry.provider)?.label, terminalOpen: entry.terminalOpen, requestedModel: entry.requestedModel, providerObservation: entry.providerObservation, lifecycleState: entry.stateLabel, autoModeLabel: entry.autoModeLabel, permissionLabel: describePermissionMode({ provider: entry.provider, requested: (entry as { requestedAutoMode?: string | null }).requestedAutoMode ?? null, reported: (entry as { reportedPermissionMode?: { mode: string; since: string } | null }).reportedPermissionMode ?? null })?.text, ...(gitEvidence.has(entry.id) ? { gitEvidence: gitEvidence.get(entry.id) } : {}) }));
   const accountRows = profiles ? await Promise.all(profiles.map(async (profile, index) => {
     const [policy, ...usage] = await limitLines(profile.id, () => sessions.list());
     const gate = await currentGateState(profile.id, () => sessions.list());

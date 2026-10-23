@@ -82,6 +82,7 @@ export interface SessionView extends SessionIdentity {
   instructionStatusLabel?: string;
   /** What auto mode was requested for this window's launch of the CLI; a request, not proof of how the CLI runs. */
   autoModeLabel?: string;
+  requestedAutoMode?: string | null;
   instructionDigest?: string | null;
   /** What was put into the prepared instructions of this session (prepared, not proof that the CLI read it); null when unknown. */
   injectedCounts?: { rules: number; memories: number } | null;
@@ -186,6 +187,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly instructionStates = new Map<string, SessionInstructionState>();
   private readonly instructionLabels = new Map<string, string>();
   private readonly autoModeLabels = new Map<string, string>();
+  // The mode the CLI was asked to start in (#362): 'on' (auto), 'off' (ask), 'unknown'; compared with what the CLI reports.
+  private readonly autoModeStates = new Map<string, string>();
   private readonly instructionDigests = new Map<string, string>();
   private readonly injectedCounts = new Map<string, { rules: number; memories: number }>();
   private readonly instructionMethods = new Map<string, string>();
@@ -317,6 +320,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       instructionState: this.instructionStates.get(entry.id) ?? 'none',
       instructionStatusLabel: this.instructionLabels.get(entry.id) ?? 'No instructions configured',
       autoModeLabel: this.autoModeLabels.get(entry.id) ?? 'Auto mode: unknown (not started in this window)',
+      requestedAutoMode: this.autoModeStates.get(entry.id) ?? null,
       instructionDigest: this.instructionDigests.get(entry.id) ?? null,
       injectedCounts: this.injectedCounts.get(entry.id) ?? null,
       instructionMethod: this.instructionMethods.get(entry.id) ?? null
@@ -399,7 +403,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     /** The role group's permissions as launch arguments for a CLI that has them as flags (Codex's sandbox mode); merged with the auto mode's. */
     permissionArgs?: string[];
     /** Auto mode for the CLI (issue #296): the arguments to pass and the label to show. Resolved by the caller from the person's settings. */
-    autoMode?: { args: string[]; label: string };
+    autoMode?: { args: string[]; label: string; state?: string };
     /** The codename the caller assigned (issue #342); shown with the session and saved with it. */
     codename?: string;
     /** A folder put first on PATH for the typed CLI command (issue #342: the session's gh wrapper). */
@@ -462,7 +466,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     instructions?: SessionInstructionsInput,
     wrap?: (executable: string, args: string[]) => { executable: string; args: string[] },
     attributionFile?: string,
-    autoMode?: { args: string[]; label: string },
+    autoMode?: { args: string[]; label: string; state?: string },
     permissionArgs?: string[],
     pathPrefix?: string
   ): SessionView {
@@ -503,6 +507,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     this.names.set(identity.id, name);
     if (autoMode) this.autoModeLabels.set(identity.id, launch ? autoMode.label : 'Auto mode: not applicable (a shell only: no CLI was started)');
+    if (autoMode && launch && typeof autoMode.state === 'string') this.autoModeStates.set(identity.id, autoMode.state); else this.autoModeStates.delete(identity.id);
     if (requestedModel !== null) this.models.set(identity.id, requestedModel);
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
     if (instructions?.injectedCounts) this.injectedCounts.set(identity.id, instructions.injectedCounts);
@@ -642,7 +647,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       /** The same attribution settings file `start` takes. */
       attributionFile?: string;
       /** The same auto mode `start` takes. */
-      autoMode?: { args: string[]; label: string };
+      autoMode?: { args: string[]; label: string; state?: string };
       /** The same permission arguments `start` takes. */
       permissionArgs?: string[];
       /** The codename the new session holds (issue #342). When it is the old session's, the old record stops holding it. */
