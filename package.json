@@ -525,6 +525,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "fflate": "0.8.3"
+    "fflate": "0.8.3",
+    "smol-toml": "1.9.1"
   }
 }

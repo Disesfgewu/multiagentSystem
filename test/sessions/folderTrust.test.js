@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { trustClaudeFolder, trustCodexFolder, describeTrust, tomlString } = require('../../src/sessions/folderTrust');
+const { trustClaudeFolder, trustCodexFolder, describeTrust, usableManagedRoots, tomlString } = require('../../src/sessions/folderTrust');
+const { parse: parseToml } = require('smol-toml');
 
 function temp(t) {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mas-trust-')));
@@ -79,7 +80,7 @@ test('Codex: the trust table is appended and the existing text is untouched', (t
 test('Codex: a folder the file already mentions otherwise is left alone, so no duplicate table is made', (t) => {
   const dir = temp(t);
   const file = path.join(dir, 'config.toml');
-  for (const text of [`[projects.${tomlString(folder)}]\ntrust_level = "untrusted"\n`, `[projects.'${folder}']\ntrust_level = "trusted"\n`, `[projects.${tomlString(folder)}]\n[other]\ntrust_level = "trusted"\n`]) {
+  for (const text of [`[projects.${tomlString(folder)}]\ntrust_level = "untrusted"\n`, `[projects.'${folder}']\ntrust_level = "untrusted"\n`, `[projects.${tomlString(folder)}]\n[other]\ntrust_level = "trusted"\n`]) {
     fs.writeFileSync(file, text);
     assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: false, reason: 'codex-entry-exists' }, text);
     assert.equal(fs.readFileSync(file, 'utf8'), text);
@@ -148,4 +149,55 @@ test('the settings file keeps its own mode, even one the umask would narrow (#36
   t.after(() => process.umask(previous));
   assert.equal(trustClaudeFolder({ configDir: dir, folder }).changed, true);
   assert.equal(fs.statSync(file).mode & 0o777, 0o620);
+});
+
+test('Codex: a config.toml whose projects are written so that a table cannot be appended is left alone, never broken (#362)', (t) => {
+  const dir = temp(t);
+  const file = path.join(dir, 'config.toml');
+  for (const text of [
+    'projects = { "/w/z" = { trust_level = "trusted" } }\n',
+    '[[projects]]\nname = "x"\n',
+    'projects = 5\n'
+  ]) {
+    fs.writeFileSync(file, text);
+    assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: false, reason: 'config-unexpected-shape' }, text);
+    assert.equal(fs.readFileSync(file, 'utf8'), text, 'unchanged');
+  }
+  fs.writeFileSync(file, 'model = \n');
+  assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: false, reason: 'config-not-toml' });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'model = \n');
+});
+
+test('Codex: every file it writes parses, with exactly this folder trusted; an existing entry is found whatever the quoting (#362)', (t) => {
+  const dir = temp(t);
+  const file = path.join(dir, 'config.toml');
+  // Dotted keys may define `projects`: TOML lets a [projects."<folder>"] header add a sub-table to it, so that is written.
+  for (const text of ['', 'model = "a"', '[projects]\n', 'projects."/w/z".trust_level = "trusted"\n', `[projects."${folder}/longer"]\ntrust_level = "trusted"\n`, 'a.b = 1\n[tui]\nx = true\n']) {
+    fs.writeFileSync(file, text);
+    assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: true, changed: true }, JSON.stringify(text));
+    const parsed = parseToml(fs.readFileSync(file, 'utf8'));
+    assert.equal(parsed.projects[folder].trust_level, 'trusted');
+  }
+  assert.equal(parseToml(fs.readFileSync(file, 'utf8')).a.b, 1, 'what was there is still read the same');
+  fs.writeFileSync(file, `projects.${tomlString(folder)}.trust_level = "untrusted"\n`);
+  assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: false, reason: 'codex-entry-exists' }, 'a dotted entry for this folder is found');
+  fs.writeFileSync(file, `[projects.'${folder}']\ntrust_level = "trusted"\n`);
+  assert.deepEqual(trustCodexFolder({ codexHome: dir, folder }), { ok: true, changed: false }, 'a single-quoted entry is recognised');
+});
+
+test('Claude Code: an account folder that is a link is refused (#362)', { skip: process.platform === 'win32' }, (t) => {
+  const dir = temp(t);
+  const real = path.join(dir, 'real');
+  fs.mkdirSync(real);
+  fs.symlinkSync(real, path.join(dir, 'linked'));
+  assert.deepEqual(trustClaudeFolder({ configDir: path.join(dir, 'linked'), folder }), { ok: false, reason: 'no-account-folder' });
+  assert.deepEqual(trustCodexFolder({ codexHome: path.join(dir, 'linked'), folder }), { ok: false, reason: 'no-account-folder' });
+  assert.deepEqual(fs.readdirSync(real), [], 'nothing was written through the link');
+});
+
+test('a managed worktree folder that is a link, or missing, is never used (#362)', { skip: process.platform === 'win32' }, (t) => {
+  const dir = temp(t);
+  fs.mkdirSync(path.join(dir, 'repo-worktrees'));
+  fs.symlinkSync('/', path.join(dir, 'other-worktrees'));
+  assert.deepEqual(usableManagedRoots([path.join(dir, 'repo-worktrees'), path.join(dir, 'other-worktrees'), path.join(dir, 'missing-worktrees')]), [path.join(dir, 'repo-worktrees')]);
 });

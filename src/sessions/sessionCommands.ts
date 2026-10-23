@@ -274,7 +274,8 @@ const withIdeLabels = <T extends { id: string }>(entries: T[]): Array<T & { ideL
   ...(trustStatus.has(entry.id) ? { trustLabel: trustStatus.get(entry.id) } : {})
 }));
 
-const { trustClaudeFolder, trustCodexFolder, describeTrust } = require('./folderTrust') as {
+const { trustClaudeFolder, trustCodexFolder, describeTrust, usableManagedRoots } = require('./folderTrust') as {
+  usableManagedRoots(roots: string[]): string[];
   trustClaudeFolder(input: { configDir: string | undefined; folder: string }): { ok: true; changed: boolean } | { ok: false; reason: string };
   trustCodexFolder(input: { codexHome: string | undefined; folder: string }): { ok: true; changed: boolean } | { ok: false; reason: string };
   describeTrust(result: unknown, cliName: string): string | null;
@@ -286,7 +287,7 @@ const TRUST_CLI: Record<string, string> = Object.freeze({ claude: 'Claude Code',
 
 /** The managed worktree folders of this window's projects: `<repo>-worktrees` next to each open folder (#362). */
 function managedRootsOfWindow(): string[] {
-  return (vscode.workspace.workspaceFolders ?? []).map((folder) => managedWorktreeRoot(folder.uri.fsPath));
+  return usableManagedRoots((vscode.workspace.workspaceFolders ?? []).map((folder) => managedWorktreeRoot(folder.uri.fsPath)));
 }
 
 /**

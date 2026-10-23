@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { parse: parseToml } = require('smol-toml');
 
 /**
  * Pre-trusting the folder an agent starts in (#362). Claude Code and Codex each ask once per folder whether to trust it, and
@@ -104,8 +105,10 @@ function tomlString(value) {
 
 /**
  * Codex: a `[projects."<folder>"]` table with `trust_level = "trusted"` appended to `<codexHome>/config.toml`.
- * When the file already mentions the folder in any form, nothing is written: it is either trusted already (exactly this table
- * with that line) or the person decided something else, and a second table for the same folder would make the file invalid.
+ * The file is parsed with a TOML parser (smol-toml) before and after the change. When it already has an entry for the folder, in
+ * any form or quoting, nothing is written: it is either trusted already or the person decided something else. When the file
+ * cannot be parsed, or the appended table would not leave valid TOML with this folder trusted (`projects` written as an inline
+ * table, with dotted keys or as an array of tables), nothing is written either.
  * @returns {{ ok: true, changed: boolean } | { ok: false, reason: string }}
  */
 function trustCodexFolder({ codexHome, folder, hooks }) {
@@ -117,20 +120,23 @@ function trustCodexFolder({ codexHome, folder, hooks }) {
   try { dir = fs.lstatSync(codexHome); } catch { return refuse('no-account-folder'); }
   if (dir.isSymbolicLink() || !dir.isDirectory()) return refuse('no-account-folder');
   const header = `[projects.${key}]`;
-  const trustedIn = (text) => {
-    const lines = text.split(/\r?\n/);
-    const at = lines.findIndex((line) => line.trim() === header);
-    if (at < 0) return false;
-    for (let index = at + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
-      if (/^\s*trust_level\s*=\s*"trusted"\s*(#.*)?$/.test(lines[index])) return true;
-    }
-    return false;
-  };
+  // The file is parsed before and after: the entry for the folder is looked up by its real key whatever the quoting, and a change
+  // that would not leave valid TOML with exactly this folder trusted (an inline `projects = { ... }` table, dotted keys, an array of
+  // `[[projects]]` tables) is never written.
+  const parse = (text) => { try { return { ok: true, value: parseToml(text) }; } catch { return { ok: false }; } };
+  const entryOf = (value) => (isPlain(value) && isPlain(value.projects) && Object.hasOwn(value.projects, folder) ? value.projects[folder] : undefined);
+  const trustedIn = (text) => { const parsed = parse(text); return parsed.ok && isPlain(entryOf(parsed.value)) && entryOf(parsed.value).trust_level === 'trusted'; };
   return updateConfig(path.join(codexHome, 'config.toml'), (current) => {
     const text = current ?? '';
-    if (text.includes(folder) || text.includes(key.slice(1, -1))) return trustedIn(text) ? true : refuse('codex-entry-exists');
+    const before = parse(text);
+    if (!before.ok) return refuse('config-not-toml');
+    const entry = entryOf(before.value);
+    if (entry !== undefined) return isPlain(entry) && entry.trust_level === 'trusted' ? true : refuse('codex-entry-exists');
     const separator = text === '' || text.endsWith('\n') ? '' : '\n';
-    return `${text}${separator}${text === '' ? '' : '\n'}${header}\ntrust_level = "trusted"\n`;
+    const next = `${text}${separator}${text === '' ? '' : '\n'}${header}\ntrust_level = "trusted"\n`;
+    const after = parse(next);
+    if (!after.ok || !isPlain(entryOf(after.value)) || entryOf(after.value).trust_level !== 'trusted') return refuse('config-unexpected-shape');
+    return next;
   }, trustedIn, hooks);
 }
 
@@ -144,12 +150,23 @@ const REASONS = Object.freeze({
   'config-not-a-file': 'the account\'s settings file is a link or not a file',
   'config-too-large': 'the account\'s settings file is unusually large',
   'config-not-json': 'the account\'s .claude.json could not be parsed',
-  'config-unexpected-shape': 'the account\'s .claude.json does not have the expected shape',
+  'config-not-toml': 'the account\'s config.toml could not be parsed',
+  'config-unexpected-shape': 'the account\'s settings file does not have a shape the trust entry can be added to safely',
   'config-not-written': 'the account\'s settings file could not be written',
   'config-overwritten': 'the CLI rewrote its settings file right after, without the trust entry',
   'config-busy': 'the CLI kept rewriting its settings file, so it was left alone',
   'codex-entry-exists': 'config.toml already has an entry for this folder that does not say "trusted"'
 });
+
+/**
+ * The managed worktree folders trust may be written for: real folders only. One that is a link could point anywhere (even at /),
+ * which would widen what gets trusted, so it is left out, as is one that does not exist.
+ */
+function usableManagedRoots(roots, lstat = fs.lstatSync) {
+  return (Array.isArray(roots) ? roots : []).filter((root) => {
+    try { const info = lstat(root); return info.isDirectory() && !info.isSymbolicLink(); } catch { return false; }
+  });
+}
 
 /** The line for the session's details and card. */
 function describeTrust(result, cliName) {
@@ -158,4 +175,4 @@ function describeTrust(result, cliName) {
   return `Folder trust: not pre-written, so ${cliName} asks once (${REASONS[result.reason] ?? result.reason})`;
 }
 
-module.exports = { trustClaudeFolder, trustCodexFolder, describeTrust, REASONS, tomlString };
+module.exports = { trustClaudeFolder, trustCodexFolder, describeTrust, usableManagedRoots, REASONS, tomlString };
