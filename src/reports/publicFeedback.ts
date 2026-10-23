@@ -99,14 +99,14 @@ export async function configureMergeAuthority(input?: { mode?: unknown; interact
 function publisher(store: Store, repository: string): { actorId: string; login: string } | 'unreadable' | null {
   return publisherFor(store.get(COLLECTION, POLICY_ID), repository);
 }
-function previous(store: Store, target: PublicTarget): any {
-  const found = store.get(COLLECTION, recordId(target.repository, target.kind, target.number));
+function previous(store: Store, target: PublicTarget, id = recordId(target.repository, target.kind, target.number)): any {
+  const found = store.get(COLLECTION, id);
   if (!found?.ok) return 'unreadable';
   if (!found.found) return null;
   return found.value?.kind === 'public-feedback-request-v1' ? found.value : 'unreadable';
 }
-function save(store: Store, target: PublicTarget, value: Record<string, unknown>): boolean {
-  return store.put(COLLECTION, recordId(target.repository, target.kind, target.number), { kind: 'public-feedback-request-v1', repository: target.repository, targetKind: target.kind, number: target.number, version: target.version, ...value })?.ok === true;
+function save(store: Store, target: PublicTarget, value: Record<string, unknown>, id = recordId(target.repository, target.kind, target.number)): boolean {
+  return store.put(COLLECTION, id, { kind: 'public-feedback-request-v1', repository: target.repository, targetKind: target.kind, number: target.number, version: target.version, ...value })?.ok === true;
 }
 function previousBy(store: Store, id: string, expectedKind: string): any {
   const found = store.get(COLLECTION, id);
@@ -345,25 +345,34 @@ function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 're
   try { return id !== undefined && new OwnerPostStore(store).record({ repository, kind, id, number, body }).ok === true; } catch { return false; }
 }
 
-export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
+/**
+ * `conversation`: a message of a conversation with the PM (#343). It is kept in its own record per Issue or PR, and a finished message
+ * does not stop the next one (the report page's feedback stays one per version). A message whose outcome is unknown, or that is
+ * still being sent, still blocks the next until it is resolved, so a retry can never post the same text twice by itself.
+ */
+export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean; conversation?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; commentId?: number; body?: string }> {
   let ownerRecorded = false;
+  // GitHub's id for the comment this call posted (not set when it was already sent before): talking to the PM (#343) reads it back.
+  let commentId: number | undefined;
   if (!REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
   const configured = publisher(store, target.repository);
   if (configured === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (!configured) return { ok: false, code: 'publisher-not-configured' };
-  const old = previous(store, target);
+  const conversation = input?.conversation === true;
+  const requestRecord = conversation ? `${recordId(target.repository, target.kind, target.number)}-talk` : recordId(target.repository, target.kind, target.number);
+  const old = previous(store, target, requestRecord);
   if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
-  if (old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-sent' };
+  if (!conversation && old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-sent' };
   const allowBypass = testMode && input?.interactive === false;
   const initialDraft = old?.status === 'draft' && old.version === target.version && typeof old.body === 'string' ? old.body : '';
   const body = allowBypass ? input?.body : await hooks.prompt(initialDraft);
   if (body === undefined) return { ok: false, code: 'cancelled' };
   if (!plainText(body)) return { ok: false, code: 'invalid-public-feedback' };
   const requestId = old?.status === 'draft' && old.version === target.version && old.body === body && typeof old.requestId === 'string' ? old.requestId : `feedback_${randomBytes(12).toString('hex')}`;
-  const draftSaved = store.put(COLLECTION, recordId(target.repository, target.kind, target.number), { kind: 'public-feedback-request-v1', repository: target.repository, targetKind: target.kind, number: target.number, version: target.version, status: 'draft', requestId, body, updatedAt: new Date().toISOString() });
+  const draftSaved = store.put(COLLECTION, requestRecord, { kind: 'public-feedback-request-v1', repository: target.repository, targetKind: target.kind, number: target.number, version: target.version, status: 'draft', requestId, body, updatedAt: new Date().toISOString() });
   if (!draftSaved?.ok && draftSaved?.reason !== 'secret-detected') return { ok: false, code: 'private-storage-unavailable' };
   if (!allowBypass) {
     const versionInfo = target.kind === 'pullRequest' ? ` (head ${target.version})` : ` (version ${target.version.slice(0, 12)})`;
@@ -377,15 +386,15 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   const match = REPOSITORY.exec(target.repository)!; const repository = { owner: match[1], name: match[2] };
   const audit = { record(entry: any) {
     const status = entry.stage === 'result' ? (entry.outcome === 'done' ? 'done' : entry.outcome === 'unknown' ? 'unknown' : 'draft') : 'sending';
-    if (!save(store, target, { status, requestId, body, updatedAt: new Date().toISOString(), audit: { stage: entry.stage, outcome: entry.outcome ?? null } })) throw new Error('audit-unavailable');
+    if (!save(store, target, { status, requestId, body, updatedAt: new Date().toISOString(), audit: { stage: entry.stage, outcome: entry.outcome ?? null } }, requestRecord)) throw new Error('audit-unavailable');
   } };
   const broker = new Broker({
     identity: { current: () => ({ actorId: String(actor.id), role: 'pm' }), actorIdForLogin: () => null },
-    reader: {}, transport: { comment: async ({ number, body: sent }: any) => { const posted = await hooks.comment(auth, repository, number, sent); if (posted.ok) ownerRecorded = recordOwnerPost(store, target.repository, 'comment', posted.number, number, sent); return posted; } }, audit,
+    reader: {}, transport: { comment: async ({ number, body: sent }: any) => { const posted = await hooks.comment(auth, repository, number, sent); if (posted.ok) { ownerRecorded = recordOwnerPost(store, target.repository, 'comment', posted.number, number, sent); commentId = posted.number; } return posted; } }, audit,
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'comment', requestId, target: target.kind === 'issue' ? 'issue' : 'pr', number: target.number, body });
-  return result.ok ? { ok: true, ownerRecorded } : { ok: false, code: result.reason ?? 'write-refused' };
+  return result.ok ? { ok: true, ownerRecorded, ...(commentId !== undefined ? { commentId, body: body as string } : {}) } : { ok: false, code: result.reason ?? 'write-refused' };
 }
 
 export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {

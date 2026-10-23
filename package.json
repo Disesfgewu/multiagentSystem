@@ -70,6 +70,9 @@
     "onCommand:multiagentSystem.broadcasts.deliver",
     "onCommand:multiagentSystem.broadcasts.revoke",
     "onCommand:multiagentSystem.meeting.start",
+    "onCommand:multiagentSystem.talk.open",
+    "onCommand:multiagentSystem.talk.send",
+    "onCommand:multiagentSystem.talk.refresh",
     "onCommand:multiagentSystem.discuss.withPm",
     "onView:multiagentSystem.memoryView",
     "onCommand:multiagentSystem.memory.refresh",
@@ -368,6 +371,9 @@
       { "command": "multiagentSystem.broadcasts.details", "title": "Multiagent: Read Full Broadcast Notice" },
       { "command": "multiagentSystem.broadcasts.revoke", "title": "Multiagent: Revoke Broadcast" },
       { "command": "multiagentSystem.meeting.start", "title": "Multiagent: Start Meeting", "icon": "$(comment-discussion)" },
+      { "command": "multiagentSystem.talk.open", "title": "Multiagent: Talk to PM via GitHub", "icon": "$(comment)" },
+      { "command": "multiagentSystem.talk.send", "title": "Multiagent: Send Message to PM", "icon": "$(send)" },
+      { "command": "multiagentSystem.talk.refresh", "title": "Multiagent: Read Conversation Again", "icon": "$(refresh)" },
       { "command": "multiagentSystem.discuss.withPm", "title": "Discuss with PM Agent", "category": "Multiagent" },
       { "command": "multiagentSystem.memory.refresh", "title": "Multiagent: Refresh Shared Memory", "icon": "$(refresh)" },
       { "command": "multiagentSystem.memory.add", "title": "Multiagent: Add Shared Memory Note", "icon": "$(add)" },
@@ -412,7 +418,9 @@
         { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection && (resourceScheme == file || resourceScheme == multiagent-report-diff)", "group": "9_multiagent@1" }
       ],
       "commandPalette": [
-        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection" }
+        { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection" },
+        { "command": "multiagentSystem.talk.send", "when": "resourceScheme == multiagent-talk" },
+        { "command": "multiagentSystem.talk.refresh", "when": "resourceScheme == multiagent-talk" }
       ],
       "editor/title": [
         { "command": "multiagentSystem.reports.backToOverview", "when": "resourceScheme == multiagent-report", "group": "navigation@0" },
@@ -425,7 +433,10 @@
         { "command": "multiagentSystem.reports.reviewPullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@5" },
         { "command": "multiagentSystem.reports.mergePullRequest", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@6" },
         { "command": "multiagentSystem.reports.deleteBranch", "when": "resourceScheme == multiagent-report && resourcePath =~ /pull-request-/", "group": "navigation@7" },
-        { "command": "multiagentSystem.reports.closeIssue", "when": "resourceScheme == multiagent-report && resourcePath =~ /issue-/", "group": "navigation@5" }
+        { "command": "multiagentSystem.reports.closeIssue", "when": "resourceScheme == multiagent-report && resourcePath =~ /issue-/", "group": "navigation@5" },
+        { "command": "multiagentSystem.talk.open", "when": "resourceScheme == multiagent-report", "group": "navigation@8" },
+        { "command": "multiagentSystem.talk.send", "when": "resourceScheme == multiagent-talk", "group": "navigation@1" },
+        { "command": "multiagentSystem.talk.refresh", "when": "resourceScheme == multiagent-talk", "group": "navigation@2" }
       ],
       "view/title": [
         { "command": "multiagentSystem.reports.refresh", "when": "view == multiagentSystem.issuesReportView || view == multiagentSystem.prsReportView", "group": "navigation" },

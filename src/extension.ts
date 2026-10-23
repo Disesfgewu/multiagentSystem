@@ -8,6 +8,7 @@ import { registerRoleCommands } from './roles/roleCommands';
 import { registerBroadcastCommands } from './broadcast/commands';
 import { registerMeetingCommands } from './meeting/commands';
 import { registerDiscussCommands } from './discuss/commands';
+import { registerTalkCommands } from './talk/talkView';
 import { registerMemoryCommands } from './memoryPanel/commands';
 import { registerTeamRulesCommands } from './teamRules/commands';
 import { registerExportCommands } from './export/commands';
@@ -103,6 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerBroadcastCommands(context, sessions);
   registerMeetingCommands(context, sessions);
   registerDiscussCommands(context, sessions);
+  registerTalkCommands(context, sessions);
   registerMemoryCommands(context, sessions);
   registerTeamRulesCommands(context);
   registerExportCommands(context);

@@ -159,6 +159,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'startMeeting':
         void vscode.commands.executeCommand('multiagentSystem.meeting.start');
         return { ok: true, command: message.type };
+      // Takes no content either: which Issue or PR, the message and both confirmations come from the command's own windows (#343).
+      case 'talkToPm':
+        void vscode.commands.executeCommand('multiagentSystem.talk.open');
+        return { ok: true, command: message.type };
       case 'sendTask':
         void vscode.commands.executeCommand(DISPATCH_COMMANDS.sendTask);
         return { ok: true, command: message.type };
