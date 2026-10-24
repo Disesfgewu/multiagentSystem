@@ -38,6 +38,7 @@ test('the synthetic GitHub publishes into the fixture, so the page reads the com
   assert.equal(posted.ok, true);
   assert.deepEqual((await fixtureReader(fixture).getIssueComments(12)).data.at(-1), { id: posted.number, author: 'e2e-owner', createdAt: fixture.comments[12].at(-1).createdAt, body: 'Hello' });
   // The publishing side checks the same condition again before it uses any of this.
-  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/reports/publicFeedback.ts'), 'utf8');
+  // Line endings normalized: a Windows checkout has CRLF, and the pattern below is written with \n.
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/reports/publicFeedback.ts'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(source, /export function useE2eGitHubForPublishing\(mode: number, env: NodeJS\.ProcessEnv, fixture: unknown\): boolean \{[\s\S]*?if \(!e2eGitHubFixture\(mode, env\)\) return false;\n {2}hooks = \{ \.\.\.realHooks, \.\.\.fixtureWriteHooks\(fixture\) \};/);
 });

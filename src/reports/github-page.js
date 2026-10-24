@@ -24,6 +24,12 @@ const SCRIPT = String.raw`
   app.appendChild(root);
   app.appendChild(composer);
   var page = null;
+  // What the page last drew (everything but the time of the reading), and the line that says when it was read.
+  var drawn = null;
+  var statusLine = null;
+  function showStatus() {
+    if (statusLine && page) statusLine.textContent = page.readAt ? 'Read from GitHub ' + shortTime(page.readAt) + (page.note ? ' · ' + page.note : '') + '.' : '';
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -188,7 +194,9 @@ const SCRIPT = String.raw`
     tools.appendChild(button('Open on GitHub', function () { post({ type: 'openOnGitHub' }); }));
     tools.appendChild(button('Open as text report', function () { post({ type: 'openText' }); }));
     top.appendChild(tools);
-    if (page.readAt) top.appendChild(el('div', 'muted', 'Read from GitHub ' + shortTime(page.readAt) + (page.note ? ' · ' + page.note : '') + '.'));
+    statusLine = el('div', 'muted', '');
+    showStatus();
+    top.appendChild(statusLine);
     if (page.fresh && page.fresh.length) top.appendChild(el('div', 'note note-new', page.fresh.length + (page.fresh.length === 1 ? ' new post' : ' new posts') + ' since you opened this page (marked New).'));
     root.appendChild(top);
 
@@ -269,7 +277,16 @@ const SCRIPT = String.raw`
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data) return;
-    if (data.type === 'page') { page = data; render(); return; }
+    if (data.type === 'page') {
+      // A reading that changed nothing on the page only updates its status line: the page is not drawn again, so nothing moves
+      // under the pointer or loses its place while the person reads, writes or clicks.
+      var shown = JSON.stringify([data.model, data.fresh, data.write, data.error]);
+      page = data;
+      if (shown === drawn && statusLine) { showStatus(); return; }
+      drawn = shown;
+      render();
+      return;
+    }
     if (data.type === 'preview' && preview) { preview.textContent = ''; preview.appendChild(content(data.body)); return; }
     // Published: the box is emptied; the new comment appears with the next reading.
     if (data.type === 'posted' && box) { box.value = ''; box.hidden = false; if (preview) preview.hidden = true; }

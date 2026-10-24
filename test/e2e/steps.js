@@ -150,6 +150,18 @@ async function pageFrame(page, title) {
   throw new Error(`the page "${title}" did not appear`);
 }
 
+/** Waits until the page's text has not changed for a second (at most 15 s), so a click lands on what was found. */
+async function settled(page, frame) {
+  const deadline = Date.now() + 15000;
+  let last = null;
+  let since = Date.now();
+  while (Date.now() < deadline) {
+    const now = await frame.locator('body').innerText().catch(() => '');
+    if (now !== last) { last = now; since = Date.now(); } else if (Date.now() - since >= 1000) return;
+    await page.waitForTimeout(200);
+  }
+}
+
 /** Opens an Issue or pull request page from the Work tab, as a person does: the button, then the item in the list. */
 async function openGitHubPage(page, number, tabLabel) {
   await clickInWorkbench(page, 'Open Issue or pull request…', { tab: 'Work' });
@@ -641,7 +653,7 @@ const ITEMS = [
         does: 'Click "Comment". The first time, set who publishes: click "Configure PM Publisher" and confirm. Then click "Comment" again, read the whole comment in the window and click "Publish public feedback".',
         run: async ({ page, check }) => {
           const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
-          const comment = () => frame.locator('.composer .btn', { hasText: /^Comment$/ }).first().click();
+          const comment = async () => { await settled(page, frame); await frame.locator('.composer .btn', { hasText: /^Comment$/ }).first().click(); };
           await comment();
           // No account publishes for this repository yet: the message says so and offers to set it.
           const answered = await drive(page, [
@@ -671,6 +683,7 @@ const ITEMS = [
         run: async ({ page, check }) => {
           const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
           const post = frame.locator('.post', { hasText: 'I will start with the read-only page' }).first();
+          await settled(page, frame);
           await post.locator('.btn', { hasText: 'Ask an agent…' }).click();
           const answered = await drive(page, [
             { when: /Which agent should read it and reply on Issue #12/, pick: 'E2E Agent 1' },

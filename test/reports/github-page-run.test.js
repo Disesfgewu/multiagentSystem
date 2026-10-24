@@ -117,3 +117,21 @@ test('a new post is marked, what was typed survives a new reading, and HTML in a
   page.send({ type: 'posted' });
   assert.equal(box.value, '');
 });
+
+test('a reading that changes nothing does not draw the page again; one that does keeps the place (#353, the review of PR #380)', () => {
+  const page = runPage();
+  const m = model();
+  page.send({ type: 'page', model: m, write: { ok: true }, fresh: [], readAt: '2026-10-24T10:00:00.000Z', note: 'up to date' });
+  const before = page.find((n) => n.tag === 'article');
+  const link = page.find((n) => n.tag === 'button' && n.textContent === 'Comment')[0];
+  // The next reading, 45 s later, finds the same posts: only the line that says when it was read changes.
+  page.send({ type: 'page', model: JSON.parse(JSON.stringify(m)), write: { ok: true }, fresh: [], readAt: '2026-10-24T10:00:45.000Z', note: 'up to date' });
+  const after = page.find((n) => n.tag === 'article');
+  assert.equal(after.length, before.length);
+  assert.ok(after.every((node, index) => node === before[index]), 'the same elements stay where they were: nothing moves under the pointer');
+  assert.ok(page.app.textContent.includes('Read from GitHub 2026-10-24 10:00 UTC'), 'the time of the reading is updated');
+  assert.equal(page.find((n) => n.tag === 'button' && n.textContent === 'Comment')[0], link);
+  // A reading with a new post draws the page again.
+  page.send({ type: 'page', model: m, write: { ok: true }, fresh: ['comment:1202'], readAt: '2026-10-24T10:01:30.000Z', note: 'up to date' });
+  assert.notEqual(page.find((n) => n.tag === 'article')[0], before[0]);
+});
