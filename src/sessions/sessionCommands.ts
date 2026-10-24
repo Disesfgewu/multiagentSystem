@@ -361,8 +361,7 @@ function withIdePort(provider: string, sessionId: string, env: Record<string, st
   return found.ok ? { ...(env ?? {}), CLAUDE_CODE_SSE_PORT: String(found.port) } : env;
 }
 
-/** The one line an agent's terminal shows instead of the long command typed into it (#357). */
-const launchNote = (provider: string, codename: string | undefined): string => `Multiagent: starting ${builtIn.get(provider)?.label ?? provider}${codename ? ` (${codename})` : ''}`;
+const { launchNote } = require('./launchNote') as { launchNote(provider: string, codename: string | undefined): string };
 
 const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
   ? 'The session codename was taken by another window during review. Please start again.'
