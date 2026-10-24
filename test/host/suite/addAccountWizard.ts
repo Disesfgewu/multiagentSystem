@@ -18,6 +18,9 @@ const EMAIL = 'wizard.person@example.test';
 export async function runAddAccountWizardChecks(): Promise<void> {
   if (process.platform === 'win32') { console.log('host smoke: the add-account wizard check is not run on Windows (the identity check is not supported there), so it was skipped'); return; }
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mas-wizard-home-')));
+  // The seams exist for these tests only: an installed extension (not test mode) cannot replace the home folder or the sign-in.
+  const refused = await outsideTestMode(async () => { try { setAddAccountSeamsForTests({ home }); return 'replaced'; } catch (error) { return String((error as Error).message); } });
+  assert.equal(refused.result, 'This is only exposed in Extension Host tests.');
   let signIns = 0;
   setAddAccountSeamsForTests({ home, openSignIn: () => { signIns += 1; return { done: Promise.resolve() }; } });
   setIdentityRunnerForTests(async (_file, _args, options) => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: EMAIL, orgName: 'Wizard Org', subscriptionType: 'pro', configDirectory: options.env.CLAUDE_CONFIG_DIR }) }));
