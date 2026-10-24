@@ -24,6 +24,8 @@ process.stdin.on('data', (chunk) => {
       if (mode === 'silent') continue;
       if (mode === 'error') { say({ id: message.id, error: { code: -32600, message: 'not available' } }); continue; }
       say({ method: 'remoteControl/status/changed', params: { status: 'disabled' } });
+      // A request from the server that happens to use the same id: it is not the answer.
+      say({ id: message.id, method: 'item/tool/requestUserInput', params: {} });
       say({ id: message.id, result: { account: mode === 'other-home' ? accounts.chatgpt : accounts[mode], requiresOpenaiAuth: true } });
     }
   }

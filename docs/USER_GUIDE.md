@@ -99,7 +99,7 @@
 
 ![用預設帳號啟動](user-guide/images/03-start-with-default.png)
 
-**換帳號重新啟動**：卡片下方按 **Switch account…** → 選另一個帳號（清單裡不會有它現在用的帳號）。會跳出確認視窗 `Restart “E2E Agent 5” with the account “Work A”?`，說明它的終端機會關掉、agent 會停下，然後在同一個資料夾、用同樣的名稱、身份組和模型重新啟動。按 **Restart with This Account** 才會動作；按 **Cancel** 什麼都不變。重新啟動之後，工作台只剩一張它的卡片，寫著新的帳號；如果新的 session 在後面的確認視窗被取消，舊的卡片會留著，寫 **Terminal closed**，可以重新開啟。
+**換帳號重新啟動**：卡片下方按 **Switch account…** → 選另一個帳號（清單裡不會有它現在用的帳號）。會跳出確認視窗 `Restart “E2E Agent 5” with the account “Work A”?`，說明它的終端機會關掉、agent 會停下，然後在同一個資料夾、用同樣的名稱、身份組和模型重新啟動。按 **Restart with This Account** 才會動作；按 **Cancel** 什麼都不變。重新啟動之後，工作台只剩一張它的卡片，寫著新的帳號；如果新的 session 在後面的確認視窗被取消，舊的卡片會留著，寫 **Terminal closed**，可以重新開啟。終端機已經關閉的卡片（例如重新載入視窗之後）也可以換帳號。換帳號後 agent 的代號不變（例如一直是 `Worker-05`），所以它在 GitHub 上的署名不會中途改變。
 
 ![換帳號重新啟動](user-guide/images/03-switch-account.png)
 

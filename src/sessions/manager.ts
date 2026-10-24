@@ -412,6 +412,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     autoMode?: { args: string[]; label: string; state?: string };
     /** The codename the caller assigned (issue #342); shown with the session and saved with it. */
     codename?: string;
+    /** The session the codename was moved from (#352: an agent restarted with another account); that record stops holding it. */
+    codenameFrom?: string;
     /** A folder put first on PATH for the typed CLI command (issue #342: the session's gh wrapper). */
     pathPrefix?: string;
     /** A short line shown instead of the long typed command (#357): the screen is cleared first. Omitted: the command stays as typed. */
@@ -442,7 +444,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
       this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs, input.pathPrefix, input.launchNote);
-      if (input.codename !== undefined) this.codenames.set(identity.id, input.codename);
+      if (input.codename !== undefined) {
+        if (input.codenameFrom !== undefined && this.codenames.get(input.codenameFrom) === input.codename) this.codenames.delete(input.codenameFrom);
+        this.codenames.set(identity.id, input.codename);
+      }
       await this.persist();
       return this.view(identity.id);
     } catch (error) {

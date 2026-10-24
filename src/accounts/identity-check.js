@@ -40,7 +40,8 @@ function codexAnswer(stdout, id = CODEX_ACCOUNT_REQUEST_ID) {
     if (!line.trim().startsWith('{')) continue;
     let message;
     try { message = JSON.parse(line); } catch { continue; }
-    if (isPlain(message) && message.id === id) return message;
+    // A request the server sends (it has a `method`) can carry the same id: only an answer counts.
+    if (isPlain(message) && message.id === id && !Object.hasOwn(message, 'method')) return message;
   }
   return null;
 }

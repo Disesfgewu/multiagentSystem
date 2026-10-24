@@ -530,7 +530,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
   }
 
-  async function startWithAccount(input: SessionCommandOptions): Promise<SessionOutcome> {
+  // `inherit` is never read from a command's argument: only restartWithAccount passes it, so no caller can take another session's codename.
+  async function startWithAccount(input: SessionCommandOptions, inherit: { codenameFrom?: string } = {}): Promise<SessionOutcome> {
     const interactive = input.interactive !== false;
     // Set once a quota-gate reservation is taken; released on every exit path below except the one
     // success path, which instead hands it off to this new session's own lifetime.
@@ -643,7 +644,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         const project = await resolveProject(cwd);
         // The codename is worked out before the instructions (they tell it to the agent) but written only once they are confirmed.
         const codenames = new CodenameStore(store);
-        const codenameAsk = codenameRequest(store, project.repoId, targetSessionId, input.roleGroupId);
+        const codenameAsk = codenameRequest(store, project.repoId, targetSessionId, input.roleGroupId, inherit.codenameFrom);
         const previewed = codenames.preview(codenameAsk);
         if (!previewed.ok) {
           if (release) { await release(); release = undefined; }
@@ -714,7 +715,9 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           if (release) { await release(); release = undefined; }
           return failure(codenameFailure(committed.reason), interactive);
         }
-        revertCodename = () => { codenames.revert({ repoId: codenameAsk.repoId, sessionId: codenameAsk.sessionId }); };
+        // A codename moved from the session this one replaces goes back to it if this one does not start.
+        const movedFrom = codenameAsk.from !== undefined && inherit.codenameFrom !== undefined && manager.get(inherit.codenameFrom)?.codename === codename ? codenameAsk.from : undefined;
+        revertCodename = () => { codenames.revert({ repoId: codenameAsk.repoId, sessionId: codenameAsk.sessionId, ...(movedFrom ? { from: movedFrom } : {}) }); };
         const wrapper = prepareGhWrapper(privateDir, targetSessionId, codename, env);
         if (!wrapper.ok) {
           cleanupSessionPlan(prep.plan);
@@ -759,7 +762,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         ...(attributionFile ? { attributionFile } : {}),
         ...(provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}),
         ...(autoMode.auto ? { autoMode: autoMode.auto } : {}),
-        ...(codename !== undefined && revertCodename ? { codename } : {}),
+        ...(codename !== undefined && revertCodename ? { codename, ...(inherit.codenameFrom ? { codenameFrom: inherit.codenameFrom } : {}) } : {}),
         ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {}),
         launchNote: launchNote(provider, codename)
       });
@@ -804,11 +807,16 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   /** Stops a session and lets go of everything it held: its account slot, isolation, observation and window-only notes. */
   async function stopSessionNow(id: string): Promise<SessionView> {
     const session = manager.stop(id);
+    await releaseSessionResources(id);
+    return session;
+  }
+
+  /** What a session holds while it runs: its quota reservation, observations and screen state. Safe for one whose terminal is closed. */
+  async function releaseSessionResources(id: string): Promise<void> {
     await releaseReservation(id);
     observations.release(id);
     ideStatus.delete(id);
     trustStatus.delete(id);
-    return session;
   }
 
   /**
@@ -840,8 +848,11 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       'Restart with This Account'
     );
     if (answer !== 'Restart with This Account') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-    await stopSessionNow(prior.id);
+    // A card whose terminal already closed (every card after a window reload) has nothing to stop, only what it held to release.
+    if (prior.terminalOpen) await stopSessionNow(prior.id);
+    else await releaseSessionResources(prior.id);
     changed.fire();
+    // The agent keeps its codename, so its GitHub signature does not change: it moves from the old session to the new one.
     const restarted = await startWithAccount({
       interactive: true,
       provider: prior.provider,
@@ -851,7 +862,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       accountProfileId: choice.id === 'unassigned' ? undefined : choice.id,
       requestedModel: prior.requestedModel,
       ...(launch === false ? { launch } : {})
-    });
+    }, { codenameFrom: prior.id });
     // The agent is shown once, as its new session. If the new one did not start, the stopped one stays and can be reopened.
     if (restarted.ok) {
       try { await manager.forget(prior.id); } catch { /* it stays listed with its terminal closed */ }

@@ -1044,3 +1044,16 @@ test('forget drops a stopped session from the list and from what is saved, and r
   assert.deepEqual((r.store.saved ?? []).map((record) => [record.id, record.name]), [[kept.id, 'Kept']]);
   await rejectsWithCode(r.manager.forget(replaced.id), 'session-not-found');
 });
+
+test('a codename moved from another session leaves that session: two sessions never show the same codename (#352)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const old = await start(r, { name: 'Same Agent', codename: 'Worker-05' });
+  r.manager.stop(old.id);
+  const again = await start(r, { name: 'Same Agent', codename: 'Worker-05', codenameFrom: old.id });
+  assert.equal(r.manager.get(again.id)?.codename, 'Worker-05');
+  assert.equal(r.manager.get(old.id)?.codename, null, 'the old record no longer holds it');
+  const other = await start(r, { name: 'Other', codename: 'Worker-06', codenameFrom: again.id });
+  assert.equal(r.manager.get(again.id)?.codename, 'Worker-05', 'a different codename takes nothing away');
+  assert.equal(r.manager.get(other.id)?.codename, 'Worker-06');
+});

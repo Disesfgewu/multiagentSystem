@@ -7,7 +7,7 @@ import { accountService } from '../../../src/accounts/accountRuntime';
 import { outsideTestMode } from './nonInteractiveGate';
 import { removeTemp } from './tempCleanup';
 
-type Listed = { sessions: Array<{ id: string; name: string; state: string; terminalOpen: boolean; accountProfileId: string }> };
+type Listed = { sessions: Array<{ id: string; name: string; state: string; terminalOpen: boolean; accountProfileId: string; codename?: string | null }> };
 type Item = { label: string; id?: string };
 
 /**
@@ -42,7 +42,8 @@ export async function runSwitchAccountChecks(workspace: string): Promise<void> {
   ui.showQuickPick = async (items: Item[] | Thenable<Item[]>) => {
     const listed = await items;
     offered.push(listed.map((item) => item.label));
-    return listed.find((item) => item.id === to) ?? listed[0];
+    // The other of the two accounts: the list leaves out the one the agent uses.
+    return listed.find((item) => item.id === to) ?? listed.find((item) => item.id === from);
   };
   const button = async (message: string, options: unknown, ...buttons: string[]) => {
     asked.push(message);
@@ -60,16 +61,28 @@ export async function runSwitchAccountChecks(workspace: string): Promise<void> {
     const still = (await list()).filter((entry) => entry.name === 'Switch Account Agent');
     assert.deepEqual(still.map((entry) => [entry.id, entry.accountProfileId]), [[id, from]]);
 
-    // Confirmed: the agent stops and starts again with the chosen account, same name, same folder.
+    // Confirmed: the agent stops and starts again with the chosen account, same name, same folder, same codename.
     restart = true;
+    const codename = (await list()).find((entry) => entry.id === id)?.codename;
+    assert.ok(codename, 'the agent has a codename to keep');
     const switched = await vscode.commands.executeCommand<{ ok: boolean; session?: { id: string; accountProfileId: string; worktree: string } }>('multiagentSystem.sessions.restartWithAccount', { id, launch: false });
     assert.equal(switched?.ok, true, JSON.stringify(switched));
     assert.notEqual(switched!.session!.id, id);
     assert.equal(switched!.session!.accountProfileId, to);
     const after = await list();
     assert.equal(after.some((entry) => entry.id === id), false, 'the stopped session is no longer listed: the agent shows once');
-    assert.deepEqual(after.filter((entry) => entry.name === 'Switch Account Agent' && entry.terminalOpen).map((entry) => [entry.id, entry.accountProfileId]), [[switched!.session!.id, to]]);
+    assert.deepEqual(after.filter((entry) => entry.name === 'Switch Account Agent' && entry.terminalOpen).map((entry) => [entry.id, entry.accountProfileId, entry.codename]), [[switched!.session!.id, to, codename]], 'it signs as before');
+
+    // A card whose terminal already closed (every card after a window reload) switches too: nothing to stop, the rest as above.
     await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: switched!.session!.id, interactive: false });
+    assert.equal((await list()).find((entry) => entry.id === switched!.session!.id)?.terminalOpen, false);
+    const reopened = await vscode.commands.executeCommand<{ ok: boolean; message?: string; session?: { id: string; accountProfileId: string } }>('multiagentSystem.sessions.restartWithAccount', { id: switched!.session!.id, launch: false });
+    assert.equal(reopened?.ok, true, JSON.stringify(reopened));
+    assert.equal(reopened!.session!.accountProfileId, from);
+    const closedAfter = await list();
+    assert.equal(closedAfter.some((entry) => entry.id === switched!.session!.id), false, 'the closed card is replaced, not kept beside the new one');
+    assert.equal(closedAfter.find((entry) => entry.id === reopened!.session!.id)?.codename, codename, 'and it still signs as before');
+    await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: reopened!.session!.id, interactive: false });
   } finally {
     ui.showQuickPick = original.pick;
     ui.showWarningMessage = original.warn;
