@@ -15,6 +15,7 @@ import { registerExportCommands } from './export/commands';
 import { registerDispatchCommands } from './dispatch/commands';
 import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerCommandCenter } from './commandCenter/commandCenter';
+import { registerHomeView } from './sidebar/homeView';
 import { registerOverview } from './overview/overviewView';
 import { registerReports } from './reports/reportsView';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';
@@ -65,6 +66,7 @@ async function launchAgent(): Promise<void> {
   const name = await vscode.window.showInputBox({
     prompt: 'Terminal name',
     value: provider.label,
+    ignoreFocusOut: true,
     validateInput: validateTerminalName
   });
   if (!name) return;
@@ -99,6 +101,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerUsageLogCommands(context, sessions);
   registerOverview(context, sessions);
   registerCommandCenter(context, sessions);
+  registerHomeView(context, sessions);
   registerReports(context);
   registerRoleCommands(context, sessions);
   registerBroadcastCommands(context, sessions);

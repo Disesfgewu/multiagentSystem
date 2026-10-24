@@ -80,7 +80,9 @@ const isPm = (role) => role === 'pm';
  * @returns {{ pm: object[], agents: object[], accounts: object[], counts: { agents: number, pm: number } }}
  */
 function buildCards(input) {
-  const { sessions, agents = [], accounts = [], roles = {}, reports = {}, assignments = {} } = isPlain(input) ? input : {};
+  const { sessions, agents = [], accounts = [], roles = {}, reports = {}, assignments = {}, emails = {} } = isPlain(input) ? input : {};
+  // The e-mail address of each account from this window's last sign-in check (#357): shown on the card only, never stored.
+  const emailOf = (id) => (isPlain(emails) && typeof id === 'string' && Object.hasOwn(emails, id) && typeof emails[id] === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(emails[id]) ? emails[id] : null);
   const presented = new Map((Array.isArray(agents) ? agents : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const accountById = new Map((Array.isArray(accounts) ? accounts : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const cards = [];
@@ -106,7 +108,7 @@ function buildCards(input) {
       role,
       roleName: line(roleInfo && roleInfo.name, role ? role : session.roleGroupId === 'unassigned' || !session.roleGroupId ? 'no role group' : UNKNOWN),
       provider: line(session.providerLabel ?? session.provider),
-      account: account ? line(account.label, 'Account') : (session.accountProfileId && session.accountProfileId !== 'unassigned' ? 'profile missing' : 'CLI default sign-in'),
+      account: account ? `${line(account.label, 'Account')}${emailOf(session.accountProfileId) ? ` (${emailOf(session.accountProfileId)})` : ''}` : (session.accountProfileId && session.accountProfileId !== 'unassigned' ? 'profile missing' : 'CLI default sign-in'),
       model: line(session.requestedModel, 'CLI default'),
       modelNote: 'requested, not confirmed',
       status,
@@ -288,9 +290,30 @@ function toggled(list, id) {
 
 // ---- the only messages the page may send ----
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm']);
+/**
+ * The Workbench tabs (#357) and what their next-step buttons open: a fixed name, never a command id the page chose. Each opens an
+ * existing command with NO argument, so the command's own windows ask the person (which CLI, which account, what text, and the
+ * confirmation); nothing here starts, stops, sends or publishes by itself.
+ */
+const TABS = Object.freeze(['agents', 'work', 'accounts', 'broadcast', 'ask', 'knowledge', 'setup']);
+const TARGETS = Object.freeze({
+  startAgent: 'multiagentSystem.launchAgent',
+  sessions: 'multiagentSystem.sessions.list',
+  createRole: 'multiagentSystem.roles.create',
+  browseGitHub: 'multiagentSystem.github.browse',
+  broadcastCreate: 'multiagentSystem.broadcasts.send',
+  broadcastDeliver: 'multiagentSystem.broadcasts.deliver',
+  discussWithPm: 'multiagentSystem.discuss.withPm',
+  memoryAdd: 'multiagentSystem.memory.add',
+  memoryReview: 'multiagentSystem.memory.review',
+  skillsInstall: 'multiagentSystem.skills.install',
+  setupRefresh: 'multiagentSystem.setup.refresh',
+  setupDiagnose: 'multiagentSystem.setup.diagnose'
+});
+
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: []
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: []
 });
 
 /**
@@ -321,6 +344,8 @@ function parseMessage(raw, knownIds, accountIds) {
       if (typeof value !== 'string' || !ID.test(value) || !known.has(value)) return { ok: false, reason: 'unknown-id' };
     } else if (key === 'mode') {
       if (!LAYOUTS.includes(value)) return { ok: false, reason: 'invalid-field' };
+    } else if (key === 'target') {
+      if (typeof value !== 'string' || !Object.hasOwn(TARGETS, value)) return { ok: false, reason: 'invalid-field' };
     } else if (key === 'kind') {
       if (value !== 'issue' && value !== 'pullRequest') return { ok: false, reason: 'invalid-field' };
     } else if (key === 'order') {
@@ -341,4 +366,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES };
+module.exports = { buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

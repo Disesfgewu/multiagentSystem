@@ -151,11 +151,16 @@ class UsageLogItem extends vscode.TreeItem {
 
 type AccountTreeItem = AccountItem | AccountMessage | SessionItem | UsageLogItem;
 
+// Fired whenever the accounts' rows are drawn again: an account added, changed, removed or checked (#357). The Workbench and the side
+// bar listen, so a new account or a finished sign-in check shows there without waiting for an agent to change.
+const accountsChanged = new vscode.EventEmitter<void>();
+export const onDidChangeAccounts = accountsChanged.event;
+
 class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
   private readonly changed = new vscode.EventEmitter<AccountTreeItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  refresh(): void { this.changed.fire(undefined); }
+  refresh(): void { this.changed.fire(undefined); accountsChanged.fire(); }
   getTreeItem(item: AccountTreeItem): vscode.TreeItem { return item; }
 
   async getChildren(item?: AccountTreeItem): Promise<AccountTreeItem[]> {
@@ -219,6 +224,36 @@ class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
 let sessions: SessionCommands | undefined;
 let treeForTest: AccountTree | undefined;
 let currentTree: AccountTree | undefined;
+
+/**
+ * The accounts at a glance, for the side bar's one line (#357): how many, how many signed in, how many need the person. The same
+ * judgement as the Accounts rows (sign-in, usage that needs a step, a duplicate, an unhealthy profile). Unknown when unreadable.
+ */
+export async function accountsAtAGlance(): Promise<{ ok: true; total: number; signedIn: number; attention: number } | { ok: false }> {
+  try {
+    const result = await accountService(() => sessions?.list() ?? []);
+    if (!result.ok) return { ok: false };
+    const loaded = result.service.list();
+    if (!loaded.ok) return { ok: false };
+    restoreChecks(result.store, loaded.profiles);
+    const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
+    const quotas = await Promise.all(loaded.profiles.map((profile: any) => quotaDetail(profile.id, () => sessions?.list() ?? []).catch(() => null)));
+    let signedIn = 0;
+    let attention = 0;
+    loaded.profiles.forEach((profile: any, index: number) => {
+      const who = identitySummary({ check: checkResults.get(profile.id), display: checkDisplays.get(profile.id), checking: checking.has(profile.id) });
+      const usage = quotaSummary(quotas[index], new Date());
+      if (who.signedIn === true) signedIn += 1;
+      if (who.attention || usage.attention || (described[index].duplicateOf ?? []).length > 0 || described[index].health === 'attention') attention += 1;
+    });
+    return { ok: true, total: loaded.profiles.length, signedIn, attention };
+  } catch { return { ok: false }; }
+}
+
+/** The e-mail address the CLI reported for an account in this window's last check (#357 cards), or null. Memory only, never stored. */
+export function accountEmail(profileId: string): string | null {
+  return checkDisplays.get(profileId)?.email ?? null;
+}
 
 export function accountTreeForTests(): vscode.TreeDataProvider<AccountTreeItem> {
   if (!treeForTest) throw new Error('The account tree is available only in Extension Host tests.');
@@ -349,7 +384,7 @@ async function create(): Promise<void> {
     void vscode.window.showWarningMessage(`${picked.label} can launch in a terminal, but separate account profiles are unavailable. Account isolation, identity verification and quota/usage are unknown. Use the CLI's default sign-in; no account profile or configuration folder was created.`);
     return;
   }
-  const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
+  const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', ignoreFocusOut: true, validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
   if (!label) return;
   const result = await accountService(() => sessions?.list() ?? []);
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }

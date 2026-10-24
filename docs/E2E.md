@@ -28,7 +28,17 @@
 - `framework`：只證明畫面到得了。
 - `not-done`：功能還沒做；用 `pending` 寫明還差什麼，以及負責的 issue。
 
-只有標成 `accepted`、而且每個檢查都成立的項目，報告才會寫「accepted」；檢查通過但沒有標成 accepted 的項目，會寫「checks pass — NOT DONE (…)」。目前的兩項（側欄、指揮台）都還是 `not-done`，要等 #357 完成。
+只有標成 `accepted`、而且每個檢查都成立的項目，報告才會寫「accepted」；檢查通過但沒有標成 accepted 的項目，會寫「checks pass — NOT DONE (…)」。
+
+目前已驗收（#357）：
+- **00 側欄**：只留一個入口，原本的 view 都不在畫面上。
+- **11 指揮台**：從工作台新增帳號並檢查登入、建立身份組、啟動 3 個 agent，畫面上有 3 張卡片，每張都有代號、帳號（含 email）與模式。
+
+## 寫步驟時要注意
+- `drive(page, answers, done)` 依提示文字回答 VS Code 自己的視窗（quick pick、輸入框、modal）。設定裡的 `window.dialogStyle` 是 `custom`：系統原生的對話框不在頁面裡，看不到也點不到。
+- agent 的終端機會在編輯區打開，蓋在工作台前面，所以操作工作台前要先點它的分頁。
+- 截圖前要先 `npm run build`，因為 `run.js` 載入的是編譯後的擴充套件。
+- `MULTIAGENT_E2E_DEBUG=1`：在等待時截圖，每個流程最多 20 張，用來看頁面碰不到的視窗。
 
 ## 新增一項
 每個面向使用者的 PR，都要在 `test/e2e/steps.js` 補上自己那一項（#360 的編號）：

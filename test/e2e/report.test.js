@@ -46,8 +46,14 @@ test('only an item marked accepted whose checks all held is reported as accepted
   assert.equal(R.verdict({ ok: true, acceptance: 'not-done', pending: '#357' }), 'checks pass — NOT DONE (#357)');
 });
 
-test('the items of this framework are not marked accepted until #357 builds what #360 asks for (#371)', () => {
+test('an item is either accepted with nothing pending, or not done with what is still to do (#371, #357)', () => {
   const { ITEMS } = require('./steps');
-  for (const item of ITEMS) assert.notEqual(item.acceptance, 'accepted', item.id);
-  for (const item of ITEMS) assert.match(item.pending ?? '', /#357/, item.id);
+  for (const item of ITEMS) {
+    if (item.acceptance === 'accepted') assert.equal(item.pending, undefined, `${item.id} is accepted, so nothing is pending`);
+    else assert.match(item.pending ?? '', /#\d+/, `${item.id} says which issue finishes it`);
+  }
+  // #357: the side bar keeps one entry, and one screen shows every agent with its codename, account and mode.
+  assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '11']);
+  const eleven = ITEMS.find((item) => item.id === '11');
+  assert.ok(eleven.steps.some((step) => step.name === 'start-three-agents') && eleven.steps.some((step) => step.name === 'see-three-cards'), 'item 11 starts three agents and looks at their cards');
 });

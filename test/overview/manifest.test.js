@@ -21,8 +21,8 @@ test('the activity bar has a Multiagent container with an icon that exists', () 
   assert.equal(/<script|onload|href=|xlink:href|<image|<foreignObject/i.test(svg), false, 'the icon holds no script or external reference');
 });
 
-test('the overview is first, the three existing lists moved in, and nothing is left in the Explorer', () => {
-  assert.deepEqual(contributes.views.multiagentSystem.map((view) => view.id), VIEWS);
+test('the Multiagent view is first, the classic lists follow (shown only with the setting), and nothing is left in the Explorer', () => {
+  assert.deepEqual(contributes.views.multiagentSystem.map((view) => view.id), ['multiagentSystem.homeView', ...VIEWS]);
   assert.equal(contributes.views.explorer, undefined);
   for (const id of VIEWS) assert.equal(Object.values(contributes.views).flat().filter((view) => view.id === id).length, 1, `${id} appears once`);
   for (const view of contributes.views.multiagentSystem) assert.ok(view.name && view.name.length > 2);

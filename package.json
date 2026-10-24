@@ -151,6 +151,11 @@
           "description": "Host names the enforced mode lets the CLI reach (user settings only), for example api.example.com or *.example.com. GitHub hosts are always refused, even if listed. Empty means enforced mode refuses to start.",
           "items": { "type": "string", "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$" }
         },
+        "multiagentSystem.showClassicViews": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the classic side bar views (Overview, Issues Report, PRs Report, GitHub, Accounts and Sessions, Role Groups and Rules, Administrator Broadcasts, Shared Memory, Tools Setup) under the Multiagent view. Everything they do is also in the Workbench."
+        },
         "multiagentSystem.agents.autoMode": {
           "type": "string",
           "enum": ["on", "off"],
@@ -187,15 +192,16 @@
     },
     "views": {
       "multiagentSystem": [
-        { "id": "multiagentSystem.overviewView", "name": "Overview" },
-        { "id": "multiagentSystem.issuesReportView", "name": "Issues Report" },
-        { "id": "multiagentSystem.prsReportView", "name": "PRs Report" },
-        { "id": "multiagentSystem.githubView", "name": "GitHub" },
-        { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions" },
-        { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules" },
-        { "id": "multiagentSystem.broadcastsView", "name": "Administrator Broadcasts" },
-        { "id": "multiagentSystem.memoryView", "name": "Shared Memory" },
-        { "id": "multiagentSystem.toolsSetupView", "name": "Tools Setup" }
+        { "id": "multiagentSystem.homeView", "name": "Multiagent" },
+        { "id": "multiagentSystem.overviewView", "name": "Overview", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.issuesReportView", "name": "Issues Report", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.prsReportView", "name": "PRs Report", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.githubView", "name": "GitHub", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.accountsView", "name": "Accounts and Sessions", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.rolesView", "name": "Role Groups and Rules", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.broadcastsView", "name": "Administrator Broadcasts", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.memoryView", "name": "Shared Memory", "when": "config.multiagentSystem.showClassicViews" },
+        { "id": "multiagentSystem.toolsSetupView", "name": "Tools Setup", "when": "config.multiagentSystem.showClassicViews" }
       ]
     },
     "viewsWelcome": [
@@ -369,6 +375,7 @@
       { "command": "multiagentSystem.roles.start", "title": "Multiagent: Start Agent with This Role Group", "icon": "$(play)" },
       { "command": "multiagentSystem.roles.preview", "title": "Multiagent: Preview Effective Rules" },
       { "command": "multiagentSystem.roles.remove", "title": "Multiagent: Remove Role Group" },
+      { "command": "multiagentSystem.workbench.open", "title": "Multiagent: Open Workbench", "icon": "$(layout)" },
       { "command": "multiagentSystem.commandCenter.open", "title": "Multiagent: Open Command Center", "icon": "$(layout)" },
       { "command": "multiagentSystem.usage.showLog", "title": "Multiagent: Show Token Usage Log" },
       { "command": "multiagentSystem.usage.exportLog", "title": "Multiagent: Export Token Usage Log (masked)" },

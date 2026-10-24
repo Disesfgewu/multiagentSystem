@@ -95,11 +95,17 @@ test('a saved check keeps the reduced identity and never an e-mail address; a re
   assert.equal(new AccountCheckStore(store).load(['acct-4']).size, 0);
 });
 
-const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/accountCommands.ts'), 'utf8');
+// Line endings normalized: a Windows checkout has CRLF, and the patterns below are written with \n.
+const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/accountCommands.ts'), 'utf8').replace(/\r\n/g, '\n');
 
-test('the e-mail address goes only to the screen: the display map is read in two places (row and details) and never stored or logged (#352)', () => {
+test('the e-mail address goes only to the screen: the display map is read for the row, the details, the side bar count and the Workbench card, and never stored or logged (#352, #357)', () => {
   const uses = [...source.matchAll(/checkDisplays\.(\w+)\(/g)].map((match) => match[1]);
-  assert.deepEqual(uses.sort(), ['delete', 'get', 'get', 'set'], uses.join(','));
+  assert.deepEqual(uses.sort(), ['delete', 'get', 'get', 'get', 'get', 'set'], uses.join(','));
+  // The side bar count passes it to identitySummary only to know signed in or not; the Workbench card is the one other reader.
+  assert.match(source, /export function accountEmail\(profileId: string\): string \| null \{\n {2}return checkDisplays\.get\(profileId\)\?\.email \?\? null;\n\}/);
+  const srcRoot = path.join(__dirname, '../../src');
+  const readers = fs.readdirSync(srcRoot, { recursive: true }).filter((name) => /\.(ts|js)$/.test(name)).filter((name) => /\baccountEmail\(/.test(fs.readFileSync(path.join(srcRoot, name), 'utf8'))).map((name) => name.replace(/\\/g, '/')).sort();
+  assert.deepEqual(readers, ['accounts/accountCommands.ts', 'commandCenter/commandCenter.ts'], 'only the Workbench cards read it');
   assert.match(source, /const \{ display, \.\.\.result \} = outcome;[\s\S]*new AccountCheckStore\(accounts\.store\)\.save\(profile\.id, result\)/, 'what is saved is the result without the display part');
   assert.match(source, /const \{ display: _display, \.\.\.outcome \} = await checkAccountIdentity/, 'the launch probe drops it too');
   assert.doesNotMatch(source, /console\.(log|warn|error)\([^)]*display/i);

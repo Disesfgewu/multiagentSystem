@@ -85,13 +85,19 @@ test('the page really runs: given a state it draws every card, the PM panel and 
       { id: 'acct-2', label: `Codex <b>${hostile}`, provider: 'Codex CLI', signIn: 'sign-in not checked in this window', identity: 'identity unknown', issues: [], plan: 'plus', windows: [], usageKnown: false, reason: { short: 'no Codex session log yet', detail: 'This account has no session log yet.', hint: 'Run Codex once with this account.', next: { action: 'details', label: 'Open the account details' } }, policy: 'Limits: none set.', gate: null, alert: null, agents: [], agentCount: 0 }
     ],
     alerts: ['Main: new agents on this account are held back'], decisions: { issues: { known: false, text: 'issues: unknown (open the report list to load it)' }, pullRequests: { known: true, text: '2 pull requests need a decision' } }, notes: ['a note'] } } });
-  const text = app.textContent;
+  // The Agents tab is shown first (#357); the accounts are on their own tab, reached with one click on it.
+  const agentsText = app.textContent;
+  assert.equal(agentsText.includes('Accounts (2)'), false, 'the accounts are not on the Agents tab');
+  const accountsTab = nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab' && entry.textContent === 'Accounts').at(-1);
+  assert.ok(accountsTab, 'there is an Accounts tab');
+  accountsTab.listeners.click();
+  const text = agentsText + app.textContent;
   assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'Auto mode is not in effect: Claude Code reports default (asks before actions)'), 'a fallen-back auto mode is an alert (#362)');
   assert.ok(text.includes('Next: reopen the session'));
   assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'VS Code: not connected (no lock file)'), 'a card whose Claude Code cannot reach VS Code says so as an alert (#354)');
   assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'muted' && entry.textContent === "VS Code: connected through this window's Claude Code port (40002)"));
   assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'Folder trust: not pre-written, so Codex asks once (x)'), 'a CLI that will stop to ask is shown as an alert (#362)');
-  for (const expected of ['Command Center', 'PM', 'Agents (6)', 'Accounts (2)', 'quota: near the limit', 'Usage: unknown (no Codex session log yet)', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Read-only view']) assert.ok(text.includes(expected), expected);
+  for (const expected of ['Workbench', 'PM', 'Agents (6)', 'Accounts (2)', 'quota: near the limit', 'Usage: unknown (no Codex session log yet)', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Values without a source are shown as unknown.']) assert.ok(text.includes(expected), expected);
   for (const expected of ['5-hour: 42% used · verified and current · resets in 2h · read 1m ago · from claude status line rate_limits', 'identity verified (abcd1234)', 'sign-in not checked in this window', 'plan plus', 'Limits: warn at 80% used.', 'Agents: Worker One (+2 more)', 'No running agent uses this account.', 'Quota alerts', 'Main: new agents on this account are held back', 'Quota: new agents on this account are held back', 'This account has no session log yet.', 'Run Codex once with this account.']) assert.ok(text.includes(expected), `the account panel draws: ${expected}`);
   for (const expected of ['waiting for input', 'ended', 'state unknown', 'working']) assert.ok(text.includes(expected), `the status text "${expected}" is drawn on a card`);
   assert.ok(text.includes('Worktree: 2 changed, 0 untracked; 1 ahead, 0 behind its upstream'), 'the card itself carries one line about the working folder');
@@ -135,5 +141,50 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   listeners.message({ data: { type: 'attack', state: {} } });
   listeners.message({ data: null });
   listeners.message({ data: { type: 'state', state: null } });
-  assert.ok(app.textContent.includes('Command Center'), 'messages that are not a valid state change nothing');
+  assert.ok(app.textContent.includes('Workbench'), 'messages that are not a valid state change nothing');
+});
+
+test('the Workbench has seven tabs; each says what it is for and has a next step, and the host can open one by name (#357)', () => {
+  const posted = [];
+  const listeners = {};
+  const nodes = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', draggable: false, type: '', id: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage: (message) => posted.push(message) }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const empty = { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'issues: unknown' }, pullRequests: { known: false, text: 'pull requests: unknown' } }, notes: [] };
+  listeners.message({ data: { type: 'state', state: empty } });
+  const tabs = () => nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab').slice(-7);
+  assert.deepEqual(tabs().map((entry) => entry.textContent), ['Agents', 'Work', 'Accounts', 'Broadcast', 'Ask', 'Knowledge', 'Setup']);
+  assert.equal(tabs()[0].attrs['aria-selected'], 'true', 'the Agents tab is shown first');
+  assert.ok(app.textContent.includes('Start agent…') && app.textContent.includes('Next step'), 'with no agent the Agents tab says what to do next');
+  for (const label of ['Agents', 'Work', 'Accounts', 'Broadcast', 'Ask', 'Knowledge', 'Setup']) {
+    tabs().find((entry) => entry.textContent === label).listeners.click();
+    assert.equal(tabs().find((entry) => entry.textContent === label).attrs['aria-selected'], 'true', label);
+    assert.ok(app.textContent.includes('Next step'), `${label} has a next step`);
+  }
+  // The card grid's own rule must not also lay out the agents section (the heading was put into a column of its own, #357).
+  assert.equal(nodes.some((entry) => entry.tag === 'main' && /(^| )grid( |$)/.test(entry.className)), false, 'the agents section is not a grid itself');
+  // A next-step button posts only a fixed target name.
+  tabs().find((entry) => entry.textContent === 'Broadcast').listeners.click();
+  nodes.filter((entry) => entry.tag === 'button' && entry.textContent === 'Create broadcast notice…').at(-1).listeners.click();
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'open', target: 'broadcastCreate' }));
+  tabs().find((entry) => entry.textContent === 'Setup').listeners.click();
+  nodes.filter((entry) => entry.tag === 'button' && entry.textContent === 'Show classic views').at(-1).listeners.click();
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'showClassicViews' }));
+  // The host opens a tab by name; an unknown name changes nothing.
+  listeners.message({ data: { type: 'showTab', tab: 'accounts' } });
+  assert.equal(tabs().find((entry) => entry.textContent === 'Accounts').attrs['aria-selected'], 'true');
+  listeners.message({ data: { type: 'showTab', tab: 'nonsense' } });
+  assert.equal(tabs().find((entry) => entry.textContent === 'Accounts').attrs['aria-selected'], 'true');
+  const { TARGETS } = require('../../src/commandCenter/model');
+  for (const match of SCRIPT.matchAll(/open\('([A-Za-z]+)'\)/g)) assert.ok(Object.hasOwn(TARGETS, match[1]), `the page only names known targets: ${match[1]}`);
 });

@@ -5,7 +5,8 @@ import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } fro
 import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
-import { observationsFor, ACCOUNT_COMMANDS } from '../accounts/accountCommands';
+import { observationsFor, ACCOUNT_COMMANDS, accountEmail, onDidChangeAccounts } from '../accounts/accountCommands';
+import { WORKBENCH_COMMAND } from '../sidebar/homeView';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
@@ -19,6 +20,8 @@ const model = require('./model') as {
   parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
   buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
   applyLayoutMessage(layout: Layout, message: Message): Layout;
+  TABS: readonly string[];
+  TARGETS: Record<string, string>;
 };
 const { renderPage } = require('./page') as { renderPage(input: { nonce: string }): string };
 const { createRefreshLoop } = require('./refreshLoop') as { createRefreshLoop(run: () => Promise<void>): { request(): Promise<void>; running(): boolean } };
@@ -30,7 +33,7 @@ const LAYOUT_KEY = 'commandCenter.layout';
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; action?: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest' };
+type Message = { type: string; action?: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -87,6 +90,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[] } | undefined;
   let layout: Layout = model.normalizeLayout(context.workspaceState.get(LAYOUT_KEY));
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // The tab the Workbench was opened at, sent once the new page says it is ready.
+  let pendingTab: string | undefined;
 
   const knownIds = (): Set<string> => new Set([...(cached?.pm ?? []), ...(cached?.agents ?? [])].map((card) => card.id as string));
   const knownAccountIds = (): Set<string> => new Set((cached?.accounts ?? []).map((row) => row.id as string));
@@ -100,6 +105,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   let lastReports: Record<string, unknown> = {};
   let lastAssignments: Record<string, unknown> = {};
   const publish = (next: NonNullable<typeof cached>): void => { cached = next; post(); };
+  // The e-mail address of each agent's account from this window's sign-in checks (#357): memory only, for the cards.
+  const emailsOf = (live: Array<{ accountProfileId?: string }>): Record<string, string> => Object.fromEntries(live.map((entry) => entry.accountProfileId).filter((id): id is string => typeof id === 'string').map((id) => [id, accountEmail(id)]).filter((pair): pair is [string, string] => typeof pair[1] === 'string'));
   /**
    * One refresh, published in two steps (#368): first the cards from the sessions as they are now (with the pull request reports,
    * accounts and team rules last read), then again once the slower reads have answered. Nothing it worked out is thrown away.
@@ -108,7 +115,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const live = sessions.list().map((entry) => ({ ...entry, providerLabel: builtIn.get(entry.provider)?.label }));
     const [snapshot, roles] = await Promise.all([collectOverview(sessions), roleGroups()]);
     const notesWith = (teamRules: string | undefined) => [...(teamRules ? [teamRules] : []), ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240));
-    const first = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports: lastReports, assignments: lastAssignments });
+    const first = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports: lastReports, assignments: lastAssignments, emails: emailsOf(live) });
     publish({ pm: first.pm, agents: first.agents, accounts: cached?.accounts ?? [], alerts: cached?.alerts ?? [], decisions: model.describeDecisions(decisionCountsSnapshot()), notes: cached ? cached.notes : notesWith(undefined) });
     // The latest report of each agent's pull request: read a few at a time and kept for a minute by the report module.
     const numbers = [...new Set(snapshot.agents.map((agent) => agent.pullRequestNumber).filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0))].slice(0, 12);
@@ -117,7 +124,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const assignments = Object.fromEntries(await readAssignments());
     lastReports = reports;
     lastAssignments = assignments;
-    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments });
+    const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments, emails: emailsOf(live) });
     const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
     publish({ pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: notesWith(teamRules) });
@@ -137,6 +144,9 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const message = parsed.message;
     switch (message.type) {
       case 'ready':
+        if (pendingTab && panel) { void panel.webview.postMessage({ type: 'showTab', tab: pendingTab }); pendingTab = undefined; }
+        await refresh();
+        return { ok: true, command: message.type };
       case 'refresh':
         await refresh();
         return { ok: true, command: message.type };
@@ -196,8 +206,23 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'exportReport':
         void vscode.commands.executeCommand(EXPORT_PROJECT_REPORT);
         return { ok: true, command: message.type };
-      case 'openReports':
+      case 'openReports': {
+        // The report lists are classic views until the Work tab has them (#353): when they are hidden, the person is asked first.
+        if (!vscode.workspace.getConfiguration('multiagentSystem').get<boolean>('showClassicViews')) {
+          const answer = await vscode.window.showInformationMessage('The issue and pull request lists are in the classic side bar views for now.', { modal: true, detail: 'Show the classic views (Settings: multiagentSystem.showClassicViews) to open them? The Work tab gets its own lists in #353.' }, 'Show Classic Views');
+          if (answer !== 'Show Classic Views') return { ok: false, reason: 'cancelled' };
+          await vscode.workspace.getConfiguration('multiagentSystem').update('showClassicViews', true, vscode.ConfigurationTarget.Global);
+        }
         await vscode.commands.executeCommand(message.kind === 'issue' ? 'multiagentSystem.issuesReportView.focus' : 'multiagentSystem.prsReportView.focus');
+        return { ok: true, command: message.type };
+      }
+      // A next-step button of a tab (#357): a fixed name, mapped here to an existing command that is run with no argument.
+      case 'open':
+        void vscode.commands.executeCommand(model.TARGETS[message.target as string]);
+        return { ok: true, command: message.type };
+      case 'showClassicViews':
+        await vscode.workspace.getConfiguration('multiagentSystem').update('showClassicViews', true, vscode.ConfigurationTarget.Global);
+        void vscode.window.showInformationMessage('The classic views are shown under Multiagent in the side bar. Hide them again in Settings: multiagentSystem.showClassicViews.');
         return { ok: true, command: message.type };
       default:
         return { ok: false, reason: 'unknown-command' };
@@ -207,9 +232,14 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   controller = { handle, state: payload, refresh };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
-  const open = (): void => {
-    if (panel) { panel.reveal(vscode.ViewColumn.Active); void refresh(); return; }
-    panel = vscode.window.createWebviewPanel(COMMAND_CENTER_VIEW_TYPE, 'Command Center', vscode.ViewColumn.Active, { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: false });
+  // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).
+  const open = (value?: unknown): void => {
+    const asked = value && typeof value === 'object' ? (value as { tab?: unknown }).tab : undefined;
+    const tab = typeof asked === 'string' && (model.TABS as readonly string[]).includes(asked) ? asked : 'agents';
+    const show = (): void => { void panel?.webview.postMessage({ type: 'showTab', tab }); };
+    if (panel) { panel.reveal(vscode.ViewColumn.Active); show(); void refresh(); return; }
+    panel = vscode.window.createWebviewPanel(COMMAND_CENTER_VIEW_TYPE, 'Workbench', vscode.ViewColumn.Active, { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: false });
+    pendingTab = tab;
     panel.webview.html = renderPage({ nonce: randomBytes(16).toString('base64url') });
     panel.webview.onDidReceiveMessage((raw: unknown) => { void handle(raw); });
     panel.onDidChangeViewState((event) => { if (event.webviewPanel.visible) scheduleRefresh(); });
@@ -217,8 +247,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_CENTER_COMMAND, open),
+    vscode.commands.registerCommand(COMMAND_CENTER_COMMAND, () => open()),
+    vscode.commands.registerCommand(WORKBENCH_COMMAND, (value?: unknown) => open(value)),
     sessions.onDidChange(() => scheduleRefresh()),
+    onDidChangeAccounts(() => scheduleRefresh()),
     { dispose: () => { panel?.dispose(); if (timer) clearTimeout(timer); } }
   );
 }
