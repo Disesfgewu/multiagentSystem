@@ -1018,3 +1018,16 @@ test('the session\'s gh wrapper folder is put first on PATH in the typed command
   const shellOnly = await r.manager.start({ provider: 'claude', name: 'Shell', cwd: '/synthetic/project', launch: false, pathPrefix: '/private/s4' });
   assert.equal(shellOnly.state, 'terminal-open', 'a shell-only terminal types nothing, so it needs no prefix');
 });
+
+test('a launch note clears the screen before the command and prints it; without one the command is typed exactly as before (#357)', async () => {
+  const r = rig();
+  await r.manager.start({ provider: 'claude', name: 'Noted', cwd: '/synthetic/project', launchNote: 'Multiagent: starting Claude Code (Worker-01)' });
+  assert.equal(r.terminals[0].sent[0].text, `clear 2>/dev/null; printf '%s\\n' 'Multiagent: starting Claude Code (Worker-01)'; claude ${ATTRIBUTION}`);
+  await r.manager.start({ provider: 'claude', name: 'Plain', cwd: '/synthetic/project' });
+  assert.equal(r.terminals[1].sent[0].text, `claude ${ATTRIBUTION}`);
+  const shell = await r.manager.start({ provider: 'claude', name: 'Shell', cwd: '/synthetic/project', launch: false, launchNote: 'Multiagent: starting Claude Code' });
+  assert.equal(r.terminals[2].sent.length, 0, 'nothing is typed into a shell-only session');
+  r.manager.stop(shell.id);
+  await r.manager.reopen(shell.id, { launchNote: 'Multiagent: starting Claude Code (Worker-02)' });
+  assert.match(r.terminals[r.terminals.length - 1].sent[0].text, /^clear 2>\/dev\/null; printf '%s\\n' 'Multiagent: starting Claude Code \(Worker-02\)'; claude /);
+});

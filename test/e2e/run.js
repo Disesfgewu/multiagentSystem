@@ -62,6 +62,8 @@ function sandbox() {
     'window.newWindowDimensions': 'default',
     // VS Code's own dialogs instead of the system's: a native modal is not part of the page, so it could not be clicked or seen.
     'window.dialogStyle': 'custom',
+    // The terminal drawn as text, not on a canvas, so a step can read what it shows.
+    'terminal.integrated.gpuAcceleration': 'off',
     // VS Code's own network use goes through a proxy on a closed local port (updates, experiments and the marketplace are also off).
     // The extension's first-use download of the GitHub CLI is left out by MULTIAGENT_E2E_NO_DOWNLOAD (development mode only).
     'http.proxy': 'http://127.0.0.1:9',

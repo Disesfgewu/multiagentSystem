@@ -81,22 +81,24 @@
 - 也可以從 Command Palette 執行 `Multiagent: Open Workbench`。
 
 **會看到什麼**：
-- **Agents (數量)**：每個 agent 一張卡片。卡片上有：
-  - 代號（例如 Worker-01）、名稱與身份組。
-  - CLI 與帳號，例如 `Account: Work A (owner-a@example.test)`。email 是這個視窗最近一次登入檢查讀到的，只存在記憶體裡。
-  - 模型。
-  - 是否連上 VS Code。
-  - 工作資料夾、最近的報告。
-  - 模式，例如 `Auto mode: on`。
-  - 實際的權限模式、額度。
+- **Agents (數量)**：每個 agent 一張卡片，用白話寫成：
+  - 第一行：代號（例如 Worker-01）、名稱與身份組；右上角是狀態。如果有需要注意的事，會多一個黃色的小標，例如「VS Code not connected」。
+  - 下面四行：
+    - CLI 與模型，例如 `Claude Code · CLI default`。
+    - `Account: Work A (owner-a@example.test)`：email 是這個視窗最近一次登入檢查讀到的，只存在記憶體裡。
+    - `Mode: Auto`。
+    - `Doing: …`：正在處理的 Issue 或 PR。
+  - **Details**：點開才看得到工作資料夾、報告、實際的權限模式、黃色小標的原因、額度與其他證據。
+  - 主要按鈕：**Focus terminal**。
 - 左邊是 PM 與待決定的事項。
+- agent 的終端機只會顯示一行「Multiagent: starting Claude Code (Worker-01)」，不會顯示一長串啟動指令。
 
-下圖是 e2e 用合成的 CLI 啟動 3 個 agent 之後的畫面：
+下圖是 e2e 用合成的 CLI 啟動 4 個 agent 之後的畫面，一個畫面就放得下 4 張卡片：
 
-![3 個 agent 的卡片](user-guide/images/11-see-three-cards.png)
+![4 個 agent 的卡片](user-guide/images/11-see-four-cards.png)
 
 **常見問題**：
-- **卡片寫 `VS Code: not connected (…)`**：這個視窗裡沒有 VS Code 的 Claude Code 擴充套件（見第 6 章）。
+- **卡片有黃色小標「VS Code not connected」**：點開 Details 可以看到原因，通常是這個視窗裡沒有 VS Code 的 Claude Code 擴充套件（見第 6 章）。
 - **卡片寫 `state unknown`**：agent 還沒回報狀態，畫面不會猜測。
 - **側欄寫 `Needs you: 1 account`**：打開 Accounts 分頁，看那個帳號寫了什麼，例如額度橋接還沒設定。
 

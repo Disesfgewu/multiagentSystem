@@ -79,10 +79,23 @@ const isPm = (role) => role === 'pm';
  *   `agents`: the overview's presented agents (same ids as the sessions); `accounts`: its presented accounts (id, label, usage lines, gate).
  * @returns {{ pm: object[], agents: object[], accounts: object[], counts: { agents: number, pm: number } }}
  */
+/** An e-mail address the CLI reported, only when it is a plain address on one line; anything else is not shown (#357). */
+const plainEmail = (value) => (typeof value === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(value) ? value : null);
+
+/** "Auto", "Ask", "Dangerous" or "unknown", from the label the session layer wrote (#357 cards). */
+function modeWord(label) {
+  if (typeof label !== 'string') return 'unknown';
+  if (/^Dangerous mode: on/.test(label)) return 'Dangerous';
+  // "Auto mode: on requested, but … none was passed (unknown)" is not auto mode: only "on (" is.
+  if (/^Auto mode: on \(/.test(label)) return 'Auto';
+  if (/^Auto mode: off/.test(label)) return 'Ask';
+  return 'unknown';
+}
+
 function buildCards(input) {
   const { sessions, agents = [], accounts = [], roles = {}, reports = {}, assignments = {}, emails = {} } = isPlain(input) ? input : {};
   // The e-mail address of each account from this window's last sign-in check (#357): shown on the card only, never stored.
-  const emailOf = (id) => (isPlain(emails) && typeof id === 'string' && Object.hasOwn(emails, id) && typeof emails[id] === 'string' && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(emails[id]) ? emails[id] : null);
+  const emailOf = (id) => (isPlain(emails) && typeof id === 'string' && Object.hasOwn(emails, id) ? plainEmail(emails[id]) : null);
   const presented = new Map((Array.isArray(agents) ? agents : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const accountById = new Map((Array.isArray(accounts) ? accounts : []).filter((entry) => isPlain(entry) && typeof entry.id === 'string').map((entry) => [entry.id, entry]));
   const cards = [];
@@ -125,6 +138,8 @@ function buildCards(input) {
       report: { lines: reportLines(pullRequest, pullRequest !== null && isPlain(reports) && Object.hasOwn(reports, String(pullRequest)) ? reports[String(pullRequest)] : undefined) },
       quota: account ? { lines: lines(account.usage).slice(0, 2), policy: line(account.policy, '', 160), gate } : { lines: [], policy: '', gate: null },
       autoMode: line(session.autoModeLabel, '', 140) || null,
+      // The mode in one word for the card (#357): the full label stays in its details.
+      mode: modeWord(session.autoModeLabel),
       // The mode the CLI itself reports, against the one asked for (#362): an agent that fell back to asking is an alert.
       permission: (() => { const mode = describePermissionMode({ provider: session.provider, requested: session.requestedAutoMode ?? null, reported: session.reportedPermissionMode ?? null }); return mode ? { text: line(mode.text, '', 200), attention: mode.attention, lines: mode.lines.map((entry) => line(entry, '', 300)) } : null; })(),
       // Whether its Claude Code was given this window's port (#354); shown as the extension worded it, only for sessions that have one.
@@ -224,6 +239,8 @@ function buildAccountRows(input) {
     return {
       id: account.id,
       label: line(account.label, 'Account'),
+      // Which real account it is (#352, #357): the e-mail address from this window's last sign-in check, memory only.
+      email: plainEmail(account.email),
       provider: line(account.provider),
       signIn: account.health === 'ready' ? 'sign-in checked' : account.health === 'attention' ? 'sign-in needs attention' : 'sign-in not checked in this window',
       identity,
@@ -366,4 +383,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

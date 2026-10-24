@@ -361,6 +361,8 @@ function withIdePort(provider: string, sessionId: string, env: Record<string, st
   return found.ok ? { ...(env ?? {}), CLAUDE_CODE_SSE_PORT: String(found.port) } : env;
 }
 
+const { launchNote } = require('./launchNote') as { launchNote(provider: string, codename: string | undefined): string };
+
 const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
   ? 'The session codename was taken by another window during review. Please start again.'
   : `The session codename could not be prepared (${reason}). The agent was not started.`), { code: reason === 'codename-changed' ? 'stale-instructions' : 'codename-unavailable' });
@@ -721,7 +723,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         ...(provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}),
         ...(autoMode.auto ? { autoMode: autoMode.auto } : {}),
         ...(codename !== undefined && revertCodename ? { codename } : {}),
-        ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {})
+        ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {}),
+        launchNote: launchNote(provider, codename)
       });
       revertCodename = undefined;
       // No confirmation window was shown for this launch: say it on screen anyway, so nobody is surprised that the agent does not stop to ask.
@@ -1027,7 +1030,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
         }
         if (attributionFile) { const file = attributionFile; const previous = isolationDispose; isolationDispose = async () => { try { await previous?.(); } finally { removeClaudeSettings(file); } }; }
         try {
-          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}), ...(codename !== undefined && revertCodename ? { codename } : {}), ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {}) });
+          session = await manager.reopen(id, { newId: newSessionId, launch: input.launch, acknowledgeUnknown, env: observedLaunch.env, instructions, ...(isolation.kind === 'enforced' ? { wrap: isolation.wrap } : {}), ...(attributionFile ? { attributionFile } : {}), ...(prior.provider === 'codex' && input.launch !== false ? { permissionArgs: codexArguments(instructions?.toolPermissions).args } : {}), ...(autoMode.auto ? { autoMode: autoMode.auto } : {}), ...(codename !== undefined && revertCodename ? { codename } : {}), ...(ghWrapperDir ? { pathPrefix: ghWrapperDir } : {}), launchNote: launchNote(prior.provider, codename) });
           revertCodename = undefined;
           if (interactive && autoMode.auto && autoMode.auto.state !== 'off' && !autoModeShown) void vscode.window.showInformationMessage(autoMode.lines.join(' '));
         } catch (error) {

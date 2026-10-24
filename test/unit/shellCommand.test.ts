@@ -7,7 +7,8 @@ import {
   quotePowerShell,
   quoteCmd,
   quoteShellArg,
-  formatShellCommandLine
+  formatShellCommandLine,
+  formatClearPrefix
 } from '../../src/terminals/shellCommand';
 
 test('quotePosix keeps safe unquoted arguments unchanged', () => {
@@ -123,4 +124,16 @@ test('formatShellCommandLine keeps a hostile executable path and arguments insid
   const arg = reader(rest.slice(' --append-system-prompt-file '.length));
   assert.ok(arg);
   assert.equal(arg.end, rest.length - ' --append-system-prompt-file '.length, 'nothing follows the last argument');
+});
+
+test('the clear prefix wipes the long command and prints one plain line, in each shell; an unsafe note is not printed (#357)', () => {
+  assert.equal(formatClearPrefix('Multiagent: starting Claude Code (Worker-01)', 'posix'), "clear 2>/dev/null; printf '%s\\n' 'Multiagent: starting Claude Code (Worker-01)'; ");
+  assert.equal(formatClearPrefix('Multiagent: starting Codex CLI', 'powershell'), "Clear-Host; Write-Host 'Multiagent: starting Codex CLI'; ");
+  assert.equal(formatClearPrefix('Multiagent: starting agy', 'cmd'), 'cls & echo Multiagent: starting agy & ');
+  for (const note of ['$(rm -rf /)', 'a; b', 'x & y', "it's", 'a\nb', '%PATH%', '', 'x'.repeat(81)]) {
+    for (const shell of ['posix', 'powershell', 'cmd'] as const) {
+      const prefix = formatClearPrefix(note, shell);
+      assert.ok(['clear 2>/dev/null; ', 'Clear-Host; ', 'cls & '].includes(prefix), `${shell}: ${JSON.stringify(note)} -> ${prefix}`);
+    }
+  }
 });

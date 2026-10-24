@@ -68,35 +68,45 @@ const SCRIPT = String.raw`
     title.appendChild(el('strong', null, card.name));
     title.appendChild(el('span', 'muted', ' · ' + card.roleName));
     head.appendChild(title);
-    head.appendChild(el('span', 'badge badge-' + card.status.state, card.status.text));
+    var badges = el('div', 'badges');
+    badges.appendChild(el('span', 'badge badge-' + card.status.state, card.status.text));
+    // What needs a look is a small yellow tag in words (#357); the reason is in the details below.
+    if (card.ide && /not connected/.test(card.ide)) badges.appendChild(el('span', 'tag tag-warn', 'VS Code not connected'));
+    if (card.trust && /asks once/.test(card.trust)) badges.appendChild(el('span', 'tag tag-warn', 'will ask to trust the folder'));
+    if (card.permission && card.permission.attention) badges.appendChild(el('span', 'tag tag-warn', 'auto mode not in effect'));
+    head.appendChild(badges);
     node.appendChild(head);
     if (card.alert) node.appendChild(el('div', 'alert', card.alert));
     if (!card.collapsed) {
+      // The card in plain words (#357): who, which account, which mode, what it is doing. Everything else is in Details.
       var body = el('div', 'card-body');
-      body.appendChild(el('div', null, card.provider + ' · Account: ' + card.account));
-      body.appendChild(el('div', 'muted', 'Model: ' + card.model + ' (' + card.modelNote + ')'));
-      body.appendChild(el('div', null, 'Working on: ' + card.task.text));
-      if (card.injected) body.appendChild(el('div', 'muted', card.injected));
-      if (card.ide) body.appendChild(el('div', /not connected/.test(card.ide) ? 'alert' : 'muted', card.ide));
-      if (card.trust) body.appendChild(el('div', /asks once/.test(card.trust) ? 'alert' : 'muted', card.trust));
-      if (card.assigned) body.appendChild(el('div', 'muted', 'Handed: ' + card.assigned));
-      body.appendChild(el('div', null, 'Worktree: ' + card.worktree));
-      var report = el('div', 'report');
-      card.report.lines.forEach(function (text, index) { report.appendChild(el('div', index === 0 ? 'report-head' : 'report-line', text)); });
-      body.appendChild(report);
-      body.appendChild(el('div', 'muted', 'State: ' + card.status.source));
-      if (card.autoMode) body.appendChild(el('div', 'muted', card.autoMode));
+      body.appendChild(el('div', null, card.provider + ' · ' + card.model));
+      body.appendChild(el('div', null, 'Account: ' + card.account));
+      body.appendChild(el('div', null, 'Mode: ' + card.mode));
+      body.appendChild(el('div', null, 'Doing: ' + card.task.text));
+      var details = el('details');
+      details.appendChild(el('summary', null, 'Details'));
+      var more = function (text, className) { details.appendChild(el('div', className || 'detail', text)); };
+      more('Model: ' + card.model + ' (' + card.modelNote + ')');
+      if (card.autoMode) more(card.autoMode);
       if (card.permission) {
-        body.appendChild(el('div', card.permission.attention ? 'alert' : 'muted', card.permission.text));
-        card.permission.lines.forEach(function (text) { body.appendChild(el('div', 'detail', text)); });
+        more(card.permission.text, card.permission.attention ? 'detail alert' : 'detail');
+        card.permission.lines.forEach(function (text) { more(text); });
       }
-      body.appendChild(quotaBlock(card));
-      if (card.details.length > 0) {
-        var details = el('details');
-        details.appendChild(el('summary', null, 'Evidence and details'));
-        card.details.forEach(function (text) { details.appendChild(el('div', 'detail', text)); });
-        body.appendChild(details);
-      }
+      if (card.ide) more(card.ide, /not connected/.test(card.ide) ? 'detail alert' : 'detail');
+      if (card.trust) more(card.trust, /asks once/.test(card.trust) ? 'detail alert' : 'detail');
+      if (card.injected) more(card.injected);
+      if (card.assigned) more('Handed: ' + card.assigned);
+      more('Worktree: ' + card.worktree);
+      card.report.lines.forEach(function (text, index) { more(text, index === 0 ? 'detail report-head' : 'detail'); });
+      more('State: ' + card.status.source);
+      details.appendChild(quotaBlock(card));
+      card.details.forEach(function (text) { more(text); });
+      var tools = el('div', 'row');
+      tools.appendChild(button(card.collapsed ? 'Expand' : 'Collapse', function () { post({ type: 'toggleCollapse', id: card.id }); }));
+      tools.appendChild(button(card.pinned ? 'Unpin' : 'Pin', function () { post({ type: 'togglePin', id: card.id }); }));
+      details.appendChild(tools);
+      body.appendChild(details);
       node.appendChild(body);
     }
     var actions = el('footer', 'card-actions');
@@ -105,8 +115,7 @@ const SCRIPT = String.raw`
       actions.appendChild(button('Open report', function () { post({ type: 'openReport', id: card.id }); }));
       actions.appendChild(button('Open PR', function () { post({ type: 'openPullRequest', id: card.id }); }));
     }
-    actions.appendChild(button(card.collapsed ? 'Expand' : 'Collapse', function () { post({ type: 'toggleCollapse', id: card.id }); }));
-    actions.appendChild(button(card.pinned ? 'Unpin' : 'Pin', function () { post({ type: 'togglePin', id: card.id }); }));
+    if (card.collapsed) actions.appendChild(button('Expand', function () { post({ type: 'toggleCollapse', id: card.id }); }));
     node.appendChild(actions);
     return node;
   }
@@ -121,6 +130,7 @@ const SCRIPT = String.raw`
     var head = el('div', 'card-head');
     var title = el('div', 'card-title');
     title.appendChild(el('strong', null, account.label));
+    if (account.email) title.appendChild(el('span', null, ' · ' + account.email));
     title.appendChild(el('span', 'muted', ' · ' + account.provider));
     head.appendChild(title);
     head.appendChild(el('span', 'badge', account.signIn));
@@ -292,6 +302,9 @@ const STYLE = `
   h1 { font-size: 1.3em; margin: 0; } h2 { font-size: 1.05em; margin: 0 0 8px; } h3 { font-size: 1em; margin: 12px 0 4px; }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+  .tag { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+  .tag-warn { background: transparent; color: var(--vscode-editorWarning-foreground); border: 1px solid var(--vscode-editorWarning-foreground); }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }

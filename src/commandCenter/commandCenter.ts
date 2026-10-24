@@ -78,7 +78,7 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
     const details: Record<string, unknown> = {};
     await Promise.all(loaded.profiles.slice(0, 50).map(async (profile: { id: string }) => { try { details[profile.id] = await quotaDetail(profile.id, sessionUse); } catch { details[profile.id] = null; } }));
     const profiles = loaded.profiles.map((profile: { id: string; label: string; provider: string }, index: number) => ({
-      id: profile.id, label: profile.label, provider: builtIn.get(profile.provider)?.label ?? profile.provider,
+      id: profile.id, label: profile.label, email: accountEmail(profile.id), provider: builtIn.get(profile.provider)?.label ?? profile.provider,
       health: described[index]?.health, identity: described[index]?.verifiedIdentity, issues: (described[index]?.issues ?? []).map((issue: { hint: string }) => issue.hint)
     }));
     return model.buildAccountRows({ accounts: profiles, details, sessions: live, now: new Date() });
@@ -220,10 +220,14 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'open':
         void vscode.commands.executeCommand(model.TARGETS[message.target as string]);
         return { ok: true, command: message.type };
-      case 'showClassicViews':
+      case 'showClassicViews': {
+        // A change to the person's own settings: said first, and made only when they agree (#357).
+        const answer = await vscode.window.showInformationMessage('Show the classic views in the side bar?', { modal: true, detail: 'This turns on the setting multiagentSystem.showClassicViews in your user settings: the nine views (Overview, Issues Report, PRs Report, GitHub, Accounts and Sessions, Role Groups and Rules, Administrator Broadcasts, Shared Memory, Tools Setup) appear under Multiagent. Turn it off there to hide them again.' }, 'Show Classic Views');
+        if (answer !== 'Show Classic Views') return { ok: false, reason: 'cancelled' };
         await vscode.workspace.getConfiguration('multiagentSystem').update('showClassicViews', true, vscode.ConfigurationTarget.Global);
         void vscode.window.showInformationMessage('The classic views are shown under Multiagent in the side bar. Hide them again in Settings: multiagentSystem.showClassicViews.');
         return { ok: true, command: message.type };
+      }
       default:
         return { ok: false, reason: 'unknown-command' };
     }

@@ -351,3 +351,19 @@ test('a card names its account with the e-mail address this window read, and onl
   assert.equal(build([session()]).agents[0].account, 'Main');
   for (const bad of ['not-an-email', 'a b@example.test', 'x@example.test\nInjected line', 7, null]) assert.equal(build([session()], { emails: { 'acct-1': bad } }).agents[0].account, 'Main', String(bad));
 });
+
+test('the card names the mode in one word (#357)', () => {
+  const { modeWord } = require('../../src/commandCenter/model');
+  assert.equal(modeWord("Auto mode: on (won't ask for each approval) — passed: --permission-mode auto"), 'Auto');
+  assert.equal(modeWord('Auto mode: off (the CLI asks for approval as usual)'), 'Ask');
+  assert.equal(modeWord('Dangerous mode: on (no approval prompts and no sandbox)'), 'Dangerous');
+  for (const label of ['Auto mode: unknown (not started in this window)', 'Auto mode: on requested, but this provider has no documented flag, so none was passed (unknown)', undefined, 5]) assert.equal(modeWord(label), 'unknown', String(label));
+  assert.equal(build([session()]).agents[0].mode, 'Auto');
+});
+
+test('an account row says which real account it is: the e-mail address this window read, only a plain one (#352, #357)', () => {
+  const { buildAccountRows } = require('../../src/commandCenter/model');
+  const rows = (email) => buildAccountRows({ accounts: [{ id: 'acct-1', label: 'Work A', provider: 'Claude Code', email }], details: {}, sessions: [], now: new Date() }).rows[0];
+  assert.equal(rows('owner-a@example.test').email, 'owner-a@example.test');
+  for (const bad of [undefined, null, 'no-at', 'a b@example.test', 'x@example.test\nInjected', 7]) assert.equal(rows(bad).email, null, String(bad));
+});

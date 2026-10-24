@@ -92,11 +92,13 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   assert.ok(accountsTab, 'there is an Accounts tab');
   accountsTab.listeners.click();
   const text = agentsText + app.textContent;
-  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'Auto mode is not in effect: Claude Code reports default (asks before actions)'), 'a fallen-back auto mode is an alert (#362)');
+  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'detail alert' && entry.textContent === 'Auto mode is not in effect: Claude Code reports default (asks before actions)'), 'a fallen-back auto mode is an alert in the details (#362)');
+  assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'tag tag-warn' && entry.textContent === 'auto mode not in effect'), 'and a yellow tag on the card (#357)');
   assert.ok(text.includes('Next: reopen the session'));
-  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'VS Code: not connected (no lock file)'), 'a card whose Claude Code cannot reach VS Code says so as an alert (#354)');
-  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'muted' && entry.textContent === "VS Code: connected through this window's Claude Code port (40002)"));
-  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'alert' && entry.textContent === 'Folder trust: not pre-written, so Codex asks once (x)'), 'a CLI that will stop to ask is shown as an alert (#362)');
+  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'detail alert' && entry.textContent === 'VS Code: not connected (no lock file)'), 'a card whose Claude Code cannot reach VS Code says why in its details (#354)');
+  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'detail' && entry.textContent === "VS Code: connected through this window's Claude Code port (40002)"));
+  assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'tag tag-warn' && entry.textContent === 'VS Code not connected'), 'not connected is a small yellow tag, not a red paragraph (#357)');
+  assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'detail alert' && entry.textContent === 'Folder trust: not pre-written, so Codex asks once (x)'), 'a CLI that will stop to ask is shown as an alert (#362)');
   for (const expected of ['Workbench', 'PM', 'Agents (6)', 'Accounts (2)', 'quota: near the limit', 'Usage: unknown (no Codex session log yet)', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Values without a source are shown as unknown.']) assert.ok(text.includes(expected), expected);
   for (const expected of ['5-hour: 42% used · verified and current · resets in 2h · read 1m ago · from claude status line rate_limits', 'identity verified (abcd1234)', 'sign-in not checked in this window', 'plan plus', 'Limits: warn at 80% used.', 'Agents: Worker One (+2 more)', 'No running agent uses this account.', 'Quota alerts', 'Main: new agents on this account are held back', 'Quota: new agents on this account are held back', 'This account has no session log yet.', 'Run Codex once with this account.']) assert.ok(text.includes(expected), `the account panel draws: ${expected}`);
   for (const expected of ['waiting for input', 'ended', 'state unknown', 'working']) assert.ok(text.includes(expected), `the status text "${expected}" is drawn on a card`);
@@ -187,4 +189,33 @@ test('the Workbench has seven tabs; each says what it is for and has a next step
   assert.equal(tabs().find((entry) => entry.textContent === 'Accounts').attrs['aria-selected'], 'true');
   const { TARGETS } = require('../../src/commandCenter/model');
   for (const match of SCRIPT.matchAll(/open\('([A-Za-z]+)'\)/g)) assert.ok(Object.hasOwn(TARGETS, match[1]), `the page only names known targets: ${match[1]}`);
+});
+
+test('a card says in four plain lines who it is, which account, which mode and what it is doing; the rest is under Details (#357)', () => {
+  const nodes = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', draggable: false, type: '', id: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  const listeners = {};
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage() {} }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const card = { id: 'a-1', codename: 'Worker-01', name: 'Agent One', role: 'worker', roleName: 'Developers', provider: 'Claude Code', account: 'Work A (owner-a@example.test)', model: 'CLI default', modelNote: 'requested, not confirmed', mode: 'Auto', status: { state: 'unknown', text: 'state unknown', source: 'no hook evidence' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task is known' }, worktree: '0 changed; upstream unknown; at e68869580e0a', report: { lines: ['Latest report: none'] }, summary: '', details: ['Branch: x'], quota: { lines: [], policy: '', gate: null }, autoMode: 'Auto mode: on (won\'t ask)', ide: 'VS Code: not connected (no lock file)', injected: 'Prepared for this agent: 7 rules', alert: null, pinned: false, collapsed: false };
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [card], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  const body = nodes.filter((entry) => entry.className === 'card-body').at(-1);
+  const top = body.children.filter((child) => child.tag === 'div').map((child) => child.textContent);
+  assert.deepEqual(top, ['Claude Code · CLI default', 'Account: Work A (owner-a@example.test)', 'Mode: Auto', 'Doing: no task is known']);
+  const details = body.children.find((child) => child.tag === 'details');
+  for (const hidden of ['Worktree: 0 changed', 'Prepared for this agent', 'State: no hook evidence', 'VS Code: not connected (no lock file)']) {
+    assert.ok(details.textContent.includes(hidden), `${hidden} is in the details`);
+    assert.equal(top.some((line) => line.includes(hidden)), false, `${hidden} is not in the plain lines`);
+  }
+  const footer = nodes.filter((entry) => entry.tag === 'footer').at(-1);
+  assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal'], 'one main button');
 });
