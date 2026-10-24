@@ -111,6 +111,7 @@ const SCRIPT = String.raw`
     }
     var actions = el('footer', 'card-actions');
     actions.appendChild(button(card.terminalOpen ? 'Focus terminal' : 'Terminal closed', function () { post({ type: 'focus', id: card.id }); }));
+    actions.appendChild(button('Switch account…', function () { post({ type: 'switchAccount', id: card.id }); }, 'Restart this agent with another account (you are asked first)'));
     if (card.task.pullRequest !== null) {
       actions.appendChild(button('Open report', function () { post({ type: 'openReport', id: card.id }); }));
       actions.appendChild(button('Open PR', function () { post({ type: 'openPullRequest', id: card.id }); }));
@@ -138,11 +139,21 @@ const SCRIPT = String.raw`
     row.appendChild(el('div', 'muted', account.identity + (account.plan ? ' · plan ' + account.plan : '')));
     account.issues.forEach(function (text) { row.appendChild(el('div', 'detail', text)); });
     if (account.alert) row.appendChild(el('div', 'alert', 'Quota: ' + account.alert));
+    // Usage in plain words (#352): how much is used and when it resets. How it was read, and from where, is under Details.
     var usage = el('div', 'quota');
     account.windows.forEach(function (entry) {
-      usage.appendChild(el('div', 'quota-line' + (entry.kind === 'unknown' ? ' muted' : ''), entry.label + ': ' + entry.text + ' · ' + entry.trust + ' · ' + entry.resets + ' · ' + entry.read + ' · from ' + entry.source));
+      var plain = entry.label + ': ' + entry.text + (entry.kind === 'unknown' ? '' : ', ' + entry.resets) + (entry.caveat ? ' (' + entry.caveat + ')' : '');
+      usage.appendChild(el('div', 'quota-line' + (entry.kind === 'unknown' ? ' muted' : ''), plain));
     });
     if (account.windows.length === 0 && !account.reason) usage.appendChild(el('div', 'quota-line muted', 'Usage: unknown'));
+    if (account.windows.length > 0) {
+      var source = el('details');
+      source.appendChild(el('summary', null, 'Details'));
+      account.windows.forEach(function (entry) {
+        source.appendChild(el('div', 'detail muted', entry.label + ': ' + entry.trust + ' · ' + entry.read + ' · from ' + entry.source));
+      });
+      usage.appendChild(source);
+    }
     row.appendChild(usage);
     var next = null;
     if (account.reason) {
@@ -210,6 +221,7 @@ const SCRIPT = String.raw`
   function agentsTab(panel) {
     var tools = el('div', 'row');
     tools.appendChild(button('Start agent…', function () { open('startAgent'); }));
+    tools.appendChild(button('Edit role group…', function () { open('editRole'); }, 'Rename a role group, set its default account, its tools or its instructions'));
     tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
     tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
     tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));

@@ -144,6 +144,7 @@ interface Registry {
   observeCli(id: string, token: string, event: ProviderEvent): RegistryEntry;
   cliExited(id: string, token: string): RegistryEntry;
   terminalClosed(id: string, token: string): RegistryEntry;
+  forget(id: string): void;
   snapshot(): SessionIdentity[];
 }
 
@@ -411,6 +412,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     autoMode?: { args: string[]; label: string; state?: string };
     /** The codename the caller assigned (issue #342); shown with the session and saved with it. */
     codename?: string;
+    /** The session the codename was moved from (#352: an agent restarted with another account); that record stops holding it. */
+    codenameFrom?: string;
     /** A folder put first on PATH for the typed CLI command (issue #342: the session's gh wrapper). */
     pathPrefix?: string;
     /** A short line shown instead of the long typed command (#357): the screen is cleared first. Omitted: the command stays as typed. */
@@ -441,7 +444,10 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
       this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs, input.pathPrefix, input.launchNote);
-      if (input.codename !== undefined) this.codenames.set(identity.id, input.codename);
+      if (input.codename !== undefined) {
+        if (input.codenameFrom !== undefined && this.codenames.get(input.codenameFrom) === input.codename) this.codenames.delete(input.codenameFrom);
+        this.codenames.set(identity.id, input.codename);
+      }
       await this.persist();
       return this.view(identity.id);
     } catch (error) {
@@ -768,6 +774,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     if (dropped > 0) await this.persist();
     return dropped;
+  }
+
+  /**
+   * Drops a stopped session from the list and from what is saved (#352: an agent restarted with another account is shown once, as
+   * the new session). A session whose terminal is open is refused with `session-live`.
+   */
+  async forget(id: string): Promise<void> {
+    if (this.handles.has(id)) throw new SessionError('session-live');
+    this.registry.forget(id);
+    for (const map of [this.names, this.models, this.instructionStates, this.instructionLabels, this.autoModeLabels, this.autoModeStates, this.instructionDigests, this.reviewDigests, this.injectedCounts, this.instructionMethods, this.codenames, this.activePlans]) map.delete(id);
+    await this.persist();
   }
 
   get(id: string): SessionView | null {

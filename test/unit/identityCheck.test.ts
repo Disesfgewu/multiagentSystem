@@ -15,6 +15,7 @@ const { checkAccountIdentity, describeCheck, splitFolderIssues, REASONS, MAX_OUT
 
 const EMAIL = 'person@example.test';
 const FAKE = path.resolve(__dirname, '..', '..', '..', 'test', 'accounts', 'fixtures', 'fake-cli.js');
+const FAKE_CODEX = path.resolve(__dirname, '..', '..', '..', 'test', 'accounts', 'fixtures', 'fake-codex-app-server.js');
 
 function world(t: { after(fn: () => void): void }) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-identity-')));
@@ -172,7 +173,7 @@ test('providers with no check, unknown providers and rejected profiles are unkno
   const w = world(t);
   let ran = 0;
   const runner = async () => { ran += 1; return { code: 0, stdout: '{}' }; };
-  for (const provider of ['codex', 'agy', 'opencode', '', undefined, '__proto__', 'constructor']) {
+  for (const provider of ['agy', 'opencode', '', undefined, '__proto__', 'constructor']) {
     const result = await checkAccountIdentity({ profile: { ...w.profile, provider }, context: w.context, platform: PLATFORM, runner });
     assert.deepEqual([result.reason, result.identity], ['provider-not-supported', null], String(provider));
     assert.match(describeCheck(result).summary, /no sign-in check/);
@@ -379,4 +380,64 @@ test('a command that floods its output is stopped, not left running', { timeout:
 test('a command that dies from a signal is a failed run, not an answer', { timeout: 40_000, skip: process.platform === 'win32' }, async () => {
   const outcome = await runCommand(process.execPath, ['-e', 'process.kill(process.pid, "SIGKILL")'], { env: { PATH: process.env.PATH }, timeoutMs: 5000, maxOutputBytes: 1000 });
   assert.deepEqual([outcome.code, outcome.timedOut, outcome.errorCode], [null, undefined, 'ERR_SIGNAL']);
+});
+
+// Codex (#352): its app-server is asked `account/read` on standard input, and stopped once it has answered.
+function codexWorld(t: { after(fn: () => void): void }) {
+  const w = world(t);
+  const configDir = path.join(w.homeDir, 'multiagent-accounts', 'codex-work');
+  fs.mkdirSync(configDir, { recursive: true });
+  return { ...w, configDir, profile: { id: 'acct-c', provider: 'codex', label: 'Codex Work', configDir, expectedAuthMethod: null } };
+}
+function fakeCodex(mode: string, configDir: string, seen: Array<{ file: string; args: string[]; input?: string }> = []) {
+  return {
+    seen,
+    runner: (file: string, args: string[], options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxOutputBytes: number; input?: string; answeredWhen?: (stdout: string) => boolean }) => {
+      seen.push({ file, args, input: options.input });
+      return runCommand(process.execPath, [FAKE_CODEX, ...args], { ...options, env: childEnvironment({ FAKE_MODE: mode, CODEX_HOME: configDir }, options.env) });
+    }
+  };
+}
+
+test('a Codex account says which e-mail address and plan it is, from the app-server, which is stopped once it answered', { timeout: 40_000 }, async (t) => {
+  const w = codexWorld(t);
+  const { runner, seen } = fakeCodex('chatgpt', w.configDir);
+  const started = Date.now();
+  const result = await checkAccountIdentity({ profile: w.profile, context: w.context, platform: PLATFORM, runner });
+  assert.ok(Date.now() - started < 8000, 'it did not wait for the time limit');
+  assert.equal(result.state, 'checked');
+  assert.equal(result.source, 'codex app-server account/read');
+  assert.equal(result.identity.loggedIn, true);
+  assert.equal(result.identity.authMethod, 'chatgpt');
+  assert.equal(result.identity.subject.confidence, 'actual');
+  assert.equal(result.identity.plan.value, 'plus');
+  assert.equal(result.identity.configDirMatches, true, 'the server said it used this account\'s folder');
+  assert.deepEqual(result.display, { email: EMAIL, organization: null });
+  assert.equal(JSON.stringify(result.identity).includes(EMAIL), false, 'the e-mail address is only in the display part');
+  assert.deepEqual(seen.map((call) => [call.file, call.args]), [['codex', ['app-server']]]);
+  const sent = String(seen[0].input).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((message) => message.method), ['initialize', 'initialized', 'account/read']);
+  assert.deepEqual(sent[2].params, { refreshToken: false }, 'no token is refreshed');
+});
+
+test('a Codex account signed out, signed in with an API key, with an odd plan, or in another folder says so', { timeout: 40_000 }, async (t) => {
+  const w = codexWorld(t);
+  const run = (mode: string) => checkAccountIdentity({ profile: w.profile, context: w.context, platform: PLATFORM, runner: fakeCodex(mode, w.configDir).runner });
+  const out = await run('signed-out');
+  assert.deepEqual([out.state, out.identity.loggedIn, out.display], ['checked', false, { email: null, organization: null }]);
+  const key = await run('api-key');
+  assert.deepEqual([key.identity.loggedIn, key.identity.subject.confidence, key.identity.plan.value], [true, 'unknown', null]);
+  assert.equal((await run('odd-plan')).identity.plan.value, null, 'a plan name not in the list is not shown');
+  const other = await run('other-home');
+  assert.equal(other.identity.configDirMatches, false);
+  assert.ok(other.identity.anomalies.includes('config-dir-mismatch'));
+  assert.equal((await run('error')).reason, 'nonzero-exit');
+});
+
+test('a Codex app-server that never answers is stopped at the time limit and reported as timed out', { timeout: 40_000 }, async (t) => {
+  const w = codexWorld(t);
+  const { runner } = fakeCodex('silent', w.configDir);
+  const quick = (file: string, args: string[], options: any) => runner(file, args, { ...options, timeoutMs: 500, graceMs: 200 });
+  const result = await checkAccountIdentity({ profile: w.profile, context: w.context, platform: PLATFORM, runner: quick });
+  assert.deepEqual([result.state, result.reason, result.identity], ['unknown', 'timed-out', null]);
 });

@@ -53,7 +53,9 @@
 
 `src/accounts/identity-check.js` 在使用者完成登入後，以**該帳號設定資料夾的環境**執行 provider 自己的狀態命令，並把結果還原成帳號畫面已經理解的觀測（8 碼不可逆指紋、登入方式、健康、可選的方案）。
 
-- 只有 Claude Code 有檢查：`claude auth status --json`（命令固定，不由設定、標籤或工作區決定；可執行檔名取自 provider 登錄）。Codex 的檢查需要 app-server 協定工作階段，agy 沒有已驗證的檢查，兩者目前一律回「未知：此 provider 尚無檢查」，不猜測。
+- Claude Code：`claude auth status --json`（命令固定，不由設定、標籤或工作區決定；可執行檔名取自 provider 登錄）。
+- Codex（#352）：`codex app-server`，從標準輸入送三則固定的 JSON 訊息（`initialize`、`initialized`、`account/read`，`refreshToken: false`，不更新任何 token），收到 `account/read` 的回答就停止 server。ChatGPT 登入時取 `email` 與 `planType`；`initialize` 回答裡的 `codexHome` 用來確認 CLI 用的是這個帳號資料夾。API key 登入只顯示已登入、身分未確認。**本擴充套件從不開啟 Codex 的憑證檔**（`auth.json` 等）。方案只顯示 free、go、plus、pro、team、business、enterprise、edu（取自 Codex app-server 協定的 `PlanType`），其他一律丟棄為未知。server 一直不回答時，照一般的逾時停止整個行程群組。協定形狀已對 codex-cli 0.163.0 的空帳號資料夾驗證（`account: null`）；已登入的回答形狀取自同版本產生的 JSON schema，**未用真實帳號驗證**。
+- agy 沒有已驗證的檢查，一律回「未知：此 provider 尚無檢查」，不猜測。
 - 以 `execFile` 的參數陣列執行（不經 shell）、10 秒逾時、輸出上限 64 KB；環境以 `launchEnvironment` 為準（設定資料夾套用、繼承的憑證覆蓋變數移除）。只解析 stdout 的 JSON；stderr 不讀入任何值。
 - **原始輸出不被保留、記錄或放進錯誤訊息。** 結果含指紋、登入方式、方案（僅在 CLI 回報、且是簡短單純文字時）、異常旗標、檢查時間與來源，以及另外放在 `display` 的 email 與組織名稱（見下）。
 - **email 與組織只顯示在本機畫面上（#352，管理者要求，取代先前「只顯示指紋」的政策）**：帳號列與帳號詳情顯示 CLI 回報的帳號 email，以及組織名稱（如果有）。只接受格式正確、簡短、單行的值。這兩項只放在這個視窗的記憶體中：
@@ -63,7 +65,7 @@
 - 任何失敗（找不到 CLI、逾時、輸出過大、非 JSON、欄位不符、非零結束碼、設定資料夾不再通過檢查）都是「未知」加原因與白話說明，不會顯示 ready。
 - 登入 terminal 關閉時自動檢查一次，也可按「我已完成登入，立即檢查」或用 `Check Account Sign-in`；確認身分後提供「以此帳號啟動 session」。
 - 檢查結果（**不含** email 與組織）存在私人儲存區（`accountChecks`），重新載入視窗後仍看得到，並標示檢查時間與「檢查於這個視窗開啟之前」。擴充套件啟動時，會自動依序把每個有檢查的帳號重新檢查一次；email 與組織就是從這次檢查重新取得的。
-- 帳號列一行顯示：管理者取的名稱、email（組織）、方案、登入狀態與檢查時間、額度（例如 `5h 32% (resets in 2h) · 7d 10%`）。沒有額度數字時，寫明原因與下一步（例如「status line not set up: use Configure Claude Status Line Bridge」、「no agent has run on this account yet: start one and its usage appears」）；過期的數字標示為 out of date。同一個真實帳號登入在兩個資料夾時，顯示 `DUPLICATE ACCOUNT`，並說明怎麼修正。Accounts 檢視最上方有一列總覽（幾個帳號、幾個已登入、幾個需要處理）。
+- 帳號列一行顯示：管理者取的名稱、email（組織）、方案、登入狀態與檢查時間、額度（例如 `5h 32% (resets in 2h) · 7d 10%`）。工作台 Accounts 分頁的用量行只寫用量與重設時間（例如 `5-hour: 32% used, resets in 2h`，不可靠時加 `(out of date)` 等短語）；可信度、讀取時間與來源放在帳號列的 Details 裡。沒有額度數字時，寫明原因與下一步（例如「status line not set up: use Configure Claude Status Line Bridge」、「no agent has run on this account yet: start one and its usage appears」）；過期的數字標示為 out of date。同一個真實帳號登入在兩個資料夾時，顯示 `DUPLICATE ACCOUNT`，並說明怎麼修正。Accounts 檢視最上方有一列總覽（幾個帳號、幾個已登入、幾個需要處理）。
 - 訂閱方案欄位名稱（`subscriptionType`）沿用既有解析器，**未對真實 CLI 輸出驗證**；只有 free、pro、max、team、enterprise（不分大小寫，顯示為小寫）會被顯示，其他任何文字都丟棄為「未知」；清單是猜測的目前名稱，不是已驗證的。
 - 逾時由執行器自己強制：到時限先送 SIGTERM，寬限期（1.5 秒）後仍未結束就 SIGKILL，並在固定的硬時限內一定回報；檢查本身另有硬時限，執行器若完全不回應也會被放棄並回報逾時。
 - 帳號詳情把「設定資料夾是否通過本擴充套件的安全檢查」與「CLI 是否確認它使用這個資料夾」分成兩行：CLI 沒裝或沒回報只會讓第二行是未確認，不會讓資料夾顯示為被拒絕。
@@ -83,6 +85,8 @@
 7. **檢查登入**：管理者按「I have signed in — check now」或關掉終端機之後，檢查一次；CLI 回報已登入，才算完成。
 
 每一步失敗時，都會寫明原因與下一步。
+
+帳號資料夾的 `settings.json` 已經有別的 `statusLine` 時，精靈（以及任何沒有人可以詢問的呼叫）**不覆蓋**，回報 `already has its own status line; it was kept and not replaced` 與下一步；只有互動的 Configure Claude Status Line Bridge 會跳出確認視窗，列出目前與新的命令，按下 **Overwrite and Enable Bridge** 才會換掉。
 
 這個指令不讀取任何參數，所以呼叫的人不能指定資料夾，也不能跳過確認。
 

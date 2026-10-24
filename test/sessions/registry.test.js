@@ -111,3 +111,15 @@ test('duplicate ids and malformed restored records are rejected', () => {
   });
   assert.throws(() => SessionRegistry.restore([input(), input()]), { code: 'session-exists' });
 });
+
+test('a session is forgotten only when its terminal is not open, and then it is gone from the list and the snapshot (#352)', () => {
+  const registry = new SessionRegistry();
+  registry.create(input());
+  registry.attachTerminal('session-a', 'terminal-1');
+  assert.throws(() => registry.forget('session-a'), { code: 'session-live' });
+  registry.terminalClosed('session-a', 'terminal-1');
+  registry.forget('session-a');
+  assert.equal(registry.get('session-a'), null);
+  assert.deepEqual(registry.snapshot(), []);
+  assert.throws(() => registry.forget('session-a'), { code: 'session-not-found' });
+});

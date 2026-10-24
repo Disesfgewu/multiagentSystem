@@ -68,8 +68,8 @@
 
 **會看到什麼**：帳號列會列出：
 - 方案，例如 `plan Max`。
-- 用量：`5-hour: 32% used · resets in 2h`、`Weekly: 10% used`。如果 Claude Code 有回報依模型的週額度，也會列出，例如 `Weekly (Opus): 5% used`。
-- 每一行都寫了讀取的時間與來源。
+- 用量，只寫用了多少、什麼時候重設：`5-hour: 32% used, resets in 2h`、`Weekly: 10% used, resets in 3d`。如果 Claude Code 有回報依模型的週額度，也會列出，例如 `Weekly (Opus): 5% used`。數字過期或不能用來擋啟動時，後面會加一兩個字，例如 `(out of date)`。
+- 按帳號列下方的 **Details**，可以看到每個數字的讀取時間、可信度與來源，例如 `5-hour: verified and current · read 1m ago · from claude status line rate_limits`。
 
 還沒有讀數的帳號，會寫明原因與下一步，不會只寫「unknown」。
 
@@ -77,8 +77,33 @@
 
 **為什麼一開始沒有用量**：Claude Code 只有在有 session 執行時，才會透過 status line 回報用量。所以帳號第一次有 agent 跑起來之後，數字才會出現。
 
+**帳號已經有自己的 status line**：Multiagent 不會默默換掉它。帳號列會寫 `another status line is set`，旁邊有 **Review the status line setting**。按下去會跳出確認視窗，列出目前的命令和要換成的命令；按 **Cancel** 就什麼都不改，右下角會寫 `Existing settings were not changed`。Add account 精靈遇到這種情況也一樣不覆蓋，只提醒你之後再設定。
+
+![保留自己的 status line](user-guide/images/02-keep-own-status-line.png)
+
 ## 3. 每個 agent 用哪個帳號
-尚未完成，見 #352。
+
+**要做什麼**：決定每個 agent 用哪個帳號；Claude Code 和 Codex 都可以有好幾個帳號。
+
+**加一個 Codex 帳號**：工作台 → **Accounts** → **Add Codex account**，步驟和第 1 章一樣（名稱、**Add and Sign In**、在終端機登入、**I have signed in — check now**）。Codex 會自己回報登入的是哪個帳號，帳號列寫成 `Codex A · codex-owner@example.test · Codex CLI`，還有方案，例如 `plan Plus`。
+
+![Codex 帳號](user-guide/images/03-add-codex-account.png)
+
+**給身份組一個預設帳號**：工作台 → **Agents** → **Edit role group…** → 選身份組 → **Set default account profile** → 選帳號。右下角會寫 `“E2E Developers” now has the default account “Work B”: Start agent lists it first, and you can still choose another.`
+
+**啟動時改選**：**Start agent…** 選了身份組之後，帳號清單的第一個就是它的預設帳號，旁邊寫 `this role group's default account`。要用別的帳號，直接選別的就好。
+
+![預設帳號排第一](user-guide/images/03-see-default-first.png)
+
+**會看到什麼**：每張 agent 卡片都寫它用哪個帳號，例如用預設帳號啟動的這張寫 `Account: Work B (owner-b@example.test)`。
+
+![用預設帳號啟動](user-guide/images/03-start-with-default.png)
+
+**換帳號重新啟動**：卡片下方按 **Switch account…** → 選另一個帳號（清單裡不會有它現在用的帳號）。會跳出確認視窗 `Restart “E2E Agent 5” with the account “Work A”?`，說明它的終端機會關掉、agent 會停下，然後在同一個資料夾、用同樣的名稱、身份組和模型重新啟動。按 **Restart with This Account** 才會動作；按 **Cancel** 什麼都不變。重新啟動之後，工作台只剩一張它的卡片，寫著新的帳號；如果新的 session 在後面的確認視窗被取消，舊的卡片會留著，寫 **Terminal closed**，可以重新開啟。終端機已經關閉的卡片（例如重新載入視窗之後）也可以換帳號。換帳號後 agent 的代號不變（例如一直是 `Worker-05`），所以它在 GitHub 上的署名不會中途改變。
+
+![換帳號前先確認](user-guide/images/03-confirm-switch.png)
+
+![換帳號後：同一個代號，新的帳號](user-guide/images/03-switch-account.png)
 
 ## 4. 和 PM agent 一起 review reports
 尚未完成，見 #353。

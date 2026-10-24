@@ -1031,3 +1031,29 @@ test('a launch note clears the screen before the command and prints it; without 
   await r.manager.reopen(shell.id, { launchNote: 'Multiagent: starting Claude Code (Worker-02)' });
   assert.match(r.terminals[r.terminals.length - 1].sent[0].text, /^clear 2>\/dev\/null; printf '%s\\n' 'Multiagent: starting Claude Code \(Worker-02\)'; claude /);
 });
+
+test('forget drops a stopped session from the list and from what is saved, and refuses one whose terminal is open (#352)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const kept = await start(r, { name: 'Kept' });
+  const replaced = await start(r, { name: 'Replaced' });
+  await rejectsWithCode(r.manager.forget(replaced.id), 'session-live');
+  r.manager.stop(replaced.id);
+  await r.manager.forget(replaced.id);
+  assert.deepEqual(r.manager.list().map((session) => session.id), [kept.id]);
+  assert.deepEqual((r.store.saved ?? []).map((record) => [record.id, record.name]), [[kept.id, 'Kept']]);
+  await rejectsWithCode(r.manager.forget(replaced.id), 'session-not-found');
+});
+
+test('a codename moved from another session leaves that session: two sessions never show the same codename (#352)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const old = await start(r, { name: 'Same Agent', codename: 'Worker-05' });
+  r.manager.stop(old.id);
+  const again = await start(r, { name: 'Same Agent', codename: 'Worker-05', codenameFrom: old.id });
+  assert.equal(r.manager.get(again.id)?.codename, 'Worker-05');
+  assert.equal(r.manager.get(old.id)?.codename, null, 'the old record no longer holds it');
+  const other = await start(r, { name: 'Other', codename: 'Worker-06', codenameFrom: again.id });
+  assert.equal(r.manager.get(again.id)?.codename, 'Worker-05', 'a different codename takes nothing away');
+  assert.equal(r.manager.get(other.id)?.codename, 'Worker-06');
+});

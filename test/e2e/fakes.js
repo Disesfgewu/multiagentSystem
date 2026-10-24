@@ -11,12 +11,15 @@ const path = require('node:path');
  * - `claude auth login` / `codex login` finish at once, as after a sign-in in the browser.
  * - `claude auth status` answers for the account folder it was started with: `owner-b@example.test` for a folder whose name has
  *   "work-b" in it, `owner-a@example.test` for any other, so two accounts are two different real accounts.
+ * - `codex app-server` answers `initialize` with the CODEX_HOME it was started with and `account/read` with a ChatGPT sign-in,
+ *   `codex-owner@example.test` on the Plus plan, then keeps running until it is stopped, like the real server.
  * - `claude` started as an agent does what Claude Code does with a status line: it runs the `statusLine` command of its account's
  *   settings.json with a status line input on stdin (5-hour 32 %, weekly 10 %, weekly Opus 5 %), so the bridge the extension set
  *   up writes the usage reading the account row shows; then it runs the Stop hooks with a hook input (permission mode auto), so
  *   the hook bridge reports the agent as waiting.
  */
 
+const CODEX_EMAIL = 'codex-owner@example.test';
 const ACCOUNT = Object.freeze({ email: 'owner-a@example.test', orgName: 'Example Org', orgId: 'org-example', subscriptionType: 'max' });
 
 function script(name, calls) {
@@ -37,6 +40,21 @@ if (${JSON.stringify(name)} === 'codex' && has('login')) { process.stdout.write(
 if (${JSON.stringify(name)} === 'claude' && has('auth', 'status')) {
   process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email, orgId: ${JSON.stringify(ACCOUNT.orgId)}, orgName: ${JSON.stringify(ACCOUNT.orgName)}, subscriptionType: ${JSON.stringify(ACCOUNT.subscriptionType)}, configDirectory: configDir }));
   process.exit(0);
+}
+if (${JSON.stringify(name)} === 'codex' && has('app-server')) {
+  let buffered = '';
+  process.stdin.on('data', (chunk) => {
+    buffered += chunk;
+    let end;
+    while ((end = buffered.indexOf('\\n')) >= 0) {
+      const message = JSON.parse(buffered.slice(0, end));
+      buffered = buffered.slice(end + 1);
+      if (message.method === 'initialize') process.stdout.write(JSON.stringify({ id: message.id, result: { userAgent: 'synthetic', codexHome: configDir } }) + '\\n');
+      if (message.method === 'account/read') process.stdout.write(JSON.stringify({ id: message.id, result: { account: { type: 'chatgpt', email: ${JSON.stringify(CODEX_EMAIL)}, planType: 'plus' }, requiresOpenaiAuth: true } }) + '\\n');
+    }
+  });
+  setInterval(() => {}, 1 << 30);
+  return;
 }
 if (${JSON.stringify(name)} === 'gh' && has('auth', 'status')) { process.stdout.write('github.example.test\\n  Logged in to github.example.test account synthetic-owner\\n'); process.exit(0); }
 // An agent session: like Claude Code, run the account's status line command with a status line input, then wait.
@@ -75,4 +93,4 @@ function readCalls(file) {
   try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)); } catch { return []; }
 }
 
-module.exports = { writeFakeClis, readCalls, ACCOUNT };
+module.exports = { writeFakeClis, readCalls, ACCOUNT, CODEX_EMAIL };

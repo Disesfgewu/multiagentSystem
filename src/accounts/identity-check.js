@@ -1,7 +1,7 @@
 'use strict';
 
 const { builtIn } = require('../providers/registry');
-const { claudeIdentityFromAuthStatus, unknown } = require('./observation');
+const { claudeIdentityFromAuthStatus, codexIdentityFromAccountRead, unknown } = require('./observation');
 const { validateProfile } = require('./profile');
 
 // Asking a provider's own CLI who is signed in for one account profile. The CLI is run by an
@@ -16,14 +16,41 @@ const TIMEOUT_MS = 10_000;
 // at this hard limit and reports a timeout, so a runner that never returns cannot hold the screen.
 const HARD_LIMIT_MS = TIMEOUT_MS + 5_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
-// Plan names that are shown. Anything else the CLI reports is dropped (unknown) rather than shown: the text
-// comes from outside and could say anything. The list is a guess at current names, not a verified one.
-const PLAN_NAMES = Object.freeze(['free', 'pro', 'max', 'team', 'enterprise']);
+// Plan names that are shown, per provider. Anything else the CLI reports is dropped (unknown) rather than shown: the text
+// comes from outside and could say anything. Claude's list is a guess at current names; Codex's are from its app-server
+// protocol schema (PlanType), the plain ones only.
+const PLAN_NAMES = Object.freeze({
+  claude: Object.freeze(['free', 'pro', 'max', 'team', 'enterprise']),
+  codex: Object.freeze(['free', 'go', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu'])
+});
+
+// Codex says who is signed in only through its app-server protocol (#352): one JSON message per line on standard input, the
+// answer on standard output. The session is opened, `account/read` is asked once without refreshing any token, and the server is
+// stopped as soon as it has answered. Its credential files are never opened by this extension.
+const CODEX_ACCOUNT_REQUEST_ID = 1;
+const CODEX_INPUT = [
+  { method: 'initialize', id: 0, params: { clientInfo: { name: 'multiagent_system', title: 'Multiagent System', version: '1' } } },
+  { method: 'initialized' },
+  { method: 'account/read', id: CODEX_ACCOUNT_REQUEST_ID, params: { refreshToken: false } }
+].map((message) => JSON.stringify(message)).join('\n') + '\n';
+
+/** The app-server's answer to the message with `id` among the lines it printed, or null. */
+function codexAnswer(stdout, id = CODEX_ACCOUNT_REQUEST_ID) {
+  for (const line of String(stdout).split('\n')) {
+    if (!line.trim().startsWith('{')) continue;
+    let message;
+    try { message = JSON.parse(line); } catch { continue; }
+    // A request the server sends (it has a `method`) can carry the same id: only an answer counts.
+    if (isPlain(message) && message.id === id && !Object.hasOwn(message, 'method')) return message;
+  }
+  return null;
+}
 
 // The status command for each provider that has one. A provider not listed here cannot be checked and
-// says so; no command is guessed. Codex needs a protocol session (app-server), which is not run here.
+// says so; no command is guessed.
 const CHECKS = Object.freeze({
-  claude: Object.freeze({ args: Object.freeze(['auth', 'status', '--json']), source: 'claude auth status --json' })
+  claude: Object.freeze({ args: Object.freeze(['auth', 'status', '--json']), source: 'claude auth status --json' }),
+  codex: Object.freeze({ args: Object.freeze(['app-server']), source: 'codex app-server account/read', input: CODEX_INPUT, answeredWhen: (stdout) => codexAnswer(stdout) !== null })
 });
 
 const REASONS = Object.freeze({
@@ -43,7 +70,7 @@ const REASONS = Object.freeze({
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 // What the account view shows on this computer so the person can tell accounts apart (#352, at the owner's request): the e-mail
-// address and organization the CLI reported. Only well-formed, short, single-line values are kept; anything else is dropped. This
+// address and organization the CLI reported (Codex reports no organization). Only well-formed, short, single-line values are kept; anything else is dropped. This
 // object is never stored, logged, exported, sent to GitHub or put into an agent's instructions: it lives in this window's memory and
 // is shown on the account rows and details only. See docs/ACCOUNT_PROFILES.md.
 const EMAIL = /^[^\s@\p{Cc}\p{Cf}]{1,64}@[^\s@\p{Cc}\p{Cf}]{1,190}$/u;
@@ -80,7 +107,8 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   let timer;
   try {
     const limit = new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), hardLimitMs); });
-    outcome = await Promise.race([runner(executable, [...spec.args], { env, timeoutMs: TIMEOUT_MS, maxOutputBytes: MAX_OUTPUT_BYTES }), limit]);
+    const io = spec.input === undefined ? {} : { input: spec.input, answeredWhen: spec.answeredWhen };
+    outcome = await Promise.race([runner(executable, [...spec.args], { env, timeoutMs: TIMEOUT_MS, maxOutputBytes: MAX_OUTPUT_BYTES, ...io }), limit]);
   } catch {
     return unknownResult('run-failed', checkedAt, spec.source);
   } finally {
@@ -95,20 +123,35 @@ async function checkAccountIdentity({ profile, runner, env = {}, context, now = 
   if (outcome.code !== 0) return unknownResult('nonzero-exit', checkedAt, spec.source);
 
   let status;
-  try {
-    status = JSON.parse(outcome.stdout);
-  } catch {
-    return unknownResult('not-json', checkedAt, spec.source);
+  let identity;
+  if (profile.provider === 'codex') {
+    const answer = codexAnswer(outcome.stdout);
+    if (answer === null) return unknownResult('not-json', checkedAt, spec.source);
+    if (Object.hasOwn(answer, 'error')) return unknownResult('nonzero-exit', checkedAt, spec.source);
+    const result = answer.result;
+    if (!isPlain(result) || typeof result.requiresOpenaiAuth !== 'boolean' || !(result.account === null || result.account === undefined || (isPlain(result.account) && typeof result.account.type === 'string'))) return unknownResult('unexpected-shape', checkedAt, spec.source);
+    const account = isPlain(result.account) ? result.account : null;
+    status = { email: account && account.type === 'chatgpt' ? account.email : null };
+    // The answer to `initialize` says which CODEX_HOME the server used, so the folder is confirmed as for Claude.
+    const started = codexAnswer(outcome.stdout, 0);
+    const codexHome = started && isPlain(started.result) && typeof started.result.codexHome === 'string' ? started.result.codexHome : undefined;
+    identity = codexIdentityFromAccountRead({ account }, { profile, observedAt: checkedAt, codexHome, context });
+  } else {
+    try {
+      status = JSON.parse(outcome.stdout);
+    } catch {
+      return unknownResult('not-json', checkedAt, spec.source);
+    }
+    if (!isPlain(status) || typeof status.loggedIn !== 'boolean') return unknownResult('unexpected-shape', checkedAt, spec.source);
+    identity = claudeIdentityFromAuthStatus(status, { profile, observedAt: checkedAt, context });
   }
-  if (!isPlain(status) || typeof status.loggedIn !== 'boolean') return unknownResult('unexpected-shape', checkedAt, spec.source);
-
-  const identity = claudeIdentityFromAuthStatus(status, { profile, observedAt: checkedAt, context });
-  // Only a plan name from the list above is passed on, in lower case; anything else is dropped rather than shown.
+  // Only a plan name from the provider's list above is passed on, in lower case; anything else is dropped rather than shown.
+  const plans = PLAN_NAMES[profile.provider];
   if (identity.plan && identity.plan.value !== null) {
     const name = typeof identity.plan.value === 'string' ? identity.plan.value.trim().toLowerCase() : '';
-    if (PLAN_NAMES.includes(name)) identity.plan = { ...identity.plan, value: name };
+    if (plans.includes(name)) identity.plan = { ...identity.plan, value: name };
   }
-  if (identity.plan && identity.plan.value !== null && !(typeof identity.plan.value === 'string' && PLAN_NAMES.includes(identity.plan.value))) {
+  if (identity.plan && identity.plan.value !== null && !(typeof identity.plan.value === 'string' && plans.includes(identity.plan.value))) {
     identity.plan = unknown('plan', { source: spec.source, observedAt: checkedAt, reason: 'unusable-value' });
   }
   return { ok: true, state: 'checked', reason: 'checked', checkedAt, source: spec.source, identity, display: displayFromStatus(status) };
@@ -140,4 +183,4 @@ function describeCheck(result) {
   return { summary: 'Signed in, but the CLI did not confirm who the account is.', hint: 'The identity stays unknown, so this account cannot be used for a managed launch.' };
 }
 
-module.exports = { checkAccountIdentity, displayFromStatus, describeCheck, splitFolderIssues, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES, HARD_LIMIT_MS };
+module.exports = { checkAccountIdentity, displayFromStatus, codexAnswer, CODEX_INPUT, describeCheck, splitFolderIssues, CHECKS, REASONS, TIMEOUT_MS, MAX_OUTPUT_BYTES, HARD_LIMIT_MS };

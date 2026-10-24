@@ -164,6 +164,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         await context.workspaceState.update(LAYOUT_KEY, layout);
         post();
         return { ok: true, command: message.type };
+      // The card's "Switch account…" (#352): the session command picks the account and asks before it stops anything.
+      case 'switchAccount':
+        void vscode.commands.executeCommand('multiagentSystem.sessions.restartWithAccount', { id: message.id });
+        return { ok: true, command: message.type };
       case 'focus':
         await vscode.commands.executeCommand('multiagentSystem.sessions.focus', { id: message.id });
         return { ok: true, command: message.type };

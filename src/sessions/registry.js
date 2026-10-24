@@ -161,6 +161,13 @@ class SessionRegistry {
     return copy(entry);
   }
 
+  // A session whose terminal is not open is dropped from the list (#352: replaced by the same agent on another account).
+  forget(id) {
+    this.#entry(id);
+    if (this.bindings.has(id)) throw new SessionError('session-live');
+    this.entries.delete(id);
+  }
+
   // Persist only through the caller's private storage. On restart every
   // runtime status becomes unknown until new terminal/provider evidence arrives.
   snapshot() {
