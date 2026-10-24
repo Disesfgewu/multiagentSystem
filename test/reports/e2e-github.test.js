@@ -26,3 +26,18 @@ test('the synthetic reader has the read calls only, answering from the fixture (
   assert.deepEqual(await reader.listIssues({ state: 'closed' }), { kind: 'ok', data: [] });
   assert.deepEqual(await reader.getPullRequestSnapshot(7), { status: 'complete' });
 });
+
+test('the synthetic GitHub publishes into the fixture, so the page reads the comment back; the real code does everything else (#353)', async () => {
+  const { fixtureWriteHooks } = require('../../src/reports/e2eGitHub');
+  const fixture = JSON.parse(JSON.stringify({ ...FIXTURE, owner: 'e2e-owner', issues: [{ number: 12, state: 'open', title: 'x', body: 'b' }] }));
+  const hooks = fixtureWriteHooks(fixture);
+  assert.deepEqual(Object.keys(hooks).sort(), ['comment', 'repository', 'session', 'user', 'version'], 'no confirmation, prompt or privacy check is replaced');
+  assert.deepEqual(await hooks.user(await hooks.session()), { id: 4242, login: 'e2e-owner' });
+  assert.equal(await hooks.version({ kind: 'issue', number: 12 }), require('node:crypto').createHash('sha256').update('x\0b').digest('hex'));
+  const posted = await hooks.comment(null, null, 12, 'Hello');
+  assert.equal(posted.ok, true);
+  assert.deepEqual((await fixtureReader(fixture).getIssueComments(12)).data.at(-1), { id: posted.number, author: 'e2e-owner', createdAt: fixture.comments[12].at(-1).createdAt, body: 'Hello' });
+  // The publishing side checks the same condition again before it uses any of this.
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/reports/publicFeedback.ts'), 'utf8');
+  assert.match(source, /export function useE2eGitHubForPublishing\(mode: number, env: NodeJS\.ProcessEnv, fixture: unknown\): boolean \{[\s\S]*?if \(!e2eGitHubFixture\(mode, env\)\) return false;\n {2}hooks = \{ \.\.\.realHooks, \.\.\.fixtureWriteHooks\(fixture\) \};/);
+});

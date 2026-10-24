@@ -53,7 +53,9 @@ test('an item is either accepted with nothing pending, or not done with what is 
     else assert.match(item.pending ?? '', /#\d+/, `${item.id} says which issue finishes it`);
   }
   // #357: the side bar keeps one entry, and one screen shows every agent with its codename, account and mode.
-  assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '01', '11', '02', '03']);
+  assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '01', '11', '02', '03', '08']);
+  // #353: item 08 reads an Issue and a pull request, opens a diff, writes, publishes and asks an agent about a post.
+  assert.deepEqual(ITEMS.find((item) => item.id === '08').steps.map((step) => step.name), ['open-issue-page', 'open-pr-page', 'open-file-diff', 'write-comment', 'publish-comment', 'ask-agent']);
   // #352: item 03 adds a Codex account, sets a role group's default account, starts with it and switches an agent's account.
   const three = ITEMS.find((item) => item.id === '03');
   assert.deepEqual(three.steps.map((step) => step.name), ['add-codex-account', 'set-default-account', 'see-default-first', 'start-with-default', 'confirm-switch', 'switch-account']);

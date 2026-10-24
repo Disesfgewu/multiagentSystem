@@ -234,7 +234,13 @@ export async function commentOnGitHub(sessions: SessionCommands, target: Target,
   if (!version) { void vscode.window.showErrorMessage(`${where(target)} could not be read, so nothing was sent.`); return { ok: false, code: 'target-unreadable' }; }
   const sent = await deps.send({ repository, kind: target.kind, number: target.number, version }, { interactive: true, conversation: true, ...(options.typed !== undefined ? { typed: options.typed } : {}) });
   if (!sent.ok) {
-    if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The comment was not sent (${sent.code ?? 'unknown'}).${options.tellPm ? ' The PM was not told.' : ''}`);
+    const told = options.tellPm ? ' The PM was not told.' : '';
+    // Who publishes is set once per repository; the message offers it, as the text report does.
+    if (sent.code === 'publisher-not-configured' || sent.code === 'publisher-identity-changed') {
+      void vscode.window.showErrorMessage(`The comment was not sent: ${sent.code === 'publisher-not-configured' ? 'no GitHub account is set to publish your comments for this repository yet' : 'the signed-in GitHub account is not the one set to publish'}.${told}`, 'Configure PM Publisher').then((picked) => {
+        if (picked) void vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher);
+      });
+    } else if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The comment was not sent (${sent.code ?? 'unknown'}).${told}`);
     return { ok: false, code: sent.code };
   }
   options.afterPost?.();

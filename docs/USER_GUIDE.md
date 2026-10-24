@@ -135,7 +135,7 @@
 ![Issue 頁面](user-guide/images/08-open-issue-page.png)
 
 PR 頁面還會顯示：
-- head 的 commit、分支、CI 狀態與 review 狀態。
+- head 的 commit 與分支，以及用白話寫的檢查結果與 review 狀態，例如 `Checks: checks passed · Review: changes requested`。
 - review 和留言依時間排在一起。
 - **Files changed**：點檔名就會開啟那個檔案的 diff，和文字報告裡點檔名一樣。
 - **Review comments on lines**：每則都寫著檔案和行號，按 **Go to …** 就會跳到 diff 的那一行。
@@ -156,6 +156,10 @@ PR 頁面還會顯示：
 - **Comment and tell PM**：先照上面的方式發出留言，再從 GitHub 讀回來確認真的在上面，然後才問你要不要通知 PM agent。通知時，PM 的終端機只會收到一行數字，例如 `管理者在 Issue #12 留言（留言 ID 4242），請讀取這則留言並在 Issue #12 回覆。`，不會收到留言內容。
 
 ![留言與預覽](user-guide/images/08-write-comment.png)
+
+第一次發留言時，還沒有設定由哪個 GitHub 帳號替你發留言，所以會出現 **Configure PM Publisher**。按下去並確認一次，之後就不會再問。
+
+![發出留言](user-guide/images/08-publish-comment.png)
 
 **請 agent 看某一則留言**：每則留言、review、逐行留言下面都有兩個按鈕：
 - **Discuss with PM**：請 PM agent 讀這一則並回覆。

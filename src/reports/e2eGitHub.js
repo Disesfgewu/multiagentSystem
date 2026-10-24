@@ -47,4 +47,35 @@ function fixtureReader(fixture) {
   };
 }
 
-module.exports = { e2eGitHubFixture, fixtureReader };
+/**
+ * The synthetic GitHub's side of publishing (#353): a signed-in account and a comment call that adds the comment to the fixture, so
+ * the page reads it back as GitHub would. Everything else of publishing (the privacy check, the confirmation, the owner record) is
+ * the real code. Used only together with the reader above, under the same condition.
+ */
+function fixtureWriteHooks(fixture) {
+  const login = typeof fixture.owner === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fixture.owner) ? fixture.owner : 'e2e-owner';
+  const session = { id: 'e2e-session', accessToken: 'synthetic', account: { id: '4242', label: login }, scopes: [] };
+  const comments = (fixture.comments ??= {});
+  let nextId = 900001;
+  const versionOf = (target) => {
+    if (target.kind === 'issue') {
+      const issue = byNumber(fixture.issues, target.number);
+      return issue ? require('node:crypto').createHash('sha256').update(`${issue.title}\0${issue.body ?? ''}`).digest('hex') : null;
+    }
+    const pull = byNumber(fixture.pullRequests, target.number);
+    return pull && typeof pull.headSha === 'string' ? pull.headSha : null;
+  };
+  return {
+    session: async () => session,
+    user: async () => ({ id: 4242, login }),
+    version: async (target) => versionOf(target),
+    repository: async () => fixture.repository,
+    comment: async (_auth, _repository, number, body) => {
+      const id = nextId++;
+      (comments[String(number)] ??= []).push({ id, author: login, createdAt: new Date().toISOString(), body });
+      return { ok: true, number: id };
+    }
+  };
+}
+
+module.exports = { e2eGitHubFixture, fixtureReader, fixtureWriteHooks };

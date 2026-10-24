@@ -331,6 +331,16 @@ const realHooks: Hooks = {
 let hooks = realHooks;
 let testMode = false;
 export function setPublicFeedbackTestMode(enabled: boolean): void { testMode = enabled; if (!enabled) hooks = realHooks; }
+/**
+ * The end-to-end run only (#353): publishing goes to its synthetic GitHub. The condition is checked here again (development mode and
+ * the run's environment variable naming the file), so an installed extension can never reach this.
+ */
+export function useE2eGitHubForPublishing(mode: number, env: NodeJS.ProcessEnv, fixture: unknown): boolean {
+  const { e2eGitHubFixture, fixtureWriteHooks } = require('./e2eGitHub') as { e2eGitHubFixture(mode: number, env: NodeJS.ProcessEnv): unknown; fixtureWriteHooks(fixture: unknown): Partial<Hooks> };
+  if (!e2eGitHubFixture(mode, env)) return false;
+  hooks = { ...realHooks, ...fixtureWriteHooks(fixture) };
+  return true;
+}
 export function installPublicFeedbackTestOverrides(next: Partial<Hooks>): void {
   if (!testMode) throw new Error('Public feedback overrides are available only in Extension Host tests.');
   hooks = { ...realHooks, ...next };

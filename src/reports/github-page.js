@@ -195,7 +195,7 @@ const SCRIPT = String.raw`
     if (m.pr) {
       var pr = el('section', 'pr-box');
       pr.appendChild(el('div', null, 'Head ' + (m.pr.headSha ? m.pr.headSha.slice(0, 12) : 'unknown') + ' · ' + (m.pr.headRef || 'branch unknown') + ' → ' + (m.pr.baseRef || 'base unknown')));
-      pr.appendChild(el('div', null, 'CI: ' + m.pr.ci + ' · Review: ' + m.pr.approval));
+      pr.appendChild(el('div', null, 'Checks: ' + m.pr.ci + ' · Review: ' + m.pr.approval));
       root.appendChild(pr);
     }
     m.notes.forEach(function (text) { root.appendChild(el('div', 'note', text)); });

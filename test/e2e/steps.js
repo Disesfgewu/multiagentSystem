@@ -54,13 +54,18 @@ async function drive(page, answers, done, timeoutMs = 60000) {
     if (await done(seen)) return seen;
     const dialog = page.locator('.monaco-dialog-box:visible').first();
     if (await dialog.isVisible().catch(() => false)) {
-      const message = (await dialog.locator('.dialog-message-text').innerText().catch(() => '')).trim();
-      const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
-      if (!rule) throw new Error(`a dialog nobody answers: "${message}"`);
-      seen.push(`dialog: ${message} → ${rule.button}`);
-      await dialog.locator('.monaco-button', { hasText: rule.button }).first().click();
-      await page.waitForTimeout(400);
-      continue;
+      // VS Code shows a modal's message in its detail part when the call gives no detail: read the message, else that part.
+      const textOf = async (selector) => (await dialog.locator(selector).first().innerText().catch(() => '')).trim();
+      const message = (await textOf('.dialog-message-text')) || (await textOf('.dialog-message-detail'));
+      // A dialog whose text is not drawn yet is looked at again on the next round.
+      if (message !== '') {
+        const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
+        if (!rule) throw new Error(`a dialog nobody answers: "${message}"`);
+        seen.push(`dialog: ${message} → ${rule.button}`);
+        await dialog.locator('.monaco-button', { hasText: rule.button }).first().click();
+        await page.waitForTimeout(400);
+        continue;
+      }
     }
     // A notification with a button the flow waits for (for example "I have signed in — check now").
     const toastRule = answers.find((entry) => entry.toast);
@@ -99,6 +104,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
     if (process.env.MULTIAGENT_E2E_DEBUG === '1' && shots < 20) { shots += 1; await page.screenshot({ path: require('node:path').join(__dirname, '..', '..', 'artifacts', 'e2e', `debug-${Date.now()}.png`) }).catch(() => {}); }
     await page.waitForTimeout(250);
   }
+  // The last answer may have been given just before the time ran out.
+  if (await done(seen)) return seen;
   throw new Error(`the flow did not finish in ${timeoutMs / 1000} s; answered: ${seen.join(' | ')}`);
 }
 
@@ -560,8 +567,7 @@ const ITEMS = [
     id: '08',
     title: 'Issues and pull requests shown like GitHub',
     issue: '#353',
-    acceptance: 'not-done',
-    pending: '#353: review, merge and close from the page (the next PR); a comment is published only with a signed-in GitHub account, so posting is checked by the host tests and the real-repository walk-through (#135)',
+    acceptance: 'accepted',
     steps: [
       {
         name: 'open-issue-page',
@@ -593,7 +599,7 @@ const ITEMS = [
         run: async ({ page, check }) => {
           await openGitHubPage(page, 7, 'PR #7');
           const frame = await pageFrame(page, 'Read-only Issue and pull request page');
-          check('its head, branches, CI and review', await frame.locator('.pr-box').innerText(), (text) => /Head 1234567890ab · feat\/github-page → main/.test(text) && /CI: passing/.test(text) && /Review: changes_requested/.test(text));
+          check('its head, branches, checks and review, in plain words', await frame.locator('.pr-box').innerText(), (text) => /Head 1234567890ab · feat\/github-page → main/.test(text) && /Checks: checks passed/.test(text) && /Review: changes requested/.test(text) && !/_/.test(text.split('\n')[1] ?? ''));
           check('the review is in the conversation, with its state', (await frame.locator('.post-head').allInnerTexts()).join(' | '), /PM-01（自稱）[\s\S]*review: requested changes/);
           check('the changed files', await frame.locator('h2', { hasText: 'Files changed' }).innerText(), 'Files changed (1)');
           check('and the comment on a line, with where it is', await frame.locator('.where').first().innerText(), 'src/reports/github-page.js:2');
@@ -631,6 +637,35 @@ const ITEMS = [
         }
       },
       {
+        name: 'publish-comment',
+        does: 'Click "Comment". The first time, set who publishes: click "Configure PM Publisher" and confirm. Then click "Comment" again, read the whole comment in the window and click "Publish public feedback".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          const comment = () => frame.locator('.composer .btn', { hasText: /^Comment$/ }).first().click();
+          await comment();
+          // No account publishes for this repository yet: the message says so and offers to set it.
+          const answered = await drive(page, [
+            { toast: 'no GitHub account is set to publish', button: 'Configure PM Publisher' },
+            { dialog: /^Allow the signed-in GitHub user e2e-owner to publish/, button: 'Configure PM publisher' }
+          ], async (seen) => seen.some((line) => /^dialog: Allow the signed-in GitHub user/.test(line)), 60000);
+          await page.waitForTimeout(1000);
+          check('who publishes is set once, after its confirmation', answered.join(' | '), /Configure PM Publisher[\s\S]*Allow the signed-in GitHub user e2e-owner to publish/);
+          await clearNotifications(page);
+          await comment();
+          const dialog = page.locator('.monaco-dialog-box', { hasText: 'Publish this exact comment to example/project Issue #12' }).first();
+          await dialog.waitFor({ state: 'visible', timeout: 30000 });
+          check('the confirmation shows the whole comment before anything is published', await dialog.innerText(), /\*\*Thanks\*\*, please summarise the open points\./);
+          await dialog.locator('.monaco-button', { hasText: 'Publish public feedback' }).click();
+          const posted = frame.locator('.post', { hasText: 'please summarise the open points' }).first();
+          await posted.waitFor({ timeout: 30000 });
+          check('the comment is on the page, drawn as Markdown', await posted.locator('.md strong').first().innerText(), 'Thanks');
+          check('with the 管理者 badge: it was published from here', await posted.locator('.post-head .author').innerText(), '管理者');
+          check('the comment box is empty again', await frame.locator('textarea.comment-box').inputValue(), '');
+          await posted.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
         name: 'ask-agent',
         does: 'On Worker-01\'s comment click "Ask an agent…", choose "E2E Agent 1", read the window and click "Send Now".',
         run: async ({ page, check }) => {
@@ -640,7 +675,7 @@ const ITEMS = [
           const answered = await drive(page, [
             { when: /Which agent should read it and reply on Issue #12/, pick: 'E2E Agent 1' },
             { dialog: /Ask this agent to read this post on Issue #12 and reply there/, button: 'Send Now' }
-          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box .monaco-button:visible', { hasText: 'Send Now' }).first().isVisible().catch(() => false)), 60000);
           check('it asked which agent, then asked before typing anything', answered.join(' | '), /pick: [\s\S]*E2E Agent 1[\s\S]*dialog: Ask this agent to read this post on Issue #12 and reply there\? → Send Now/);
           // What reached the agent is one line of numbers: the Issue and the comment id, never the comment's text.
           await page.locator('.tabs-container .tab', { hasText: 'E2E Agent 1' }).first().click();

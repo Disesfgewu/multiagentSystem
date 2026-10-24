@@ -42,7 +42,13 @@ test('a pull request page: head, CI, review state, the report\'s file list, and 
     summary: { ci: 'passing', approval: 'changes_requested' }
   });
   assert.equal(model.state, 'open');
-  assert.deepEqual([model.pr.headSha, model.pr.headRef, model.pr.baseRef, model.pr.ci, model.pr.approval], [HEAD, 'feat/page', 'main', 'passing', 'changes_requested']);
+  assert.deepEqual([model.pr.headSha, model.pr.headRef, model.pr.baseRef, model.pr.ci, model.pr.approval], [HEAD, 'feat/page', 'main', 'checks passed', 'changes requested'], 'in plain words, not GitHub\'s field values (#360)');
+  const plain = (summary) => { const built = buildPageModel({ repository: 'o/r', kind: 'pullRequest', item: { number: 1, state: 'open', headSha: HEAD }, comments: ok([]), reviews: ok([]), reviewComments: ok([]), files: ok([]), summary }); return [built.pr.ci, built.pr.approval]; };
+  assert.deepEqual(plain({ ci: 'failing', approval: 'not_approved' }), ['checks failed', 'not approved yet']);
+  assert.deepEqual(plain({ ci: 'pending', approval: 'approved' }), ['checks still running', 'approved']);
+  assert.deepEqual(plain({ ci: 'none', approval: 'unknown' }), ['no checks reported', 'unknown']);
+  assert.deepEqual(plain({ ci: '<b>x</b>', approval: 'stale_review' }), ['unknown', 'unknown'], 'a value it does not know is unknown, never shown as given');
+  assert.deepEqual(plain(null), ['unknown', 'unknown']);
   assert.deepEqual(model.posts.map((post) => [post.id, post.kind, post.review]), [[201, 'review', 'requested changes']], 'a pending review is not shown');
   assert.deepEqual(model.pr.files.map((file) => [file.filename, file.status, file.additions, file.deletions]), [['src/a.ts', 'modified', 3, 1], ['b.md', 'added', 9, 0]]);
   assert.deepEqual(model.pr.inline.map((entry) => [entry.id, entry.path, entry.line, entry.file]), [[301, 'src/a.ts', 12, 0], [302, 'src/elsewhere.ts', 3, null]], 'only a comment on a listed file can be opened');

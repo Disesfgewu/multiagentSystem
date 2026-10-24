@@ -4,7 +4,7 @@ import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
-import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
+import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode, useE2eGitHubForPublishing } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
 import { openGitHubPage, PageSource } from './githubPage';
 import * as fsp from 'node:fs/promises';
@@ -737,7 +737,11 @@ export function registerReports(context: vscode.ExtensionContext): void {
   setPublicFeedbackTestMode(context.extensionMode === vscode.ExtensionMode.Test);
   // The end-to-end run only (development mode and its environment variable): a synthetic GitHub, read-only, instead of the network.
   const fixture = e2eGitHubFixture(context.extensionMode, process.env);
-  if (fixture) { const reader = fixtureReader(fixture) as unknown as ReportReader; deps = { ...realDeps, repository: async () => fixture.repository, readerFor: () => reader }; }
+  if (fixture) {
+    const reader = fixtureReader(fixture) as unknown as ReportReader;
+    deps = { ...realDeps, repository: async () => fixture.repository, readerFor: () => reader };
+    useE2eGitHubForPublishing(context.extensionMode, process.env, fixture);
+  }
   const content = new ReportContent();
   reportContent = content;
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };

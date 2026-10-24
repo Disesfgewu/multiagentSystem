@@ -19,6 +19,11 @@ const listOf = (result) => (complete(result) ? (result.kind === 'empty' ? [] : r
 const when = (value) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null);
 const unread = (what, result) => `${what}: unknown (${line(result && result.kind ? result.kind : 'not read', 30)}). It could not be read completely, so it is not shown.`;
 
+// The pull request's review and checks in plain words (#360): what the owner reads, not GitHub's field values.
+const APPROVAL_WORDS = Object.freeze({ approved: 'approved', changes_requested: 'changes requested', not_approved: 'not approved yet' });
+const CHECK_WORDS = Object.freeze({ passing: 'checks passed', failing: 'checks failed', pending: 'checks still running', none: 'no checks reported' });
+const words = (table, value) => (typeof value === 'string' && Object.hasOwn(table, value) ? table[value] : 'unknown');
+
 const REVIEW_STATES = Object.freeze({ APPROVED: 'approved', CHANGES_REQUESTED: 'requested changes', COMMENTED: 'commented', DISMISSED: 'dismissed' });
 
 function badge(item, kind, ownerPosts) {
@@ -86,8 +91,8 @@ function buildPageModel(input) {
       headSha: typeof item.headSha === 'string' ? item.headSha.slice(0, 40) : null,
       headRef: line(item.headRef ?? '', 120) || null,
       baseRef: line(item.baseRef ?? '', 120) || null,
-      ci: line(input.summary && input.summary.ci ? input.summary.ci : 'unknown', 20),
-      approval: line(input.summary && input.summary.approval ? input.summary.approval : 'unknown', 40),
+      ci: words(CHECK_WORDS, input.summary && input.summary.ci),
+      approval: words(APPROVAL_WORDS, input.summary && input.summary.approval),
       files,
       inline: inline.slice(0, MAX_POSTS)
     };
