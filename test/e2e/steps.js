@@ -38,6 +38,19 @@ async function timed(what, action, limitMs = 20000) {
 /** A pause on this side's clock, not the page's: it ends even when the page does not answer (#385). */
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Presses Enter in a list or input box (#385). Enter that accepts a choice can open a webview at once, which takes the focus into a
+ * frame of its own; the key's acknowledgment then may never come back, so the press never resolves, though the key did its work
+ * (CI run 40119192971: the Issue page was open behind a press that never finished). The press is given three seconds; after that the
+ * flow goes on, and what the key did is checked by the flow's own end condition, as before.
+ */
+async function pressEnter(page) {
+  let acknowledged = false;
+  const press = page.keyboard.press('Enter').then(() => { acknowledged = true; }, () => { acknowledged = true; });
+  await timed('pressing Enter', () => Promise.race([press, pause(3000)]));
+  if (!acknowledged) console.log('e2e:   Enter was not acknowledged within 3 s (the focus moved into a new webview); going on and checking what it did');
+}
+
 /** A frame that does not answer (a webview in the background) is skipped: what it was asked counts as `fallback` after 3 s. */
 function bounded(promise, fallback, ms = 3000) {
   let timer;
@@ -51,7 +64,7 @@ async function runCommand(page, title) {
   await input.waitFor({ state: 'visible', timeout: 10000 });
   await input.fill(`>${title}`);
   await page.locator('.quick-input-widget .quick-input-list .monaco-list-row', { hasText: title }).first().waitFor({ timeout: 10000 });
-  await page.keyboard.press('Enter');
+  await pressEnter(page);
 }
 
 /** Closes the notifications in the corner (as a person would), so a screenshot shows the screen itself. */
@@ -147,7 +160,7 @@ async function drive(page, answers, done, timeoutMs = 60000) {
         if (rule.type !== '') await timed(`typing "${rule.type}"`, () => input.fill(rule.type));
         seen.push(`type: ${title} → ${rule.type || '(as suggested)'}`);
       }
-      await timed('pressing Enter', () => page.keyboard.press('Enter'));
+      await pressEnter(page);
       await pause(400);
       continue;
     }
@@ -862,7 +875,7 @@ const ITEMS = [
           check('the lock file\'s token is nowhere on the screen', await frame.locator('body').innerText(), (text) => !text.includes('synthetic-token-never-read'));
           // The Workbench draws its cards again when an agent reports: find the card again if it was redrawn under the scroll.
           for (let tries = 0; tries < 5; tries += 1) {
-            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 6' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 6' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await pause(500); }
           }
           await clearNotifications(page);
         }
