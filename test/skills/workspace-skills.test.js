@@ -10,7 +10,7 @@ const skills = require('../../src/skills/workspace-skills');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const skillsRoot = path.join(repoRoot, 'resources', 'agent-skills');
 const templatesRoot = path.join(repoRoot, 'resources', 'agent-templates');
-const BUNDLED = ['code-review-on-git', 'fetch-comments', 'fetch-issues', 'fetch-prs', 'raise-issue', 'raise-pr', 'resolve-conflicts', 'resolve-issues'];
+const BUNDLED = ['claim-issue', 'code-review-on-git', 'fetch-comments', 'fetch-issues', 'fetch-prs', 'raise-issue', 'raise-pr', 'resolve-conflicts', 'resolve-issues', 'respond-to-review', 'run-tests'];
 
 function world(t) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-skills-'));
@@ -311,12 +311,12 @@ test('automatic preparation installs both discovery locations, protects custom s
   const options = { workspaceRoot: workspace, skillsRoot, store, trusted: true, enabled: true, local: true };
   const result = await skills.runAutomaticInstall(options);
   assert.equal(result.ok, true);
-  assert.equal(result.written.length, 15);
+  assert.equal(result.written.length, BUNDLED.length * 2 - 1, 'every bundled skill in both locations, except the one that is the user\'s own');
   assert.deepEqual(result.conflicts, ['.agents/skills/fetch-prs/SKILL.md']);
   assert.equal(fs.readFileSync(path.join(custom, 'SKILL.md'), 'utf8'), 'custom');
   for (const base of ['.claude', '.agents']) for (const name of BUNDLED) assert.ok(fs.existsSync(path.join(workspace, base, 'skills', name, 'SKILL.md')));
   assert.equal(fs.existsSync(path.join(workspace, '.github')), false);
-  assert.equal(skills.parseRecord(store.get(skills.recordKey(workspace))).files.length, 15);
+  assert.equal(skills.parseRecord(store.get(skills.recordKey(workspace))).files.length, BUNDLED.length * 2 - 1);
   assert.deepEqual((await skills.runAutomaticInstall(options)).written, [], 'repeat activation does not overwrite');
   fs.writeFileSync(path.join(workspace, '.agents/skills/fetch-issues/SKILL.md'), 'edited');
   assert.equal((await skills.runRemove(deps(workspace, { store, isTestMode: true, arg: { interactive: false } }))).ok, true);
@@ -330,7 +330,7 @@ test('a skill the user deleted by hand is not recreated by later automatic prepa
   const { workspace } = world(t);
   const store = memoryStore();
   const options = { workspaceRoot: workspace, skillsRoot, store, trusted: true, enabled: true, local: true };
-  assert.equal((await skills.runAutomaticInstall(options)).written.length, 16);
+  assert.equal((await skills.runAutomaticInstall(options)).written.length, BUNDLED.length * 2);
   const deleted = path.join(workspace, '.claude/skills/fetch-prs/SKILL.md');
   fs.rmSync(path.dirname(deleted), { recursive: true });
   const again = await skills.runAutomaticInstall(options);

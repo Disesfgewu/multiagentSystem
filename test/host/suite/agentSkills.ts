@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 export async function runAgentSkillChecks(workspace: string): Promise<void> {
-  const names = ['code-review-on-git', 'fetch-comments', 'fetch-issues', 'fetch-prs', 'raise-issue', 'raise-pr', 'resolve-conflicts', 'resolve-issues'];
+  const names = ['claim-issue', 'code-review-on-git', 'fetch-comments', 'fetch-issues', 'fetch-prs', 'raise-issue', 'raise-pr', 'resolve-conflicts', 'resolve-issues', 'respond-to-review', 'run-tests'];
   const files = ['.claude', '.agents'].flatMap((root) => names.map((name) => path.join(workspace, root, 'skills', name, 'SKILL.md')));
   const deadline = Date.now() + 5000;
   while (!files.every((file) => fs.existsSync(file)) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -24,7 +24,7 @@ export async function runAgentSkillChecks(workspace: string): Promise<void> {
   assert.equal(fs.existsSync(files[0]), false);
   const installed = await vscode.commands.executeCommand<any>('multiagentSystem.skills.install', { interactive: false });
   assert.equal(installed.ok, true, JSON.stringify(installed));
-  assert.equal(installed.written.length, 15, 'explicit install restores both hosts while preserving edits');
+  assert.equal(installed.written.length, names.length * 2 - 1, 'explicit install restores both hosts while preserving edits');
   assert.equal(fs.readFileSync(edited, 'utf8'), 'synthetic user edit');
   console.log('host smoke: activation prepares bundled skills in both official discovery locations; removal persists and explicit reinstall preserves edits; actual CLI loading unverified');
 }

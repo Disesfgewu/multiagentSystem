@@ -111,11 +111,20 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       const placeholder = (await timed('the list\'s placeholder', () => input.getAttribute('placeholder').catch(() => ''))) ?? '';
       const message = (await widget.locator('.quick-input-message').innerText().catch(() => '')).trim();
       const title = `${placeholder} ${message}`.trim();
-      const rule = answers.find((entry) => (entry.pick || entry.type !== undefined) && entry.when.test(title));
+      const rule = answers.find((entry) => (entry.pick || entry.toggle || entry.accept || entry.type !== undefined) && entry.when.test(title));
       // The window may be the one the flow waits for, shown just after `done` was asked: ask again before failing.
       if (!rule && await done(seen)) return seen;
       if (!rule) throw new Error(`a window nobody answers: "${title}"`);
-      if (rule.pick) {
+      if (rule.toggle) {
+        // A list with check boxes: tick this one row, as a person clicks it, then accept.
+        const row = widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.toggle }).first();
+        await timed(`the list row "${rule.toggle}"`, () => row.waitFor({ timeout: 10000 }));
+        await timed(`ticking "${rule.toggle}"`, () => row.locator('input[type="checkbox"], .monaco-custom-toggle, .quick-input-list-checkbox').first().click());
+        seen.push(`tick: ${title} → ${rule.toggle}`);
+      } else if (rule.accept) {
+        // A list with check boxes, accepted as it is (the rows already ticked).
+        seen.push(`accept: ${title}`);
+      } else if (rule.pick) {
         await timed(`typing "${rule.pick}" into the list`, () => input.fill(rule.pick));
         await timed(`the list row "${rule.pick}"`, () => widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 }));
         seen.push(`pick: ${title} → ${rule.pick}`);
@@ -604,7 +613,10 @@ const ITEMS = [
           }
           check('one card for it, now with "Work A"', cards.length === 1 && /Account: Work A \(owner-a@example\.test\)/.test(cards[0]), true);
           check('it keeps its codename, so its GitHub signature does not change', (CODENAME.exec(cards[0] ?? '') ?? [])[1] ?? null, switched.codename);
-          await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded();
+          // The Workbench draws its cards again when an agent reports: find the card again if it was redrawn under the scroll.
+          for (let tries = 0; tries < 5; tries += 1) {
+            try { await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+          }
           await clearNotifications(page);
         }
       }
@@ -736,6 +748,59 @@ const ITEMS = [
           }
           check('the agent got one line naming Issue #12 and comment 1201', terminal.replace(/\s+/g, ''), /管理者請你閱讀Issue#12的留言（ID1201），並在Issue#12回覆你的看法。/);
           check('and not the comment\'s text', terminal, (text) => !/read-only page: /.test(text));
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
+    id: '10',
+    title: 'Skills and shared memory that save tokens',
+    issue: '#359',
+    acceptance: 'not-done',
+    pending: '#359: an agent is told only the list of its role group\'s skills (and a shared memory with a size limit), the Workbench shows how much each agent was given, and the usage log compares sessions (the next pull requests)',
+    steps: [
+      {
+        name: 'add-starter-skills',
+        does: 'In the Workbench, open Knowledge and click "Add starter skills…", keep them all ticked and press Enter.',
+        run: async ({ page, check }) => {
+          await clickInWorkbench(page, 'Add starter skills…', { tab: 'Knowledge' });
+          const answered = await drive(page, [{ when: /Add which starter skills to the library/, accept: true }], async (seen) => seen.length > 0 && !(await page.locator('.quick-input-widget:visible').first().isVisible().catch(() => false)), 30000);
+          check('it asked which starter skills to add', answered.join(' | '), /accept: Add which starter skills/);
+          const frame = await workbenchFrame(page);
+          const deadline = Date.now() + 20000;
+          let names = [];
+          while (Date.now() < deadline) { names = await frame.locator('div[data-skill] strong').allInnerTexts(); if (names.length >= 11) break; await page.waitForTimeout(300); }
+          check('the starter skills are in the library', names.join(', '), (text) => ['claim-issue', 'raise-pr', 'respond-to-review', 'run-tests', 'resolve-conflicts'].every((name) => text.includes(name)));
+          check('each says when to use it, and that no role group gets it yet', await frame.locator('div[data-skill="run-tests"]').innerText(), (text) => /Run this project's real tests once/.test(text) && /For no role group yet/.test(text));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'assign-skill',
+        does: 'On "run-tests" click "Role groups…", tick "E2E Developers" and press Enter.',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('div[data-skill="run-tests"] button', { hasText: 'Role groups…' }).click();
+          await drive(page, [{ when: /Which role groups get “run-tests”/, toggle: ROLE }], async (seen) => seen.length > 0 && !(await page.locator('.quick-input-widget:visible').first().isVisible().catch(() => false)), 30000);
+          const deadline = Date.now() + 20000;
+          let text = '';
+          while (Date.now() < deadline) { text = await (await workbenchFrame(page)).locator('div[data-skill="run-tests"]').innerText().catch(() => ''); if (/For: E2E Developers/.test(text)) break; await page.waitForTimeout(300); }
+          check('the skill is given to the role group', text, /For: E2E Developers/);
+          check('and is on', text, /\bon\b/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'edit-skill',
+        does: 'On "run-tests" click "Edit": the skill opens in the editor as a Markdown file; saving it keeps it in the library.',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('div[data-skill="run-tests"] button', { hasText: 'Edit' }).click();
+          const tab = page.locator('.tabs-container .tab', { hasText: 'SKILL.md' }).first();
+          await tab.waitFor({ timeout: 20000 });
+          check('it opens as SKILL.md in the editor', await tab.innerText(), /SKILL\.md/);
+          check('with its name, its one line and its steps', await page.locator('.editor-instance .view-lines').first().innerText(), (text) => /name:\s*run-tests/.test(text) && /Find\s+the\s+test\s+command/.test(text));
           await clearNotifications(page);
         }
       }

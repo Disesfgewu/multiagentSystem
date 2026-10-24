@@ -271,6 +271,45 @@ const SCRIPT = String.raw`
     state.accounts.forEach(function (account) { panel.appendChild(accountNode(account)); });
   }
 
+  // The skills library (#359): what each skill is for, whether it is in use, which role groups get it, and the buttons for it.
+  function knowledgeTab(panel) {
+    var skills = state.skills || { known: false, text: 'Skills: unknown.', items: [] };
+    var head = el('div', 'toolbar');
+    head.appendChild(el('h2', null, skills.text));
+    var adds = el('div', 'row');
+    adds.appendChild(button('Add skill…', function () { open('skillAdd'); }, 'Write a new skill: its name, one line saying when to use it, and its steps'));
+    adds.appendChild(button('Add starter skills…', function () { open('skillStarters'); }, 'Open a PR, run the tests, rebase, answer a review, take an issue, and more'));
+    adds.appendChild(button('Bring in this repository\'s skills…', function () { open('skillImport'); }, 'The skills in .claude/skills and .agents/skills of this project'));
+    adds.appendChild(button('Write skills into this repository…', function () { open('skillExport'); }, 'For the CLIs to find them in .claude/skills and .agents/skills (existing files are never replaced)'));
+    head.appendChild(adds);
+    panel.appendChild(head);
+    panel.appendChild(el('p', 'muted', 'An agent is told only the name and one line of each skill given to its role group, and reads a skill when it needs it.'));
+    if (skills.items.length === 0) {
+      panel.appendChild(el('p', 'muted', skills.known ? 'No skill yet.' : 'The skills library could not be read; adding a skill tries again.'));
+      panel.appendChild(nextSteps('Next step', [['Add starter skills…', function () { open('skillStarters'); }], ['Add skill…', function () { open('skillAdd'); }]]));
+    }
+    skills.items.forEach(function (skill) {
+      var row = el('div', 'account skill');
+      row.setAttribute('data-skill', skill.name);
+      var top = el('div', 'card-head');
+      top.appendChild(el('strong', null, skill.name));
+      top.appendChild(el('span', skill.state === 'active' && skill.usable ? 'badge' : 'tag tag-warn', !skill.usable ? 'cannot be used' : skill.state === 'active' ? 'on' : skill.state === 'disabled' ? 'off' : skill.state === 'candidate' ? 'suggested by an agent' : 'unknown'));
+      row.appendChild(top);
+      row.appendChild(el('div', null, skill.description));
+      row.appendChild(el('div', 'muted', skill.roles.length ? 'For: ' + skill.roles.join(', ') : 'For no role group yet'));
+      if (skill.problem) row.appendChild(el('div', 'alert', 'Not given to any agent: ' + skill.problem + '. Edit it to fix it.'));
+      var act = el('footer', 'card-actions');
+      var action = function (name, label, title) { act.appendChild(button(label, function () { post({ type: 'skillAction', action: name, name: skill.name }); }, title)); };
+      action('edit', 'Edit', 'Open the skill in the editor; save to keep it');
+      if (skill.state === 'candidate') action('approve', 'Approve…', 'Read it first; an approved skill is an ordinary skill');
+      else { action('toggle', skill.state === 'active' ? 'Turn off' : 'Turn on'); action('roles', 'Role groups…', 'Which role groups get this skill'); }
+      action('remove', 'Remove…');
+      row.appendChild(act);
+      panel.appendChild(row);
+    });
+    panel.appendChild(nextSteps('Rules and shared memory', [['Team rules…', function () { post({ type: 'editTeamRules' }); }], ['Add shared memory note…', function () { open('memoryAdd'); }], ['Review suggested memory…', function () { open('memoryReview'); }]]));
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -294,7 +333,7 @@ const SCRIPT = String.raw`
       placeholderTab(panel, 'Issues and pull requests of this project, and what waits for your decision.', '#353', [['Open Issue or pull request…', function () { open('openGitHubPage'); }], ['Browse GitHub…', function () { open('browseGitHub'); }], ['Assign Issue…', function () { post({ type: 'assignIssue' }); }], ['Export report…', function () { post({ type: 'exportReport' }); }]]);
     } else if (tab === 'broadcast') placeholderTab(panel, 'Tell every agent of a role group, or the agents you choose, the same thing.', '#357', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]);
     else if (tab === 'ask') placeholderTab(panel, 'Ask the PM or an agent a question, for example what the selected code does.', '#353', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]);
-    else if (tab === 'knowledge') placeholderTab(panel, 'Team rules, shared memory and skills given to agents.', '#359', [['Team rules…', function () { post({ type: 'editTeamRules' }); }], ['Add shared memory note…', function () { open('memoryAdd'); }], ['Review suggested memory…', function () { open('memoryReview'); }], ['Install agent skills…', function () { open('skillsInstall'); }]]);
+    else if (tab === 'knowledge') knowledgeTab(panel);
     else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
     root.appendChild(panel);
     root.appendChild(el('p', 'muted', 'Values without a source are shown as unknown.'));

@@ -20,7 +20,7 @@ import { FileProbe, findRepositoryRoots, nodeProbe } from './repositoryRoots';
 //     yet allowed to run would otherwise look the same as "not in a repository", and private
 //     data would be written into the repository before anyone noticed.
 
-export const COLLECTIONS = ['profiles', 'roleGroups', 'sessions', 'policies', 'quotaReservations', 'reportFeedback', 'broadcasts', 'broadcastDeliveries', 'teamRules', 'taskDispatches', 'usageLog', 'researchConsents', 'codenames', 'ownerPosts', 'accountChecks'] as const;
+export const COLLECTIONS = ['profiles', 'roleGroups', 'sessions', 'policies', 'quotaReservations', 'reportFeedback', 'broadcasts', 'broadcastDeliveries', 'teamRules', 'taskDispatches', 'usageLog', 'researchConsents', 'codenames', 'ownerPosts', 'accountChecks', 'skills'] as const;
 export const SCHEMA_VERSION = 1;
 export const PRIVATE_FOLDER = 'private';
 export const DEFAULT_NAMESPACE = 'default';

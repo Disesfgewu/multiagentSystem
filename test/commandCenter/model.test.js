@@ -136,7 +136,11 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  // skillAction (#359) names a skill on screen and one fixed action; the skill's text and every confirmation come from the command.
+  const skills = new Set(['run-tests']);
+  assert.deepEqual(parseMessage({ type: 'skillAction', action: 'roles', name: 'run-tests' }, new Set(), new Set(), skills), { ok: true, message: { type: 'skillAction', action: 'roles', name: 'run-tests' } });
+  for (const raw of [{ type: 'skillAction', action: 'roles', name: 'gone' }, { type: 'skillAction', action: 'save', name: 'run-tests' }, { type: 'skillAction', action: 'edit', name: 'run-tests', body: 'x' }, { type: 'skillAction', action: 'edit', name: 'Run Tests' }, { type: 'skillAction', action: 'toString', name: 'run-tests' }]) assert.equal(parseMessage(raw, new Set(), new Set(), skills).ok, false, JSON.stringify(raw));
   // switchAccount names a card on screen and nothing else: the account and the confirmation come from the command's windows.
   assert.deepEqual(parseMessage({ type: 'switchAccount', id: 'a' }, new Set(['a'])), { ok: true, message: { type: 'switchAccount', id: 'a' } });
   for (const raw of [{ type: 'switchAccount', id: 'gone' }, { type: 'switchAccount', id: 'a', accountProfileId: 'acct-2' }, { type: 'switchAccount', id: 'a', confirmed: true }]) assert.equal(parseMessage(raw, new Set(['a'])).ok, false, JSON.stringify(raw));
@@ -377,4 +381,16 @@ test('an account row says which real account it is: the e-mail address this wind
   const rows = (email) => buildAccountRows({ accounts: [{ id: 'acct-1', label: 'Work A', provider: 'Claude Code', email }], details: {}, sessions: [], now: new Date() }).rows[0];
   assert.equal(rows('owner-a@example.test').email, 'owner-a@example.test');
   for (const bad of [undefined, null, 'no-at', 'a b@example.test', 'x@example.test\nInjected', 7]) assert.equal(rows(bad).email, null, String(bad));
+});
+
+test('the Knowledge tab lists each skill in short plain lines; a long description is cut at a whole word (#359)', () => {
+  const { buildSkills } = require('../../src/commandCenter/model');
+  const long = `${'word '.repeat(60)}end`;
+  const built = buildSkills({ ok: true, skills: [{ name: 'run-tests', description: long, state: 'active', usable: true, roles: ['E2E Developers'] }, { name: 'bad', description: 'x', state: 'active', usable: false, problem: 'the steps contain wording that tells an agent to ignore its rules', roles: [] }, { name: '../x', description: 'y' }] });
+  assert.equal(built.known, true);
+  assert.deepEqual(built.items.map((item) => item.name), ['run-tests', 'bad'], 'a name that is not a skill name is left out');
+  assert.ok(built.items[0].description.endsWith('word…') && Array.from(built.items[0].description).length <= 200, built.items[0].description);
+  assert.deepEqual(built.items[0].roles, ['E2E Developers']);
+  assert.equal(built.items[1].problem, 'the steps contain wording that tells an agent to ignore its rules');
+  assert.deepEqual(buildSkills({ ok: false, reason: 'storage-unavailable' }), { known: false, text: 'Skills: unknown (the library could not be read).', items: [] });
 });

@@ -332,21 +332,54 @@ const TARGETS = Object.freeze({
   memoryAdd: 'multiagentSystem.memory.add',
   memoryReview: 'multiagentSystem.memory.review',
   skillsInstall: 'multiagentSystem.skills.install',
+  skillAdd: 'multiagentSystem.skills.libraryAdd',
+  skillStarters: 'multiagentSystem.skills.libraryAddStarters',
+  skillImport: 'multiagentSystem.skills.libraryImport',
+  skillExport: 'multiagentSystem.skills.libraryExport',
   setupRefresh: 'multiagentSystem.setup.refresh',
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id']
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name']
 });
+// What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
+const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The skills of the Knowledge tab, from `skillLibrarySummary`: each as short single lines. Unknown when the library cannot be read,
+ * never an empty list.
+ */
+// A long line cut at the last whole word, with "…", so it never ends in the middle of one.
+function shortened(text, limit) {
+  const chars = Array.from(text);
+  if (chars.length <= limit) return text;
+  const cut = chars.slice(0, limit - 1).join('');
+  const space = cut.lastIndexOf(' ');
+  return `${(space > limit / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.\-]+$/, '')}…`;
+}
+
+function buildSkills(summary) {
+  if (!isPlain(summary) || summary.ok !== true || !Array.isArray(summary.skills)) return { known: false, text: 'Skills: unknown (the library could not be read).', items: [] };
+  const items = summary.skills.filter((entry) => isPlain(entry) && typeof entry.name === 'string' && SKILL_NAME.test(entry.name)).slice(0, 50).map((entry) => ({
+    name: entry.name,
+    description: shortened(line(entry.description, '', 1024), 200),
+    state: ['active', 'disabled', 'candidate'].includes(entry.state) ? entry.state : 'unknown',
+    usable: entry.usable === true,
+    problem: entry.usable === true ? null : line(entry.problem, 'it no longer passes the checks', 160),
+    roles: (Array.isArray(entry.roles) ? entry.roles : []).slice(0, 10).map((role) => line(role, '', 60)).filter(Boolean)
+  }));
+  return { known: true, text: `Skills (${items.length})`, items };
+}
 
 /**
  * Checks a message from the page: a known command, exactly its fields, of the right type. An id must be one of the cards on
  * screen. Anything else (an unknown command, an extra field, a wrong type, a long list) is refused, never partly obeyed.
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
-function parseMessage(raw, knownIds, accountIds) {
+function parseMessage(raw, knownIds, accountIds, skillNames) {
   if (!isPlain(raw) || typeof raw.type !== 'string' || !COMMANDS.includes(raw.type)) return { ok: false, reason: 'unknown-command' };
   const allowed = SHAPES[raw.type];
   const extra = Object.keys(raw).filter((key) => key !== 'type' && !allowed.includes(key));
@@ -354,6 +387,13 @@ function parseMessage(raw, knownIds, accountIds) {
   const known = knownIds instanceof Set ? knownIds : new Set(Array.isArray(knownIds) ? knownIds : []);
   const accounts = accountIds instanceof Set ? accountIds : new Set(Array.isArray(accountIds) ? accountIds : []);
   const message = { type: raw.type };
+  if (raw.type === 'skillAction') {
+    // A skill on the screen, and one of the fixed actions; its text never comes from the page.
+    const names = skillNames instanceof Set ? skillNames : new Set();
+    if (typeof raw.action !== 'string' || !Object.hasOwn(SKILL_ACTIONS, raw.action)) return { ok: false, reason: 'invalid-field' };
+    if (typeof raw.name !== 'string' || !SKILL_NAME.test(raw.name) || !names.has(raw.name)) return { ok: false, reason: 'unknown-skill' };
+    return { ok: true, message: { type: raw.type, action: raw.action, name: raw.name } };
+  }
   if (raw.type === 'accountAction') {
     // Creating an account names no account; every other action names one that is on the screen.
     if (typeof raw.action !== 'string' || !ACCOUNT_ACTIONS.includes(raw.action)) return { ok: false, reason: 'invalid-field' };
@@ -391,4 +431,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

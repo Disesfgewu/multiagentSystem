@@ -112,7 +112,17 @@
     "onCommand:multiagentSystem.research.searchPapers",
     "onCommand:multiagentSystem.research.mcp.setSecret",
     "onCommand:multiagentSystem.skills.install",
-    "onCommand:multiagentSystem.skills.remove"
+    "onCommand:multiagentSystem.skills.remove",
+    "onCommand:multiagentSystem.skills.libraryAdd",
+    "onCommand:multiagentSystem.skills.libraryEdit",
+    "onCommand:multiagentSystem.skills.libraryToggle",
+    "onCommand:multiagentSystem.skills.libraryRoles",
+    "onCommand:multiagentSystem.skills.libraryRemove",
+    "onCommand:multiagentSystem.skills.libraryApprove",
+    "onCommand:multiagentSystem.skills.libraryAddStarters",
+    "onCommand:multiagentSystem.skills.libraryImport",
+    "onCommand:multiagentSystem.skills.libraryExport",
+    "onFileSystem:multiagent-skill"
   ],
   "contributes": {
     "configuration": {
@@ -429,7 +439,16 @@
       { "command": "multiagentSystem.research.searchPapers", "title": "Multiagent: Research: Search Papers" },
       { "command": "multiagentSystem.research.mcp.setSecret", "title": "Multiagent: Set Research MCP Server Secret" },
       { "command": "multiagentSystem.skills.install", "title": "Multiagent: Install Agent Skills in This Workspace" },
-      { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" }
+      { "command": "multiagentSystem.skills.remove", "title": "Multiagent: Remove Installed Agent Skills" },
+      { "command": "multiagentSystem.skills.libraryAdd", "title": "Multiagent: Add Skill to the Library" },
+      { "command": "multiagentSystem.skills.libraryEdit", "title": "Multiagent: Edit a Skill" },
+      { "command": "multiagentSystem.skills.libraryToggle", "title": "Multiagent: Turn a Skill On or Off" },
+      { "command": "multiagentSystem.skills.libraryRoles", "title": "Multiagent: Choose a Skill's Role Groups" },
+      { "command": "multiagentSystem.skills.libraryRemove", "title": "Multiagent: Remove a Skill from the Library" },
+      { "command": "multiagentSystem.skills.libraryApprove", "title": "Multiagent: Approve a Suggested Skill" },
+      { "command": "multiagentSystem.skills.libraryAddStarters", "title": "Multiagent: Add Starter Skills to the Library" },
+      { "command": "multiagentSystem.skills.libraryImport", "title": "Multiagent: Bring This Repository's Skills into the Library" },
+      { "command": "multiagentSystem.skills.libraryExport", "title": "Multiagent: Write Library Skills into This Repository" }
     ],
     "menus": {
       "editor/context": [

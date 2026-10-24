@@ -25,6 +25,7 @@ import { registerResearchCommands } from './research/researchCommands';
 import { registerMcpCommands } from './research/mcpCommands';
 import { setExtensionTestMode } from './shared/testMode';
 import { registerSkillCommands } from './skills/skillCommands';
+import { registerSkillLibraryCommands } from './skills/libraryCommands';
 import { registerCustomProviderCommands } from './providers/customProviderCommands';
 
 async function workspaceDirectory(): Promise<vscode.Uri | undefined> {
@@ -91,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerResearchCommands(context);
   registerMcpCommands(context);
   registerSkillCommands(context);
+  registerSkillLibraryCommands(context);
   registerCustomProviderCommands(context);
   context.subscriptions.push(
     vscode.commands.registerCommand('multiagentSystem.openTerminalGroup', openTerminalGroup),
