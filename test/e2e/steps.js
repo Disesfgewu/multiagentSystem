@@ -806,6 +806,50 @@ const ITEMS = [
       }
     ]
   },
+  {
+    id: '06',
+    title: 'Work in VS Code: an agent connected to this window',
+    issue: '#354',
+    acceptance: 'not-done',
+    pending: 'Proven here: with this window\'s Claude Code lock file present (written by the run, which has no Claude Code extension), the agent is started with that lock\'s port and its card says "VS Code connected". Not proven: that Claude Code really connects to this window (/ide in the agent\'s terminal, its edits opening as diffs in this editor). That is the real-machine item in #135.',
+    steps: [
+      {
+        name: 'start-connected-agent',
+        does: 'With the Claude Code extension running in this window (here: its lock file ~/.claude/ide/<port>.lock, written by the run), click "Start agent…" and start "E2E Agent 6" as before.',
+        run: async ({ page, check, box }) => {
+          // What the Claude Code extension writes when it starts: its port as the file name, this window's folders and its process.
+          const port = 40123;
+          const ideFolder = require('node:path').join(box.home, '.claude', 'ide');
+          require('node:fs').mkdirSync(ideFolder, { recursive: true });
+          require('node:fs').writeFileSync(require('node:path').join(ideFolder, `${port}.lock`), JSON.stringify({ pid: process.pid, workspaceFolders: [box.workspace], ideName: 'Visual Studio Code', transport: 'ws', authToken: 'synthetic-token-never-read' }));
+          const before = agentStarts(box).length;
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E Agent 6' },
+            { when: /Choose a role group for this agent/, pick: ROLE },
+            { when: /Choose an account for this new session/, pick: ACCOUNT },
+            ...START_ANSWERS
+          ], async () => agentStarts(box).length > before, 90000);
+          check('the agent was started with this window\'s Claude Code port', agentStarts(box).at(-1).idePort, port);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 6' }).first();
+          await card.waitFor({ timeout: 30000 });
+          check('its card says VS Code connected', (await card.locator('.tag').allInnerTexts()).join(' | '), /VS Code connected/);
+          check('and not the warning the other cards have', (await card.locator('.tag').allInnerTexts()).join(' | '), (text) => !/not connected/.test(text));
+          await card.locator('summary', { hasText: 'Details' }).first().click();
+          check('its details say how', await card.locator('details').first().innerText(), new RegExp(`VS Code: connected through this window's Claude Code port \\(${port}\\)`));
+          check('the lock file\'s token is nowhere on the screen', await frame.locator('body').innerText(), (text) => !text.includes('synthetic-token-never-read'));
+          // The Workbench draws its cards again when an agent reports: find the card again if it was redrawn under the scroll.
+          for (let tries = 0; tries < 5; tries += 1) {
+            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 6' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+          }
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
 ];
 
 module.exports = { ITEMS, runCommand, webviewText, clearNotifications, drive, workbenchFrame };

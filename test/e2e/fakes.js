@@ -31,7 +31,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME || null;
-fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cli: ${JSON.stringify(name)}, args, configDir }) + '\\n');
+// The IDE port it was given (#354), never anything else of its environment.
+const idePort = /^[0-9]{1,5}$/.test(process.env.CLAUDE_CODE_SSE_PORT || '') ? Number(process.env.CLAUDE_CODE_SSE_PORT) : null;
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cli: ${JSON.stringify(name)}, args, configDir, idePort }) + '\\n');
 const has = (...words) => words.every((word) => args.includes(word));
 const email = configDir && /work-b/i.test(path.basename(configDir)) ? 'owner-b@example.test' : ${JSON.stringify(ACCOUNT.email)};
 if (has('--version')) { process.stdout.write(${JSON.stringify(name)} + ' 0.0.0-synthetic\\n'); process.exit(0); }
