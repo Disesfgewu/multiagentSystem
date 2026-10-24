@@ -9,6 +9,12 @@
 
 const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P';
 
+/** A frame that does not answer (a webview in the background) is skipped: what it was asked counts as `fallback` after 3 s. */
+function bounded(promise, fallback, ms = 3000) {
+  let timer;
+  return Promise.race([promise.catch(() => fallback), new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); })]).finally(() => clearTimeout(timer));
+}
+
 /** Runs a command the way a person does: open the command palette, type its title, press Enter. */
 async function runCommand(page, title) {
   await page.keyboard.press(COMMAND_PALETTE);
@@ -114,7 +120,7 @@ async function workbenchFrame(page) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
-      const found = await frame.locator('h1', { hasText: 'Workbench' }).count().catch(() => 0);
+      const found = await bounded(frame.locator('h1', { hasText: 'Workbench' }).count(), 0);
       if (found > 0) return frame;
     }
     await page.waitForTimeout(250);
@@ -142,7 +148,7 @@ async function pageFrame(page, title) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
-      const found = await frame.locator('h1', { hasText: title }).count().catch(() => 0);
+      const found = await bounded(frame.locator('h1', { hasText: title }).count(), 0);
       if (found > 0) return frame;
     }
     await page.waitForTimeout(250);

@@ -62,3 +62,22 @@ test('an item is either accepted with nothing pending, or not done with what is 
   const eleven = ITEMS.find((item) => item.id === '11');
   assert.ok(eleven.steps.some((step) => step.name === 'start-four-agents') && eleven.steps.some((step) => step.name === 'see-four-cards'), 'item 11 starts four agents and looks at their cards');
 });
+
+test('a step that does not finish in time fails with a screenshot and the run goes on (PR #380 review)', async () => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { Recorder } = require('./report');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-limit-'));
+  const shots = [];
+  const page = { screenshot: async ({ path: file }) => { shots.push(path.basename(file)); } };
+  const recorder = new Recorder(out, { stepLimitMs: 50 });
+  const started = Date.now();
+  const ok = await recorder.item({ id: '99', title: 't', issue: '#0', acceptance: 'not-done', pending: '#0', steps: [{ name: 'hangs', does: 'x', run: () => new Promise(() => {}) }, { name: 'never-run', does: 'y', run: async () => {} }] }, page, {});
+  assert.equal(ok, false);
+  assert.ok(Date.now() - started < 2000, 'it did not wait for the step');
+  assert.match(recorder.items[0].steps[0].error, /did not finish in 0\.05 s/);
+  assert.deepEqual(shots, ['99-hangs-failed.png']);
+  assert.equal(recorder.items[0].steps.length, 1, 'the item stops at the step that failed');
+  fs.rmSync(out, { recursive: true, force: true });
+});

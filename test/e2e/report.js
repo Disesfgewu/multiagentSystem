@@ -16,8 +16,9 @@ const ACCEPTANCE = Object.freeze({ accepted: 'accepted', framework: 'framework c
  * of that item depend on it) but not the other items.
  */
 class Recorder {
-  constructor(out) {
+  constructor(out, { stepLimitMs = 120000 } = {}) {
     this.out = out;
+    this.stepLimitMs = stepLimitMs;
     this.items = [];
     this.fatalError = null;
   }
@@ -41,12 +42,23 @@ class Recorder {
           if (!ok) throw new Error(`check failed: ${label} (saw: ${shorten(actual)})`);
         }
       };
+      const started = Date.now();
+      // Printed as it happens, so a run that is stopped from outside still says which step it was in.
+      console.log(`e2e: ${item.id} ${step.name} …`);
+      let timer;
       try {
-        await step.run(ctx);
+        // A step that does not finish in time fails, with a screenshot, instead of holding the whole run (#353, PR #380 review).
+        await Promise.race([
+          step.run(ctx),
+          new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`the step did not finish in ${this.stepLimitMs / 1000} s`)), this.stepLimitMs); })
+        ]);
+        clearTimeout(timer);
         await page.screenshot({ path: path.join(this.out, file) });
         entry.screenshot = file;
       } catch (error) {
+        clearTimeout(timer);
         entry.error = String(error && error.message ? error.message : error).split('\n')[0].slice(0, 400);
+        console.log(`e2e: ${item.id} ${step.name} failed after ${Math.round((Date.now() - started) / 1000)} s: ${entry.error}`);
         const failed = `${item.id}-${step.name}-failed.png`;
         try { await page.screenshot({ path: path.join(this.out, failed) }); entry.screenshot = failed; } catch { /* the window may be gone */ }
         record.ok = false;
