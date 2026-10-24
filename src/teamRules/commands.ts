@@ -6,9 +6,10 @@ type Doc = { version: number; updatedAt: string | null; rules: Rule[] };
 type Store = { get(collection: string, id: string): any; transact(work: (tx: any) => unknown): any };
 
 const { TeamRulesStore } = require('./store') as { TeamRulesStore: new (store: Store) => { get(): { ok: true; doc: Doc } | { ok: false; reason: string }; save(next: unknown, expectedVersion: number): { ok: boolean; reason?: string } } };
-const { applyEdit, describeTeamRules, MAX_TEXT_CHARS } = require('./model') as {
+const { applyEdit, describeTeamRules, suggestionsFor, MAX_TEXT_CHARS } = require('./model') as {
   applyEdit(doc: Doc, change: unknown, now: Date): { ok: true; doc: Doc } | { ok: false; reason: string };
   describeTeamRules(doc: Doc): string;
+  suggestionsFor(doc: Doc): Array<{ key: string; label: string; text: string }>;
   MAX_TEXT_CHARS: number;
 };
 
@@ -48,7 +49,10 @@ async function edit(): Promise<void> {
   const loaded = store.get();
   if (!loaded.ok) { void vscode.window.showErrorMessage(`The team rules could not be read (${loaded.reason}). Nothing was changed.`); return; }
   const doc = loaded.doc;
+  // A suggested rule (#362) is offered until it is in the list; adding it goes through the same confirmation as any other rule.
+  const suggestions = suggestionsFor(doc);
   const action = await vscode.window.showQuickPick([
+    ...suggestions.map((rule) => ({ label: `Add the suggested rule: ${rule.label}`, detail: rule.text, value: 'suggested' as const, text: rule.text })),
     { label: 'Add a rule', detail: describeTeamRules(doc), value: 'add' as const },
     { label: 'Edit a rule', value: 'edit' as const },
     { label: 'Remove a rule', value: 'remove' as const }
@@ -56,7 +60,10 @@ async function edit(): Promise<void> {
   if (!action) return;
   let change: { kind: string; id?: string; text?: string };
   let summary: string;
-  if (action.value === 'add') {
+  if (action.value === 'suggested' && 'text' in action) {
+    change = { kind: 'add', text: action.text };
+    summary = `Add this suggested rule (agents decide routine matters themselves instead of stopping to ask):\n\n${action.text}`;
+  } else if (action.value === 'add') {
     const text = await vscode.window.showInputBox({ prompt: `A rule every agent is told to follow (up to ${MAX_TEXT_CHARS} characters). The CLI is told; nothing enforces it.`, ignoreFocusOut: true, validateInput: (value) => (value.trim() === '' ? 'Enter the rule.' : undefined) });
     if (!text) return;
     change = { kind: 'add', text: text.trim() };

@@ -75,3 +75,20 @@ test('a rule that looks like a credential, an email address or a local path is n
   }
   assert.equal(add(doc, 'Run the tests before you push.').ok, true);
 });
+
+test('the suggested "decide routine matters yourself" rule is offered until the list has it, and is a valid team rule (#362)', () => {
+  const { suggestionsFor, SUGGESTED_RULES } = require('../../src/teamRules/model');
+  const { checkPromptInjection } = require('../../src/research/ethics');
+  const [rule] = SUGGESTED_RULES;
+  assert.match(rule.text, /不要停下來詢問/);
+  for (const asked of ['無法繼續', '刪除資料', 'force-push 或改寫歷史', '合併 PR', '對外發佈', '花錢或使用付費額度']) assert.ok(rule.text.includes(asked), `it still asks first: ${asked}`);
+  assert.match(rule.text, /這條規則不取代擴充套件或 CLI 的任何確認與權限規則。$/, 'it never stands in for a confirmation or a permission rule');
+  assert.equal(checkPromptInjection(rule.text).hasInjection, false);
+  assert.deepEqual(suggestionsFor(emptyTeamRules()).map((entry) => entry.key), ['decide-routine']);
+  const added = applyEdit(emptyTeamRules(), { kind: 'add', text: rule.text }, new Date('2026-10-24T00:00:00Z'));
+  assert.equal(added.ok, true);
+  assert.deepEqual(suggestionsFor(added.doc), [], 'once in the list it is not offered again');
+  const edited = applyEdit(added.doc, { kind: 'edit', id: added.doc.rules[0].id, text: 'Decide small things yourself.' }, new Date('2026-10-24T00:00:00Z'));
+  assert.equal(suggestionsFor(edited.doc).length, 1, 'after the person reworded it, the original is offered again (it is no longer in the list)');
+  assert.deepEqual(suggestionsFor({ broken: true }), [], 'an unreadable list offers nothing');
+});
