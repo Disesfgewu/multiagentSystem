@@ -15,7 +15,10 @@ const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Contro
  */
 async function timed(what, action) {
   const started = Date.now();
+  // Said while it is still waiting too: an action that never finishes would otherwise say nothing at all.
+  const still = setInterval(() => console.log(`e2e:   still waiting for ${what} after ${Math.round((Date.now() - started) / 1000)} s`), 10000);
   try { return await action(); } finally {
+    clearInterval(still);
     const took = Date.now() - started;
     if (took > 1000) console.log(`e2e:   ${(took / 1000).toFixed(1)} s waiting for ${what}`);
   }
@@ -103,9 +106,9 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       }
     }
     const widget = page.locator('.quick-input-widget:visible').first();
-    if (await widget.isVisible().catch(() => false)) {
+    if (await timed('a list or input box (.quick-input-widget)', () => widget.isVisible().catch(() => false))) {
       const input = widget.locator('.quick-input-box input').first();
-      const placeholder = (await input.getAttribute('placeholder').catch(() => '')) ?? '';
+      const placeholder = (await timed('the list\'s placeholder', () => input.getAttribute('placeholder').catch(() => ''))) ?? '';
       const message = (await widget.locator('.quick-input-message').innerText().catch(() => '')).trim();
       const title = `${placeholder} ${message}`.trim();
       const rule = answers.find((entry) => (entry.pick || entry.type !== undefined) && entry.when.test(title));
@@ -113,8 +116,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       if (!rule && await done(seen)) return seen;
       if (!rule) throw new Error(`a window nobody answers: "${title}"`);
       if (rule.pick) {
-        await input.fill(rule.pick);
-        await widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 });
+        await timed(`typing "${rule.pick}" into the list`, () => input.fill(rule.pick));
+        await timed(`the list row "${rule.pick}"`, () => widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 }));
         seen.push(`pick: ${title} → ${rule.pick}`);
       } else {
         if (rule.type !== '') await input.fill(rule.type);
@@ -157,11 +160,11 @@ async function clickInWorkbenchNow(page, words, { tab } = {}) {
     await page.locator('.sidebar .monaco-list-row', { hasText: 'Open Workbench' }).first().click();
   } else {
     // An agent's terminal opens in the editor area in front of it: bring the Workbench back, as a person would.
-    await editorTab.click();
+    await timed('the Workbench editor tab', () => editorTab.click());
   }
-  const frame = await workbenchFrame(page);
-  if (tab) await frame.locator('button[role="tab"]', { hasText: tab }).first().click();
-  await frame.locator('button', { hasText: words }).first().click();
+  const frame = await timed('the Workbench page\'s frame', () => workbenchFrame(page));
+  if (tab) await timed(`the Workbench tab "${tab}"`, () => frame.locator('button[role="tab"]', { hasText: tab }).first().click());
+  await timed(`clicking "${words}" in the Workbench`, () => frame.locator('button', { hasText: words }).first().click());
 }
 
 /** The frame of the Issue or pull request page whose title has `title` (VS Code puts a webview in two nested frames). */
