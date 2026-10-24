@@ -829,8 +829,11 @@ async function agyFlow(workspace: string): Promise<void> {
   assert.equal(started.session?.state, 'launch-requested', 'typing a CLI command is not proof it is working');
   assert.equal(started.session?.provider, 'agy');
   await waitFor(() => vscode.window.terminals.find((terminal) => terminal.name === 'Multiagent: Agy Fake'), 10000);
-  await waitFor(() => fs.existsSync(sentinel) ? true : undefined, 20000);
-  assert.equal(fs.readFileSync(sentinel, 'utf8').trim(), 'synthetic');
+  // The synthetic agy's shell creates the file (`> file`) before it writes into it, so an existing file can still be empty for a
+  // moment, which made this check fail now and then (#349): wait for what it writes, within the same 20 s.
+  const readSentinel = (): string => { try { return fs.readFileSync(sentinel, 'utf8').trim(); } catch { return ''; } };
+  const written = await waitFor(() => readSentinel() || undefined, 20000).catch(() => assert.fail(`the synthetic agy wrote nothing within 20 s (file ${fs.existsSync(sentinel) ? 'exists, empty' : 'missing'})`));
+  assert.equal(written, 'synthetic', `the synthetic agy wrote ${JSON.stringify(readSentinel())} within 20 s`);
   if (started.session?.id) await vscode.commands.executeCommand('multiagentSystem.sessions.stop', { interactive: false, id: started.session.id });
 
   const previousPath = process.env.PATH;
