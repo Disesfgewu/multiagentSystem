@@ -13,16 +13,30 @@ const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Contro
  * Runs one action and, when it took longer than a second, prints how long and what it waited for (#380 review): a run that is slow
  * or stuck then says where. `what` names the selector or the window.
  */
-async function timed(what, action) {
+async function timed(what, action, limitMs = 20000) {
   const started = Date.now();
+  // What the run last started or finished, for the step's heartbeat (report.js): even a wait outside timed() is placed by it.
+  globalThis.e2eLastAction = `started: ${what}`;
   // Said while it is still waiting too: an action that never finishes would otherwise say nothing at all.
   const still = setInterval(() => console.log(`e2e:   still waiting for ${what} after ${Math.round((Date.now() - started) / 1000)} s`), 10000);
-  try { return await action(); } finally {
+  let timer;
+  try {
+    // And it has a limit of its own (#385): past it, it fails with its name instead of holding the step.
+    return await Promise.race([
+      Promise.resolve().then(action),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not finish in ${limitMs / 1000} s`)), limitMs); })
+    ]);
+  } finally {
     clearInterval(still);
+    clearTimeout(timer);
+    globalThis.e2eLastAction = `finished: ${what}`;
     const took = Date.now() - started;
     if (took > 1000) console.log(`e2e:   ${(took / 1000).toFixed(1)} s waiting for ${what}`);
   }
 }
+
+/** A pause on this side's clock, not the page's: it ends even when the page does not answer (#385). */
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A frame that does not answer (a webview in the background) is skipped: what it was asked counts as `fallback` after 3 s. */
 function bounded(promise, fallback, ms = 3000) {
@@ -43,7 +57,7 @@ async function runCommand(page, title) {
 /** Closes the notifications in the corner (as a person would), so a screenshot shows the screen itself. */
 async function clearNotifications(page) {
   await runCommand(page, 'Notifications: Clear All Notifications');
-  await page.waitForTimeout(300);
+  await pause(300);
 }
 
 /** The text of the webview whose tab title is `title` (VS Code puts a webview in two nested frames). */
@@ -56,7 +70,7 @@ async function webviewText(page, title, wait) {
       try { text = await frame.locator('body').innerText({ timeout: 1000 }); } catch { continue; }
       if (wait(text)) return text;
     }
-    await page.waitForTimeout(250);
+    await pause(250);
   }
   return text;
 }
@@ -73,6 +87,7 @@ async function drive(page, answers, done, timeoutMs = 60000) {
   let shots = 0;
   while (Date.now() < deadline) {
     if (await timed('the flow to be done', () => done(seen))) return seen;
+    // Every wait below is timed and limited (#385): one that does not end says which it is, and fails the step.
     const dialog = page.locator('.monaco-dialog-box:visible').first();
     if (await timed('a dialog (.monaco-dialog-box)', () => dialog.isVisible().catch(() => false))) {
       // VS Code shows a modal's message in its detail part when the call gives no detail: read the message, else that part.
@@ -89,8 +104,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
         const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
         if (!rule) throw new Error(`a dialog nobody answers: "${message}"`);
         seen.push(`dialog: ${message} → ${rule.button}`);
-        await dialog.locator('.monaco-button', { hasText: rule.button }).first().click();
-        await page.waitForTimeout(400);
+        await timed(`clicking "${rule.button}" in the dialog`, () => dialog.locator('.monaco-button', { hasText: rule.button }).first().click());
+        await pause(400);
         continue;
       }
     }
@@ -98,10 +113,10 @@ async function drive(page, answers, done, timeoutMs = 60000) {
     const toastRule = answers.find((entry) => entry.toast);
     if (toastRule) {
       const toast = page.locator('.notification-toast-container:visible', { hasText: toastRule.toast }).first();
-      if (await toast.isVisible().catch(() => false)) {
+      if (await timed(`a notification "${toastRule.toast}"`, () => toast.isVisible().catch(() => false))) {
         seen.push(`toast: ${toastRule.toast} → ${toastRule.button}`);
-        await toast.locator('.monaco-button', { hasText: toastRule.button }).first().click();
-        await page.waitForTimeout(400);
+        await timed(`clicking "${toastRule.button}" in the notification`, () => toast.locator('.monaco-button', { hasText: toastRule.button }).first().click());
+        await pause(400);
         continue;
       }
     }
@@ -109,11 +124,11 @@ async function drive(page, answers, done, timeoutMs = 60000) {
     if (await timed('a list or input box (.quick-input-widget)', () => widget.isVisible().catch(() => false))) {
       const input = widget.locator('.quick-input-box input').first();
       const placeholder = (await timed('the list\'s placeholder', () => input.getAttribute('placeholder').catch(() => ''))) ?? '';
-      const message = (await widget.locator('.quick-input-message').innerText().catch(() => '')).trim();
+      const message = (await timed('the list\'s message (.quick-input-message)', () => widget.locator('.quick-input-message').innerText({ timeout: 2000 }).catch(() => ''))).trim();
       const title = `${placeholder} ${message}`.trim();
       const rule = answers.find((entry) => (entry.pick || entry.toggle || entry.accept || entry.type !== undefined) && entry.when.test(title));
       // The window may be the one the flow waits for, shown just after `done` was asked: ask again before failing.
-      if (!rule && await done(seen)) return seen;
+      if (!rule && await timed('the flow to be done', () => done(seen))) return seen;
       if (!rule) throw new Error(`a window nobody answers: "${title}"`);
       if (rule.toggle) {
         // A list with check boxes: tick this one row, as a person clicks it, then accept.
@@ -129,19 +144,19 @@ async function drive(page, answers, done, timeoutMs = 60000) {
         await timed(`the list row "${rule.pick}"`, () => widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 }));
         seen.push(`pick: ${title} → ${rule.pick}`);
       } else {
-        if (rule.type !== '') await input.fill(rule.type);
+        if (rule.type !== '') await timed(`typing "${rule.type}"`, () => input.fill(rule.type));
         seen.push(`type: ${title} → ${rule.type || '(as suggested)'}`);
       }
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(400);
+      await timed('pressing Enter', () => page.keyboard.press('Enter'));
+      await pause(400);
       continue;
     }
     // MULTIAGENT_E2E_DEBUG=1: a screenshot of every wait (at most 20 per flow), to see a window the page cannot reach.
-    if (process.env.MULTIAGENT_E2E_DEBUG === '1' && shots < 20) { shots += 1; await page.screenshot({ path: require('node:path').join(__dirname, '..', '..', 'artifacts', 'e2e', `debug-${Date.now()}.png`) }).catch(() => {}); }
-    await page.waitForTimeout(250);
+    if (process.env.MULTIAGENT_E2E_DEBUG === '1' && shots < 20) { shots += 1; await timed('a debug screenshot', () => page.screenshot({ path: require('node:path').join(__dirname, '..', '..', 'artifacts', 'e2e', `debug-${Date.now()}.png`) }).catch(() => {})); }
+    await pause(250);
   }
   // The last answer may have been given just before the time ran out.
-  if (await done(seen)) return seen;
+  if (await timed('the flow to be done', () => done(seen))) return seen;
   throw new Error(`the flow did not finish in ${timeoutMs / 1000} s; answered: ${seen.join(' | ')}`);
 }
 
@@ -153,7 +168,7 @@ async function workbenchFrame(page) {
       const found = await bounded(frame.locator('h1', { hasText: 'Workbench' }).count(), 0);
       if (found > 0) return frame;
     }
-    await page.waitForTimeout(250);
+    await pause(250);
   }
   throw new Error('the Workbench page did not appear');
 }
@@ -164,9 +179,9 @@ async function clickInWorkbench(page, words, { tab } = {}) {
 }
 async function clickInWorkbenchNow(page, words, { tab } = {}) {
   const editorTab = page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first();
-  if (await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).count() === 0) {
-    await page.locator('.activitybar [aria-label^="Multiagent"]').first().click();
-    await page.locator('.sidebar .monaco-list-row', { hasText: 'Open Workbench' }).first().click();
+  if (await timed('the Workbench editor tab (count)', () => page.locator('.tabs-container .tab', { hasText: 'Workbench' }).count()) === 0) {
+    await timed('the Multiagent icon', () => page.locator('.activitybar [aria-label^="Multiagent"]').first().click());
+    await timed('Open Workbench in the side bar', () => page.locator('.sidebar .monaco-list-row', { hasText: 'Open Workbench' }).first().click());
   } else {
     // An agent's terminal opens in the editor area in front of it: bring the Workbench back, as a person would.
     await timed('the Workbench editor tab', () => editorTab.click());
@@ -187,7 +202,7 @@ async function pageFrameNow(page, title) {
       const found = await bounded(frame.locator('h1', { hasText: title }).count(), 0);
       if (found > 0) return frame;
     }
-    await page.waitForTimeout(250);
+    await pause(250);
   }
   throw new Error(`the page "${title}" did not appear`);
 }
@@ -200,9 +215,13 @@ async function settled(page, frame) {
   while (Date.now() < deadline) {
     const now = await frame.locator('body').innerText().catch(() => '');
     if (now !== last) { last = now; since = Date.now(); } else if (Date.now() - since >= 1000) return;
-    await page.waitForTimeout(200);
+    await pause(200);
   }
 }
+
+/** The text of an element, timed and limited (#385), so a read that does not end names its selector. */
+const textOf = (locator, what) => timed(what, () => locator.innerText({ timeout: 10000 }));
+const textsOf = (locator, what) => timed(what, () => locator.allInnerTexts());
 
 /** Opens an Issue or pull request page from the Work tab, as a person does: the button, then the item in the list. */
 async function openGitHubPage(page, number, tabLabel) {
@@ -228,7 +247,7 @@ async function addClaudeAccount(page, name, signedIn) {
   // The Refresh button is on the Agents tab; the Accounts tab then shows what was read.
   await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
   await (await workbenchFrame(page)).locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
-  await page.waitForTimeout(1500);
+  await pause(1500);
   return answered;
 }
 
@@ -249,7 +268,7 @@ async function waitForList(page, when, timeoutMs = 30000) {
   while (Date.now() < deadline) {
     const rows = await listRowsNow(page, when);
     if (rows !== null && rows.length > 0) return rows;
-    await page.waitForTimeout(250);
+    await pause(250);
   }
   throw new Error(`the list "${when}" did not appear`);
 }
@@ -408,7 +427,7 @@ const ITEMS = [
             text = await frame.locator('body').innerText();
             const waiting = (await frame.locator('section[data-id]').allInnerTexts()).filter((card) => /E2E Agent/.test(card) && /waiting for input/.test(card));
             if (/Agents \(4\)/.test(text) && waiting.length === 4) break;
-            await page.waitForTimeout(500);
+            await pause(500);
           }
           check('four agent cards', text, /Agents \(4\)/);
           const cards = await frame.locator('section[data-id]').allInnerTexts();
@@ -448,7 +467,7 @@ const ITEMS = [
           const row = frame.locator('div[data-account]', { hasText: ACCOUNT }).first();
           const deadline = Date.now() + 30000;
           let text = '';
-          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/32%/.test(text)) break; await page.waitForTimeout(500); }
+          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/32%/.test(text)) break; await pause(500); }
           check('the 5-hour usage with its reset', text, /5-hour: 32% used[\s\S]*resets in 2h/);
           check('the weekly usage', text, /Weekly: 10% used/);
           check('the weekly Opus usage too', text, /Weekly \(Opus\): 5% used/);
@@ -481,7 +500,7 @@ const ITEMS = [
           const row = frame.locator('div[data-account]', { hasText: SECOND }).first();
           const deadline = Date.now() + 30000;
           let text = '';
-          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/Review the status line setting/.test(text)) break; await page.waitForTimeout(500); }
+          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/Review the status line setting/.test(text)) break; await pause(500); }
           check('the row says another status line is set and what to do', text, /another status line|usage bridge not active/i);
           await row.locator('button', { hasText: 'Review the status line setting' }).first().click();
           const answered = await drive(page, [{ dialog: /^Overwrite existing statusLine in “Work B”/, button: 'Cancel' }], async (seen) => seen.length > 0 && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 30000);
@@ -609,13 +628,13 @@ const ITEMS = [
           while (Date.now() < deadline) {
             cards = (await again.locator('section[data-id]').allInnerTexts()).filter((card) => /E2E Agent 5/.test(card));
             if (cards.length === 1 && /Account: Work A/.test(cards[0])) break;
-            await page.waitForTimeout(500);
+            await pause(500);
           }
           check('one card for it, now with "Work A"', cards.length === 1 && /Account: Work A \(owner-a@example\.test\)/.test(cards[0]), true);
           check('it keeps its codename, so its GitHub signature does not change', (CODENAME.exec(cards[0] ?? '') ?? [])[1] ?? null, switched.codename);
           // The Workbench draws its cards again when an agent reports: find the card again if it was redrawn under the scroll.
           for (let tries = 0; tries < 5; tries += 1) {
-            try { await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+            try { await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await pause(500); }
           }
           await clearNotifications(page);
         }
@@ -635,20 +654,20 @@ const ITEMS = [
           const answered = await openGitHubPage(page, 12, 'Issue #12');
           check('the list offered the Issue', answered.join(' | '), /#12/);
           const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
-          check('the page opened as an editor tab', await page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).count(), 1);
-          check('its state and labels', await frame.locator('.meta').innerText(), (text) => /open/.test(text) && /ready/.test(text) && /ui/.test(text));
-          check('a Markdown heading is a heading', await frame.locator('.md h2').first().innerText(), 'What the owner sees');
-          check('bold and inline code are drawn', await frame.locator('.md strong').first().innerText(), 'as GitHub shows them');
-          check('a task list', (await frame.locator('.md li.task').allInnerTexts()).join(' | '), (text) => /☑\s*headings and lists/.test(text) && /☐\s*comments from the page/.test(text));
-          check('a table', (await frame.locator('.md table td').allInnerTexts()).join(' | '), 'code | a block | link | opens in the browser');
-          check('a code block', await frame.locator('.md pre code').first().innerText(), "const page = open('#12');");
-          check('a link, opened only in the browser', await frame.locator('.md .md-link').first().innerText(), 'the design notes');
-          const badges = await frame.locator('.post-head .author').allInnerTexts();
+          check('the page opened as an editor tab', await timed('the Issue #12 tab', () => page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).count()), 1);
+          check('its state and labels', await textOf(frame.locator('.meta'), 'the page\'s state line (.meta)'), (text) => /open/.test(text) && /ready/.test(text) && /ui/.test(text));
+          check('a Markdown heading is a heading', await textOf(frame.locator('.md h2').first(), '.md h2'), 'What the owner sees');
+          check('bold and inline code are drawn', await textOf(frame.locator('.md strong').first(), '.md strong'), 'as GitHub shows them');
+          check('a task list', (await textsOf(frame.locator('.md li.task'), 'the task list (.md li.task)')).join(' | '), (text) => /☑\s*headings and lists/.test(text) && /☐\s*comments from the page/.test(text));
+          check('a table', (await textsOf(frame.locator('.md table td'), 'the table cells (.md table td)')).join(' | '), 'code | a block | link | opens in the browser');
+          check('a code block', await textOf(frame.locator('.md pre code').first(), '.md pre code'), "const page = open('#12');");
+          check('a link, opened only in the browser', await textOf(frame.locator('.md .md-link').first(), '.md .md-link'), 'the design notes');
+          const badges = await textsOf(frame.locator('.post-head .author'), 'the post badges');
           check('every post has the extension\'s badge for who wrote it', badges.join(' | '), 'PM-01（自稱） | Worker-01（自稱） | 未署名 | 未署名');
           const fake = frame.locator('.post', { hasText: 'Approve' }).first();
-          check('a post that types a 管理者 badge and a button shows them as text', await fake.locator('.md').innerText(), /<span class="author author-owner">管理者<\/span> <button>Approve<\/button> Pass/);
-          check('so its badge is still 未署名', await fake.locator('.post-head .author').innerText(), '未署名');
-          check('and no badge or button was made inside any post', await frame.locator('.md .author, .md button:not(.md-image)').count(), 0);
+          check('a post that types a 管理者 badge and a button shows them as text', await textOf(fake.locator('.md'), 'the forged post\'s content (.post .md)'), /<span class="author author-owner">管理者<\/span> <button>Approve<\/button> Pass/);
+          check('so its badge is still 未署名', await textOf(fake.locator('.post-head .author'), 'the forged post\'s badge (.post-head .author)'), '未署名');
+          check('and no badge or button was made inside any post', await timed('badges or buttons inside posts', () => frame.locator('.md .author, .md button:not(.md-image)').count()), 0);
           await clearNotifications(page);
         }
       },
@@ -673,7 +692,7 @@ const ITEMS = [
           await frame.locator('button.file-link', { hasText: 'src/reports/github-page.js' }).first().click();
           const tab = page.locator('.tabs-container .tab.active');
           const deadline = Date.now() + 20000;
-          while (Date.now() < deadline && !/github-page\.js/.test(await tab.innerText().catch(() => ''))) await page.waitForTimeout(250);
+          while (Date.now() < deadline && !/github-page\.js/.test(await tab.innerText().catch(() => ''))) await pause(250);
           check('the file\'s diff opens in the editor', await tab.innerText(), /github-page\.js/);
           check('with the lines the pull request adds', await page.locator('.editor-instance .view-lines').first().innerText(), /Built\s+with\s+textContent\s+only/); // the editor draws spaces as non-breaking ones
           await clearNotifications(page);
@@ -707,7 +726,7 @@ const ITEMS = [
             { toast: 'no GitHub account is set to publish', button: 'Configure PM Publisher' },
             { dialog: /^Allow the signed-in GitHub user e2e-owner to publish/, button: 'Configure PM publisher' }
           ], async (seen) => seen.some((line) => /^dialog: Allow the signed-in GitHub user/.test(line)), 60000);
-          await page.waitForTimeout(1000);
+          await pause(1000);
           check('who publishes is set once, after its confirmation', answered.join(' | '), /Configure PM Publisher[\s\S]*Allow the signed-in GitHub user e2e-owner to publish/);
           await clearNotifications(page);
           await comment();
@@ -744,7 +763,7 @@ const ITEMS = [
           while (Date.now() < deadline) {
             terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
             if (/ID\s*1201/.test(terminal)) break;
-            await page.waitForTimeout(300);
+            await pause(300);
           }
           check('the agent got one line naming Issue #12 and comment 1201', terminal.replace(/\s+/g, ''), /管理者請你閱讀Issue#12的留言（ID1201），並在Issue#12回覆你的看法。/);
           check('and not the comment\'s text', terminal, (text) => !/read-only page: /.test(text));
@@ -770,7 +789,7 @@ const ITEMS = [
           const frame = await workbenchFrame(page);
           const deadline = Date.now() + 20000;
           let names = [];
-          while (Date.now() < deadline) { names = await frame.locator('div[data-skill] strong').allInnerTexts(); if (names.length >= 11) break; await page.waitForTimeout(300); }
+          while (Date.now() < deadline) { names = await frame.locator('div[data-skill] strong').allInnerTexts(); if (names.length >= 11) break; await pause(300); }
           check('the starter skills are in the library', names.join(', '), (text) => ['claim-issue', 'raise-pr', 'respond-to-review', 'run-tests', 'resolve-conflicts'].every((name) => text.includes(name)));
           check('each says when to use it, and that no role group gets it yet', await frame.locator('div[data-skill="run-tests"]').innerText(), (text) => /Run this project's real tests once/.test(text) && /For no role group yet/.test(text));
           await clearNotifications(page);
@@ -785,7 +804,7 @@ const ITEMS = [
           await drive(page, [{ when: /Which role groups get “run-tests”/, toggle: ROLE }], async (seen) => seen.length > 0 && !(await page.locator('.quick-input-widget:visible').first().isVisible().catch(() => false)), 30000);
           const deadline = Date.now() + 20000;
           let text = '';
-          while (Date.now() < deadline) { text = await (await workbenchFrame(page)).locator('div[data-skill="run-tests"]').innerText().catch(() => ''); if (/For: E2E Developers/.test(text)) break; await page.waitForTimeout(300); }
+          while (Date.now() < deadline) { text = await (await workbenchFrame(page)).locator('div[data-skill="run-tests"]').innerText().catch(() => ''); if (/For: E2E Developers/.test(text)) break; await pause(300); }
           check('the skill is given to the role group', text, /For: E2E Developers/);
           check('and is on', text, /\bon\b/);
           await clearNotifications(page);
@@ -852,4 +871,4 @@ const ITEMS = [
   },
 ];
 
-module.exports = { ITEMS, runCommand, webviewText, clearNotifications, drive, workbenchFrame };
+module.exports = { ITEMS, runCommand, webviewText, clearNotifications, drive, workbenchFrame, timed };
