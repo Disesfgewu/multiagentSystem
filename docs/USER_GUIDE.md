@@ -181,7 +181,36 @@ PR 頁面還會顯示：
 尚未完成，見 #358。
 
 ## 10. 用 skills 與共享記憶省 tokens
-尚未完成，見 #359。
+
+**要做什麼**：把常用的步驟（開 PR、跑測試、rebase、回應 review、領 issue…）寫成 skill，交給對應的身份組。agent 啟動時只會被告知 skill 的名稱和一行說明，需要時才自己去讀內容，這樣就不必每次重新摸索，也省 tokens。
+
+**從哪裡點**：工作台 → **Knowledge**。
+1. **Add starter skills…**：加入內建的起始 skills（預設全部勾選），按 Enter。
+   ![加入起始 skills](user-guide/images/10-add-starter-skills.png)
+2. 在某個 skill 上按 **Role groups…**，勾選要給的身份組，例如 `E2E Developers`，按 Enter。這張卡片會改成 `For: E2E Developers`。
+   ![指定身份組](user-guide/images/10-assign-skill.png)
+3. **Edit**：skill 會以 `SKILL.md` 開在編輯器裡。照一般方式存檔（⌘S／Ctrl+S）就會存回庫裡。
+   ![編輯 skill](user-guide/images/10-edit-skill.png)
+
+其他按鈕：
+- **Add skill…**：輸入名稱和一行說明後，在編輯器裡寫步驟，再存檔。
+- **Turn off／Turn on**：關掉的 skill 不會告訴任何 agent。
+- **Remove…**：從庫裡移除，會先確認。
+- **Bring in this repository's skills…**：讀進專案裡 `.claude/skills`、`.agents/skills` 的 skills。
+- **Write skills into this repository…**：寫到這兩個位置給 CLI 使用。會先列出要寫的檔案，已經存在的檔案絕不覆蓋。
+
+**存檔時的檢查**：skill 的內容會給 agent 看，所以存檔前會檢查，有以下情況就不存，並說明原因：
+- 有隱藏字元或控制字元。
+- 有「忽略你的規則」這類字眼。
+- 有本擴充套件自己的訊息標記。
+- 有看起來像密鑰、email 或家目錄路徑的內容。
+
+agent 提出的 skill 只會成為「suggested by an agent」，你按 **Approve…** 之後才會生效。
+
+**還沒做的部分**（#359 接下來的 PR）：
+- agent 啟動時真的只注入這份 skill 清單。
+- 共享記憶的大小上限。
+- 工作台顯示每個 agent 被注入了多少字與 tokens。
 
 ## 11. 一個畫面看到所有 agent
 

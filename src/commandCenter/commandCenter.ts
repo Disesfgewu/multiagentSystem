@@ -10,6 +10,7 @@ import { WORKBENCH_COMMAND } from '../sidebar/homeView';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
+import { onDidChangeSkillLibrary, skillLibrarySummary } from '../skills/libraryCommands';
 import { DISPATCH_COMMANDS, readAssignments } from '../dispatch/commands';
 
 const model = require('./model') as {
@@ -17,7 +18,9 @@ const model = require('./model') as {
   describeDecisions(counts: unknown): { issues: unknown; pullRequests: unknown };
   normalizeLayout(raw: unknown): Layout;
   arrange(cards: any[], layout: Layout): any[];
-  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  buildSkills(summary: unknown): { known: boolean; text: string; items: Array<{ name: string }> };
+  SKILL_ACTIONS: Record<string, string>;
   buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
   applyLayoutMessage(layout: Layout, message: Message): Layout;
   TABS: readonly string[];
@@ -33,7 +36,7 @@ const LAYOUT_KEY = 'commandCenter.layout';
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; action?: string; id?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string };
+type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -93,7 +96,7 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
 
 /** The Command Center: a read-only team screen in the editor area (issue #309). Everything it shows comes from the existing services. */
 export function registerCommandCenter(context: vscode.ExtensionContext, sessions: SessionCommands): void {
-  let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[] } | undefined;
+  let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[]; skills?: ReturnType<typeof model.buildSkills> } | undefined;
   let layout: Layout = model.normalizeLayout(context.workspaceState.get(LAYOUT_KEY));
   let timer: ReturnType<typeof setTimeout> | undefined;
   // The tab the Workbench was opened at, sent once the new page says it is ready.
@@ -101,9 +104,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
 
   const knownIds = (): Set<string> => new Set([...(cached?.pm ?? []), ...(cached?.agents ?? [])].map((card) => card.id as string));
   const knownAccountIds = (): Set<string> => new Set((cached?.accounts ?? []).map((row) => row.id as string));
+  const knownSkills = (): Set<string> => new Set((cached?.skills?.items ?? []).map((skill) => skill.name));
   const payload = () => {
     if (!cached) return null;
-    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes };
+    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null) };
   };
   const post = (): void => { const state = payload(); if (panel && state) void panel.webview.postMessage({ type: 'state', state }); };
 
@@ -122,7 +126,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const [snapshot, roles] = await Promise.all([collectOverview(sessions), roleGroups()]);
     const notesWith = (teamRules: string | undefined) => [...(teamRules ? [teamRules] : []), ...snapshot.notes.slice(0, 4)].map((note) => String(note).slice(0, 240));
     const first = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports: lastReports, assignments: lastAssignments, emails: emailsOf(live) });
-    publish({ pm: first.pm, agents: first.agents, accounts: cached?.accounts ?? [], alerts: cached?.alerts ?? [], decisions: model.describeDecisions(decisionCountsSnapshot()), notes: cached ? cached.notes : notesWith(undefined) });
+    publish({ pm: first.pm, agents: first.agents, accounts: cached?.accounts ?? [], alerts: cached?.alerts ?? [], decisions: model.describeDecisions(decisionCountsSnapshot()), notes: cached ? cached.notes : notesWith(undefined), skills: cached?.skills });
     // The latest report of each agent's pull request: read a few at a time and kept for a minute by the report module.
     const numbers = [...new Set(snapshot.agents.map((agent) => agent.pullRequestNumber).filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0))].slice(0, 12);
     const reports: Record<string, unknown> = {};
@@ -133,7 +137,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const built = model.buildCards({ sessions: live, agents: snapshot.agents, accounts: snapshot.accounts, roles, reports, assignments, emails: emailsOf(live) });
     const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
-    publish({ pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: notesWith(teamRules) });
+    const skills = model.buildSkills(await skillLibrarySummary());
+    publish({ pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: notesWith(teamRules), skills });
   };
   // At most one refresh at a time; a request meanwhile runs one more afterwards (#368).
   const loop = createRefreshLoop(refreshOnce);
@@ -145,7 +150,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
 
   const handle = async (raw: unknown): Promise<CommandCenterResult> => {
-    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds());
+    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds(), knownSkills());
     if (!parsed.ok) return { ok: false, reason: parsed.reason };
     const message = parsed.message;
     switch (message.type) {
@@ -232,6 +237,10 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'open':
         void vscode.commands.executeCommand(model.TARGETS[message.target as string]);
         return { ok: true, command: message.type };
+      // One skill of the Knowledge tab (#359): the command's own windows ask everything; the page names only which skill.
+      case 'skillAction':
+        void vscode.commands.executeCommand(model.SKILL_ACTIONS[message.action as string], { name: message.name });
+        return { ok: true, command: `skillAction:${message.action}` };
       case 'showClassicViews': {
         // A change to the person's own settings: said first, and made only when they agree (#357).
         const answer = await vscode.window.showInformationMessage('Show the classic views in the side bar?', { modal: true, detail: 'This turns on the setting multiagentSystem.showClassicViews in your user settings: the nine views (Overview, Issues Report, PRs Report, GitHub, Accounts and Sessions, Role Groups and Rules, Administrator Broadcasts, Shared Memory, Tools Setup) appear under Multiagent. Turn it off there to hide them again.' }, 'Show Classic Views');
@@ -267,6 +276,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     vscode.commands.registerCommand(WORKBENCH_COMMAND, (value?: unknown) => open(value)),
     sessions.onDidChange(() => scheduleRefresh()),
     onDidChangeAccounts(() => scheduleRefresh()),
+    onDidChangeSkillLibrary(() => scheduleRefresh()),
     { dispose: () => { panel?.dispose(); if (timer) clearTimeout(timer); } }
   );
 }
