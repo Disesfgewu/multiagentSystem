@@ -10,11 +10,15 @@ const { builtIn } = require('../providers/registry');
 
 const TOKEN = /^[A-Za-z0-9_-]{8,64}$/;
 const PROFILE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
- * @param {{ roleGroup?: any, rules?: any, memories?: any[], omitted?: any }} [input]
+ * The parts of an agent's instructions, each as text: the heading, the rules, the reviewed project notes and the list of skills
+ * (#359). An agent is given only each skill's name, one line and file: it reads a skill's file when it needs it, which is what
+ * saves tokens. The parts are kept apart so the Workbench can show how much of each an agent was given.
+ * @param {{ roleGroup?: any, rules?: any, memories?: any[], omitted?: any, skills?: Array<{ name: string, description: string, file: string }> }} [input]
  */
-function renderContext({ roleGroup, rules, memories = [], omitted } = {}) {
+function renderSections({ roleGroup, rules, memories = [], omitted, skills = [] } = {}) {
   const lines = [roleGroup && typeof roleGroup.name === 'string' && roleGroup.name.trim() !== '' ? `# Role: ${roleGroup.name.trim()}` : '# Instructions'];
   const instructions = rules && Array.isArray(rules.instructions) ? rules.instructions : [];
   const forbids = rules && Array.isArray(rules.forbids) ? rules.forbids : [];
@@ -28,7 +32,9 @@ function renderContext({ roleGroup, rules, memories = [], omitted } = {}) {
   if (requires.length > 0) {
     ruleLines.push(`- Always: ${requires.map((rule) => rule.key).sort().join(', ')}`);
   }
-  if (ruleLines.length > 0) lines.push('', '## Rules', ...ruleLines);
+  const head = lines.join('\n');
+  // Each part starts with a blank line, exactly as the instructions were laid out before they had parts.
+  const ruleText = ruleLines.length > 0 ? ['', '', '## Rules', ...ruleLines].join('\n') : '';
 
   // Stable ordering keeps the injected prefix identical between launches so the
   // provider's prompt cache can be reused.
@@ -38,8 +44,34 @@ function renderContext({ roleGroup, rules, memories = [], omitted } = {}) {
   // What the size limit left out is said, not dropped silently, so the model knows the list is partial.
   const left = omitted && Number.isInteger(omitted.count) && omitted.count > 0 ? omitted.count : 0;
   if (left > 0) memoryLines.push(`- (${left} more reviewed ${left === 1 ? 'note was' : 'notes were'} left out to stay within the size limit.)`);
-  if (memoryLines.length > 0) lines.push('', '## Project notes (reviewed, role-scoped)', ...memoryLines);
-  return `${lines.join('\n')}\n`;
+  const memoryText = memoryLines.length > 0 ? ['', '', '## Project notes (reviewed, role-scoped)', ...memoryLines].join('\n') : '';
+  // Sorted by name, like the notes, so the same skills give the same text at every start.
+  const skillLines = [...(Array.isArray(skills) ? skills : [])]
+    .sort((a, b) => byCodeUnit(a.name, b.name))
+    .map((skill) => `- ${skill.name}: ${skill.description} (file: ${skill.file})`);
+  const skillText = skillLines.length > 0
+    ? ['', '', '## Skills', 'Step-by-step procedures you can use. Read a skill\'s file only when its line fits what you are about to do; do not read them all.', ...skillLines].join('\n')
+    : '';
+  return { head, rules: ruleText, memories: memoryText, skills: skillText };
+}
+
+function renderContext(input = {}) {
+  const parts = renderSections(input);
+  return `${parts.head}${parts.rules}${parts.memories}${parts.skills}\n`;
+}
+
+/** A rough count of tokens for what an agent is given (#359), labelled an estimate wherever it is shown: one per CJK character, one per four other characters. */
+function estimateTokens(text) {
+  if (typeof text !== 'string' || text === '') return 0;
+  const wide = (text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []).length;
+  return wide + Math.ceil((Array.from(text).length - wide) / 4);
+}
+
+/** How much of each part an agent was given: characters, and the estimate of tokens. */
+function measureSections(parts) {
+  const size = (text) => ({ chars: Array.from(text).length, tokens: estimateTokens(text) });
+  const total = `${parts.head}${parts.rules}${parts.memories}${parts.skills}`;
+  return { rules: size(parts.rules), memories: size(parts.memories), skills: size(parts.skills), total: size(total) };
 }
 
 function tomlString(text) {
@@ -50,7 +82,7 @@ function tomlString(text) {
 // private directory; argv carries a file path or a profile name, never content.
 function planInjection(options) {
   const { provider, roleGroup, rules, memories, omitted, privateDir, repoRoot, sessionToken,
-    codexHome, capabilities = {}, context } = options;
+    codexHome, capabilities = {}, context, skills = [] } = options;
   const descriptor = builtIn.get(provider);
   if (!descriptor) throw new Error('unsupported provider');
   if (!TOKEN.test(sessionToken || '')) throw new Error('invalid session token');
@@ -58,13 +90,18 @@ function planInjection(options) {
   const privateCheck = checkPrivateRoot(privateDir, repoRoot, context);
   if (!privateCheck.ok) throw new Error(`private directory rejected: ${privateCheck.problems.join(', ')}`);
 
-  const text = renderContext({ roleGroup, rules, memories, omitted });
   const sessionDir = nodePath.join(privateDir, 'sessions', sessionToken);
+  // The skills given to this agent, each written as its own SKILL.md in a folder of this session (or, for Codex, next to its
+  // profile in CODEX_HOME), never into the repository: the instructions list them by name, one line and that file.
+  const skillFiles = (folder) => (Array.isArray(skills) ? skills : []).filter((skill) => SKILL_NAME.test(skill.name) && typeof skill.content === 'string')
+    .map((skill) => ({ name: skill.name, description: skill.description, file: nodePath.join(folder, skill.name, 'SKILL.md'), content: skill.content }));
+  const textWith = (listed) => renderContext({ roleGroup, rules, memories, omitted, skills: listed });
+  const text = textWith(skillFiles(nodePath.join(sessionDir, 'skills')));
   const scope = { root: privateDir, repoRoot, exclusiveDir: sessionDir };
   const manual = () => ({
     provider,
     method: 'manual',
-    files: [{ path: nodePath.join(sessionDir, 'context.md'), content: text }],
+    files: [{ path: nodePath.join(sessionDir, 'context.md'), content: text }, ...skillFiles(nodePath.join(sessionDir, 'skills')).map((skill) => ({ path: skill.file, content: skill.content }))],
     argv: [],
     ...scope,
     note: 'Open the file and paste it into the terminal as the first message.'
@@ -73,11 +110,14 @@ function planInjection(options) {
   if (descriptor.id === 'claude') {
     if (!capabilities.appendSystemPromptFile) return manual();
     const file = nodePath.join(sessionDir, 'claude-context.md');
+    const skillsDir = nodePath.join(sessionDir, 'skills');
+    const listed = skillFiles(skillsDir);
     return {
       provider,
       method: 'append-system-prompt-file',
-      files: [{ path: file, content: text }],
-      argv: ['--append-system-prompt-file', file],
+      files: [{ path: file, content: text }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
+      // Claude Code may read the skills folder of this session, and nothing else of it.
+      argv: ['--append-system-prompt-file', file, ...(listed.length > 0 ? ['--add-dir', skillsDir] : [])],
       ...scope
     };
   }
@@ -88,10 +128,11 @@ function planInjection(options) {
     const homeCheck = checkPrivateRoot(codexHome, repoRoot, context);
     if (!homeCheck.ok) throw new Error(`CODEX_HOME rejected: ${homeCheck.problems.join(', ')}`);
     const file = nodePath.join(codexHome, `${profileName}.config.toml`);
+    const listed = skillFiles(nodePath.join(codexHome, `${profileName}-skills`));
     return {
       provider,
       method: 'profile-developer-instructions',
-      files: [{ path: file, content: `developer_instructions = ${tomlString(text)}\n` }],
+      files: [{ path: file, content: `developer_instructions = ${tomlString(textWith(listed))}\n` }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
       argv: ['-p', profileName],
       root: codexHome,
       repoRoot,
@@ -264,4 +305,4 @@ function cleanupPlan(plan) {
   return plan.created ? removeCreated(plan.created) : { removed: 0, skipped: [] };
 }
 
-module.exports = { renderContext, planInjection, writePlan, cleanupPlan };
+module.exports = { renderContext, renderSections, measureSections, estimateTokens, planInjection, writePlan, cleanupPlan };

@@ -146,9 +146,8 @@ function buildCards(input) {
       // Whether its Claude Code was given this window's port (#354); shown as the extension worded it, only for sessions that have one.
       ide: line(session.ideLabel, '', 260) || null,
       trust: line(session.trustLabel, '', 260) || null,
-      injected: isPlain(session.injectedCounts) && Number.isSafeInteger(session.injectedCounts.rules) && Number.isSafeInteger(session.injectedCounts.memories) && session.injectedCounts.rules >= 0 && session.injectedCounts.memories >= 0
-        ? `Prepared for this agent: ${session.injectedCounts.rules} rule${session.injectedCounts.rules === 1 ? '' : 's'} and ${session.injectedCounts.memories} shared note${session.injectedCounts.memories === 1 ? '' : 's'} (the CLI is told; not proof it read them)`
-        : 'Rules and notes given to this agent: unknown (not started in this window)',
+      injected: describeInjected(session.injectedCounts),
+      given: describeSizes(session.injectedSizes),
       alert: gate === 'block' ? 'quota: new agents on this account are held back' : gate === 'confirm' ? 'quota: needs confirmation' : gate === 'warn' ? 'quota: near the limit' : null
     });
   }
@@ -361,6 +360,28 @@ function shortened(text, limit) {
   return `${(space > limit / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.\-]+$/, '')}…`;
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/** What an agent was prepared with: rules, shared notes and (#359) skills, counted. */
+function describeInjected(counts) {
+  if (!isPlain(counts) || !isCount(counts.rules) || !isCount(counts.memories)) return 'Rules and notes given to this agent: unknown (not started in this window)';
+  const skills = isCount(counts.skills) ? counts.skills : null;
+  const parts = [plural(counts.rules, 'rule'), plural(counts.memories, 'shared note'), ...(skills === null ? [] : [`${plural(skills, 'skill')} (listed, not their text)`])];
+  return `Prepared for this agent: ${parts.slice(0, -1).join(', ')} and ${parts.at(-1)} (the CLI is told; not proof it read them)`;
+}
+
+/**
+ * How much the agent was given at its start (#359): the estimate of tokens in all, then the characters of each part. Only the real
+ * measures of what was prepared; nothing here claims tokens were saved.
+ */
+function describeSizes(sizes) {
+  const ok = (entry) => isPlain(entry) && isCount(entry.chars) && isCount(entry.tokens);
+  if (!isPlain(sizes) || !['rules', 'memories', 'skills', 'total'].every((key) => ok(sizes[key]))) return null;
+  const n = (value) => value.toLocaleString('en-US');
+  return `Given at start: about ${n(sizes.total.tokens)} tokens (an estimate) — rules ${n(sizes.rules.chars)} characters, shared notes ${n(sizes.memories.chars)}, skills list ${n(sizes.skills.chars)}`;
+}
+
 function buildSkills(summary) {
   if (!isPlain(summary) || summary.ok !== true || !Array.isArray(summary.skills)) return { known: false, text: 'Skills: unknown (the library could not be read).', items: [] };
   const items = summary.skills.filter((entry) => isPlain(entry) && typeof entry.name === 'string' && SKILL_NAME.test(entry.name)).slice(0, 50).map((entry) => ({
@@ -431,4 +452,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { describeSizes, describeInjected, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

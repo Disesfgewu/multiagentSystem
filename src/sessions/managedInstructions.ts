@@ -3,6 +3,15 @@
 import * as crypto from 'node:crypto';
 import { builtIn } from '../providers/registry';
 import { renderContext, planInjection, writePlan, cleanupPlan } from '../memory/injection';
+const { renderSections, measureSections } = require('../memory/injection') as {
+  renderSections(input: Record<string, unknown>): { head: string; rules: string; memories: string; skills: string };
+  measureSections(parts: { head: string; rules: string; memories: string; skills: string }): InjectedSizes;
+};
+const { SkillLibrary, renderSkillFile } = require('../skills/library') as {
+  SkillLibrary: new (store: unknown) => { forRoleGroup(id: string): { ok: true; skills: Array<{ name: string; description: string; body: string; revision: number }> } | { ok: false; reason: string } };
+  renderSkillFile(skill: { name: string; description: string; body: string }): string;
+};
+export type InjectedSizes = { rules: { chars: number; tokens: number }; memories: { chars: number; tokens: number }; skills: { chars: number; tokens: number }; total: { chars: number; tokens: number } };
 import { resolveRules } from '../memory/rules';
 import { previewEffectiveRules, formatPreview, ENFORCEMENT } from '../roles/preview';
 import { validRecord } from '../roles/role-store';
@@ -40,6 +49,8 @@ export interface InstructionSnapshot {
   broadcastBindings: BroadcastBinding[];
   /** The shared notes this snapshot was composed with (id and version). A change to any of them makes the snapshot stale. */
   memoryBindings: Array<{ id: string; version: number }>;
+  /** The skills this snapshot lists (#359), by name and revision. A skill changed, added, turned off or removed makes the snapshot stale. */
+  skillBindings?: Array<{ name: string; revision: number }>;
   /** The version of the team rules this snapshot was composed with (0: none were written). A newer version makes the snapshot stale. */
   teamRulesVersion: number;
   /** The session's codename (issue #342), which the agent is told to sign its GitHub posts with; null when it has none. */
@@ -83,8 +94,10 @@ export interface PreparedInstructions {
   summaryText: string;
   /** The role group's effective level for each tool (a stronger layer's ban applied), or null without a role group: what the launch turns into the CLI's own permission settings (issue #310). */
   toolPermissions: Record<string, string> | null;
-  /** How many rules and shared notes were put into the prepared instructions (prepared, not proof that the CLI read them). */
-  injectedCounts: { rules: number; memories: number };
+  /** How many rules, shared notes and skills were put into the prepared instructions (prepared, not proof that the CLI read them). */
+  injectedCounts: { rules: number; memories: number; skills: number };
+  /** How much of each part that is (#359): characters, and an estimate of tokens. */
+  injectedSizes: InjectedSizes | null;
 }
 
 export interface PrepareInstructionsFailure {
@@ -257,12 +270,28 @@ export async function prepareInstructionSnapshot(
     }
   }
 
+  // Skills (#359): those of the library that are on, approved, for this role group and still pass their checks. The agent is given
+  // their list, not their text; their names and revisions are part of what the person confirms. A library that cannot be read
+  // stops the launch, like shared memory: an agent is not started with a list that might be wrong.
+  let skills: Array<{ name: string; description: string; body: string; revision: number }> = [];
+  if (group) {
+    let chosen: ReturnType<InstanceType<typeof SkillLibrary>['forRoleGroup']>;
+    try { chosen = new SkillLibrary(store).forRoleGroup(group.id); } catch { chosen = { ok: false, reason: 'storage-unavailable' }; }
+    if (!chosen.ok) return { ok: false, code: 'skills-unavailable', message: `The skills library could not be read (${chosen.reason}). The agent was not started.` };
+    skills = chosen.skills;
+    if (skills.length > 0 && digest !== null) {
+      const skillDigest = crypto.createHash('sha256').update(JSON.stringify(skills.map((skill) => [skill.name, skill.revision]))).digest('hex');
+      digest = `sha256:${crypto.createHash('sha256').update(`${digest}\nskills:${skillDigest}`).digest('hex')}`;
+    }
+  }
+  const skillInputs = skills.map((skill) => ({ name: skill.name, description: skill.description, content: renderSkillFile(skill) }));
+
   // What the person reviews, without the one rule that differs for every session: the codename instruction (its id is fixed; the
   // codename itself is shown in the dialog anyway). Every other part counts: the provider, the role group (with its tool
   // permissions), each composed rule and the shared notes. The effective permissions follow from the role group and the rules.
   let reviewDigest: string | null = null;
   if (digest !== null) {
-    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]) }, (_key, value) => {
+    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]), skills: skills.map((skill) => [skill.name, skill.revision]) }, (_key, value) => {
       if (Array.isArray(value)) return value.filter((entry) => !(entry && typeof entry === 'object' && (entry as { id?: unknown }).id === CODENAME_RULE_ID));
       return value;
     });
@@ -277,13 +306,12 @@ export async function prepareInstructionSnapshot(
   let injectionState: PreparedInstructions['injectionState'] = 'none';
   let injectionStatusLabel = 'No instructions configured';
 
+  let injectedSizes: InjectedSizes | null = null;
   if (digest !== null) {
-    renderedContext = renderContext({
-      roleGroup: group ?? { id: 'unassigned', name: 'Agent', role: 'general' },
-      rules: effectiveRules,
-      memories,
-      omitted: memoryOmitted
-    });
+    const listedSkills = skillInputs.map((skill) => ({ ...skill, file: nodePath.join(privateDir, 'sessions', targetSessionId, 'skills', skill.name, 'SKILL.md') }));
+    const contextInput = { roleGroup: group ?? { id: 'unassigned', name: 'Agent', role: 'general' }, rules: effectiveRules, memories, omitted: memoryOmitted, skills: listedSkills };
+    renderedContext = renderContext(contextInput);
+    injectedSizes = measureSections(renderSections(contextInput));
 
     try {
       const ruleInjection = builtIn.capability(provider, 'ruleInjection');
@@ -295,6 +323,7 @@ export async function prepareInstructionSnapshot(
         rules: effectiveRules,
         memories,
         omitted: memoryOmitted,
+        skills: skillInputs,
         privateDir,
         codexHome: options.codexHome,
         repoRoot,
@@ -341,6 +370,7 @@ export async function prepareInstructionSnapshot(
     targetSessionId,
     broadcastBindings,
     memoryBindings: memories.map((item) => ({ id: item.id, version: item.version })),
+    skillBindings: skills.map((skill) => ({ name: skill.name, revision: skill.revision })),
     teamRulesVersion,
     codename: options.codename ?? null,
     digest,
@@ -372,7 +402,8 @@ export async function prepareInstructionSnapshot(
     injectionStatusLabel,
     renderedContext,
     summaryText,
-    injectedCounts: { rules: effectiveRules ? effectiveRules.instructions.length + effectiveRules.forbids.length + effectiveRules.requires.length : 0, memories: memories.length },
+    injectedCounts: { rules: effectiveRules ? effectiveRules.instructions.length + effectiveRules.forbids.length + effectiveRules.requires.length : 0, memories: memories.length, skills: skills.length },
+    injectedSizes,
     toolPermissions: group && previewResult && previewResult.ok ? Object.fromEntries(previewResult.permissions.map((entry: { tool: string; effective: string }) => [entry.tool, entry.effective])) : null
   };
 }
@@ -416,6 +447,13 @@ export async function isSnapshotStale(
         if (now2 !== JSON.stringify((snapshot.memoryBindings ?? []).map((item) => [item.id, item.version]))) return { stale: true, reason: 'memory-changed' };
       } else if ((snapshot.memoryBindings ?? []).length > 0) return { stale: true, reason: 'memory-changed' };
     } catch { return { stale: true, reason: 'memory-unavailable' }; }
+  }
+  // The skills of the role group changed since the snapshot (#359): the agent would be given a list the person did not confirm.
+  if (snapshot.roleGroupId !== 'unassigned') {
+    let chosen: ReturnType<InstanceType<typeof SkillLibrary>['forRoleGroup']>;
+    try { chosen = new SkillLibrary(store).forRoleGroup(snapshot.roleGroupId); } catch { chosen = { ok: false, reason: 'storage-unavailable' }; }
+    if (!chosen.ok) return { stale: true, reason: 'skills-unavailable' };
+    if (JSON.stringify(chosen.skills.map((skill) => [skill.name, skill.revision])) !== JSON.stringify((snapshot.skillBindings ?? []).map((item) => [item.name, item.revision]))) return { stale: true, reason: 'skills-changed' };
   }
   // Team rules changed since the snapshot was prepared: the agent would start with rules the person did not review.
   const team: any = new TeamRulesStore(store).get();

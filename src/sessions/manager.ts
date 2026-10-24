@@ -8,6 +8,10 @@ import { formatShellCommandLine, formatClearPrefix, formatPathPrefix } from '../
 import { cleanupSessionPlan } from './managedInstructions';
 const { parseCodename } = require('./codenames') as { parseCodename(value: unknown): { prefix: string; number: number } | null };
 
+/** How much of each part of an agent's instructions it was given (#359): characters and an estimate of tokens. */
+type SizeEntry = { chars: number; tokens: number };
+export type InjectedSizes = { rules: SizeEntry; memories: SizeEntry; skills: SizeEntry; total: SizeEntry };
+
 // Session lifecycle on top of SessionRegistry. It does not import `vscode`: native terminals and
 // persistence are injected, so the behaviour is tested with fakes. Nothing here is sent to GitHub;
 // ids, worktree paths and names are private local data.
@@ -65,7 +69,9 @@ export interface SessionInstructionsInput {
   argv?: string[];
   injectionState?: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
   injectionStatusLabel?: string;
-  injectedCounts?: { rules: number; memories: number };
+  injectedCounts?: { rules: number; memories: number; skills?: number };
+  /** How much of each part of the instructions that is (#359): characters and an estimate of tokens. */
+  injectedSizes?: InjectedSizes | null;
 }
 
 export interface SessionView extends SessionIdentity {
@@ -87,7 +93,8 @@ export interface SessionView extends SessionIdentity {
   instructionDigest?: string | null;
   instructionReviewDigest?: string | null;
   /** What was put into the prepared instructions of this session (prepared, not proof that the CLI read it); null when unknown. */
-  injectedCounts?: { rules: number; memories: number } | null;
+  injectedCounts?: { rules: number; memories: number; skills?: number } | null;
+  injectedSizes?: InjectedSizes | null;
   instructionMethod?: string | null;
   /** Fresh, verified provider evidence only. It is never persisted with the session record. */
   providerObservation?: any;
@@ -195,7 +202,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly instructionDigests = new Map<string, string>();
   // The digest of what the person reviewed (#362): the instructions without this session's codename. This window only.
   private readonly reviewDigests = new Map<string, string>();
-  private readonly injectedCounts = new Map<string, { rules: number; memories: number }>();
+  private readonly injectedCounts = new Map<string, { rules: number; memories: number; skills?: number }>();
+  private readonly injectedSizes = new Map<string, InjectedSizes>();
   private readonly instructionMethods = new Map<string, string>();
   private readonly codenames = new Map<string, string>();
   private readonly activePlans = new Map<string, any>();
@@ -329,6 +337,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       instructionDigest: this.instructionDigests.get(entry.id) ?? null,
       instructionReviewDigest: this.reviewDigests.get(entry.id) ?? null,
       injectedCounts: this.injectedCounts.get(entry.id) ?? null,
+      injectedSizes: this.injectedSizes.get(entry.id) ?? null,
       instructionMethod: this.instructionMethods.get(entry.id) ?? null
     };
   }
@@ -526,6 +535,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     if (instructions?.digest) this.instructionDigests.set(identity.id, instructions.digest);
     if (instructions?.reviewDigest) this.reviewDigests.set(identity.id, instructions.reviewDigest);
     if (instructions?.injectedCounts) this.injectedCounts.set(identity.id, instructions.injectedCounts);
+    if (instructions?.injectedSizes) this.injectedSizes.set(identity.id, instructions.injectedSizes);
     if (instructions?.method && instructions.method !== 'none') this.instructionMethods.set(identity.id, instructions.method);
     if (instructions?.plan) this.activePlans.set(identity.id, instructions.plan);
 
@@ -783,7 +793,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   async forget(id: string): Promise<void> {
     if (this.handles.has(id)) throw new SessionError('session-live');
     this.registry.forget(id);
-    for (const map of [this.names, this.models, this.instructionStates, this.instructionLabels, this.autoModeLabels, this.autoModeStates, this.instructionDigests, this.reviewDigests, this.injectedCounts, this.instructionMethods, this.codenames, this.activePlans]) map.delete(id);
+    for (const map of [this.names, this.models, this.instructionStates, this.instructionLabels, this.autoModeLabels, this.autoModeStates, this.instructionDigests, this.reviewDigests, this.injectedCounts, this.injectedSizes, this.instructionMethods, this.codenames, this.activePlans]) map.delete(id);
     await this.persist();
   }
 

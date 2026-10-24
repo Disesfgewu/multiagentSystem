@@ -231,3 +231,37 @@ test('a card says in four plain lines who it is, which account, which mode and w
   const footer = nodes.filter((entry) => entry.tag === 'footer').at(-1);
   assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal', 'Switch account…'], 'one main button, and switching the account (#352)');
 });
+
+test('a card\'s Details that the person opened stay open when the cards are drawn again (#359)', () => {
+  const listeners = {};
+  const nodes = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', open: false,
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage() {} }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const card = { id: 'a-1', name: 'Agent', role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', status: { state: 'working', text: 'working', source: 'hooks' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false, given: 'Given at start: about 50 tokens (an estimate) — rules 100 characters, shared notes 0, skills list 80' };
+  const state = { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [card], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] };
+  listeners.message({ data: { type: 'state', state } });
+  const detailsOf = () => nodes.filter((entry) => entry.tag === 'details').at(-1);
+  const first = detailsOf();
+  assert.equal(first.open, false);
+  assert.ok(first.textContent.includes('Given at start: about 50 tokens'), 'the size line is in Details');
+  first.open = true;
+  first.listeners.toggle();
+  listeners.message({ data: { type: 'state', state } });
+  const again = detailsOf();
+  assert.notEqual(again, first, 'the card was drawn again');
+  assert.equal(again.open, true, 'and its Details are still open');
+  again.open = false;
+  again.listeners.toggle();
+  listeners.message({ data: { type: 'state', state } });
+  assert.equal(detailsOf().open, false, 'closed stays closed');
+});
