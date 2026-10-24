@@ -109,6 +109,8 @@ async function main() {
   let failed = false;
   try {
     const page = await app.firstWindow();
+    // No single action waits without end: one that cannot happen fails its step.
+    page.setDefaultTimeout(30000);
     await page.setViewportSize({ width: 1440, height: 900 }).catch(() => {});
     await page.waitForSelector('.monaco-workbench', { timeout: 120000 });
     // The extension activates on startup; give its views a moment to register.

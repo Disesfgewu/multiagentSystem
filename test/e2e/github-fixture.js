@@ -32,6 +32,8 @@ const ISSUE_BODY = [
 function fixture() {
   return {
     repository: 'example/project',
+    // The synthetic GitHub account the run publishes with (#353).
+    owner: 'e2e-owner',
     issues: [
       { number: 12, title: 'Show Issues and pull requests like GitHub', state: 'open', labels: ['ready', 'ui'], assignees: [], author: 'shared-account', createdAt: at(22, 9), body: ISSUE_BODY }
     ],

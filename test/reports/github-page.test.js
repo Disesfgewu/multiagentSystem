@@ -42,7 +42,13 @@ test('a pull request page: head, CI, review state, the report\'s file list, and 
     summary: { ci: 'passing', approval: 'changes_requested' }
   });
   assert.equal(model.state, 'open');
-  assert.deepEqual([model.pr.headSha, model.pr.headRef, model.pr.baseRef, model.pr.ci, model.pr.approval], [HEAD, 'feat/page', 'main', 'passing', 'changes_requested']);
+  assert.deepEqual([model.pr.headSha, model.pr.headRef, model.pr.baseRef, model.pr.ci, model.pr.approval], [HEAD, 'feat/page', 'main', 'checks passed', 'changes requested'], 'in plain words, not GitHub\'s field values (#360)');
+  const plain = (summary) => { const built = buildPageModel({ repository: 'o/r', kind: 'pullRequest', item: { number: 1, state: 'open', headSha: HEAD }, comments: ok([]), reviews: ok([]), reviewComments: ok([]), files: ok([]), summary }); return [built.pr.ci, built.pr.approval]; };
+  assert.deepEqual(plain({ ci: 'failing', approval: 'not_approved' }), ['checks failed', 'not approved yet']);
+  assert.deepEqual(plain({ ci: 'pending', approval: 'approved' }), ['checks still running', 'approved']);
+  assert.deepEqual(plain({ ci: 'none', approval: 'unknown' }), ['no checks reported', 'unknown']);
+  assert.deepEqual(plain({ ci: '<b>x</b>', approval: 'stale_review' }), ['unknown', 'unknown'], 'a value it does not know is unknown, never shown as given');
+  assert.deepEqual(plain(null), ['unknown', 'unknown']);
   assert.deepEqual(model.posts.map((post) => [post.id, post.kind, post.review]), [[201, 'review', 'requested changes']], 'a pending review is not shown');
   assert.deepEqual(model.pr.files.map((file) => [file.filename, file.status, file.additions, file.deletions]), [['src/a.ts', 'modified', 3, 1], ['b.md', 'added', 9, 0]]);
   assert.deepEqual(model.pr.inline.map((entry) => [entry.id, entry.path, entry.line, entry.file]), [[301, 'src/a.ts', 12, 0], [302, 'src/elsewhere.ts', 3, null]], 'only a comment on a listed file can be opened');
@@ -63,8 +69,8 @@ test('what could not be read is said, never shown as empty (#353)', () => {
 });
 
 test('the page may ask only fixed things, each naming a number it was given (#353)', () => {
-  const known = { links: 2, files: 1, inline: new Set([301]) };
-  for (const good of [{ type: 'ready' }, { type: 'refresh' }, { type: 'openOnGitHub' }, { type: 'openText' }, { type: 'openLink', link: 1 }, { type: 'openFile', file: 0 }, { type: 'openInline', id: 301 }]) {
+  const known = { links: 2, files: 1, inline: new Set([301]), posts: new Set(['comment:401', 'review:501', 'inline:301']) };
+  for (const good of [{ type: 'ready' }, { type: 'refresh' }, { type: 'openOnGitHub' }, { type: 'openText' }, { type: 'openLink', link: 1 }, { type: 'openFile', file: 0 }, { type: 'openInline', id: 301 }, { type: 'preview', text: '**x**' }, { type: 'comment', text: 'hi', tellPm: true }, { type: 'ask', post: 'review', id: 501, who: 'pm' }, { type: 'ask', post: 'inline', id: 301, who: 'agent' }]) {
     assert.deepEqual(parsePageMessage(good, known), { ok: true, message: good }, JSON.stringify(good));
   }
   const refused = [
@@ -72,10 +78,16 @@ test('the page may ask only fixed things, each naming a number it was given (#35
     [{ type: 'merge' }, 'unknown-command'], [{ type: 'toString' }, 'unknown-command'], [{ type: '__proto__' }, 'unknown-command'],
     [{ type: 'openLink', link: 2 }, 'unknown-link'], [{ type: 'openLink', link: -1 }, 'invalid-number'], [{ type: 'openLink', link: '0' }, 'invalid-number'], [{ type: 'openLink', link: 0.5 }, 'invalid-number'],
     [{ type: 'openLink', link: 0, url: 'https://evil.test' }, 'unexpected-field'], [{ type: 'refresh', text: 'x' }, 'unexpected-field'],
-    [{ type: 'openFile', file: 1 }, 'unknown-file'], [{ type: 'openInline', id: 302 }, 'unknown-comment'], [{ type: 'openInline' }, 'invalid-number']
+    [{ type: 'openFile', file: 1 }, 'unknown-file'], [{ type: 'openInline', id: 302 }, 'unknown-comment'], [{ type: 'openInline' }, 'invalid-number'],
+    // Text only where the person types it, of a bounded length; choices only from their list; a post only one the page was given.
+    [{ type: 'comment', text: 'x'.repeat(65537), tellPm: false }, 'invalid-text'], [{ type: 'comment', text: 5, tellPm: false }, 'invalid-text'], [{ type: 'comment', text: 'x', tellPm: 'yes' }, 'invalid-choice'],
+    [{ type: 'comment', text: 'x' }, 'invalid-choice'], [{ type: 'comment', text: 'x', tellPm: true, number: 9 }, 'unexpected-field'], [{ type: 'preview' }, 'invalid-text'],
+    [{ type: 'ask', post: 'comment', id: 402, who: 'pm' }, 'unknown-post'], [{ type: 'ask', post: 'review', id: 401, who: 'pm' }, 'unknown-post'], [{ type: 'ask', post: 'issue', id: 401, who: 'pm' }, 'invalid-choice'],
+    [{ type: 'ask', post: 'comment', id: 401, who: 'worker-01' }, 'invalid-choice'], [{ type: 'ask', post: 'comment', id: 401, who: 'pm', session: 'abc' }, 'unexpected-field'],
+    [{ type: 'merge', id: 7 }, 'unknown-command'], [{ type: 'type', text: 'rm -rf' }, 'unknown-command']
   ];
   for (const [raw, reason] of refused) assert.deepEqual(parsePageMessage(raw, known), { ok: false, reason }, JSON.stringify(raw));
-  assert.deepEqual(Object.keys(SHAPES).sort(), ['openFile', 'openInline', 'openLink', 'openOnGitHub', 'openText', 'ready', 'refresh'], 'this version only reads: no write action exists');
+  assert.deepEqual(Object.keys(SHAPES).sort(), ['ask', 'comment', 'openFile', 'openInline', 'openLink', 'openOnGitHub', 'openText', 'preview', 'ready', 'refresh'], 'the writes are a comment and asking about a post; no review, merge or close yet');
 });
 
 test('the page loads nothing from outside and never turns text into HTML (#353)', () => {

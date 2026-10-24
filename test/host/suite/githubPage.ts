@@ -59,7 +59,7 @@ export async function runGitHubPageChecks(): Promise<void> {
     await vscode.commands.executeCommand(REPORT_COMMANDS.openPage, { kind: 'pullRequest', number: 900 });
     const pull = githubPageForTests('pullRequest', 900)!;
     const pr = (pull.model as any).pr;
-    assert.deepEqual([pr.headSha, pr.ci, pr.files.length, pr.inline.length], [HEAD, 'passing', 1, 1]);
+    assert.deepEqual([pr.headSha, pr.ci, pr.files.length, pr.inline.length], [HEAD, 'checks passed', 1, 1]);
     assert.equal((pull.model as any).body.blocks[1].t, 'table');
     assert.deepEqual((pull.model as any).posts.map((post: any) => [post.kind, post.review, post.badge.text]), [['review', 'requested changes', 'PM-01（自稱）']]);
 

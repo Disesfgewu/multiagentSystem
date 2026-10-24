@@ -9,6 +9,27 @@
 
 const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P';
 
+/**
+ * Runs one action and, when it took longer than a second, prints how long and what it waited for (#380 review): a run that is slow
+ * or stuck then says where. `what` names the selector or the window.
+ */
+async function timed(what, action) {
+  const started = Date.now();
+  // Said while it is still waiting too: an action that never finishes would otherwise say nothing at all.
+  const still = setInterval(() => console.log(`e2e:   still waiting for ${what} after ${Math.round((Date.now() - started) / 1000)} s`), 10000);
+  try { return await action(); } finally {
+    clearInterval(still);
+    const took = Date.now() - started;
+    if (took > 1000) console.log(`e2e:   ${(took / 1000).toFixed(1)} s waiting for ${what}`);
+  }
+}
+
+/** A frame that does not answer (a webview in the background) is skipped: what it was asked counts as `fallback` after 3 s. */
+function bounded(promise, fallback, ms = 3000) {
+  let timer;
+  return Promise.race([promise.catch(() => fallback), new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); })]).finally(() => clearTimeout(timer));
+}
+
 /** Runs a command the way a person does: open the command palette, type its title, press Enter. */
 async function runCommand(page, title) {
   await page.keyboard.press(COMMAND_PALETTE);
@@ -51,16 +72,27 @@ async function drive(page, answers, done, timeoutMs = 60000) {
   const seen = [];
   let shots = 0;
   while (Date.now() < deadline) {
-    if (await done(seen)) return seen;
+    if (await timed('the flow to be done', () => done(seen))) return seen;
     const dialog = page.locator('.monaco-dialog-box:visible').first();
-    if (await dialog.isVisible().catch(() => false)) {
-      const message = (await dialog.locator('.dialog-message-text').innerText().catch(() => '')).trim();
-      const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
-      if (!rule) throw new Error(`a dialog nobody answers: "${message}"`);
-      seen.push(`dialog: ${message} → ${rule.button}`);
-      await dialog.locator('.monaco-button', { hasText: rule.button }).first().click();
-      await page.waitForTimeout(400);
-      continue;
+    if (await timed('a dialog (.monaco-dialog-box)', () => dialog.isVisible().catch(() => false))) {
+      // VS Code shows a modal's message in its detail part when the call gives no detail: read the message, else that part.
+      // Only a part that is there is read, and briefly: the empty dialog box VS Code leaves behind has neither, and waiting for one
+      // would hold every round of this loop for the whole default timeout.
+      const textOf = async (selector) => {
+        const part = dialog.locator(selector).first();
+        if ((await part.count().catch(() => 0)) === 0) return '';
+        return (await part.innerText({ timeout: 1000 }).catch(() => '')).trim();
+      };
+      const message = await timed('the dialog\'s text (.dialog-message-text, .dialog-message-detail)', async () => (await textOf('.dialog-message-text')) || (await textOf('.dialog-message-detail')));
+      // A dialog whose text is not drawn yet is looked at again on the next round.
+      if (message !== '') {
+        const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
+        if (!rule) throw new Error(`a dialog nobody answers: "${message}"`);
+        seen.push(`dialog: ${message} → ${rule.button}`);
+        await dialog.locator('.monaco-button', { hasText: rule.button }).first().click();
+        await page.waitForTimeout(400);
+        continue;
+      }
     }
     // A notification with a button the flow waits for (for example "I have signed in — check now").
     const toastRule = answers.find((entry) => entry.toast);
@@ -74,9 +106,9 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       }
     }
     const widget = page.locator('.quick-input-widget:visible').first();
-    if (await widget.isVisible().catch(() => false)) {
+    if (await timed('a list or input box (.quick-input-widget)', () => widget.isVisible().catch(() => false))) {
       const input = widget.locator('.quick-input-box input').first();
-      const placeholder = (await input.getAttribute('placeholder').catch(() => '')) ?? '';
+      const placeholder = (await timed('the list\'s placeholder', () => input.getAttribute('placeholder').catch(() => ''))) ?? '';
       const message = (await widget.locator('.quick-input-message').innerText().catch(() => '')).trim();
       const title = `${placeholder} ${message}`.trim();
       const rule = answers.find((entry) => (entry.pick || entry.type !== undefined) && entry.when.test(title));
@@ -84,8 +116,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       if (!rule && await done(seen)) return seen;
       if (!rule) throw new Error(`a window nobody answers: "${title}"`);
       if (rule.pick) {
-        await input.fill(rule.pick);
-        await widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 });
+        await timed(`typing "${rule.pick}" into the list`, () => input.fill(rule.pick));
+        await timed(`the list row "${rule.pick}"`, () => widget.locator('.quick-input-list .monaco-list-row', { hasText: rule.pick }).first().waitFor({ timeout: 10000 }));
         seen.push(`pick: ${title} → ${rule.pick}`);
       } else {
         if (rule.type !== '') await input.fill(rule.type);
@@ -99,6 +131,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
     if (process.env.MULTIAGENT_E2E_DEBUG === '1' && shots < 20) { shots += 1; await page.screenshot({ path: require('node:path').join(__dirname, '..', '..', 'artifacts', 'e2e', `debug-${Date.now()}.png`) }).catch(() => {}); }
     await page.waitForTimeout(250);
   }
+  // The last answer may have been given just before the time ran out.
+  if (await done(seen)) return seen;
   throw new Error(`the flow did not finish in ${timeoutMs / 1000} s; answered: ${seen.join(' | ')}`);
 }
 
@@ -107,7 +141,7 @@ async function workbenchFrame(page) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
-      const found = await frame.locator('h1', { hasText: 'Workbench' }).count().catch(() => 0);
+      const found = await bounded(frame.locator('h1', { hasText: 'Workbench' }).count(), 0);
       if (found > 0) return frame;
     }
     await page.waitForTimeout(250);
@@ -117,30 +151,48 @@ async function workbenchFrame(page) {
 
 /** Clicks a button of the Workbench page by its words (opening the Workbench from the side bar first when it is not open). */
 async function clickInWorkbench(page, words, { tab } = {}) {
+  return timed(`the Workbench button "${words}"${tab ? ` on ${tab}` : ''}`, () => clickInWorkbenchNow(page, words, { tab }));
+}
+async function clickInWorkbenchNow(page, words, { tab } = {}) {
   const editorTab = page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first();
   if (await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).count() === 0) {
     await page.locator('.activitybar [aria-label^="Multiagent"]').first().click();
     await page.locator('.sidebar .monaco-list-row', { hasText: 'Open Workbench' }).first().click();
   } else {
     // An agent's terminal opens in the editor area in front of it: bring the Workbench back, as a person would.
-    await editorTab.click();
+    await timed('the Workbench editor tab', () => editorTab.click());
   }
-  const frame = await workbenchFrame(page);
-  if (tab) await frame.locator('button[role="tab"]', { hasText: tab }).first().click();
-  await frame.locator('button', { hasText: words }).first().click();
+  const frame = await timed('the Workbench page\'s frame', () => workbenchFrame(page));
+  if (tab) await timed(`the Workbench tab "${tab}"`, () => frame.locator('button[role="tab"]', { hasText: tab }).first().click());
+  await timed(`clicking "${words}" in the Workbench`, () => frame.locator('button', { hasText: words }).first().click());
 }
 
 /** The frame of the Issue or pull request page whose title has `title` (VS Code puts a webview in two nested frames). */
 async function pageFrame(page, title) {
+  return timed(`the page "${title}"`, () => pageFrameNow(page, title));
+}
+async function pageFrameNow(page, title) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
-      const found = await frame.locator('h1', { hasText: title }).count().catch(() => 0);
+      const found = await bounded(frame.locator('h1', { hasText: title }).count(), 0);
       if (found > 0) return frame;
     }
     await page.waitForTimeout(250);
   }
   throw new Error(`the page "${title}" did not appear`);
+}
+
+/** Waits until the page's text has not changed for a second (at most 15 s), so a click lands on what was found. */
+async function settled(page, frame) {
+  const deadline = Date.now() + 15000;
+  let last = null;
+  let since = Date.now();
+  while (Date.now() < deadline) {
+    const now = await frame.locator('body').innerText().catch(() => '');
+    if (now !== last) { last = now; since = Date.now(); } else if (Date.now() - since >= 1000) return;
+    await page.waitForTimeout(200);
+  }
 }
 
 /** Opens an Issue or pull request page from the Work tab, as a person does: the button, then the item in the list. */
@@ -164,7 +216,9 @@ async function addClaudeAccount(page, name, signedIn) {
     { dialog: /^Add the Claude Code account/, button: 'Add and Sign In' },
     { toast: 'Sign in to Claude Code in the terminal', button: 'I have signed in — check now' }
   ], async () => counted.test(await page.locator('.sidebar').innerText().catch(() => '')), 90000);
-  await clickInWorkbench(page, 'Refresh', { tab: 'Accounts' }).catch(() => {});
+  // The Refresh button is on the Agents tab; the Accounts tab then shows what was read.
+  await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+  await (await workbenchFrame(page)).locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
   await page.waitForTimeout(1500);
   return answered;
 }
@@ -560,8 +614,7 @@ const ITEMS = [
     id: '08',
     title: 'Issues and pull requests shown like GitHub',
     issue: '#353',
-    acceptance: 'not-done',
-    pending: '#353: comment from the page, Comment and tell PM, Discuss with PM, and review, merge and close from the page (the next PRs)',
+    acceptance: 'accepted',
     steps: [
       {
         name: 'open-issue-page',
@@ -593,7 +646,7 @@ const ITEMS = [
         run: async ({ page, check }) => {
           await openGitHubPage(page, 7, 'PR #7');
           const frame = await pageFrame(page, 'Read-only Issue and pull request page');
-          check('its head, branches, CI and review', await frame.locator('.pr-box').innerText(), (text) => /Head 1234567890ab · feat\/github-page → main/.test(text) && /CI: passing/.test(text) && /Review: changes_requested/.test(text));
+          check('its head, branches, checks and review, in plain words', await frame.locator('.pr-box').innerText(), (text) => /Head 1234567890ab · feat\/github-page → main/.test(text) && /Checks: checks passed/.test(text) && /Review: changes requested/.test(text) && !/_/.test(text.split('\n')[1] ?? ''));
           check('the review is in the conversation, with its state', (await frame.locator('.post-head').allInnerTexts()).join(' | '), /PM-01（自稱）[\s\S]*review: requested changes/);
           check('the changed files', await frame.locator('h2', { hasText: 'Files changed' }).innerText(), 'Files changed (1)');
           check('and the comment on a line, with where it is', await frame.locator('.where').first().innerText(), 'src/reports/github-page.js:2');
@@ -611,6 +664,78 @@ const ITEMS = [
           while (Date.now() < deadline && !/github-page\.js/.test(await tab.innerText().catch(() => ''))) await page.waitForTimeout(250);
           check('the file\'s diff opens in the editor', await tab.innerText(), /github-page\.js/);
           check('with the lines the pull request adds', await page.locator('.editor-instance .view-lines').first().innerText(), /Built\s+with\s+textContent\s+only/); // the editor draws spaces as non-breaking ones
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'write-comment',
+        does: 'Back on "Issue #12", type "**Thanks**, please summarise the open points." in the comment box at the bottom and click "Preview".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).first().click();
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          check('the comment box is there, with both buttons', (await frame.locator('.composer .btn').allInnerTexts()).join(' | '), 'Write | Preview | Comment | Comment and tell PM');
+          check('it says what happens to a comment', await frame.locator('.composer').innerText(), /checked for private information, shown whole for confirmation, and only then published/);
+          const box = frame.locator('textarea.comment-box');
+          await box.fill('**Thanks**, please summarise the open points.');
+          await frame.locator('.composer .btn', { hasText: 'Preview' }).click();
+          await frame.locator('.composer .preview strong').first().waitFor({ timeout: 10000 });
+          check('the preview draws the Markdown as the page does', await frame.locator('.composer .preview').innerText(), /Thanks, please summarise the open points\./);
+          check('in bold where it was asked for', await frame.locator('.composer .preview strong').first().innerText(), 'Thanks');
+        }
+      },
+      {
+        name: 'publish-comment',
+        does: 'Click "Comment". The first time, set who publishes: click "Configure PM Publisher" and confirm. Then click "Comment" again, read the whole comment in the window and click "Publish public feedback".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          const comment = async () => { await settled(page, frame); await frame.locator('.composer .btn', { hasText: /^Comment$/ }).first().click(); };
+          await comment();
+          // No account publishes for this repository yet: the message says so and offers to set it.
+          const answered = await drive(page, [
+            { toast: 'no GitHub account is set to publish', button: 'Configure PM Publisher' },
+            { dialog: /^Allow the signed-in GitHub user e2e-owner to publish/, button: 'Configure PM publisher' }
+          ], async (seen) => seen.some((line) => /^dialog: Allow the signed-in GitHub user/.test(line)), 60000);
+          await page.waitForTimeout(1000);
+          check('who publishes is set once, after its confirmation', answered.join(' | '), /Configure PM Publisher[\s\S]*Allow the signed-in GitHub user e2e-owner to publish/);
+          await clearNotifications(page);
+          await comment();
+          const dialog = page.locator('.monaco-dialog-box', { hasText: 'Publish this exact comment to example/project Issue #12' }).first();
+          await dialog.waitFor({ state: 'visible', timeout: 30000 });
+          check('the confirmation shows the whole comment before anything is published', await dialog.innerText(), /\*\*Thanks\*\*, please summarise the open points\./);
+          await dialog.locator('.monaco-button', { hasText: 'Publish public feedback' }).click();
+          const posted = frame.locator('.post', { hasText: 'please summarise the open points' }).first();
+          await posted.waitFor({ timeout: 30000 });
+          check('the comment is on the page, drawn as Markdown', await posted.locator('.md strong').first().innerText(), 'Thanks');
+          check('with the 管理者 badge: it was published from here', await posted.locator('.post-head .author').innerText(), '管理者');
+          check('the comment box is empty again', await frame.locator('textarea.comment-box').inputValue(), '');
+          await posted.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'ask-agent',
+        does: 'On Worker-01\'s comment click "Ask an agent…", choose "E2E Agent 1", read the window and click "Send Now".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          const post = frame.locator('.post', { hasText: 'I will start with the read-only page' }).first();
+          await settled(page, frame);
+          await post.locator('.btn', { hasText: 'Ask an agent…' }).click();
+          const answered = await drive(page, [
+            { when: /Which agent should read it and reply on Issue #12/, pick: 'E2E Agent 1' },
+            { dialog: /Ask this agent to read this post on Issue #12 and reply there/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box .monaco-button:visible', { hasText: 'Send Now' }).first().isVisible().catch(() => false)), 60000);
+          check('it asked which agent, then asked before typing anything', answered.join(' | '), /pick: [\s\S]*E2E Agent 1[\s\S]*dialog: Ask this agent to read this post on Issue #12 and reply there\? → Send Now/);
+          // What reached the agent is one line of numbers: the Issue and the comment id, never the comment's text.
+          await page.locator('.tabs-container .tab', { hasText: 'E2E Agent 1' }).first().click();
+          const deadline = Date.now() + 20000;
+          let terminal = '';
+          while (Date.now() < deadline) {
+            terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
+            if (/ID\s*1201/.test(terminal)) break;
+            await page.waitForTimeout(300);
+          }
+          check('the agent got one line naming Issue #12 and comment 1201', terminal.replace(/\s+/g, ''), /管理者請你閱讀Issue#12的留言（ID1201），並在Issue#12回覆你的看法。/);
+          check('and not the comment\'s text', terminal, (text) => !/read-only page: /.test(text));
           await clearNotifications(page);
         }
       }

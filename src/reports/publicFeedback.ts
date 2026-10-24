@@ -331,6 +331,16 @@ const realHooks: Hooks = {
 let hooks = realHooks;
 let testMode = false;
 export function setPublicFeedbackTestMode(enabled: boolean): void { testMode = enabled; if (!enabled) hooks = realHooks; }
+/**
+ * The end-to-end run only (#353): publishing goes to its synthetic GitHub. The condition is checked here again (development mode and
+ * the run's environment variable naming the file), so an installed extension can never reach this.
+ */
+export function useE2eGitHubForPublishing(mode: number, env: NodeJS.ProcessEnv, fixture: unknown): boolean {
+  const { e2eGitHubFixture, fixtureWriteHooks } = require('./e2eGitHub') as { e2eGitHubFixture(mode: number, env: NodeJS.ProcessEnv): unknown; fixtureWriteHooks(fixture: unknown): Partial<Hooks> };
+  if (!e2eGitHubFixture(mode, env)) return false;
+  hooks = { ...realHooks, ...fixtureWriteHooks(fixture) };
+  return true;
+}
 export function installPublicFeedbackTestOverrides(next: Partial<Hooks>): void {
   if (!testMode) throw new Error('Public feedback overrides are available only in Extension Host tests.');
   hooks = { ...realHooks, ...next };
@@ -350,7 +360,7 @@ function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 're
  * does not stop the next one (the report page's feedback stays one per version). A message whose outcome is unknown, or that is
  * still being sent, still blocks the next until it is resolved, so a retry can never post the same text twice by itself.
  */
-export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; interactive?: boolean; conversation?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; commentId?: number; body?: string }> {
+export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; typed?: string; interactive?: boolean; conversation?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; commentId?: number; body?: string }> {
   let ownerRecorded = false;
   // GitHub's id for the comment this call posted (not set when it was already sent before): talking to the PM (#343) reads it back.
   let commentId: number | undefined;
@@ -368,7 +378,9 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   if (!conversation && old?.status === 'done' && old.version === target.version) return { ok: true, code: 'already-sent' };
   const allowBypass = testMode && input?.interactive === false;
   const initialDraft = old?.status === 'draft' && old.version === target.version && typeof old.body === 'string' ? old.body : '';
-  const body = allowBypass ? input?.body : await hooks.prompt(initialDraft);
+  // `typed`: what the person wrote in the Issue or pull request page (#353) instead of the input box. It is still shown whole in the
+  // confirmation below and goes through the same checks; only the extension's own tests may skip the confirmation.
+  const body = allowBypass ? input?.body : typeof input?.typed === 'string' ? input.typed : await hooks.prompt(initialDraft);
   if (body === undefined) return { ok: false, code: 'cancelled' };
   if (!plainText(body)) return { ok: false, code: 'invalid-public-feedback' };
   const requestId = old?.status === 'draft' && old.version === target.version && old.body === body && typeof old.requestId === 'string' ? old.requestId : `feedback_${randomBytes(12).toString('hex')}`;

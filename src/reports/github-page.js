@@ -16,8 +16,20 @@ const SCRIPT = String.raw`
 (function () {
   'use strict';
   var vscode = acquireVsCodeApi();
-  var root = document.getElementById('app');
+  var app = document.getElementById('app');
+  // What GitHub says is drawn again at every reading; the comment box is made once and kept, so nothing typed is lost.
+  var root = document.createElement('div');
+  var composer = document.createElement('section');
+  composer.className = 'composer';
+  app.appendChild(root);
+  app.appendChild(composer);
   var page = null;
+  // What the page last drew (everything but the time of the reading), and the line that says when it was read.
+  var drawn = null;
+  var statusLine = null;
+  function showStatus() {
+    if (statusLine && page) statusLine.textContent = page.readAt ? 'Read from GitHub ' + shortTime(page.readAt) + (page.note ? ' · ' + page.note : '') + '.' : '';
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -127,16 +139,37 @@ const SCRIPT = String.raw`
     return head;
   }
 
-  function postNode(entry, extra, actions) {
-    var node = el('article', 'post');
-    node.appendChild(postHeader(entry, extra));
+  function canWrite() { return Boolean(page && page.write && page.write.ok); }
+  function whyNot() { return page && page.write && page.write.reason ? page.write.reason : 'Not available.'; }
+  function writeButton(label, onClick, title) {
+    var node = button(label, onClick, canWrite() ? title : whyNot());
+    node.disabled = !canWrite();
+    return node;
+  }
+  // Ask the PM, or an agent the person picks, to read this post and reply: the page names the post, the extension asks first.
+  function askButtons(kind, id, row) {
+    row.appendChild(writeButton('Discuss with PM', function () { post({ type: 'ask', post: kind, id: id, who: 'pm' }); }, 'Ask the PM agent to read this post and reply here (you are asked first)'));
+    row.appendChild(writeButton('Ask an agent…', function () { post({ type: 'ask', post: kind, id: id, who: 'agent' }); }, 'Choose an agent to read this post and reply here (you are asked first)'));
+  }
+  function isNew(kind, id) { return Boolean(page && page.fresh && page.fresh.indexOf(kind + ':' + id) >= 0); }
+
+  function postNode(entry, extra, actions, kind) {
+    var fresh = kind ? isNew(kind, entry.id) : false;
+    var node = el('article', fresh ? 'post post-new' : 'post');
+    var head = postHeader(entry, extra);
+    if (fresh) head.appendChild(el('span', 'new-tag', 'New'));
+    node.appendChild(head);
     node.appendChild(content(entry.body));
-    if (actions) node.appendChild(actions);
+    var row = actions || null;
+    if (kind) { row = row || el('div', 'row'); askButtons(kind, entry.id, row); }
+    if (row) node.appendChild(row);
     return node;
   }
 
   function render() {
+    var scrolled = window.scrollY;
     root.textContent = '';
+    renderComposer();
     if (!page) { root.appendChild(el('p', 'muted', 'Reading from GitHub…')); return; }
     if (page.error) {
       root.appendChild(el('p', 'alert', page.error));
@@ -161,20 +194,23 @@ const SCRIPT = String.raw`
     tools.appendChild(button('Open on GitHub', function () { post({ type: 'openOnGitHub' }); }));
     tools.appendChild(button('Open as text report', function () { post({ type: 'openText' }); }));
     top.appendChild(tools);
-    if (page.readAt) top.appendChild(el('div', 'muted', 'Read from GitHub ' + shortTime(page.readAt) + '.'));
+    statusLine = el('div', 'muted', '');
+    showStatus();
+    top.appendChild(statusLine);
+    if (page.fresh && page.fresh.length) top.appendChild(el('div', 'note note-new', page.fresh.length + (page.fresh.length === 1 ? ' new post' : ' new posts') + ' since you opened this page (marked New).'));
     root.appendChild(top);
 
     if (m.pr) {
       var pr = el('section', 'pr-box');
       pr.appendChild(el('div', null, 'Head ' + (m.pr.headSha ? m.pr.headSha.slice(0, 12) : 'unknown') + ' · ' + (m.pr.headRef || 'branch unknown') + ' → ' + (m.pr.baseRef || 'base unknown')));
-      pr.appendChild(el('div', null, 'CI: ' + m.pr.ci + ' · Review: ' + m.pr.approval));
+      pr.appendChild(el('div', null, 'Checks: ' + m.pr.ci + ' · Review: ' + m.pr.approval));
       root.appendChild(pr);
     }
     m.notes.forEach(function (text) { root.appendChild(el('div', 'note', text)); });
 
     var timeline = el('section', 'timeline');
     timeline.appendChild(postNode({ badge: m.author.badge, login: m.author.login, at: m.author.at, body: m.body }));
-    m.posts.forEach(function (entry) { timeline.appendChild(postNode(entry, entry.kind === 'review' ? 'review: ' + entry.review : null)); });
+    m.posts.forEach(function (entry) { timeline.appendChild(postNode(entry, entry.kind === 'review' ? 'review: ' + entry.review : null, null, entry.kind)); });
     root.appendChild(el('h2', null, 'Conversation (' + (m.posts.length + 1) + ')'));
     root.appendChild(timeline);
 
@@ -197,19 +233,63 @@ const SCRIPT = String.raw`
             actions = el('div', 'row');
             actions.appendChild(button('Go to ' + where, function () { post({ type: 'openInline', id: entry.id }); }, 'Open the diff of this file at this line'));
           }
-          var node = postNode(entry, null, actions);
+          var node = postNode(entry, null, actions, 'inline');
           node.insertBefore(el('div', 'where muted', where), node.firstChild);
           root.appendChild(node);
         });
       }
     }
+    window.scrollTo(0, scrolled);
+  }
+
+  // The comment box: Write and Preview, then Comment, or Comment and tell PM. Both post only after the extension's own confirmation.
+  var box = null;
+  var preview = null;
+  var tools = null;
+  var reason = null;
+  function renderComposer() {
+    if (!box) {
+      composer.appendChild(el('h2', null, 'Add a comment'));
+      var tabs = el('div', 'row');
+      box = el('textarea', 'comment-box');
+      box.rows = 6;
+      box.maxLength = 65536;
+      box.placeholder = 'Write a comment in Markdown. It is published on GitHub after you confirm it.';
+      preview = el('div', 'post preview');
+      preview.hidden = true;
+      tabs.appendChild(button('Write', function () { box.hidden = false; preview.hidden = true; }));
+      tabs.appendChild(button('Preview', function () { box.hidden = true; preview.hidden = false; preview.textContent = ''; preview.appendChild(el('p', 'muted', 'Drawing the preview…')); post({ type: 'preview', text: box.value }); }));
+      composer.appendChild(tabs);
+      composer.appendChild(box);
+      composer.appendChild(preview);
+      tools = el('div', 'row');
+      composer.appendChild(tools);
+      reason = el('div', 'muted');
+      composer.appendChild(reason);
+    }
+    tools.textContent = '';
+    tools.appendChild(writeButton('Comment', function () { if (box.value.trim()) post({ type: 'comment', text: box.value, tellPm: false }); }, 'Publish this comment on GitHub (you see it whole and confirm first)'));
+    tools.appendChild(writeButton('Comment and tell PM', function () { if (box.value.trim()) post({ type: 'comment', text: box.value, tellPm: true }); }, 'Publish it, and once GitHub shows it, tell the PM agent to read it and reply (asked first)'));
+    reason.textContent = canWrite() ? 'Your comment is checked for private information, shown whole for confirmation, and only then published.' : whyNot();
+    box.disabled = !canWrite();
   }
 
   window.addEventListener('message', function (event) {
     var data = event.data;
-    if (!data || data.type !== 'page') return;
-    page = data;
-    render();
+    if (!data) return;
+    if (data.type === 'page') {
+      // A reading that changed nothing on the page only updates its status line: the page is not drawn again, so nothing moves
+      // under the pointer or loses its place while the person reads, writes or clicks.
+      var shown = JSON.stringify([data.model, data.fresh, data.write, data.error]);
+      page = data;
+      if (shown === drawn && statusLine) { showStatus(); return; }
+      drawn = shown;
+      render();
+      return;
+    }
+    if (data.type === 'preview' && preview) { preview.textContent = ''; preview.appendChild(content(data.body)); return; }
+    // Published: the box is emptied; the new comment appears with the next reading.
+    if (data.type === 'posted' && box) { box.value = ''; box.hidden = false; if (preview) preview.hidden = true; }
   });
   render();
   post({ type: 'ready' });
@@ -249,6 +329,11 @@ const STYLE = `
   .btn:hover { background: var(--vscode-button-secondaryHoverBackground); } .btn:focus-visible, .md-link:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .file-link { font-family: var(--vscode-editor-font-family); background: transparent; color: var(--vscode-textLink-foreground); padding: 0; }
   .muted { color: var(--vscode-descriptionForeground); } .alert { color: var(--vscode-errorForeground); }
+  .post-new { border-color: var(--vscode-focusBorder); } .new-tag { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; background: var(--vscode-focusBorder); color: var(--vscode-button-foreground); }
+  .note-new { border-color: var(--vscode-focusBorder); }
+  .composer { margin-top: 24px; border-top: 1px solid var(--vscode-panel-border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .comment-box { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px; resize: vertical; }
+  .preview { min-height: 4em; } .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
 
 /**
@@ -275,27 +360,44 @@ function renderPage({ nonce }) {
 `;
 }
 
-// What the page may ask: fixed names, each with only the numbers it needs. Anything else is refused before it reaches a command.
-const SHAPES = Object.freeze({ ready: [], refresh: [], openOnGitHub: [], openText: [], openLink: ['link'], openFile: ['file'], openInline: ['id'] });
+// What the page may ask: fixed names, each with only the fields it needs, of the type it needs. Anything else is refused before it
+// reaches a command. A number must name something the page was given; text is only ever what the person typed in the comment box.
+const MAX_TEXT = 65536;
+const SHAPES = Object.freeze({
+  ready: {}, refresh: {}, openOnGitHub: {}, openText: {},
+  openLink: { link: 'index' }, openFile: { file: 'index' }, openInline: { id: 'index' },
+  preview: { text: 'text' }, comment: { text: 'text', tellPm: 'boolean' }, ask: { post: 'post', id: 'index', who: 'who' }
+});
+const FIELD_OK = Object.freeze({
+  index: (value) => Number.isSafeInteger(value) && value >= 0,
+  text: (value) => typeof value === 'string' && value.length <= MAX_TEXT,
+  boolean: (value) => typeof value === 'boolean',
+  post: (value) => value === 'comment' || value === 'review' || value === 'inline',
+  who: (value) => value === 'pm' || value === 'agent'
+});
 
 /**
  * @param {unknown} raw what the page posted
- * @param {{ links: number, files: number, inline: Set<number> }} known how many links and files the page was given, and its inline comment ids
- * @returns {{ ok: true, message: { type: string, link?: number, file?: number, id?: number } } | { ok: false, reason: string }}
+ * @param {{ links: number, files: number, inline: Set<number>, posts?: Set<string> }} known how many links and files the page was
+ *   given, its line comment ids, and its posts as "kind:id"
+ * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
 function parsePageMessage(raw, known) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, reason: 'not-an-object' };
   const type = raw.type;
   if (typeof type !== 'string' || !Object.hasOwn(SHAPES, type)) return { ok: false, reason: 'unknown-command' };
   const fields = SHAPES[type];
-  for (const key of Object.keys(raw)) if (key !== 'type' && !fields.includes(key)) return { ok: false, reason: 'unexpected-field' };
-  for (const key of fields) if (!Number.isSafeInteger(raw[key]) || raw[key] < 0) return { ok: false, reason: 'invalid-number' };
+  for (const key of Object.keys(raw)) if (key !== 'type' && !Object.hasOwn(fields, key)) return { ok: false, reason: 'unexpected-field' };
+  for (const [key, kind] of Object.entries(fields)) {
+    if (!FIELD_OK[kind](raw[key])) return { ok: false, reason: kind === 'index' ? 'invalid-number' : kind === 'text' ? 'invalid-text' : 'invalid-choice' };
+  }
   if (type === 'openLink' && raw.link >= known.links) return { ok: false, reason: 'unknown-link' };
   if (type === 'openFile' && raw.file >= known.files) return { ok: false, reason: 'unknown-file' };
   if (type === 'openInline' && !known.inline.has(raw.id)) return { ok: false, reason: 'unknown-comment' };
+  if (type === 'ask' && !(known.posts instanceof Set && known.posts.has(`${raw.post}:${raw.id}`))) return { ok: false, reason: 'unknown-post' };
   const message = { type };
-  for (const key of fields) message[key] = raw[key];
+  for (const key of Object.keys(fields)) message[key] = raw[key];
   return { ok: true, message };
 }
 
-module.exports = { renderPage, parsePageMessage, SCRIPT, STYLE, SHAPES };
+module.exports = { renderPage, parsePageMessage, SCRIPT, STYLE, SHAPES, MAX_TEXT };

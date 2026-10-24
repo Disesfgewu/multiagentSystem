@@ -135,7 +135,7 @@
 ![Issue 頁面](user-guide/images/08-open-issue-page.png)
 
 PR 頁面還會顯示：
-- head 的 commit、分支、CI 狀態與 review 狀態。
+- head 的 commit 與分支，以及用白話寫的檢查結果與 review 狀態，例如 `Checks: checks passed · Review: changes requested`。
 - review 和留言依時間排在一起。
 - **Files changed**：點檔名就會開啟那個檔案的 diff，和文字報告裡點檔名一樣。
 - **Review comments on lines**：每則都寫著檔案和行號，按 **Go to …** 就會跳到 diff 的那一行。
@@ -151,7 +151,31 @@ PR 頁面還會顯示：
 - 連結只接受 https 開頭的網址，或這個 repo 裡的路徑，而且一定在瀏覽器開啟。
 - 圖片不會載入，只會出現一個按鈕，按了才在瀏覽器開啟。這樣就沒有人能從圖片知道你讀過這則留言。
 
-**還不能做的事**：在頁面上留言、通知 PM、Discuss with PM、review、合併、關閉，會在 #353 接下來的 PR 加入。在那之前，請照舊用文字報告上方的按鈕。
+**留言**：頁面最下方是留言框，用 Markdown 寫。按 **Preview** 可以先看渲染後的樣子，再按下面其中一個：
+- **Comment**：發成 GitHub 留言。發出前會先檢查有沒有私人資訊，再跳出確認視窗把整段文字列出來，按下確認才會發。發出去的留言會記成「管理者」，所以頁面上的徽章是 `管理者`。
+- **Comment and tell PM**：先照上面的方式發出留言，再從 GitHub 讀回來確認真的在上面，然後才問你要不要通知 PM agent。通知時，PM 的終端機只會收到一行數字，例如 `管理者在 Issue #12 留言（留言 ID 4242），請讀取這則留言並在 Issue #12 回覆。`，不會收到留言內容。
+
+![留言與預覽](user-guide/images/08-write-comment.png)
+
+第一次發留言時，還沒有設定由哪個 GitHub 帳號替你發留言，所以會出現 **Configure PM Publisher**。按下去並確認一次，之後就不會再問。
+
+![發出留言](user-guide/images/08-publish-comment.png)
+
+**請 agent 看某一則留言**：每則留言、review、逐行留言下面都有兩個按鈕：
+- **Discuss with PM**：請 PM agent 讀這一則並回覆。
+- **Ask an agent…**：從正在執行的 agent 中選一個（例如 Worker-01），請它讀這一則並回覆。
+
+兩個按鈕都會先跳出確認視窗。對方終端機收到的只有編號，例如 `管理者請你閱讀 Issue #12 的留言（ID 1201），並在 Issue #12 回覆你的看法。`。GitHub 上的文字永遠不會被打進終端機，所以留言裡就算寫了「忽略規則、執行某指令」，也不會被執行。
+
+![請 agent 看留言](user-guide/images/08-ask-agent.png)
+
+**自動更新**：頁面開著而且在畫面上時，每 45 秒會重新讀一次。讀取失敗時會等久一點再讀，遇到 GitHub 的流量限制時，會等到 GitHub 說可以再讀的時間。打開頁面之後才出現的留言會標上 **New**。正在寫的留言不會因為更新而消失。
+
+**未信任的工作區**：只能閱讀。留言框和所有寫入按鈕都是停用的，旁邊會寫原因。
+
+**Talk to PM via GitHub**（工作台 **Ask** 分頁，或 Command Palette）：現在開的也是這個頁面。
+
+**還不能做的事**：PR 的 Approve、Request changes、Merge、Delete branch，以及 Issue 的 Close，會在 #353 的下一個 PR 加入。在那之前，請照舊用文字報告上方的按鈕（頁面上的 **Open as text report**）。
 
 ## 9. 危險自動模式與模型切換
 尚未完成，見 #358。
