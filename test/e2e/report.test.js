@@ -55,5 +55,5 @@ test('an item is either accepted with nothing pending, or not done with what is 
   // #357: the side bar keeps one entry, and one screen shows every agent with its codename, account and mode.
   assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '11']);
   const eleven = ITEMS.find((item) => item.id === '11');
-  assert.ok(eleven.steps.some((step) => step.name === 'start-three-agents') && eleven.steps.some((step) => step.name === 'see-three-cards'), 'item 11 starts three agents and looks at their cards');
+  assert.ok(eleven.steps.some((step) => step.name === 'start-four-agents') && eleven.steps.some((step) => step.name === 'see-four-cards'), 'item 11 starts four agents and looks at their cards');
 });

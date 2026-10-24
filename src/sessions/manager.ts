@@ -4,7 +4,7 @@ import { modelArguments, normalizeRequestedModel } from '../providers/modelSelec
 import { attributionArguments } from '../providers/attribution';
 const { promptIsSafe } = require('../broadcast/deliver') as { promptIsSafe(prompt: unknown): boolean };
 const { mergeSandboxArguments } = require('../roles/tool-permissions') as { mergeSandboxArguments(auto: string[], permission: string[]): string[] };
-import { formatShellCommandLine, formatPathPrefix } from '../terminals/shellCommand';
+import { formatShellCommandLine, formatClearPrefix, formatPathPrefix } from '../terminals/shellCommand';
 import { cleanupSessionPlan } from './managedInstructions';
 const { parseCodename } = require('./codenames') as { parseCodename(value: unknown): { prefix: string; number: number } | null };
 
@@ -413,6 +413,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     codename?: string;
     /** A folder put first on PATH for the typed CLI command (issue #342: the session's gh wrapper). */
     pathPrefix?: string;
+    /** A short line shown instead of the long typed command (#357): the screen is cleared first. Omitted: the command stays as typed. */
+    launchNote?: string;
   }): Promise<SessionView> {
     if (input.codename !== undefined && !parseCodename(input.codename)) throw new SessionError('invalid-codename');
     const executable = this.executableFor(input.provider);
@@ -438,7 +440,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       // reach another session's terminal, plan or bookkeeping.
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs, input.pathPrefix);
+      this.open(identity, name, executable, input.launch !== false, input.env, requestedModel, input.instructions, input.wrap, input.attributionFile, input.autoMode, input.permissionArgs, input.pathPrefix, input.launchNote);
       if (input.codename !== undefined) this.codenames.set(identity.id, input.codename);
       await this.persist();
       return this.view(identity.id);
@@ -473,7 +475,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     attributionFile?: string,
     autoMode?: { args: string[]; label: string; state?: string },
     permissionArgs?: string[],
-    pathPrefix?: string
+    pathPrefix?: string,
+    launchNote?: string
   ): SessionView {
     const modelArgs = modelArguments(identity.provider, requestedModel);
     const instructionArgs = instructions?.argv ?? [];
@@ -540,7 +543,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     this.handles.set(identity.id, terminal);
     terminal.show();
     if (launch) {
-      const commandLine = prefix + formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
+      const commandLine = (launchNote ? formatClearPrefix(launchNote, shellType ?? 'posix') : '') + prefix + formatShellCommandLine(wrapped.executable, wrapped.args, { shellType });
       terminal.sendText(commandLine, true);
       this.registry.launchRequested(identity.id, token);
     }
@@ -660,6 +663,8 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       codename?: string;
       /** The same PATH folder `start` takes. */
       pathPrefix?: string;
+    /** A short line shown instead of the long typed command (#357): the screen is cleared first. Omitted: the command stays as typed. */
+    launchNote?: string;
     } = {}
   ): Promise<SessionView> {
     if (options.codename !== undefined && !parseCodename(options.codename)) throw new SessionError('invalid-codename');
@@ -689,7 +694,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
       };
       if (this.registry.get(candidate.id)) throw new SessionError('session-exists');
       identity = candidate;
-      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs, options.pathPrefix);
+      this.open(identity, this.names.get(id) || `${old.provider} session`, executable, options.launch !== false, options.env, this.models.get(id) ?? null, options.instructions, options.wrap, options.attributionFile, options.autoMode, options.permissionArgs, options.pathPrefix, options.launchNote);
       if (options.codename !== undefined) {
         if (this.codenames.get(id) === options.codename) this.codenames.delete(id);
         this.codenames.set(identity.id, options.codename);

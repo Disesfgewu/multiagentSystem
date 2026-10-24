@@ -134,6 +134,18 @@ export function formatShellCommandLine(
  *   inherit them and find the shims; only `gh` typed into cmd.exe itself is not wrapped. Null for a folder cmd.exe would read
  *   differently (`%`, `^`, `"` and the like), which is refused rather than quoted.
  */
+/**
+ * What goes in front of a typed command line so the screen shows a short line instead of the long command (#357): the screen is
+ * cleared once the shell has read the line, and `note` is printed. The command itself is unchanged. A note with anything but plain
+ * letters, digits, spaces and . : ( ) - is not printed (cmd.exe would read some of them), the screen is still cleared.
+ */
+export function formatClearPrefix(note: string, shellType: ShellType): string {
+  const plain = typeof note === 'string' && /^[A-Za-z0-9 .:()-]{1,80}$/.test(note) ? note : null;
+  if (shellType === 'powershell') return `Clear-Host; ${plain ? `Write-Host ${quotePowerShell(plain)}; ` : ''}`;
+  if (shellType === 'cmd') return `cls & ${plain ? `echo ${plain} & ` : ''}`;
+  return `clear 2>/dev/null; ${plain ? `printf '%s\\n' ${quotePosix(plain)}; ` : ''}`;
+}
+
 export function formatPathPrefix(dir: string, shellType: ShellType): string | null {
   assertNoControlChars(dir, 'path');
   if (dir.trim() === '') throw new TypeError('path must not be empty');

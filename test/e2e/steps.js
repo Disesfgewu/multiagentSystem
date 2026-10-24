@@ -178,7 +178,7 @@ const ITEMS = [
           check('the account was added through its own windows', answered.join(' | '), /Claude Code[\s\S]*Work A[\s\S]*recommended folder/);
           await frame.locator('div[data-account] button', { hasText: 'Check sign-in' }).first().click();
           await page.waitForTimeout(2500);
-          check('the Accounts tab lists it', await frame.locator('body').innerText(), /Work A/);
+          check('the Accounts tab lists it with the e-mail address the sign-in check read', await frame.locator('div[data-account]').first().innerText(), /Work A · owner-a@example\.test/);
           await clearNotifications(page);
         }
       },
@@ -198,10 +198,10 @@ const ITEMS = [
         }
       },
       {
-        name: 'start-three-agents',
-        does: 'Click "Start agent…" three times: Claude Code, the account "Work A", the role group "E2E Developers", the CLI default model; confirm the windows that ask.',
+        name: 'start-four-agents',
+        does: 'Click "Start agent…" four times: Claude Code, the account "Work A", the role group "E2E Developers", the CLI default model; confirm the windows that ask.',
         run: async ({ page, check, box }) => {
-          for (let index = 1; index <= 3; index += 1) {
+          for (let index = 1; index <= 4; index += 1) {
             await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
             await drive(page, [
               { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
@@ -216,12 +216,16 @@ const ITEMS = [
             ], async () => require('./fakes').readCalls(box.fakes.calls).filter((call) => call.cli === 'claude' && !call.args.includes('auth') && !call.args.includes('--version')).length >= index, 90000);
           }
           const calls = require('./fakes').readCalls(box.fakes.calls).filter((call) => call.cli === 'claude' && !call.args.includes('auth') && !call.args.includes('--version'));
-          check('the synthetic claude was started three times, each with the account folder', calls.filter((call) => call.configDir).length, 3);
+          check('the synthetic claude was started four times, each with the account folder', calls.filter((call) => call.configDir).length, 4);
+          // The agent's terminal shows one short line, not the long command typed into it.
+          const terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
+          check('the terminal says which agent starts', terminal, /Multiagent: starting Claude Code \(Worker-0\d\)/);
+          check('and does not show the long command', terminal, (text) => !/--settings|--append-system-prompt-file|PATH=/.test(text));
           await clearNotifications(page);
         }
       },
       {
-        name: 'see-three-cards',
+        name: 'see-four-cards',
         does: 'Look at the Agents tab of the Workbench.',
         run: async ({ page, check }) => {
           await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
@@ -231,19 +235,25 @@ const ITEMS = [
           let text = '';
           while (Date.now() < deadline) {
             text = await frame.locator('body').innerText();
-            if (/Agents \(3\)/.test(text)) break;
+            if (/Agents \(4\)/.test(text)) break;
             await page.waitForTimeout(500);
           }
-          check('three agent cards', text, /Agents \(3\)/);
+          check('four agent cards', text, /Agents \(4\)/);
           const cards = await frame.locator('section[data-id]').allInnerTexts();
           const agentCards = cards.filter((card) => /E2E Agent/.test(card));
-          check('each card is one of the three agents', agentCards.length, 3);
+          check('each card is one of the four agents', agentCards.length, 4);
           check('each card shows its codename', agentCards.every((card) => /\b[A-Z][A-Za-z]*-\d{2,4}\b/.test(card)), true);
           check('each card shows its account with its e-mail address', agentCards.every((card) => card.includes('Account: Work A (owner-a@example.test)')), true);
-          check('each card shows its mode', agentCards.every((card) => /Auto mode: on/.test(card)), true);
-          const heading = await frame.locator('main h2', { hasText: 'Agents (3)' }).first().boundingBox();
+          check('each card shows its mode in one word', agentCards.every((card) => /Mode: Auto/.test(card)), true);
+          check('each card is plain: the worktree and evidence are under Details', agentCards.every((card) => !/upstream|hook evidence|Prepared for this agent/.test(card)), true);
+          check('VS Code not connected is a small tag, not a paragraph', agentCards.every((card) => /VS Code not connected/.test(card) && !/no VS Code window has registered/.test(card)), true);
+          const view = page.viewportSize() ?? { width: 1440, height: 900 };
+          const frameBox = await page.locator('iframe').last().boundingBox();
+          const boxes = await frame.locator('section[data-id]').evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().bottom));
+          check('all four cards fit on one screen', Boolean(frameBox) && boxes.length >= 4 && boxes.slice(0, 4).every((bottom) => frameBox.y + bottom <= view.height), true);
+          const heading = await frame.locator('main h2', { hasText: 'Agents (4)' }).first().boundingBox();
           const first = await frame.locator('section[data-id]').first().boundingBox();
-          check('the cards sit under the "Agents (3)" heading, not in a column beside it', Boolean(heading && first && first.y > heading.y && Math.abs(first.x - heading.x) < 40), true);
+          check('the cards sit under the "Agents (4)" heading, not in a column beside it', Boolean(heading && first && first.y > heading.y && Math.abs(first.x - heading.x) < 40), true);
           await clearNotifications(page);
         }
       }

@@ -44,10 +44,26 @@ export async function runWorkbenchChecks(): Promise<void> {
   } finally {
     (vscode.commands as { executeCommand: typeof vscode.commands.executeCommand }).executeCommand = original;
   }
+  const ui = vscode.window as unknown as { showInformationMessage: typeof vscode.window.showInformationMessage };
+  const realInfo = ui.showInformationMessage;
+  const asked: string[] = [];
+  let reply: string | undefined;
   try {
+    ui.showInformationMessage = (async (message: string, ...rest: unknown[]) => {
+      const options = rest[0] as { modal?: boolean } | undefined;
+      if (options && options.modal) { asked.push(message); return reply; }
+      return undefined;
+    }) as typeof vscode.window.showInformationMessage;
+    // The person is asked first (#357): dismissing changes nothing.
+    reply = undefined;
+    assert.deepEqual(await center.handle({ type: 'showClassicViews' }), { ok: false, reason: 'cancelled' });
+    assert.deepEqual(asked, ['Show the classic views in the side bar?']);
+    assert.equal(settings().get('showClassicViews'), false, 'nothing was written without the answer');
+    reply = 'Show Classic Views';
     assert.deepEqual(await center.handle({ type: 'showClassicViews' }), { ok: true, command: 'showClassicViews' });
-    assert.equal(settings().get('showClassicViews'), true, 'the classic views are shown after the button');
+    assert.equal(settings().get('showClassicViews'), true, 'the classic views are shown after the person agreed');
   } finally {
+    ui.showInformationMessage = realInfo;
     await settings().update('showClassicViews', undefined, vscode.ConfigurationTarget.Global);
   }
   assert.equal(settings().get('showClassicViews'), false);
