@@ -29,7 +29,8 @@ const STATE_TEXT = Object.freeze({
   working: 'working',
   waiting: 'waiting for input',
   ended: 'ended',
-  unknown: 'state unknown'
+  // Plain words (#357): the CLI has not said yet what it is doing.
+  unknown: 'not reported yet'
 });
 
 /**

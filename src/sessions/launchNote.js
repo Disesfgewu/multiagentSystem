@@ -1,6 +1,7 @@
 'use strict';
 
 const { builtIn } = require('../providers/registry');
+const { parseCodename } = require('./codenames');
 
 /**
  * The one line an agent's terminal shows instead of the long command typed into it (#357). It is built only from fixed words, the
@@ -10,7 +11,8 @@ const { builtIn } = require('../providers/registry');
 function launchNote(provider, codename, registry = builtIn) {
   const known = typeof provider === 'string' && registry.has(provider) ? registry.get(provider)?.label : undefined;
   const cli = typeof known === 'string' && /^[A-Za-z0-9 ]{1,30}$/.test(known) ? known : 'an agent CLI';
-  const code = typeof codename === 'string' && /^[A-Z][A-Za-z]{0,15}-\d{2,4}$/.test(codename) ? ` (${codename})` : '';
+  // A codename exactly as this extension gives them out (the same check as everywhere else).
+  const code = parseCodename(codename) ? ` (${codename})` : '';
   return `Multiagent: starting ${cli}${code}`;
 }
 
