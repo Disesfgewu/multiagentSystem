@@ -136,7 +136,7 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'startMeeting', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'startMeeting', 'talkToPm', 'toggleCollapse', 'togglePin']);
 });
 
 // ---- accounts and quota (issue #304) ----
@@ -327,4 +327,27 @@ test('a card says which permission mode Claude Code reports, and an alert when a
   assert.equal(fell.permission.attention, true);
   assert.ok(fell.permission.lines.length > 0);
   assert.equal(build([session({ provider: 'codex' })]).agents[0].permission, null);
+});
+
+test('the Workbench next steps open only a fixed list of existing commands, none of which stops, removes, merges or publishes by itself (#357)', () => {
+  const { TARGETS, TABS } = require('../../src/commandCenter/model');
+  const manifest = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '../../package.json'), 'utf8'));
+  const declared = new Set(manifest.contributes.commands.map((entry) => entry.command));
+  for (const [name, command] of Object.entries(TARGETS)) {
+    assert.ok(declared.has(command), `${name} opens a declared command (${command})`);
+    assert.doesNotMatch(command, /stop|remove|delete|clear|revoke|merge|publish|close|reopen/i, `${name} does nothing irreversible by itself`);
+  }
+  assert.deepEqual([...TABS], ['agents', 'work', 'accounts', 'broadcast', 'ask', 'knowledge', 'setup']);
+  assert.deepEqual(parseMessage({ type: 'open', target: 'startAgent' }, new Set()), { ok: true, message: { type: 'open', target: 'startAgent' } });
+  for (const target of ['multiagentSystem.sessions.stop', 'constructor', '__proto__', 'toString', '', 5, undefined]) assert.equal(parseMessage({ type: 'open', target }, new Set()).ok, false, String(target));
+  assert.equal(parseMessage({ type: 'open', target: 'startAgent', args: ['x'] }, new Set()).reason, 'unexpected-field', 'no argument reaches the command');
+  assert.deepEqual(parseMessage({ type: 'showClassicViews' }, new Set()), { ok: true, message: { type: 'showClassicViews' } });
+  assert.equal(parseMessage({ type: 'showClassicViews', value: false }, new Set()).reason, 'unexpected-field');
+});
+
+test('a card names its account with the e-mail address this window read, and only a plain address (#357)', () => {
+  const [card] = build([session()], { emails: { 'acct-1': 'owner-a@example.test' } }).agents;
+  assert.equal(card.account, 'Main (owner-a@example.test)');
+  assert.equal(build([session()]).agents[0].account, 'Main');
+  for (const bad of ['not-an-email', 'a b@example.test', 'x@example.test\nInjected line', 7, null]) assert.equal(build([session()], { emails: { 'acct-1': bad } }).agents[0].account, 'Main', String(bad));
 });

@@ -855,7 +855,9 @@ export function registerReports(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(REPORT_COMMANDS.back, async () => {
       // Back to the agents: close the report that is open and bring the overview forward.
       if (activeTarget()) await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-      await vscode.commands.executeCommand('multiagentSystem.overviewView.focus');
+      // The agents are in the Workbench's Agents tab (#357); the classic Overview view only when the person shows the classic views.
+      if (vscode.workspace.getConfiguration('multiagentSystem').get<boolean>('showClassicViews')) await vscode.commands.executeCommand('multiagentSystem.overviewView.focus');
+      else await vscode.commands.executeCommand('multiagentSystem.workbench.open', { tab: 'agents' });
       return { ok: true };
     })
   );

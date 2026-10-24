@@ -73,7 +73,7 @@ const SCRIPT = String.raw`
     if (card.alert) node.appendChild(el('div', 'alert', card.alert));
     if (!card.collapsed) {
       var body = el('div', 'card-body');
-      body.appendChild(el('div', null, card.provider + ' · ' + card.account));
+      body.appendChild(el('div', null, card.provider + ' · Account: ' + card.account));
       body.appendChild(el('div', 'muted', 'Model: ' + card.model + ' (' + card.modelNote + ')'));
       body.appendChild(el('div', null, 'Working on: ' + card.task.text));
       if (card.injected) body.appendChild(el('div', 'muted', card.injected));
@@ -167,24 +167,45 @@ const SCRIPT = String.raw`
     return box;
   }
 
-  function render() {
-    root.textContent = '';
-    if (!state) { root.appendChild(el('p', 'muted', 'Loading…')); return; }
-    var bar = el('div', 'toolbar');
-    bar.appendChild(el('h1', null, 'Command Center'));
-    var tools = el('div', 'row');
-    tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
-    tools.appendChild(button('Team rules…', function () { post({ type: 'editTeamRules' }); }));
-    tools.appendChild(button('Export report…', function () { post({ type: 'exportReport' }); }));
-    tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));
-    tools.appendChild(button('Start meeting…', function () { post({ type: 'startMeeting' }); }));
-    tools.appendChild(button('Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }));
-    tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
-    tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));
-    bar.appendChild(tools);
-    root.appendChild(bar);
-    state.notes.forEach(function (text) { root.appendChild(el('div', 'note', text)); });
+  // The Workbench tabs (#357). Every tab says what it is for and has at least one next step; a tab whose own screen is not built yet
+  // says which issue builds it and opens the existing commands meanwhile.
+  var TABS = [
+    { id: 'agents', label: 'Agents' }, { id: 'work', label: 'Work' }, { id: 'accounts', label: 'Accounts' },
+    { id: 'broadcast', label: 'Broadcast' }, { id: 'ask', label: 'Ask' }, { id: 'knowledge', label: 'Knowledge' }, { id: 'setup', label: 'Setup' }
+  ];
+  var tab = 'agents';
+  function open(target) { post({ type: 'open', target: target }); }
+  function nextSteps(title, steps) {
+    var box = el('div', 'next');
+    box.appendChild(el('h3', null, title));
+    var row = el('div', 'row');
+    steps.forEach(function (step) { row.appendChild(button(step[0], step[1])); });
+    box.appendChild(row);
+    return box;
+  }
+  function tabBar() {
+    var bar = el('div', 'tabs');
+    bar.setAttribute('role', 'tablist');
+    TABS.forEach(function (entry) {
+      var node = button(entry.label, function () { tab = entry.id; render(); });
+      node.className = 'tab' + (tab === entry.id ? ' tab-selected' : '');
+      node.setAttribute('role', 'tab');
+      node.setAttribute('aria-selected', tab === entry.id ? 'true' : 'false');
+      node.id = 'tab-' + entry.id;
+      bar.appendChild(node);
+    });
+    return bar;
+  }
 
+  function agentsTab(panel) {
+    var tools = el('div', 'row');
+    tools.appendChild(button('Start agent…', function () { open('startAgent'); }));
+    tools.appendChild(button(state.layout.mode === 'grid' ? 'List view' : 'Grid view', function () { post({ type: 'setLayout', mode: state.layout.mode === 'grid' ? 'list' : 'grid' }); }));
+    tools.appendChild(button('Send task…', function () { post({ type: 'sendTask' }); }));
+    tools.appendChild(button('Assign Issue…', function () { post({ type: 'assignIssue' }); }));
+    tools.appendChild(button('Refresh', function () { post({ type: 'refresh' }); }));
+    panel.appendChild(tools);
+    state.notes.forEach(function (text) { panel.appendChild(el('div', 'note', text)); });
     var layout = el('div', 'layout');
     var pm = el('aside', 'pm-panel');
     pm.appendChild(el('h2', null, 'PM'));
@@ -198,29 +219,63 @@ const SCRIPT = String.raw`
     }
     pm.appendChild(decisionLines(state.decisions));
     layout.appendChild(pm);
-
     var rest = el('main', 'agents ' + state.layout.mode);
     rest.appendChild(el('h2', null, 'Agents (' + state.agents.length + ')'));
-    if (state.agents.length === 0) rest.appendChild(el('p', 'muted', 'No other agents are running. Start one from an account.'));
+    if (state.agents.length === 0) {
+      rest.appendChild(el('p', 'muted', 'No other agents are running.'));
+      rest.appendChild(nextSteps('Next step', [['Start agent…', function () { open('startAgent'); }], ['Add account', function () { post({ type: 'accountAction', action: 'create' }); }], ['Create role group…', function () { open('createRole'); }]]));
+    }
     var grid = el('div', 'grid ' + state.layout.mode);
     state.agents.forEach(function (card) { grid.appendChild(cardNode(card, false)); });
     rest.appendChild(grid);
     layout.appendChild(rest);
-    root.appendChild(layout);
+    panel.appendChild(layout);
+  }
 
-    var accounts = el('section', 'accounts');
-    var accountHead = el('div', 'toolbar');
-    accountHead.appendChild(el('h2', null, 'Accounts (' + state.accounts.length + ')'));
-    accountHead.appendChild(button('Add account', function () { post({ type: 'accountAction', action: 'create' }); }));
-    accounts.appendChild(accountHead);
-    if (state.accounts.length === 0) accounts.appendChild(el('p', 'muted', 'No account profiles yet. Add one to see its sign-in and usage here.'));
-    state.accounts.forEach(function (account) { accounts.appendChild(accountNode(account)); });
-    root.appendChild(accounts);
-    root.appendChild(el('p', 'muted', 'Read-only view. Values without a source are shown as unknown.'));
+  function accountsTab(panel) {
+    var head = el('div', 'toolbar');
+    head.appendChild(el('h2', null, 'Accounts (' + state.accounts.length + ')'));
+    head.appendChild(button('Add account', function () { post({ type: 'accountAction', action: 'create' }); }));
+    panel.appendChild(head);
+    if (state.accounts.length === 0) {
+      panel.appendChild(el('p', 'muted', 'No account profiles yet. Add one to see its sign-in and usage here.'));
+      panel.appendChild(nextSteps('Next step', [['Add account', function () { post({ type: 'accountAction', action: 'create' }); }]]));
+    }
+    state.accounts.forEach(function (account) { panel.appendChild(accountNode(account)); });
+  }
+
+  function placeholderTab(panel, what, issue, steps) {
+    panel.appendChild(el('p', null, what));
+    panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
+    panel.appendChild(nextSteps('Next step', steps));
+  }
+
+  function render() {
+    root.textContent = '';
+    if (!state) { root.appendChild(el('p', 'muted', 'Loading…')); return; }
+    var bar = el('div', 'toolbar');
+    bar.appendChild(el('h1', null, 'Workbench'));
+    root.appendChild(bar);
+    root.appendChild(tabBar());
+    var panel = el('section', 'tab-panel');
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', 'tab-' + tab);
+    if (tab === 'agents') agentsTab(panel);
+    else if (tab === 'accounts') accountsTab(panel);
+    else if (tab === 'work') {
+      panel.appendChild(decisionLines(state.decisions));
+      placeholderTab(panel, 'Issues and pull requests of this project, and what waits for your decision.', '#353', [['Browse GitHub…', function () { open('browseGitHub'); }], ['Assign Issue…', function () { post({ type: 'assignIssue' }); }], ['Export report…', function () { post({ type: 'exportReport' }); }]]);
+    } else if (tab === 'broadcast') placeholderTab(panel, 'Tell every agent of a role group, or the agents you choose, the same thing.', '#357', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]);
+    else if (tab === 'ask') placeholderTab(panel, 'Ask the PM or an agent a question, for example what the selected code does.', '#353', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]);
+    else if (tab === 'knowledge') placeholderTab(panel, 'Team rules, shared memory and skills given to agents.', '#359', [['Team rules…', function () { post({ type: 'editTeamRules' }); }], ['Add shared memory note…', function () { open('memoryAdd'); }], ['Review suggested memory…', function () { open('memoryReview'); }], ['Install agent skills…', function () { open('skillsInstall'); }]]);
+    else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
+    root.appendChild(panel);
+    root.appendChild(el('p', 'muted', 'Values without a source are shown as unknown.'));
   }
 
   window.addEventListener('message', function (event) {
     var data = event.data;
+    if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; render(); return; }
     if (!data || data.type !== 'state' || typeof data.state !== 'object' || data.state === null) return;
     state = data.state;
     render();
@@ -236,6 +291,12 @@ const STYLE = `
   h1 { font-size: 1.3em; margin: 0; } h2 { font-size: 1.05em; margin: 0 0 8px; } h3 { font-size: 1em; margin: 12px 0 4px; }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
+  .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
+  .tab:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .tab:focus-visible, .btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  .tab-selected { border-bottom-color: var(--vscode-focusBorder); font-weight: 600; }
+  .next { margin: 12px 0; } .tab-panel > .row { margin-bottom: 10px; }
   .layout { display: flex; gap: 16px; align-items: flex-start; }
   .pm-panel { flex: 0 0 320px; position: sticky; top: 8px; max-height: calc(100vh - 80px); overflow: auto; border-right: 1px solid var(--vscode-panel-border); padding-right: 12px; }
   .agents { flex: 1 1 auto; min-width: 0; }
@@ -277,7 +338,7 @@ function renderPage({ nonce }) {
     "base-uri 'none'"
   ].join('; ');
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Command Center</title><style nonce="${nonce}">${STYLE}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workbench</title><style nonce="${nonce}">${STYLE}</style></head>
 <body><div id="app" role="main"></div><script nonce="${nonce}">${SCRIPT}</script></body></html>
 `;
 }

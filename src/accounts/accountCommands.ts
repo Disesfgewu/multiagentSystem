@@ -220,6 +220,36 @@ let sessions: SessionCommands | undefined;
 let treeForTest: AccountTree | undefined;
 let currentTree: AccountTree | undefined;
 
+/**
+ * The accounts at a glance, for the side bar's one line (#357): how many, how many signed in, how many need the person. The same
+ * judgement as the Accounts rows (sign-in, usage that needs a step, a duplicate, an unhealthy profile). Unknown when unreadable.
+ */
+export async function accountsAtAGlance(): Promise<{ ok: true; total: number; signedIn: number; attention: number } | { ok: false }> {
+  try {
+    const result = await accountService(() => sessions?.list() ?? []);
+    if (!result.ok) return { ok: false };
+    const loaded = result.service.list();
+    if (!loaded.ok) return { ok: false };
+    restoreChecks(result.store, loaded.profiles);
+    const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: result.store.repoRoot } });
+    const quotas = await Promise.all(loaded.profiles.map((profile: any) => quotaDetail(profile.id, () => sessions?.list() ?? []).catch(() => null)));
+    let signedIn = 0;
+    let attention = 0;
+    loaded.profiles.forEach((profile: any, index: number) => {
+      const who = identitySummary({ check: checkResults.get(profile.id), display: checkDisplays.get(profile.id), checking: checking.has(profile.id) });
+      const usage = quotaSummary(quotas[index], new Date());
+      if (who.signedIn === true) signedIn += 1;
+      if (who.attention || usage.attention || (described[index].duplicateOf ?? []).length > 0 || described[index].health === 'attention') attention += 1;
+    });
+    return { ok: true, total: loaded.profiles.length, signedIn, attention };
+  } catch { return { ok: false }; }
+}
+
+/** The e-mail address the CLI reported for an account in this window's last check (#357 cards), or null. Memory only, never stored. */
+export function accountEmail(profileId: string): string | null {
+  return checkDisplays.get(profileId)?.email ?? null;
+}
+
 export function accountTreeForTests(): vscode.TreeDataProvider<AccountTreeItem> {
   if (!treeForTest) throw new Error('The account tree is available only in Extension Host tests.');
   return treeForTest;
