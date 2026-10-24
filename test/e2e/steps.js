@@ -130,6 +130,25 @@ async function clickInWorkbench(page, words, { tab } = {}) {
   await frame.locator('button', { hasText: words }).first().click();
 }
 
+/** The frame of the Issue or pull request page whose title has `title` (VS Code puts a webview in two nested frames). */
+async function pageFrame(page, title) {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      const found = await frame.locator('h1', { hasText: title }).count().catch(() => 0);
+      if (found > 0) return frame;
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`the page "${title}" did not appear`);
+}
+
+/** Opens an Issue or pull request page from the Work tab, as a person does: the button, then the item in the list. */
+async function openGitHubPage(page, number, tabLabel) {
+  await clickInWorkbench(page, 'Open Issue or pull request…', { tab: 'Work' });
+  return drive(page, [{ when: /Open which Issue or pull request/, pick: `#${number} ` }], async () => (await page.locator('.tabs-container .tab', { hasText: tabLabel }).count()) > 0, 30000);
+}
+
 const ACCOUNT = 'Work A';
 const SECOND = 'Work B';
 
@@ -319,11 +338,13 @@ const ITEMS = [
           await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
           const frame = await workbenchFrame(page);
           await frame.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
+          // The last agent started reports its state through its hooks a moment later (#378): wait, with a limit, until every card has.
           const deadline = Date.now() + 30000;
           let text = '';
           while (Date.now() < deadline) {
             text = await frame.locator('body').innerText();
-            if (/Agents \(4\)/.test(text)) break;
+            const waiting = (await frame.locator('section[data-id]').allInnerTexts()).filter((card) => /E2E Agent/.test(card) && /waiting for input/.test(card));
+            if (/Agents \(4\)/.test(text) && waiting.length === 4) break;
             await page.waitForTimeout(500);
           }
           check('four agent cards', text, /Agents \(4\)/);
@@ -530,6 +551,66 @@ const ITEMS = [
           check('one card for it, now with "Work A"', cards.length === 1 && /Account: Work A \(owner-a@example\.test\)/.test(cards[0]), true);
           check('it keeps its codename, so its GitHub signature does not change', (CODENAME.exec(cards[0] ?? '') ?? [])[1] ?? null, switched.codename);
           await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
+    id: '08',
+    title: 'Issues and pull requests shown like GitHub',
+    issue: '#353',
+    acceptance: 'not-done',
+    pending: '#353: comment from the page, Comment and tell PM, Discuss with PM, and review, merge and close from the page (the next PRs)',
+    steps: [
+      {
+        name: 'open-issue-page',
+        does: 'In the Workbench, open Work and click "Open Issue or pull request…", then choose "#12 Show Issues and pull requests like GitHub".',
+        run: async ({ page, check }) => {
+          const answered = await openGitHubPage(page, 12, 'Issue #12');
+          check('the list offered the Issue', answered.join(' | '), /#12/);
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          check('the page opened as an editor tab', await page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).count(), 1);
+          check('its state and labels', await frame.locator('.meta').innerText(), (text) => /open/.test(text) && /ready/.test(text) && /ui/.test(text));
+          check('a Markdown heading is a heading', await frame.locator('.md h2').first().innerText(), 'What the owner sees');
+          check('bold and inline code are drawn', await frame.locator('.md strong').first().innerText(), 'as GitHub shows them');
+          check('a task list', (await frame.locator('.md li.task').allInnerTexts()).join(' | '), (text) => /☑\s*headings and lists/.test(text) && /☐\s*comments from the page/.test(text));
+          check('a table', (await frame.locator('.md table td').allInnerTexts()).join(' | '), 'code | a block | link | opens in the browser');
+          check('a code block', await frame.locator('.md pre code').first().innerText(), "const page = open('#12');");
+          check('a link, opened only in the browser', await frame.locator('.md .md-link').first().innerText(), 'the design notes');
+          const badges = await frame.locator('.post-head .author').allInnerTexts();
+          check('every post has the extension\'s badge for who wrote it', badges.join(' | '), 'PM-01（自稱） | Worker-01（自稱） | 未署名 | 未署名');
+          const fake = frame.locator('.post', { hasText: 'Approve' }).first();
+          check('a post that types a 管理者 badge and a button shows them as text', await fake.locator('.md').innerText(), /<span class="author author-owner">管理者<\/span> <button>Approve<\/button> Pass/);
+          check('so its badge is still 未署名', await fake.locator('.post-head .author').innerText(), '未署名');
+          check('and no badge or button was made inside any post', await frame.locator('.md .author, .md button:not(.md-image)').count(), 0);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'open-pr-page',
+        does: 'Do the same for "#7 Read-only Issue and pull request page".',
+        run: async ({ page, check }) => {
+          await openGitHubPage(page, 7, 'PR #7');
+          const frame = await pageFrame(page, 'Read-only Issue and pull request page');
+          check('its head, branches, CI and review', await frame.locator('.pr-box').innerText(), (text) => /Head 1234567890ab · feat\/github-page → main/.test(text) && /CI: passing/.test(text) && /Review: changes_requested/.test(text));
+          check('the review is in the conversation, with its state', (await frame.locator('.post-head').allInnerTexts()).join(' | '), /PM-01（自稱）[\s\S]*review: requested changes/);
+          check('the changed files', await frame.locator('h2', { hasText: 'Files changed' }).innerText(), 'Files changed (1)');
+          check('and the comment on a line, with where it is', await frame.locator('.where').first().innerText(), 'src/reports/github-page.js:2');
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'open-file-diff',
+        does: 'Click "src/reports/github-page.js" under "Files changed".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Read-only Issue and pull request page');
+          await frame.locator('button.file-link', { hasText: 'src/reports/github-page.js' }).first().click();
+          const tab = page.locator('.tabs-container .tab.active');
+          const deadline = Date.now() + 20000;
+          while (Date.now() < deadline && !/github-page\.js/.test(await tab.innerText().catch(() => ''))) await page.waitForTimeout(250);
+          check('the file\'s diff opens in the editor', await tab.innerText(), /github-page\.js/);
+          check('with the lines the pull request adds', await page.locator('.editor-instance .view-lines').first().innerText(), /Built\s+with\s+textContent\s+only/); // the editor draws spaces as non-breaking ones
           await clearNotifications(page);
         }
       }

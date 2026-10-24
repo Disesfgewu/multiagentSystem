@@ -8,6 +8,7 @@ import { runGitHubChecks } from './github';
 import { runStorageChecks } from './storage';
 import { runOverviewChecks } from './overview';
 import { runReportChecks } from './reports';
+import { runGitHubPageChecks } from './githubPage';
 import { runCustomProviderChecks } from './customProviders';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runIdeBridgeChecks } from './ideBridge';
@@ -967,6 +968,7 @@ export async function run(): Promise<void> {
   console.log(await runStorageChecks(registered, workspace));
   console.log(await runOverviewChecks(workspace));
   console.log(await runReportChecks());
+  await runGitHubPageChecks();
   console.log(await runCustomProviderChecks());
   await setupFlow();
   assert.equal(vscode.workspace.workspaceFolders?.length, 1);

@@ -6,6 +6,7 @@ import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
 import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
+import { openGitHubPage, PageSource } from './githubPage';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
 const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Map<number, string>; reviews: Map<number, string> } | { ok: false; reason: string } } };
@@ -33,7 +34,9 @@ const { classifyPullRequest, classifyIssue, CATEGORIES, CATEGORY_LABELS } = requ
   CATEGORY_LABELS: Record<string, string>;
 };
 
-type ReportFile = { filename: string; path?: string | null; status: string; patch: string | null };
+type ReportFile = { filename: string; path?: string | null; status: string; patch: string | null; additions?: number | null; deletions?: number | null };
+const { buildPageModel } = require('./page-model') as { buildPageModel(input: Record<string, unknown>): any };
+const { e2eGitHubFixture, fixtureReader } = require('./e2eGitHub') as { e2eGitHubFixture(mode: number, env: NodeJS.ProcessEnv): { repository: string } | null; fixtureReader(fixture: unknown): unknown };
 const { buildIssueReport, buildPullRequestReport, summarizePullRequest, neighbour, render, line, fileBulletLines } = require('./report') as {
   summarizePullRequest(input: { repository: string; pullRequest: unknown; snapshot: unknown; comments: unknown }): PullRequestSummary;
   buildIssueReport(input: Record<string, unknown>): { title: string; lines: string[] };
@@ -54,6 +57,7 @@ export const VERSION_SCHEME = 'multiagent-pr-version';
 export const REPORT_VIEWS = { issues: 'multiagentSystem.issuesReportView', pullRequests: 'multiagentSystem.prsReportView' } as const;
 export const REPORT_COMMANDS = {
   open: 'multiagentSystem.reports.open',
+  openPage: 'multiagentSystem.reports.openPage',
   next: 'multiagentSystem.reports.next',
   previous: 'multiagentSystem.reports.previous',
   back: 'multiagentSystem.reports.backToOverview',
@@ -201,8 +205,8 @@ class Entry extends vscode.TreeItem {
     super(`#${number} ${line(title, 120) || '(no title)'}`, vscode.TreeItemCollapsibleState.None);
     this.description = detail;
     this.iconPath = new vscode.ThemeIcon(kind === 'issue' ? 'issues' : 'git-pull-request');
-    this.tooltip = 'Read this report inside the editor. It only reads: nothing is approved, merged or changed.';
-    this.command = { command: REPORT_COMMANDS.open, title: 'Read report', arguments: [{ kind, number }] };
+    this.tooltip = 'Open it as GitHub shows it, inside the editor. It only reads: nothing is approved, merged or changed.';
+    this.command = { command: REPORT_COMMANDS.openPage, title: 'Open page', arguments: [{ kind, number }] };
   }
 }
 
@@ -394,24 +398,28 @@ export function reportUri(kind: Kind, number: number): vscode.Uri {
 type ReportEvidence = { repository: string; kind: Kind; number: number; headSha: string | null; baseRef?: string | null; version: string; files: ReportFile[] };
 type ReportResult = { text: string; evidence: ReportEvidence | null };
 
-/** Builds one report and records exactly which repository/head its text represents. */
-async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
+type ItemRead =
+  | { kind: 'issue'; repository: string; issue: any; comments: Result; pullRequests: Result; ownerPosts: OwnerPosts | null }
+  | { kind: 'pullRequest'; repository: string; pullRequest: any; snapshot: any; reviews: Result; comments: Result; reviewComments: Result; files: Result; filesHeadVerified: boolean; ownerPosts: OwnerPosts | null };
+type OwnerPosts = { comments: Map<number, string>; reviews: Map<number, string> };
+
+/** Reads one Issue or pull request, as the text report and the page (#353) both show it. A failure is a sentence for the person. */
+async function readItem(kind: Kind, number: number): Promise<{ ok: true; read: ItemRead } | { ok: false; text: string }> {
   const repository = await deps.repository();
-  if (!repository) return { text: 'No GitHub project is open, so this report cannot be read.\n', evidence: null };
+  if (!repository) return { ok: false, text: 'No GitHub project is open, so this report cannot be read.' };
   const reader = deps.readerFor(repository);
-  if (!reader) return { text: 'GitHub could not be reached for this project.\n', evidence: null };
+  if (!reader) return { ok: false, text: 'GitHub could not be reached for this project.' };
   try {
     if (kind === 'issue') {
       const [issue, comments, pullRequests] = await Promise.all([reader.getIssue(number), reader.getIssueComments(number), reader.listPullRequests({ state: 'open' })]);
-      if (issue.kind !== 'ok' || !issue.data) return { text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
-      const version = createHash('sha256').update(`${issue.data.title}\0${issue.data.body ?? ''}`).digest('hex');
-      return { text: await withFeedback(render(buildIssueReport({ repository, issue: issue.data, comments, pullRequests, ownerPosts: await readOwnerPosts(repository) })), repository, kind, number, null), evidence: { repository, kind, number, headSha: null, version, files: [] } };
+      if (issue.kind !== 'ok' || !issue.data) return { ok: false, text: `Issue #${number} could not be read (${line(issue.kind, 30)}). Refresh the list and try again.` };
+      return { ok: true, read: { kind, repository, issue: issue.data, comments, pullRequests, ownerPosts: await readOwnerPosts(repository) } };
     }
     const [pullRequest, snapshot, reviews, comments, reviewComments] = await Promise.all([
       reader.getPullRequest(number), reader.getPullRequestSnapshot(number), reader.getReviews(number),
       reader.getIssueComments(number), reader.getReviewComments(number)
     ]);
-    if (pullRequest.kind !== 'ok' || !pullRequest.data) return { text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.\n`, evidence: null };
+    if (pullRequest.kind !== 'ok' || !pullRequest.data) return { ok: false, text: `Pull request #${number} could not be read (${line(pullRequest.kind, 30)}). Refresh the list and try again.` };
     // The files endpoint is keyed by PR number and has no head SHA. Read the head before and
     // after the files, so a concurrent push cannot attach a new patch to the old report head.
     let files: Result = { kind: 'not_read' };
@@ -426,12 +434,48 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
     const filesHeadVerified = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) &&
       afterFiles.kind === 'ok' && typeof afterFiles.data?.headSha === 'string' &&
       afterFiles.data.headSha.toLowerCase() === beforeHead.toLowerCase();
-    const headSha = typeof beforeHead === 'string' && /^[a-f0-9]{40}$/i.test(beforeHead) ? beforeHead : null;
-    const built = buildPullRequestReport({ repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified, ownerPosts: await readOwnerPosts(repository) });
-    return { text: await withFeedback(render(built), repository, kind, number, beforeHead), evidence: headSha ? { repository, kind, number, headSha, baseRef: typeof pullRequest.data.baseRef === 'string' ? pullRequest.data.baseRef : null, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
+    return { ok: true, read: { kind, repository, pullRequest: pullRequest.data, snapshot, reviews, comments, reviewComments, files, filesHeadVerified, ownerPosts: await readOwnerPosts(repository) } };
   } catch {
-    return { text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.\n`, evidence: null };
+    return { ok: false, text: `${kind === 'issue' ? 'Issue' : 'Pull request'} #${number} could not be read from GitHub. Refresh the list and try again.` };
   }
+}
+
+/** The pull request report built from a read, with the evidence that says which head its file list belongs to. */
+function pullRequestReportOf(read: Extract<ItemRead, { kind: 'pullRequest' }>, number: number): { built: { title: string; lines: string[]; files?: ReportFile[] }; evidence: ReportEvidence | null } {
+  const { repository, pullRequest } = read;
+  const built = buildPullRequestReport({ repository, pullRequest, snapshot: read.snapshot, reviews: read.reviews, comments: read.comments, reviewComments: read.reviewComments, files: read.files, filesHeadVerified: read.filesHeadVerified, ownerPosts: read.ownerPosts });
+  const headSha = typeof pullRequest.headSha === 'string' && /^[a-f0-9]{40}$/i.test(pullRequest.headSha) ? pullRequest.headSha : null;
+  return { built, evidence: headSha ? { repository, kind: 'pullRequest', number, headSha, baseRef: typeof pullRequest.baseRef === 'string' ? pullRequest.baseRef : null, version: headSha.toLowerCase(), files: Array.isArray(built.files) ? built.files : [] } : null };
+}
+
+/** Builds one report and records exactly which repository/head its text represents. */
+async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
+  const got = await readItem(kind, number);
+  if (!got.ok) return { text: `${got.text}\n`, evidence: null };
+  const read = got.read;
+  if (read.kind === 'issue') {
+    const version = createHash('sha256').update(`${read.issue.title}\0${read.issue.body ?? ''}`).digest('hex');
+    return { text: await withFeedback(render(buildIssueReport({ repository: read.repository, issue: read.issue, comments: read.comments, pullRequests: read.pullRequests, ownerPosts: read.ownerPosts })), read.repository, kind, number, null), evidence: { repository: read.repository, kind, number, headSha: null, version, files: [] } };
+  }
+  const { built, evidence } = pullRequestReportOf(read, number);
+  return { text: await withFeedback(render(built), read.repository, kind, number, read.pullRequest.headSha), evidence };
+}
+
+/**
+ * The Issue or pull request page (#353): the page model, and the same evidence a text report records, kept under the report's own
+ * address so a file of the page opens its diff exactly as a file of the text report does.
+ */
+export async function pageResult(kind: Kind, number: number): Promise<{ ok: true; model: any; repository: string } | { ok: false; text: string }> {
+  const got = await readItem(kind, number);
+  if (!got.ok) return got;
+  const read = got.read;
+  if (read.kind === 'issue') {
+    return { ok: true, repository: read.repository, model: buildPageModel({ repository: read.repository, kind, item: read.issue, comments: read.comments, ownerPosts: read.ownerPosts }) };
+  }
+  const { built, evidence } = pullRequestReportOf(read, number);
+  reportContent?.remember(reportUri(kind, number), evidence);
+  const summary = summarizePullRequest({ repository: read.repository, pullRequest: read.pullRequest, snapshot: read.snapshot, comments: read.comments });
+  return { ok: true, repository: read.repository, model: buildPageModel({ repository: read.repository, kind, item: read.pullRequest, comments: read.comments, reviews: read.reviews, reviewComments: read.reviewComments, files: read.files, shownFiles: built.files ?? [], summary, ownerPosts: read.ownerPosts }) };
 }
 
 /** Failures are written into the report, not thrown. */
@@ -442,6 +486,11 @@ class ReportContent implements vscode.TextDocumentContentProvider {
   readonly onDidChange = this.changed.event;
   private readonly evidence = new Map<string, ReportEvidence>();
   evidenceFor(uri: vscode.Uri): ReportEvidence | null { return this.evidence.get(uri.toString()) ?? null; }
+  /** What the page (#353) read for a pull request, kept as the text report would keep it; null forgets it. */
+  remember(uri: vscode.Uri, evidence: ReportEvidence | null): void {
+    if (evidence) this.evidence.set(uri.toString(), evidence);
+    else this.evidence.delete(uri.toString());
+  }
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const target = parse(uri);
     if (!target) return 'This report address is not valid.\n';
@@ -522,6 +571,13 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
 }
 
 let reportContent: ReportContent | undefined;
+
+// Where the Issue and pull request page (#353) reads from and what it opens: the same reads, diffs and text report as the report lists.
+const pageSource: PageSource = {
+  read: (kind, number) => pageResult(kind, number),
+  openFileDiff: (kind, number, filename, line) => openFileDiff({ reportUri: reportUri(kind, number).toString(), filename, ...(line !== undefined ? { line } : {}) }),
+  openText: (kind, number) => open({ kind, number })
+};
 
 // The text of each side of a diff, kept only for the documents currently shown (bounded).
 const versionTexts = new Map<string, string>();
@@ -615,6 +671,31 @@ async function openFileDiff(value: unknown): Promise<{ ok: boolean; code?: strin
   return patchTarget();
 }
 
+/** The open Issues and pull requests to choose from, newest first; a list that could not be read completely is said, not guessed. */
+async function chooseItem(): Promise<{ kind: Kind; number: number } | undefined> {
+  const repository = await deps.repository();
+  const reader = repository ? deps.readerFor(repository) : null;
+  if (!reader) { void vscode.window.showErrorMessage('Open a trusted project folder that has a GitHub origin to read its Issues and pull requests.'); return undefined; }
+  let issues: Result;
+  let pullRequests: Result;
+  try { [issues, pullRequests] = await Promise.all([reader.listIssues({ state: 'open' }), reader.listPullRequests({ state: 'open' })]); } catch { issues = { kind: 'transient' }; pullRequests = { kind: 'transient' }; }
+  const rows = (result: Result): any[] | null => result.kind === 'empty' ? [] : result.kind === 'ok' && Array.isArray(result.data) ? result.data.filter((entry: any) => entry && Number.isSafeInteger(entry.number) && entry.number > 0) : null;
+  const openIssues = rows(issues);
+  const openPulls = rows(pullRequests);
+  if (openIssues === null || openPulls === null) {
+    const failed = openIssues === null ? issues : pullRequests;
+    void vscode.window.showErrorMessage(incompleteMessage(openIssues === null ? 'Issues' : 'Pull requests', failed.kind, failed.reason, failed));
+    return undefined;
+  }
+  const items = [
+    ...openPulls.map((entry) => ({ label: `#${entry.number} ${line(entry.title, 120) || '(no title)'}`, description: 'pull request', target: { kind: 'pullRequest' as Kind, number: entry.number as number } })),
+    ...openIssues.filter((entry) => entry.isPullRequest !== true).map((entry) => ({ label: `#${entry.number} ${line(entry.title, 120) || '(no title)'}`, description: 'Issue', target: { kind: 'issue' as Kind, number: entry.number as number } }))
+  ].sort((a, b) => b.target.number - a.target.number);
+  if (items.length === 0) { void vscode.window.showInformationMessage('This project has no open Issues or pull requests.'); return undefined; }
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Open which Issue or pull request?', matchOnDescription: true });
+  return picked ? picked.target : undefined;
+}
+
 function activeTarget(): { kind: Kind; number: number } | null {
   const uri = vscode.window.activeTextEditor?.document.uri;
   return uri && uri.scheme === REPORT_SCHEME ? parse(uri) : null;
@@ -654,6 +735,9 @@ export function reportBadgeForTests(kind: Kind): number | undefined {
 
 export function registerReports(context: vscode.ExtensionContext): void {
   setPublicFeedbackTestMode(context.extensionMode === vscode.ExtensionMode.Test);
+  // The end-to-end run only (development mode and its environment variable): a synthetic GitHub, read-only, instead of the network.
+  const fixture = e2eGitHubFixture(context.extensionMode, process.env);
+  if (fixture) { const reader = fixtureReader(fixture) as unknown as ReportReader; deps = { ...realDeps, repository: async () => fixture.repository, readerFor: () => reader }; }
   const content = new ReportContent();
   reportContent = content;
   const trees = { issue: new ReportsTree('issue'), pullRequest: new ReportsTree('pullRequest') };
@@ -679,6 +763,11 @@ export function registerReports(context: vscode.ExtensionContext): void {
     pullRequestView,
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.open, open),
+    vscode.commands.registerCommand(REPORT_COMMANDS.openPage, async (value: unknown) => {
+      // Without an item (the command palette, the Work tab), the person chooses one of the open Issues and pull requests.
+      const target = value && typeof value === 'object' && 'kind' in value ? value : await chooseItem();
+      return target ? openGitHubPage(pageSource, target) : { ok: false, code: 'cancelled' };
+    }),
     vscode.commands.registerCommand(REPORT_COMMANDS.openFileDiff, openFileDiff),
     vscode.commands.registerCommand(REPORT_COMMANDS.next, () => step(1)),
     vscode.commands.registerCommand(REPORT_COMMANDS.previous, () => step(-1)),

@@ -342,6 +342,7 @@
       { "command": "multiagentSystem.overview.showDiff", "title": "Multiagent: Show Pull Request Diff in Editor", "icon": "$(diff)" },
       { "command": "multiagentSystem.overview.openPullRequest", "title": "Multiagent: Open This Agent's Pull Request on GitHub", "icon": "$(git-pull-request)" },
       { "command": "multiagentSystem.reports.open", "title": "Multiagent: Read Report" },
+      { "command": "multiagentSystem.reports.openPage", "title": "Multiagent: Open Issue or Pull Request Page" },
       { "command": "multiagentSystem.reports.next", "title": "Multiagent: Next Report", "icon": "$(arrow-down)" },
       { "command": "multiagentSystem.reports.previous", "title": "Multiagent: Previous Report", "icon": "$(arrow-up)" },
       { "command": "multiagentSystem.reports.backToOverview", "title": "Multiagent: Back to Agent Overview", "icon": "$(home)" },

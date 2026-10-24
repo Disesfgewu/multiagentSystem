@@ -324,6 +324,7 @@ const TARGETS = Object.freeze({
   sessions: 'multiagentSystem.sessions.list',
   createRole: 'multiagentSystem.roles.create',
   editRole: 'multiagentSystem.roles.edit',
+  openGitHubPage: 'multiagentSystem.reports.openPage',
   browseGitHub: 'multiagentSystem.github.browse',
   broadcastCreate: 'multiagentSystem.broadcasts.send',
   broadcastDeliver: 'multiagentSystem.broadcasts.deliver',
