@@ -64,7 +64,7 @@ function quotaSummary(detail, now = new Date()) {
   return current ? { text: parts.join(' · '), attention: false } : { text: [`usage unknown: ${step}`, ...parts].join(' · '), attention };
 }
 
-const PLAN_LABELS = Object.freeze({ free: 'Free', pro: 'Pro', max: 'Max', team: 'Team', enterprise: 'Enterprise' });
+const PLAN_LABELS = Object.freeze({ free: 'Free', go: 'Go', plus: 'Plus', pro: 'Pro', max: 'Max', team: 'Team', business: 'Business', enterprise: 'Enterprise', edu: 'Edu' });
 
 /**
  * Which account it is and whether it is signed in. `display` is the e-mail address and organization from this window's last check
@@ -110,4 +110,4 @@ function duplicateLine(duplicateLabels) {
   return `Same account as ${labels.map((label) => `“${label}”`).join(', ')}: both folders are signed in to one real account, so their usage is counted together. Sign one of them in to another account (Sign In to Account), or remove it.`;
 }
 
-module.exports = { quotaSummary, identitySummary, accountsOverview, duplicateLine, NEXT_STEPS, WINDOW_NAMES };
+module.exports = { quotaSummary, identitySummary, accountsOverview, duplicateLine, NEXT_STEPS, WINDOW_NAMES, PLAN_LABELS };

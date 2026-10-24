@@ -612,6 +612,11 @@ export async function configureStatusLineWizard(
         ? { ok: true, status: 'disabled', message: `Status line bridge was disabled for “${profile.label}”.` }
         : { ok: false, status: 'failed', message: disabled.reason ?? 'Failed to disable.' };
     }
+    // Without a person to ask, a status line the account already has is never replaced (#352): only the interactive overwrite
+    // modal, which shows both commands, may do that.
+    if (inspection.status === 'custom') {
+      return { ok: false, status: 'failed', message: `“${profile.label}” already has its own status line; it was kept and not replaced.` };
+    }
     const enabled = enableStatusLineBridge(profile.configDir, bridgeScriptPath);
     return enabled.ok
       ? { ok: true, status: 'enabled', message: `Status line bridge was enabled for “${profile.label}”.` }

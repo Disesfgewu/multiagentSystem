@@ -100,7 +100,14 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'tag tag-warn' && entry.textContent === 'VS Code not connected'), 'not connected is a small yellow tag, not a red paragraph (#357)');
   assert.ok(nodes.some((entry) => entry.tag === 'div' && entry.className === 'detail alert' && entry.textContent === 'Folder trust: not pre-written, so Codex asks once (x)'), 'a CLI that will stop to ask is shown as an alert (#362)');
   for (const expected of ['Workbench', 'PM', 'Agents (6)', 'Accounts (2)', 'quota: near the limit', 'Usage: unknown (no Codex session log yet)', 'Decisions waiting', 'issues: unknown', '2 pull requests need a decision', 'a note', 'Values without a source are shown as unknown.']) assert.ok(text.includes(expected), expected);
-  for (const expected of ['5-hour: 42% used · verified and current · resets in 2h · read 1m ago · from claude status line rate_limits', 'identity verified (abcd1234)', 'sign-in not checked in this window', 'plan plus', 'Limits: warn at 80% used.', 'Agents: Worker One (+2 more)', 'No running agent uses this account.', 'Quota alerts', 'Main: new agents on this account are held back', 'Quota: new agents on this account are held back', 'This account has no session log yet.', 'Run Codex once with this account.']) assert.ok(text.includes(expected), `the account panel draws: ${expected}`);
+  for (const expected of ['5-hour: 42% used, resets in 2h', '5-hour: verified and current · read 1m ago · from claude status line rate_limits', 'identity verified (abcd1234)', 'sign-in not checked in this window', 'plan plus', 'Limits: warn at 80% used.', 'Agents: Worker One (+2 more)', 'No running agent uses this account.', 'Quota alerts', 'Main: new agents on this account are held back', 'Quota: new agents on this account are held back', 'This account has no session log yet.', 'Run Codex once with this account.']) assert.ok(text.includes(expected), `the account panel draws: ${expected}`);
+  // The usage line is plain (#352): how it was read and where from is only under the row's Details.
+  const usageLines = nodes.filter((entry) => entry.tag === 'div' && /^quota-line/.test(entry.className)).map((entry) => entry.textContent);
+  assert.ok(usageLines.includes('5-hour: 42% used, resets in 2h'));
+  assert.equal(usageLines.some((line) => / from |verified|read \d/.test(line)), false, 'no source, trust or read time on the usage line');
+  const firstAccount = nodes.find((entry) => entry.tag === 'div' && entry.attrs['data-account'] === 'acct');
+  const sourceBox = firstAccount.children.flatMap((child) => child.children).find((child) => child.tag === 'details');
+  assert.ok(sourceBox && sourceBox.textContent.includes('from claude status line rate_limits'), 'the source is under Details');
   for (const expected of ['waiting for input', 'ended', 'state unknown', 'working']) assert.ok(text.includes(expected), `the status text "${expected}" is drawn on a card`);
   assert.ok(text.includes('Worktree: 2 changed, 0 untracked; 1 ahead, 0 behind its upstream'), 'the card itself carries one line about the working folder');
   for (const expected of ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing']) assert.ok(text.includes(expected), `the latest report is drawn: ${expected}`);
@@ -221,5 +228,5 @@ test('a card says in four plain lines who it is, which account, which mode and w
     assert.equal(top.some((line) => line.includes(hidden)), false, `${hidden} is not in the plain lines`);
   }
   const footer = nodes.filter((entry) => entry.tag === 'footer').at(-1);
-  assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal'], 'one main button');
+  assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal', 'Switch account…'], 'one main button, and switching the account (#352)');
 });

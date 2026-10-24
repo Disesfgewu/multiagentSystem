@@ -82,7 +82,8 @@ const checkDisplays = new Map<string, Display>();
 const checking = new Set<string>();
 let checksRestored = false;
 const { AccountCheckStore } = require('./account-checks') as { AccountCheckStore: new (store: unknown) => { save(id: string, result: unknown): { ok: boolean }; load(ids: string[]): Map<string, CheckResult> } };
-const { quotaSummary, identitySummary, accountsOverview, duplicateLine } = require('./account-row') as {
+const { quotaSummary, identitySummary, accountsOverview, duplicateLine, PLAN_LABELS } = require('./account-row') as {
+  PLAN_LABELS: Record<string, string>;
   quotaSummary(detail: unknown, now?: Date): { text: string; attention: boolean };
   identitySummary(input: { check?: unknown; display?: unknown; now?: Date; checking?: boolean }): { text: string; signedIn: boolean | null; attention: boolean; lines: string[] };
   accountsOverview(rows: Array<{ signedIn: boolean | null; attention: boolean }>): string;
@@ -265,8 +266,7 @@ export async function accountsAtAGlance(): Promise<{ ok: true; total: number; si
 /** The plan the CLI reported in this account's last sign-in check (#352: Free, Pro, Max, Team, Enterprise), or null. */
 export function accountPlan(profileId: string): string | null {
   const plan = checkResults.get(profileId)?.identity?.plan?.value;
-  const labels: Record<string, string> = { free: 'Free', pro: 'Pro', max: 'Max', team: 'Team', enterprise: 'Enterprise' };
-  return typeof plan === 'string' && Object.hasOwn(labels, plan) ? labels[plan] : null;
+  return typeof plan === 'string' && Object.hasOwn(PLAN_LABELS, plan) ? PLAN_LABELS[plan] : null;
 }
 
 /** The e-mail address the CLI reported for an account in this window's last check (#357 cards), or null. Memory only, never stored. */

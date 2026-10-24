@@ -243,6 +243,8 @@ async function edit(value: unknown): Promise<void> {
   ], { placeHolder: `Edit ${record.group.name}` });
   if (!action) return;
   let change: Record<string, unknown>;
+  // The account chosen as the default, to say after saving what Start agent will now offer first (#352).
+  let defaultLabel: string | null = null;
   if (action.value === 'rename') {
     const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: record.group.name });
     if (!name) return;
@@ -279,6 +281,7 @@ async function edit(value: unknown): Promise<void> {
       const picked = await vscode.window.showQuickPick(choices, { placeHolder: `${fieldHelp('defaultAccount')} Running sessions keep their original account.` });
       if (!picked) return;
       change = { kind: 'account', profileId: picked.id };
+      defaultLabel = picked.id ? picked.label : null;
     }
   } else if (action.value === 'memory') {
     const picked = await vscode.window.showQuickPick([
@@ -329,6 +332,11 @@ async function edit(value: unknown): Promise<void> {
   const edited = editRoleRecord(record, change);
   if (!edited.ok || !edited.record) { void vscode.window.showErrorMessage(`Role group edit was rejected (${edited.reason}).`); return; }
   const result = await saveRoleRecord(edited.record, expectedRevision);
+  if (result.ok && change.kind === 'account') {
+    void vscode.window.showInformationMessage(defaultLabel
+      ? `“${record.group.name}” now has the default account “${defaultLabel}”: Start agent lists it first, and you can still choose another.`
+      : `“${record.group.name}” has no default account now: Start agent asks which account to use.`);
+  }
   if (!result.ok) void vscode.window.showErrorMessage(result.reason === 'stale-revision'
     ? 'This role group changed during editing. Reload it and try again; your edit was not saved.'
     : `Role group was not saved (${result.reason}).`);

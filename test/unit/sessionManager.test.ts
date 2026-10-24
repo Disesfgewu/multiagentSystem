@@ -1031,3 +1031,16 @@ test('a launch note clears the screen before the command and prints it; without 
   await r.manager.reopen(shell.id, { launchNote: 'Multiagent: starting Claude Code (Worker-02)' });
   assert.match(r.terminals[r.terminals.length - 1].sent[0].text, /^clear 2>\/dev\/null; printf '%s\\n' 'Multiagent: starting Claude Code \(Worker-02\)'; claude /);
 });
+
+test('forget drops a stopped session from the list and from what is saved, and refuses one whose terminal is open (#352)', async () => {
+  const r = rig();
+  await r.manager.initialize();
+  const kept = await start(r, { name: 'Kept' });
+  const replaced = await start(r, { name: 'Replaced' });
+  await rejectsWithCode(r.manager.forget(replaced.id), 'session-live');
+  r.manager.stop(replaced.id);
+  await r.manager.forget(replaced.id);
+  assert.deepEqual(r.manager.list().map((session) => session.id), [kept.id]);
+  assert.deepEqual((r.store.saved ?? []).map((record) => [record.id, record.name]), [[kept.id, 'Kept']]);
+  await rejectsWithCode(r.manager.forget(replaced.id), 'session-not-found');
+});

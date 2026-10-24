@@ -105,7 +105,11 @@ test('the e-mail address goes only to the screen: the display map is read for th
   assert.match(source, /export function accountEmail\(profileId: string\): string \| null \{\n {2}return checkDisplays\.get\(profileId\)\?\.email \?\? null;\n\}/);
   const srcRoot = path.join(__dirname, '../../src');
   const readers = fs.readdirSync(srcRoot, { recursive: true }).filter((name) => /\.(ts|js)$/.test(name)).filter((name) => /\baccountEmail\(/.test(fs.readFileSync(path.join(srcRoot, name), 'utf8'))).map((name) => name.replace(/\\/g, '/')).sort();
-  assert.deepEqual(readers, ['accounts/accountCommands.ts', 'commandCenter/commandCenter.ts'], 'only the Workbench cards read it');
+  assert.deepEqual(readers, ['accounts/accountCommands.ts', 'commandCenter/commandCenter.ts', 'sessions/sessionCommands.ts'], 'only the Workbench cards and the account list of Start agent read it');
+  // Start agent shows it in its account list only: the map it fills goes to orderAccountChoices and nowhere else.
+  const launcher = fs.readFileSync(path.join(srcRoot, 'sessions/sessionCommands.ts'), 'utf8');
+  assert.deepEqual([...launcher.matchAll(/\bemails\b/g)].length, 3, 'emails is declared, filled and handed to the list, nothing more');
+  assert.match(launcher, /orderAccountChoices\(selected\.profiles, \{ defaultId: [^}]*emails, plans/);
   assert.match(source, /const \{ display, \.\.\.result \} = outcome;[\s\S]*new AccountCheckStore\(accounts\.store\)\.save\(profile\.id, result\)/, 'what is saved is the result without the display part');
   assert.match(source, /const \{ display: _display, \.\.\.outcome \} = await checkAccountIdentity/, 'the launch probe drops it too');
   assert.doesNotMatch(source, /console\.(log|warn|error)\([^)]*display/i);

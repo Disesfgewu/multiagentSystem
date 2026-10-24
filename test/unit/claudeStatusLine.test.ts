@@ -371,6 +371,23 @@ test('Claude status line wizard: rejects unsafe paths and rejects non-active dis
   }
 });
 
+test('Claude status line wizard: without a person to ask, never replaces a status line the account already has', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-wizard-custom-'));
+  try {
+    const settingsPath = path.join(tempDir, 'settings.json');
+    const original = JSON.stringify({ statusLine: { type: 'command', command: 'my-own-status-line' }, theme: 'dark' }, null, 2);
+    fs.writeFileSync(settingsPath, original);
+    const profile = { id: 'claude-custom', provider: 'claude', label: 'Claude Custom', configDir: tempDir };
+    const res = await configureStatusLineWizard(profile, { interactive: false, consent: true, action: 'enable' });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 'failed');
+    assert.match(res.message, /already has its own status line; it was kept/);
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), original);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('quota bridge never refreshes missing, invalid or future observation times', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-time-'));
   const now = new Date('2026-10-18T06:00:00Z');

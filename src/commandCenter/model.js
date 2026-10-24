@@ -201,6 +201,8 @@ function windowRow(entry, nowMs) {
   const confidence = entry && (entry.confidence === 'actual' || entry.confidence === 'estimated') && Number.isFinite(entry.usedPercent) ? entry.confidence : 'unknown';
   const trust = confidence === 'unknown' ? 'unknown' : entry.gateEligible ? 'verified and current' : entry.fresh && confidence === 'estimated' ? 'estimate (not used to block)' : entry.fresh ? 'source unverified (not used to block)' : 'out of date (not used to block)';
   const resetsIn = relative(entry && entry.resetsAt, nowMs);
+  // The few words the usage line keeps when a number is not one to rely on; how it was read goes under Details (#352).
+  const caveat = confidence === 'unknown' || entry.gateEligible ? null : entry.fresh && confidence === 'estimated' ? 'an estimate' : entry.fresh ? 'not verified' : 'out of date';
   return {
     window: line(entry && entry.window, UNKNOWN, 40),
     label: Object.hasOwn(WINDOW_LABELS, entry && entry.window) ? WINDOW_LABELS[entry.window] : line(entry && entry.window, 'Window', 40),
@@ -208,6 +210,7 @@ function windowRow(entry, nowMs) {
     text: confidence === 'unknown' ? 'unknown' : `${entry.usedPercent}% used`,
     kind: confidence,
     trust,
+    caveat,
     resets: resetsIn === null ? 'reset time unknown' : resetsIn.startsWith('in ') ? `resets ${resetsIn}` : 'reset time has passed',
     resetsAt: typeof (entry && entry.resetsAt) === 'string' && Number.isFinite(Date.parse(entry.resetsAt)) ? new Date(entry.resetsAt).toISOString() : null,
     read: relative(entry && entry.observedAt, nowMs) === null ? 'read time unknown' : `read ${relative(entry.observedAt, nowMs)}`,
@@ -320,6 +323,7 @@ const TARGETS = Object.freeze({
   startAgent: 'multiagentSystem.launchAgent',
   sessions: 'multiagentSystem.sessions.list',
   createRole: 'multiagentSystem.roles.create',
+  editRole: 'multiagentSystem.roles.edit',
   browseGitHub: 'multiagentSystem.github.browse',
   broadcastCreate: 'multiagentSystem.broadcasts.send',
   broadcastDeliver: 'multiagentSystem.broadcasts.deliver',
@@ -331,9 +335,9 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: []
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id']
 });
 
 /**

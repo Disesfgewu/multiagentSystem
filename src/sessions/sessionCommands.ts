@@ -48,6 +48,7 @@ const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(wo
 
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
+  restartWithAccount: 'multiagentSystem.sessions.restartWithAccount',
   start: 'multiagentSystem.sessions.start',
   focus: 'multiagentSystem.sessions.focus',
   stop: 'multiagentSystem.sessions.stop',
@@ -361,6 +362,7 @@ function withIdePort(provider: string, sessionId: string, env: Record<string, st
   return found.ok ? { ...(env ?? {}), CLAUDE_CODE_SSE_PORT: String(found.port) } : env;
 }
 
+const { orderAccountChoices } = require('../accounts/account-order') as { orderAccountChoices(profiles: unknown, options: Record<string, unknown>): Array<{ id: string; label: string; description: string; isDefault: boolean }> };
 const { launchNote } = require('./launchNote') as { launchNote(provider: string, codename: string | undefined): string };
 
 const codenameFailure = (reason: string) => Object.assign(new Error(reason === 'codename-changed'
@@ -447,6 +449,48 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
   const withoutAcknowledge = (input: SessionCommandOptions): SessionCommandOptions =>
     input.acknowledgeUnknown === true && !isExtensionTestMode() ? { ...input, acknowledgeUnknown: undefined } : input;
 
+  /** The default account of a role group (#352), or null when it has none or cannot be read. */
+  async function roleDefaultAccount(roleGroupId: string | undefined): Promise<string | null> {
+    if (!roleGroupId) return null;
+    try {
+      const opened = await privateStorage()?.use();
+      if (!opened?.ok) return null;
+      const found = (opened.store as { get(collection: string, id: string): any }).get('roleGroups', roleGroupId);
+      const id = found?.ok && found.found ? found.value?.group?.defaultAccountProfileId : null;
+      return typeof id === 'string' ? id : null;
+    } catch { return null; }
+  }
+
+  /**
+   * The account list for a new or restarted agent (#352): the role group's default first, each with the e-mail address and plan this
+   * window's sign-in check read. `exclude` leaves out the account the agent already uses. Undefined when the person cancels.
+   */
+  async function pickAccount(provider: string, options: { defaultId?: string | null; exclude?: string | null; placeHolder: string; withDefaultCli?: boolean }): Promise<{ id: string } | { failure: SessionOutcome } | undefined> {
+    const available = await accountService(() => manager.list());
+    if (!available.ok) return { failure: failure(Object.assign(new Error(available.message), { code: available.code }), true) };
+    const listed = available.service.list();
+    if (!listed.ok) return { failure: failure(Object.assign(new Error(listed.message), { code: listed.code }), true) };
+    const selected = selectRoleProfiles(listed.profiles, provider);
+    if (!selected.ok || !Array.isArray(selected.profiles)) return { failure: failure(Object.assign(new Error('invalid-account-list'), { code: 'invalid-account-list' }), true) };
+    // Loaded when needed: the account screens and the session commands are registered separately.
+    const accountsUi = require('../accounts/accountCommands') as { accountEmail(id: string): string | null; accountPlan(id: string): string | null };
+    const emails: Record<string, string> = {};
+    const plans: Record<string, string> = {};
+    for (const profile of selected.profiles) {
+      const email = accountsUi.accountEmail(profile.id);
+      const plan = accountsUi.accountPlan(profile.id);
+      if (email) emails[profile.id] = email;
+      if (plan) plans[profile.id] = plan;
+    }
+    const ordered = orderAccountChoices(selected.profiles, { defaultId: options.defaultId ?? null, emails, plans, exclude: options.exclude ?? null });
+    const items = [
+      ...ordered.map((choice) => ({ label: choice.label, description: choice.description, id: choice.id })),
+      ...(options.withDefaultCli === false ? [] : [{ label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: 'unassigned' }])
+    ];
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: options.placeHolder, ignoreFocusOut: true });
+    return picked ? { id: picked.id } : undefined;
+  }
+
   async function launch(input: SessionCommandOptions): Promise<SessionOutcome> {
     const interactive = input.interactive !== false;
     try {
@@ -454,6 +498,13 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       if (!cwd) throw Object.assign(new Error('no folder'), { code: 'no-folder' });
       let accountProfileId = input.accountProfileId;
       const provider = input.provider ?? '';
+      // The role group first (#352): its default account is then offered first.
+      let roleGroupId = input.roleGroupId;
+      if (roleGroupId === undefined && interactive && builtIn.has(provider)) {
+        const picked = await pickRoleForLaunch(provider);
+        if (picked === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+        roleGroupId = picked === 'none' ? undefined : picked;
+      }
       if (!accountProfileId && interactive && builtIn.has(provider)) {
         const isolation = builtIn.capability(provider, 'accountIsolation');
         if (isolation === 'unknown' || isolation === 'unsupported') {
@@ -462,25 +513,11 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
             { modal: true, detail: '此 CLI 將使用自己的預設登入；身份核實與額度資訊也維持未知。' }, 'Use CLI Default');
           if (answer !== 'Use CLI Default') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
         } else {
-          const available = await accountService(() => manager.list());
-          if (!available.ok) return failure(Object.assign(new Error(available.message), { code: available.code }), true);
-          const listed = available.service.list();
-          if (!listed.ok) return failure(Object.assign(new Error(listed.message), { code: listed.code }), true);
-          const selected = selectRoleProfiles(listed.profiles, provider);
-          if (!selected.ok || !Array.isArray(selected.profiles)) return failure(Object.assign(new Error('invalid-account-list'), { code: 'invalid-account-list' }), true);
-          const choice = await vscode.window.showQuickPick([
-            { label: 'Use the CLI default account', description: 'Not isolated or verified by this extension', id: 'unassigned' },
-            ...selected.profiles.map((profile) => ({ label: profile.label, description: 'Account identity: unknown until observed', id: profile.id }))
-          ], { placeHolder: 'Choose an account for this new session' });
+          const choice = await pickAccount(provider, { defaultId: await roleDefaultAccount(roleGroupId), placeHolder: 'Choose an account for this new session' });
           if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+          if ('failure' in choice) return choice.failure;
           accountProfileId = choice.id === 'unassigned' ? undefined : choice.id;
         }
-      }
-      let roleGroupId = input.roleGroupId;
-      if (roleGroupId === undefined && interactive && builtIn.has(provider)) {
-        const picked = await pickRoleForLaunch(provider);
-        if (picked === undefined) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
-        roleGroupId = picked === 'none' ? undefined : picked;
       }
       return await startWithAccount({ ...input, provider, cwd, accountProfileId, roleGroupId });
     } catch (error) {
@@ -764,6 +801,65 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     return picked?.session;
   }
 
+  /** Stops a session and lets go of everything it held: its account slot, isolation, observation and window-only notes. */
+  async function stopSessionNow(id: string): Promise<SessionView> {
+    const session = manager.stop(id);
+    await releaseReservation(id);
+    observations.release(id);
+    ideStatus.delete(id);
+    trustStatus.delete(id);
+    return session;
+  }
+
+  /**
+   * Restart with another account (#352): the agent's session is stopped and a new one starts in the same folder, with the same role
+   * group, name and model, signed in as the account the person picks. It reads only the session id; the account and the
+   * confirmation always come from its own windows, and nothing is stopped before the person confirms (also when the terminal has
+   * already closed).
+   */
+  async function restartWithAccount(value: unknown): Promise<SessionOutcome> {
+    // Only the session id is read; the extension's own host tests may also say not to open a terminal.
+    const raw = value && typeof value === 'object' ? (value as { id?: unknown; launch?: unknown }) : {};
+    const launch = isExtensionTestMode() && raw.launch === false ? false : undefined;
+    const prior = typeof raw.id === 'string' ? manager.get(raw.id) : undefined;
+    if (!prior) return failure(Object.assign(new Error('session-not-found'), { code: 'session-not-found' }), true);
+    if (!builtIn.has(prior.provider) || !['verified', 'unverified'].includes(builtIn.capability(prior.provider, 'accountIsolation'))) {
+      const message = 'This CLI cannot be given an account of its own here, so its agent cannot switch accounts.';
+      void vscode.window.showInformationMessage(message);
+      return { ok: false, code: 'account-isolation-unknown', message };
+    }
+    const choice = await pickAccount(prior.provider, { exclude: prior.accountProfileId, placeHolder: `Restart “${prior.name}” with which account?`, withDefaultCli: prior.accountProfileId !== 'unassigned' });
+    if (!choice) return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    if ('failure' in choice) return choice.failure;
+    const accounts = await accountService(() => manager.list());
+    const chosen = choice.id === 'unassigned' ? null : (accounts.ok ? accounts.service.get(choice.id) : null);
+    const label = chosen && chosen.ok ? chosen.profile.label : 'the CLI default account';
+    const answer = await vscode.window.showWarningMessage(
+      `Restart “${prior.name}” with the account “${label}”?`,
+      { modal: true, detail: `Its terminal closes and the agent in it stops. A new session starts in the same folder (${prior.worktree}) with the same role group, name and model, signed in as “${label}”. Its instructions are prepared again.` },
+      'Restart with This Account'
+    );
+    if (answer !== 'Restart with This Account') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    await stopSessionNow(prior.id);
+    changed.fire();
+    const restarted = await startWithAccount({
+      interactive: true,
+      provider: prior.provider,
+      cwd: prior.worktree,
+      name: prior.name,
+      roleGroupId: prior.roleGroupId !== 'unassigned' ? prior.roleGroupId : undefined,
+      accountProfileId: choice.id === 'unassigned' ? undefined : choice.id,
+      requestedModel: prior.requestedModel,
+      ...(launch === false ? { launch } : {})
+    });
+    // The agent is shown once, as its new session. If the new one did not start, the stopped one stays and can be reopened.
+    if (restarted.ok) {
+      try { await manager.forget(prior.id); } catch { /* it stays listed with its terminal closed */ }
+      changed.fire();
+    }
+    return restarted;
+  }
+
   async function act(action: 'focus' | 'stop' | 'reopen', value: unknown, fromOwnUi = false): Promise<SessionOutcome> {
     const input = options(value);
     const interactive = input.interactive !== false;
@@ -816,11 +912,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
           throw error;
         }
       } else if (action === 'stop') {
-        session = manager.stop(id);
-        await releaseReservation(id);
-        observations.release(id);
-        ideStatus.delete(id);
-        trustStatus.delete(id);
+        session = await stopSessionNow(id);
       } else {
         let prior = manager.get(id) ?? undefined;
         if (!prior) throw Object.assign(new Error('session-not-found'), { code: 'session-not-found' });
@@ -1124,6 +1216,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }),
     // list with `interactive: false` only returns the in-memory session list and opens no picker.
     vscode.commands.registerCommand(SESSION_COMMANDS.list, (value?: unknown) => list(value)),
+    // Interactive only: it reads the session id and nothing else (#352).
+    vscode.commands.registerCommand(SESSION_COMMANDS.restartWithAccount, (value?: unknown) => restartWithAccount(value)),
     // start, stop and reopen launch or end terminals and take account quota: outside test mode they
     // always run interactively, and reopen's `acknowledgeUnknown` cannot skip its warning.
     vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(requireInteractive(options(value)))),

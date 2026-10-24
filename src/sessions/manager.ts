@@ -144,6 +144,7 @@ interface Registry {
   observeCli(id: string, token: string, event: ProviderEvent): RegistryEntry;
   cliExited(id: string, token: string): RegistryEntry;
   terminalClosed(id: string, token: string): RegistryEntry;
+  forget(id: string): void;
   snapshot(): SessionIdentity[];
 }
 
@@ -768,6 +769,17 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
     }
     if (dropped > 0) await this.persist();
     return dropped;
+  }
+
+  /**
+   * Drops a stopped session from the list and from what is saved (#352: an agent restarted with another account is shown once, as
+   * the new session). A session whose terminal is open is refused with `session-live`.
+   */
+  async forget(id: string): Promise<void> {
+    if (this.handles.has(id)) throw new SessionError('session-live');
+    this.registry.forget(id);
+    for (const map of [this.names, this.models, this.instructionStates, this.instructionLabels, this.autoModeLabels, this.autoModeStates, this.instructionDigests, this.reviewDigests, this.injectedCounts, this.instructionMethods, this.codenames, this.activePlans]) map.delete(id);
+    await this.persist();
   }
 
   get(id: string): SessionView | null {

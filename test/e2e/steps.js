@@ -80,6 +80,8 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       const message = (await widget.locator('.quick-input-message').innerText().catch(() => '')).trim();
       const title = `${placeholder} ${message}`.trim();
       const rule = answers.find((entry) => (entry.pick || entry.type !== undefined) && entry.when.test(title));
+      // The window may be the one the flow waits for, shown just after `done` was asked: ask again before failing.
+      if (!rule && await done(seen)) return seen;
       if (!rule) throw new Error(`a window nobody answers: "${title}"`);
       if (rule.pick) {
         await input.fill(rule.pick);
@@ -149,6 +151,45 @@ async function addClaudeAccount(page, name, signedIn) {
 }
 
 const ROLE = 'E2E Developers';
+const CODEX = 'Codex A';
+
+/** The rows of the list (quick pick) on the screen, top first, when its placeholder matches `when`; null when it is not shown. */
+async function listRows(page, when) {
+  return listRowsNow(page, when);
+}
+
+/** Waits until the list whose placeholder matches `when` is on the screen, and returns its rows. */
+async function waitForList(page, when, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await listRowsNow(page, when);
+    if (rows !== null && rows.length > 0) return rows;
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`the list "${when}" did not appear`);
+}
+
+async function listRowsNow(page, when) {
+  const widget = page.locator('.quick-input-widget:visible').first();
+  if (!(await widget.isVisible().catch(() => false))) return null;
+  const placeholder = (await widget.locator('.quick-input-box input').first().getAttribute('placeholder').catch(() => '')) ?? '';
+  if (!when.test(placeholder)) return null;
+  return widget.locator('.quick-input-list .monaco-list-row').allInnerTexts();
+}
+
+/** The agents' Claude starts the synthetic CLI recorded so far (not its sign-in or version calls). */
+function agentStarts(box) {
+  return require('./fakes').readCalls(box.fakes.calls).filter((call) => call.cli === 'claude' && !call.args.includes('auth') && !call.args.includes('--version'));
+}
+
+// What the windows of Start agent and Restart ask after the account, answered as a person does.
+const START_ANSWERS = [
+  { when: /Select a model/, pick: 'Use CLI default model' },
+  { dialog: /Account isolation is not verified/, button: 'Continue' },
+  { dialog: /auto mode|Auto mode/, button: 'I Understand, Continue' },
+  { dialog: /Effective agent instructions prepared/, button: 'Start Agent' },
+  { dialog: /usage|quota|limit/i, button: 'Start Anyway' }
+];
 
 const ITEMS = [
   {
@@ -328,6 +369,147 @@ const ITEMS = [
           check('its plan', text, /plan Max/);
           const other = await frame.locator('div[data-account]', { hasText: SECOND }).first().innerText();
           check('an account no agent has run on yet says why it has no usage and what to do', other, /no agent has run|start one|Readings arrive only while a Claude session runs/i);
+          // The usage line is plain words; how it was read and where from is under the row's Details (#352).
+          const lines = await row.locator('.quota-line').allInnerTexts();
+          check('the usage line says only how much is used and when it resets', lines.join(' | '), (value) => /5-hour: 32% used, resets in 2h/.test(value) && !/ from |verified|read \d|read under/.test(value));
+          await row.locator('summary', { hasText: 'Details' }).first().click();
+          check('where the number comes from is under Details', await row.locator('details').first().innerText(), /5-hour: [^·]+ · read [^·]+ · from claude status line rate_limits/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'keep-own-status-line',
+        does: 'The account "Work B" already has a status line of its own in its settings.json. On its row, click "Review the status line setting", read what would be replaced, and click "Cancel".',
+        run: async ({ page, check, box }) => {
+          // The person's own status line, set before Multiagent was asked to set up its own.
+          const folder = require('./fakes').readCalls(box.fakes.calls).map((call) => call.configDir).find((dir) => dir && /work-b/i.test(require('node:path').basename(dir)));
+          const settingsPath = require('node:path').join(folder, 'settings.json');
+          const settings = JSON.parse(require('node:fs').readFileSync(settingsPath, 'utf8'));
+          settings.statusLine = { type: 'command', command: 'echo my own status line' };
+          const before = JSON.stringify(settings, null, 2);
+          require('node:fs').writeFileSync(settingsPath, before);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
+          const row = frame.locator('div[data-account]', { hasText: SECOND }).first();
+          const deadline = Date.now() + 30000;
+          let text = '';
+          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/Review the status line setting/.test(text)) break; await page.waitForTimeout(500); }
+          check('the row says another status line is set and what to do', text, /another status line|usage bridge not active/i);
+          await row.locator('button', { hasText: 'Review the status line setting' }).first().click();
+          const answered = await drive(page, [{ dialog: /^Overwrite existing statusLine in “Work B”/, button: 'Cancel' }], async (seen) => seen.length > 0 && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 30000);
+          check('it asks before replacing, showing the status line it would replace', answered.join(' | '), /Overwrite existing statusLine in “Work B”[\s\S]*Cancel/);
+          const toast = await page.locator('.notification-toast-container').allInnerTexts().catch(() => []);
+          check('after Cancel it says nothing was changed', toast.join(' | '), /Existing settings were not changed/);
+          check('the account\'s own status line is kept, byte for byte', require('node:fs').readFileSync(settingsPath, 'utf8'), before);
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
+    id: '03',
+    title: 'Which account each agent uses; several Claude Code and Codex accounts',
+    issue: '#352',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'add-codex-account',
+        does: 'In the Accounts tab click "Add Codex account": type the name "Codex A", click "Add and Sign In", sign in in the terminal that opens, then click "I have signed in — check now".',
+        run: async ({ page, check }) => {
+          await clickInWorkbench(page, 'Add Codex account', { tab: 'Accounts' });
+          const answered = await drive(page, [
+            { when: /A name for this Codex account/, type: CODEX },
+            { dialog: /^Add the Codex account/, button: 'Add and Sign In' },
+            { toast: 'Sign in to Codex in the terminal', button: 'I have signed in — check now' }
+          ], async () => /Accounts: 3 accounts, 3 signed in/.test(await page.locator('.sidebar').innerText().catch(() => '')), 90000);
+          check('the wizard asked for a name, one confirmation, and the sign-in', answered.join(' | '), /Codex A[\s\S]*Add and Sign In[\s\S]*check now/);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
+          const row = await frame.locator('div[data-account]', { hasText: CODEX }).first().innerText();
+          check('the Codex row says which account it is, from Codex itself', row, /Codex A · codex-owner@example\.test/);
+          check('and its plan', row, /plan Plus/);
+          check('and that its sign-in was checked', row, /sign-in checked/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'set-default-account',
+        does: 'In the Agents tab click "Edit role group…": choose "E2E Developers", "Set default account profile", then "Work B".',
+        run: async ({ page, check }) => {
+          await clickInWorkbench(page, 'Edit role group…', { tab: 'Agents' });
+          const said = /now has the default account “Work B”/;
+          await drive(page, [
+            { when: /Choose a role group/, pick: ROLE },
+            { when: /^Edit E2E Developers/, pick: 'Set default account profile' },
+            { when: /Running sessions keep their original account/, pick: SECOND }
+          ], async () => said.test((await page.locator('.notification-toast-container').allInnerTexts().catch(() => [])).join(' ')), 30000);
+          const toast = (await page.locator('.notification-toast-container').allInnerTexts()).join(' | ');
+          check('it says what the default account changes', toast, /“E2E Developers” now has the default account “Work B”: Start agent lists it first, and you can still choose another/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'see-default-first',
+        does: 'Click "Start agent…": Claude Code, the name "E2E Agent 5", the role group "E2E Developers". Look at the account list.',
+        run: async ({ page, check }) => {
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          let rows = null;
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E Agent 5' },
+            { when: /Choose a role group for this agent/, pick: ROLE }
+          ], async () => (rows = await listRows(page, /Choose an account for this new session/)) !== null && rows.length > 0, 60000);
+          check('the role group\'s default account is first, and says so', rows[0] ?? '', /Work B[\s\S]*this role group's default account[\s\S]*owner-b@example\.test/);
+          check('the other account can still be chosen', rows.slice(1).join(' | '), /Work A/);
+          // The list stays open: the picture shows it, and the next step chooses from it.
+        }
+      },
+      {
+        name: 'start-with-default',
+        does: 'Choose "Work B" and confirm the windows that ask.',
+        run: async ({ page, check, box }) => {
+          const before = agentStarts(box).length;
+          await drive(page, [{ when: /Choose an account for this new session/, pick: SECOND }, ...START_ANSWERS], async () => agentStarts(box).length > before, 90000);
+          const started = agentStarts(box).at(-1);
+          check('the agent was started with the account folder of "Work B"', require('node:path').basename(started.configDir), /work-b/i);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first();
+          await card.waitFor({ timeout: 30000 });
+          check('its card says it uses "Work B"', await card.innerText(), /Account: Work B \(owner-b@example\.test\)/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'switch-account',
+        does: 'On the card of "E2E Agent 5" click "Switch account…", choose "Work A", read what will happen and click "Restart with This Account".',
+        run: async ({ page, check, box }) => {
+          const before = agentStarts(box).length;
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
+          await frame.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().locator('button', { hasText: 'Switch account…' }).first().click();
+          const rows = await waitForList(page, /Restart “E2E Agent 5” with which account/);
+          check('the list offers the other accounts, not the one it uses', rows.join(' | '), (text) => /Work A/.test(text) && !/Work B/.test(text));
+          const answered = await drive(page, [
+            { when: /Restart “E2E Agent 5” with which account/, pick: ACCOUNT },
+            { dialog: /^Restart “E2E Agent 5” with the account “Work A”/, button: 'Restart with This Account' },
+            ...START_ANSWERS
+          ], async () => agentStarts(box).length > before, 90000);
+          check('it asked first, in a window of its own', answered.join(' | '), /dialog: Restart “E2E Agent 5” with the account “Work A”\? → Restart with This Account/);
+          check('the agent was started again with the account folder of "Work A"', require('node:path').basename(agentStarts(box).at(-1).configDir), (name) => !/work-b/i.test(name));
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const again = await workbenchFrame(page);
+          const deadline = Date.now() + 30000;
+          let cards = [];
+          while (Date.now() < deadline) {
+            cards = (await again.locator('section[data-id]').allInnerTexts()).filter((card) => /E2E Agent 5/.test(card));
+            if (cards.length === 1 && /Account: Work A/.test(cards[0])) break;
+            await page.waitForTimeout(500);
+          }
+          check('one card for it, now with "Work A"', cards.length === 1 && /Account: Work A \(owner-a@example\.test\)/.test(cards[0]), true);
           await clearNotifications(page);
         }
       }

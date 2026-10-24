@@ -12,6 +12,7 @@ import { runCustomProviderChecks } from './customProviders';
 import { runSessionPersistenceChecks, runManagedInstructionsChecks } from './sessionPersistence';
 import { runIdeBridgeChecks } from './ideBridge';
 import { runFolderTrustChecks } from './folderTrust';
+import { runSwitchAccountChecks } from './switchAccount';
 import { runPermissionModeChecks } from './permissionMode';
 import { runConfirmOnceChecks } from './confirmOnce';
 import { runQuotaDispatchChecks } from './quotaDispatch';
@@ -1098,6 +1099,7 @@ export async function run(): Promise<void> {
   console.log(await runManagedInstructionsChecks(workspace));
   await runIdeBridgeChecks(workspace);
   await runFolderTrustChecks(workspace);
+  await runSwitchAccountChecks(workspace);
   await runPermissionModeChecks(workspace);
   await runConfirmOnceChecks(workspace);
   await agyFlow(workspace);

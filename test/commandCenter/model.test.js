@@ -135,8 +135,11 @@ test('only the known commands with exactly their fields are accepted, and an id 
   assert.deepEqual(parseMessage({ type: 'focus', id: 'a' }, ['a']), { ok: true, message: { type: 'focus', id: 'a' } }, 'a list works as well as a set');
 });
 
-test('the command list is exactly what the page can send: nothing that stops, starts, sends or publishes; exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'startMeeting', 'talkToPm', 'toggleCollapse', 'togglePin']);
+test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  // switchAccount names a card on screen and nothing else: the account and the confirmation come from the command's windows.
+  assert.deepEqual(parseMessage({ type: 'switchAccount', id: 'a' }, new Set(['a'])), { ok: true, message: { type: 'switchAccount', id: 'a' } });
+  for (const raw of [{ type: 'switchAccount', id: 'gone' }, { type: 'switchAccount', id: 'a', accountProfileId: 'acct-2' }, { type: 'switchAccount', id: 'a', confirmed: true }]) assert.equal(parseMessage(raw, new Set(['a'])).ok, false, JSON.stringify(raw));
 });
 
 // ---- accounts and quota (issue #304) ----
@@ -165,6 +168,9 @@ test('an estimate, an old reading and an unknown one are each said so, and a win
   const [row] = rows([acct()], { 'acct-1': detail({ windows: [win({ confidence: 'estimated', gateEligible: false }), win({ window: 'seven_day', fresh: false, gateEligible: false, observedAt: iso(-120) }), win({ window: 'month', usedPercent: null, confidence: 'unknown', fresh: false, gateEligible: false, resetsAt: null, observedAt: null, source: null }), win({ window: 'five_hour2', resetsAt: iso(-5) })] }) }).rows;
   assert.equal(row.windows[0].trust, 'estimate (not used to block)');
   assert.equal(row.windows[1].trust, 'out of date (not used to block)');
+  // The usage line keeps only a few plain words of that; the rest is under Details (#352).
+  assert.equal(row.windows[0].caveat, 'an estimate');
+  assert.equal(row.windows[1].caveat, 'out of date');
   assert.deepEqual([row.windows[1].read], ['read 2h ago']);
   assert.deepEqual([row.windows[2].text, row.windows[2].kind, row.windows[2].resets, row.windows[2].read, row.windows[2].source], ['unknown', 'unknown', 'reset time unknown', 'read time unknown', 'unknown source']);
   assert.equal(row.windows[3].resets, 'reset time has passed');
