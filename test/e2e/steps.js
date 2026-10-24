@@ -62,6 +62,17 @@ async function drive(page, answers, done, timeoutMs = 60000) {
       await page.waitForTimeout(400);
       continue;
     }
+    // A notification with a button the flow waits for (for example "I have signed in — check now").
+    const toastRule = answers.find((entry) => entry.toast);
+    if (toastRule) {
+      const toast = page.locator('.notification-toast-container:visible', { hasText: toastRule.toast }).first();
+      if (await toast.isVisible().catch(() => false)) {
+        seen.push(`toast: ${toastRule.toast} → ${toastRule.button}`);
+        await toast.locator('.monaco-button', { hasText: toastRule.button }).first().click();
+        await page.waitForTimeout(400);
+        continue;
+      }
+    }
     const widget = page.locator('.quick-input-widget:visible').first();
     if (await widget.isVisible().catch(() => false)) {
       const input = widget.locator('.quick-input-box input').first();
@@ -118,6 +129,25 @@ async function clickInWorkbench(page, words, { tab } = {}) {
 }
 
 const ACCOUNT = 'Work A';
+const SECOND = 'Work B';
+
+/**
+ * Add Claude Code account through the wizard, as a person does, until the side bar counts it as signed in (the sign-in terminal
+ * opens in front of the Workbench, so the side bar is what stays in view). The Workbench is brought back afterwards.
+ */
+async function addClaudeAccount(page, name, signedIn) {
+  await clickInWorkbench(page, 'Add Claude Code account', { tab: 'Accounts' });
+  const counted = new RegExp(`Accounts: ${signedIn} accounts?, ${signedIn} signed in`);
+  const answered = await drive(page, [
+    { when: /A name for this Claude Code account/, type: name },
+    { dialog: /^Add the Claude Code account/, button: 'Add and Sign In' },
+    { toast: 'Sign in to Claude Code in the terminal', button: 'I have signed in — check now' }
+  ], async () => counted.test(await page.locator('.sidebar').innerText().catch(() => '')), 90000);
+  await clickInWorkbench(page, 'Refresh', { tab: 'Accounts' }).catch(() => {});
+  await page.waitForTimeout(1500);
+  return answered;
+}
+
 const ROLE = 'E2E Developers';
 
 const ITEMS = [
@@ -159,29 +189,43 @@ const ITEMS = [
     ]
   },
   {
+    id: '01',
+    title: 'Sign in to several Claude Code accounts',
+    issue: '#352',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'add-first-account',
+        does: 'In the Workbench, open Accounts and click "Add Claude Code account": type the name "Work A", click "Add and Sign In", sign in in the terminal that opens, then click "I have signed in — check now".',
+        run: async ({ page, check }) => {
+          const answered = await addClaudeAccount(page, ACCOUNT, 1);
+          check('the wizard asked for a name, one confirmation, and the sign-in', answered.join(' | '), /type: [\s\S]*Work A[\s\S]*Add and Sign In[\s\S]*check now/);
+          const frame = await workbenchFrame(page);
+          check('the account row says which account it is and that it is signed in', await frame.locator('div[data-account]', { hasText: ACCOUNT }).first().innerText(), (text) => /Work A · owner-a@example\.test/.test(text) && /sign-in checked/.test(text));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'add-second-account',
+        does: 'Do the same for a second account, "Work B".',
+        run: async ({ page, check }) => {
+          await addClaudeAccount(page, SECOND, 2);
+          const frame = await workbenchFrame(page);
+          const rows = await frame.locator('div[data-account]').allInnerTexts();
+          check('two accounts, each with its own e-mail address', rows.join(' | '), (text) => /Work A · owner-a@example\.test/.test(text) && /Work B · owner-b@example\.test/.test(text));
+          check('neither is the same real account as the other', rows.join(' | '), (text) => !/same real account|DUPLICATE/i.test(text));
+          check('the side bar says both are signed in', await page.locator('.sidebar').innerText(), /Accounts: 2 accounts, 2 signed in/);
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
     id: '11',
     title: 'One screen with every agent working on this project',
     issue: '#357 (Agents tab), #368',
     acceptance: 'accepted',
     steps: [
-      {
-        name: 'add-account',
-        does: 'In the Workbench, open the Accounts tab, click "Add account", choose Claude Code, name it "Work A" and let the extension create its folder; then click "Check sign-in".',
-        run: async ({ page, check }) => {
-          await clickInWorkbench(page, 'Add account', { tab: 'Accounts' });
-          const frame = await workbenchFrame(page);
-          const answered = await drive(page, [
-            { when: /Choose a CLI provider for this account/, pick: 'Claude Code' },
-            { when: /Account label/, type: ACCOUNT },
-            { when: /Where should this account keep its sign-in data/, pick: 'Create a recommended folder' }
-          ], async () => (await frame.locator('body').innerText().catch(() => '')).includes(ACCOUNT));
-          check('the account was added through its own windows', answered.join(' | '), /Claude Code[\s\S]*Work A[\s\S]*recommended folder/);
-          await frame.locator('div[data-account] button', { hasText: 'Check sign-in' }).first().click();
-          await page.waitForTimeout(2500);
-          check('the Accounts tab lists it with the e-mail address the sign-in check read', await frame.locator('div[data-account]').first().innerText(), /Work A · owner-a@example\.test/);
-          await clearNotifications(page);
-        }
-      },
       {
         name: 'create-role-group',
         does: 'Open the Agents tab and click "Create role group…": choose the Developer template, Claude Code and the name "E2E Developers", then "Create Role Group".',
@@ -245,6 +289,7 @@ const ITEMS = [
           check('each card shows its codename', agentCards.every((card) => /\b[A-Z][A-Za-z]*-\d{2,4}\b/.test(card)), true);
           check('each card shows its account with its e-mail address', agentCards.every((card) => card.includes('Account: Work A (owner-a@example.test)')), true);
           check('each card shows its mode in one word', agentCards.every((card) => /Mode: Auto/.test(card)), true);
+          check('each card says what the agent is doing, from its own hooks', agentCards.every((card) => /waiting for input/.test(card)), true);
           check('each card is plain: the worktree and evidence are under Details', agentCards.every((card) => !/upstream|hook evidence|Prepared for this agent/.test(card)), true);
           check('VS Code not connected is a small tag, not a paragraph', agentCards.every((card) => /VS Code not connected/.test(card) && !/no VS Code window has registered/.test(card)), true);
           const view = page.viewportSize() ?? { width: 1440, height: 900 };
@@ -258,7 +303,36 @@ const ITEMS = [
         }
       }
     ]
-  }
+  },
+  {
+    id: '02',
+    title: 'Each account\'s usage and plan',
+    issue: '#352',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'see-usage',
+        does: 'After agents have run on "Work A", open the Accounts tab of the Workbench.',
+        run: async ({ page, check }) => {
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
+          const row = frame.locator('div[data-account]', { hasText: ACCOUNT }).first();
+          const deadline = Date.now() + 30000;
+          let text = '';
+          while (Date.now() < deadline) { text = await row.innerText().catch(() => ''); if (/32%/.test(text)) break; await page.waitForTimeout(500); }
+          check('the 5-hour usage with its reset', text, /5-hour: 32% used[\s\S]*resets in 2h/);
+          check('the weekly usage', text, /Weekly: 10% used/);
+          check('the weekly Opus usage too', text, /Weekly \(Opus\): 5% used/);
+          check('the account it is', text, /Work A · owner-a@example\.test/);
+          check('its plan', text, /plan Max/);
+          const other = await frame.locator('div[data-account]', { hasText: SECOND }).first().innerText();
+          check('an account no agent has run on yet says why it has no usage and what to do', other, /no agent has run|start one|Readings arrive only while a Claude session runs/i);
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
 ];
 
 module.exports = { ITEMS, runCommand, webviewText, clearNotifications, drive, workbenchFrame };

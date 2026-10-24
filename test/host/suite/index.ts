@@ -24,6 +24,7 @@ import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
 import { runTalkToPmChecks } from './talkToPm';
 import { runAccountsViewChecks } from './accountsView';
+import { runAddAccountWizardChecks } from './addAccountWizard';
 import { runMemoryPanelChecks } from './memoryPanel';
 import { runReviewJumpChecks } from './reviewJump';
 import { runAutoModeConfirmChecks } from './autoModeConfirm';
@@ -1093,6 +1094,7 @@ export async function run(): Promise<void> {
   await runDiscussWithPmChecks(workspace);
   await runTalkToPmChecks(workspace);
   await runAccountsViewChecks();
+  await runAddAccountWizardChecks();
   console.log(await runManagedInstructionsChecks(workspace));
   await runIdeBridgeChecks(workspace);
   await runFolderTrustChecks(workspace);

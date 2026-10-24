@@ -14,7 +14,17 @@ const { accountProviderChoices } = require('./provider-choices') as {
   accountProviderChoices(): Array<{ id: string; label: string; description: string; detail: string; canCreateProfile: boolean }>;
 };
 const { describeProviderCapabilities } = require('../providers/capability-text') as { describeProviderCapabilities(id: unknown): string[] };
-const { explainFailure } = require('./folder-guidance') as { explainFailure(result: unknown): Explained[] };
+const { explainFailure, suggestFolder, createRecommendedFolder, discardCreated } = require('./folder-guidance') as {
+  explainFailure(result: unknown): Explained[];
+  suggestFolder(input: { homeDir: string; provider: string; label: string }): { parent: string; dir: string; name: string };
+  createRecommendedFolder(input: { provider: string; label: string; suggestion: { parent: string; dir: string; name: string }; profiles: unknown[]; context: { repoRoot: string; homeDir: string } }): { ok: boolean; dir?: string; madeFolders?: unknown[]; items?: Explained[] };
+  discardCreated(made: unknown[]): void;
+};
+const addAccountFlow = require('./add-account') as {
+  addAccount(provider: string, deps: Record<string, unknown>): Promise<{ ok: boolean; cancelled?: boolean; profile?: any; steps: Array<{ step: string; ok: boolean; message?: string; next?: string }> }>;
+  checkLabel(value: unknown): { ok: true; label: string } | { ok: false; message: string };
+  summarize(provider: string, label: string, result: unknown): { level: 'info' | 'warning' | 'error'; text: string } | null;
+};
 const { checkAccountIdentity, describeCheck, splitFolderIssues, CHECKS } = require('./identity-check') as {
   CHECKS: Record<string, unknown>;
   splitFolderIssues(issues: unknown): { folder: string[]; confirmation: string[] };
@@ -35,7 +45,9 @@ export const ACCOUNT_COMMANDS = {
   check: 'multiagentSystem.accounts.check',
   limits: 'multiagentSystem.accounts.limits',
   configureStatusLine: 'multiagentSystem.accounts.configureStatusLine',
-  configureHooks: 'multiagentSystem.accounts.configureHooks'
+  configureHooks: 'multiagentSystem.accounts.configureHooks',
+  addClaude: 'multiagentSystem.accounts.addClaude',
+  addCodex: 'multiagentSystem.accounts.addCodex'
 } as const;
 
 const LOGIN_COMMANDS: Record<string, string> = {
@@ -250,9 +262,86 @@ export async function accountsAtAGlance(): Promise<{ ok: true; total: number; si
   } catch { return { ok: false }; }
 }
 
+/** The plan the CLI reported in this account's last sign-in check (#352: Free, Pro, Max, Team, Enterprise), or null. */
+export function accountPlan(profileId: string): string | null {
+  const plan = checkResults.get(profileId)?.identity?.plan?.value;
+  const labels: Record<string, string> = { free: 'Free', pro: 'Pro', max: 'Max', team: 'Team', enterprise: 'Enterprise' };
+  return typeof plan === 'string' && Object.hasOwn(labels, plan) ? labels[plan] : null;
+}
+
 /** The e-mail address the CLI reported for an account in this window's last check (#357 cards), or null. Memory only, never stored. */
 export function accountEmail(profileId: string): string | null {
   return checkDisplays.get(profileId)?.email ?? null;
+}
+
+// Where the wizard makes account folders (~/multiagent-accounts/…) and how it opens the sign-in terminal. Only the extension's own
+// host tests replace them, so a test never makes a folder in the real home or runs a real sign-in.
+let accountHome = (): string => os.homedir();
+let signInOpener: ((provider: string, profile: any, env: Record<string, string | null>) => { done: Promise<void> }) | undefined;
+export function setAddAccountSeamsForTests(seams: { home?: string; openSignIn?: (provider: string, profile: any, env: Record<string, string | null>) => { done: Promise<void> } } | undefined): void {
+  if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
+  accountHome = seams?.home ? () => seams.home as string : () => os.homedir();
+  signInOpener = seams?.openSignIn;
+}
+
+/**
+ * Add Claude Code Account / Add Codex Account (#352): one wizard from a name to a signed-in account with its e-mail, plan and usage.
+ * The person types a name and confirms once a list of everything it will do; see add-account.js for the steps. It takes no
+ * argument but the provider, so no caller can choose the folder or skip the confirmation.
+ */
+async function addAccountWizard(provider: 'claude' | 'codex'): Promise<unknown> {
+  const accounts = await accountService(() => sessions?.list() ?? []);
+  if (!accounts.ok) { void vscode.window.showErrorMessage(accounts.message); return { ok: false, reason: 'storage' }; }
+  const repoRoot = (accounts.store as { repoRoot: string }).repoRoot;
+  const listed = accounts.service.list();
+  const profiles = listed.ok ? listed.profiles : [];
+  const providerLabel = provider === 'claude' ? 'Claude Code' : 'Codex';
+  let label = '';
+  // The folders made for this account, so they can be removed again if the account cannot be saved.
+  let madeFolders: unknown[] = [];
+  const result = await addAccountFlow.addAccount(provider, {
+    askLabel: async () => {
+      const typed = await vscode.window.showInputBox({ prompt: `A name for this ${providerLabel} account (shown only on this computer)`, placeHolder: 'Work, Personal, Research…', ignoreFocusOut: true, validateInput: (value) => { const checked = addAccountFlow.checkLabel(value); return checked.ok ? undefined : checked.message; } });
+      if (typed !== undefined) label = typed.trim();
+      return typed;
+    },
+    suggest: (name: string) => suggestFolder({ homeDir: accountHome(), provider, label: name }).dir,
+    confirm: async (lines: string[]) => (await vscode.window.showInformationMessage(`Add the ${providerLabel} account “${label}”?`, { modal: true, detail: lines.join('\n') }, 'Add and Sign In')) === 'Add and Sign In',
+    createFolder: (name: string) => {
+      const made = createRecommendedFolder({ provider, label: name, suggestion: suggestFolder({ homeDir: accountHome(), provider, label: name }), profiles, context: { repoRoot, homeDir: accountHome() } });
+      madeFolders = made.madeFolders ?? [];
+      return made.ok && made.dir ? { ok: true, dir: made.dir } : { ok: false, message: (made.items ?? []).map((item) => `${item.message} ${item.fix}`).join(' ') || 'The recommended folder could not be created.' };
+    },
+    createProfile: ({ label: name, dir }: { label: string; dir: string }) => {
+      const created = accounts.service.create({ provider, label: name, configDir: dir });
+      return created.ok ? { ok: true, profile: created.profile } : { ok: false, message: errorFor(created) };
+    },
+    discardFolder: () => discardCreated(madeFolders),
+    statusLine: async (profile: any) => configureStatusLineWizard(profile, { consent: true, action: 'enable', extensionPath: extensionContext?.extensionPath }),
+    hooks: async (profile: any) => configureHooksWizard(profile, { consent: true, action: 'enable', extensionPath: extensionContext?.extensionPath }),
+    openSignIn: async (profile: any) => {
+      const prepared = await launchEnvironment(profile.id, provider, () => sessions?.list() ?? []);
+      if (!prepared.ok) return { ok: false, message: prepared.message };
+      if (signInOpener) return { ok: true, done: signInOpener(provider, profile, prepared.env).done };
+      const opened = openLoginTerminal(provider, profile, prepared.env);
+      // Done when the person says so or closes the terminal, whichever comes first.
+      const done = new Promise<void>((resolve) => {
+        const watcher = vscode.window.onDidCloseTerminal((closed) => { if (closed === opened.terminal) { watcher.dispose(); resolve(); } });
+        void vscode.window.showInformationMessage(`Sign in to ${providerLabel} in the terminal that opened for “${label}”. Then check it here, or just close the terminal.`, 'I have signed in — check now').then((answer) => { if (answer) { watcher.dispose(); resolve(); } });
+      });
+      return { ok: true, done };
+    },
+    // Done only when the CLI says this account is signed in; a check that ran but found no sign-in says so.
+    check: async (profile: any) => {
+      const checked = await runCheck(accounts, profile);
+      const signedIn = checked.ok && checked.identity?.loggedIn === true;
+      return { ok: signedIn, reason: signedIn ? 'signed in' : checked.ok ? 'not signed in yet' : checked.reason };
+    }
+  });
+  currentTree?.refresh();
+  const said = addAccountFlow.summarize(provider, label, result);
+  if (said) void (said.level === 'info' ? vscode.window.showInformationMessage(said.text) : said.level === 'warning' ? vscode.window.showWarningMessage(said.text) : vscode.window.showErrorMessage(said.text));
+  return { ok: result.ok, cancelled: result.cancelled === true, steps: result.steps.map((step) => ({ step: step.step, ok: step.ok })) };
 }
 
 export function accountTreeForTests(): vscode.TreeDataProvider<AccountTreeItem> {
@@ -372,7 +461,10 @@ export function registerAccountCommands(context: vscode.ExtensionContext, sessio
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.check, (id?: unknown) => check(id)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.limits, (value?: unknown) => limits(value)),
     vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureStatusLine, (value?: unknown) => configureStatusLine(value)),
-    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureHooks, (value?: unknown) => configureHooks(value))
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.configureHooks, (value?: unknown) => configureHooks(value)),
+    // No argument is read: the name, the folder and the confirmation come from the wizard's own windows.
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.addClaude, () => addAccountWizard('claude')),
+    vscode.commands.registerCommand(ACCOUNT_COMMANDS.addCodex, () => addAccountWizard('codex'))
   );
 }
 

@@ -236,8 +236,13 @@ test('relative times read as in the future or in the past, and anything that is 
 test('an account action is one of the known ones, names an account that is on the screen, and creating an account names none', () => {
   const cards = new Set(['a']);
   const accounts = new Set(['acct-1']);
-  for (const action of ACCOUNT_ACTIONS.filter((name) => name !== 'create')) assert.deepEqual(parseMessage({ type: 'accountAction', action, id: 'acct-1' }, cards, accounts), { ok: true, message: { type: 'accountAction', action, id: 'acct-1' } }, action);
-  assert.deepEqual(parseMessage({ type: 'accountAction', action: 'create' }, cards, accounts), { ok: true, message: { type: 'accountAction', action: 'create' } });
+  const making = ['create', 'addClaude', 'addCodex'];
+  for (const action of ACCOUNT_ACTIONS.filter((name) => !making.includes(name))) assert.deepEqual(parseMessage({ type: 'accountAction', action, id: 'acct-1' }, cards, accounts), { ok: true, message: { type: 'accountAction', action, id: 'acct-1' } }, action);
+  // Making an account names none, whichever way (#352 wizard included).
+  for (const action of making) {
+    assert.deepEqual(parseMessage({ type: 'accountAction', action }, cards, accounts), { ok: true, message: { type: 'accountAction', action } }, action);
+    assert.deepEqual(parseMessage({ type: 'accountAction', action, id: 'acct-1' }, cards, accounts), { ok: false, reason: 'unexpected-field' }, `${action} with an id`);
+  }
   for (const [message, reason] of [
     [{ type: 'accountAction', action: 'create', id: 'acct-1' }, 'unexpected-field'],
     [{ type: 'accountAction', action: 'remove', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: 'delete', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: 5, id: 'acct-1' }, 'invalid-field'], [{ type: 'accountAction', action: '__proto__', id: 'acct-1' }, 'invalid-field'],
@@ -246,7 +251,7 @@ test('an account action is one of the known ones, names an account that is on th
   ]) assert.deepEqual(parseMessage(message, cards, accounts), { ok: false, reason }, JSON.stringify(message));
   assert.deepEqual(parseMessage({ type: 'accountAction', action: 'login', id: 'acct-1' }, cards), { ok: false, reason: 'unknown-id' }, 'with no account on the screen none is known');
   assert.deepEqual(parseMessage({ type: 'accountAction', action: 'login', id: 'acct-1' }, cards, ['acct-1']), { ok: true, message: { type: 'accountAction', action: 'login', id: 'acct-1' } }, 'a list works as well as a set');
-  assert.deepEqual(ACCOUNT_ACTIONS.slice().sort(), ['check', 'configureStatusLine', 'create', 'details', 'limits', 'login', 'usageLog'], 'no action removes an account, changes a login credential or sends anything');
+  assert.deepEqual(ACCOUNT_ACTIONS.slice().sort(), ['addClaude', 'addCodex', 'check', 'configureStatusLine', 'create', 'details', 'limits', 'login', 'usageLog'], 'no action removes an account, changes a login credential or sends anything');
 });
 
 const review = (over = {}) => ({ pm: 'current', userCan: 'Open it', next: 'Merge', approval: 'approved', ci: 'passing', unresolved: 1, ...over });

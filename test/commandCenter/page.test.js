@@ -109,9 +109,13 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   assert.ok(nodes.some((entry) => entry.tag === 'section' && /status-waiting/.test(entry.className)) && nodes.some((entry) => entry.tag === 'section' && /status-unknown/.test(entry.className)), 'each state has its own card class');
   const press = (label) => nodes.filter((entry) => entry.tag === 'button' && entry.textContent === label).forEach((entry) => entry.listeners.click());
   const beforeAccounts = posted.length;
-  press('Add account');
-  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'create' }), 'creating an account names no account');
+  press('Add Claude Code account');
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'addClaude' }), 'adding an account names no account');
   assert.equal(posted.length, beforeAccounts + 1);
+  press('Add Codex account');
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'addCodex' }));
+  press('Add with a folder you choose…');
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'accountAction', action: 'create' }));
   const second = nodes.find((entry) => entry.tag === 'div' && entry.attrs['data-account'] === 'acct-2');
   const clickIn = (container, label) => { const found = []; const walk = (n) => { if (n.tag === 'button' && n.textContent === label) found.push(n); n.children.forEach(walk); }; walk(container); found[0].listeners.click(); };
   clickIn(second, 'Open the account details');

@@ -16,14 +16,12 @@
 
    ![工作台](user-guide/images/00-open-workbench.png)
 
-3. **新增帳號**：在 **Accounts** 分頁按 **Add account**：
-   - 選 Claude Code。
-   - 輸入名稱。
-   - 選「Create a recommended folder」。
+3. **新增帳號**：在 **Accounts** 分頁按 **Add Claude Code account**（Codex 則按 **Add Codex account**），輸入名稱後按 **Add and Sign In**。精靈會自動完成：
+   - 建立這個帳號專用的資料夾。
+   - 設定用量與 agent 狀態的回報。
+   - 開啟登入用的終端機。
 
-   接著按帳號列上的 **Check sign-in**。如果這個帳號還沒登入，就按 **Sign in**，在開啟的終端機裡登入。
-
-   ![新增帳號](user-guide/images/11-add-account.png)
+   在終端機登入後，按 **I have signed in — check now**（或直接關掉那個終端機），帳號列就會顯示 email、方案與「sign-in checked」（見第 1 章）。
 
 4. **建立身份組**：在 **Agents** 分頁按 **Create role group…**：
    - 選範本，例如 Developer。
@@ -39,10 +37,45 @@
    每個 agent 都會在編輯區開一個終端機，工作台上也會多一張卡片（見第 11 章）。
 
 ## 1. 多帳號登入
-尚未完成，見 #352。
+
+**要做什麼**：登入多個 Claude Code（或 Codex）帳號，而且分得出是哪一個。
+
+**從哪裡點**：工作台 → **Accounts** → **Add Claude Code account**。
+1. 輸入名稱，例如「Work A」。
+2. 跳出一個確認視窗，列出精靈接下來會做的事：
+   - 在家目錄下建立 `multiagent-accounts/claude-work-a`。
+   - 在這個資料夾自己的 `settings.json` 設定 status line（5h／7d 用量）與 hook bridge（每個 agent 在做什麼）。你自己的 Claude 設定不受影響。
+   - 開啟登入用的終端機。
+   - 登入後檢查一次。
+3. 按 **Add and Sign In**，在開啟的終端機裡登入。
+4. 按右下角的 **I have signed in — check now**，或直接關掉那個終端機。
+
+另一個帳號照同樣步驟再做一次，例如「Work B」。
+
+**會看到什麼**：每個帳號一列，寫成 `Work A · owner-a@example.test · Claude Code`，右邊是 **sign-in checked**；側欄寫 `Accounts: 2 accounts, 2 signed in`。兩個資料夾如果登入的是同一個真實帳號，會標示重複，並寫明怎麼修正。
+
+![兩個帳號](user-guide/images/01-add-second-account.png)
+
+**常見問題**：
+- **精靈最後說「The sign-in could not be confirmed」**：終端機裡的登入還沒完成。完成後，按帳號列上的 **Check sign-in**。
+- **用量寫「bridge on, no reading yet」**：還沒有 agent 在這個帳號上跑過；啟動一次就會出現（見第 2 章）。
 
 ## 2. 每個帳號的額度與訂閱
-尚未完成，見 #352。帳號列已經會顯示 email（只存在本機記憶體）、方案、登入狀態與 5h／7d 額度（#356），e2e 步驟與截圖之後補上。
+
+**要做什麼**：看每個帳號用了多少額度，以及是哪個方案。
+
+**從哪裡點**：工作台 → **Accounts**。
+
+**會看到什麼**：帳號列會列出：
+- 方案，例如 `plan Max`。
+- 用量：`5-hour: 32% used · resets in 2h`、`Weekly: 10% used`。如果 Claude Code 有回報依模型的週額度，也會列出，例如 `Weekly (Opus): 5% used`。
+- 每一行都寫了讀取的時間與來源。
+
+還沒有讀數的帳號，會寫明原因與下一步，不會只寫「unknown」。
+
+![用量與方案](user-guide/images/02-see-usage.png)
+
+**為什麼一開始沒有用量**：Claude Code 只有在有 session 執行時，才會透過 status line 回報用量。所以帳號第一次有 agent 跑起來之後，數字才會出現。
 
 ## 3. 每個 agent 用哪個帳號
 尚未完成，見 #352。
