@@ -32,6 +32,7 @@ class Recorder {
       const entry = { name: step.name, does: step.does, checks: [], screenshot: null, error: null };
       record.steps.push(entry);
       const file = `${item.id}-${step.name}.png`;
+      const started = Date.now();
       const ctx = {
         page,
         box,
@@ -39,10 +40,10 @@ class Recorder {
         check: (label, actual, expected) => {
           const ok = typeof expected === 'function' ? Boolean(expected(actual)) : expected instanceof RegExp ? expected.test(String(actual)) : actual === expected;
           entry.checks.push({ label, ok, actual: shorten(actual) });
+          console.log(`e2e:   ${((Date.now() - started) / 1000).toFixed(1)} s ${ok ? 'ok' : 'FAILED'}: ${label}`);
           if (!ok) throw new Error(`check failed: ${label} (saw: ${shorten(actual)})`);
         }
       };
-      const started = Date.now();
       // Printed as it happens, so a run that is stopped from outside still says which step it was in.
       console.log(`e2e: ${item.id} ${step.name} …`);
       let timer;

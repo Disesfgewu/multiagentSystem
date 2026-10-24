@@ -9,6 +9,18 @@
 
 const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P';
 
+/**
+ * Runs one action and, when it took longer than a second, prints how long and what it waited for (#380 review): a run that is slow
+ * or stuck then says where. `what` names the selector or the window.
+ */
+async function timed(what, action) {
+  const started = Date.now();
+  try { return await action(); } finally {
+    const took = Date.now() - started;
+    if (took > 1000) console.log(`e2e:   ${(took / 1000).toFixed(1)} s waiting for ${what}`);
+  }
+}
+
 /** A frame that does not answer (a webview in the background) is skipped: what it was asked counts as `fallback` after 3 s. */
 function bounded(promise, fallback, ms = 3000) {
   let timer;
@@ -57,12 +69,18 @@ async function drive(page, answers, done, timeoutMs = 60000) {
   const seen = [];
   let shots = 0;
   while (Date.now() < deadline) {
-    if (await done(seen)) return seen;
+    if (await timed('the flow to be done', () => done(seen))) return seen;
     const dialog = page.locator('.monaco-dialog-box:visible').first();
-    if (await dialog.isVisible().catch(() => false)) {
+    if (await timed('a dialog (.monaco-dialog-box)', () => dialog.isVisible().catch(() => false))) {
       // VS Code shows a modal's message in its detail part when the call gives no detail: read the message, else that part.
-      const textOf = async (selector) => (await dialog.locator(selector).first().innerText().catch(() => '')).trim();
-      const message = (await textOf('.dialog-message-text')) || (await textOf('.dialog-message-detail'));
+      // Only a part that is there is read, and briefly: the empty dialog box VS Code leaves behind has neither, and waiting for one
+      // would hold every round of this loop for the whole default timeout.
+      const textOf = async (selector) => {
+        const part = dialog.locator(selector).first();
+        if ((await part.count().catch(() => 0)) === 0) return '';
+        return (await part.innerText({ timeout: 1000 }).catch(() => '')).trim();
+      };
+      const message = await timed('the dialog\'s text (.dialog-message-text, .dialog-message-detail)', async () => (await textOf('.dialog-message-text')) || (await textOf('.dialog-message-detail')));
       // A dialog whose text is not drawn yet is looked at again on the next round.
       if (message !== '') {
         const rule = answers.find((entry) => entry.dialog && entry.dialog.test(message));
@@ -130,6 +148,9 @@ async function workbenchFrame(page) {
 
 /** Clicks a button of the Workbench page by its words (opening the Workbench from the side bar first when it is not open). */
 async function clickInWorkbench(page, words, { tab } = {}) {
+  return timed(`the Workbench button "${words}"${tab ? ` on ${tab}` : ''}`, () => clickInWorkbenchNow(page, words, { tab }));
+}
+async function clickInWorkbenchNow(page, words, { tab } = {}) {
   const editorTab = page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first();
   if (await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).count() === 0) {
     await page.locator('.activitybar [aria-label^="Multiagent"]').first().click();
@@ -145,6 +166,9 @@ async function clickInWorkbench(page, words, { tab } = {}) {
 
 /** The frame of the Issue or pull request page whose title has `title` (VS Code puts a webview in two nested frames). */
 async function pageFrame(page, title) {
+  return timed(`the page "${title}"`, () => pageFrameNow(page, title));
+}
+async function pageFrameNow(page, title) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
@@ -189,7 +213,9 @@ async function addClaudeAccount(page, name, signedIn) {
     { dialog: /^Add the Claude Code account/, button: 'Add and Sign In' },
     { toast: 'Sign in to Claude Code in the terminal', button: 'I have signed in — check now' }
   ], async () => counted.test(await page.locator('.sidebar').innerText().catch(() => '')), 90000);
-  await clickInWorkbench(page, 'Refresh', { tab: 'Accounts' }).catch(() => {});
+  // The Refresh button is on the Agents tab; the Accounts tab then shows what was read.
+  await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+  await (await workbenchFrame(page)).locator('button[role="tab"]', { hasText: 'Accounts' }).first().click();
   await page.waitForTimeout(1500);
   return answered;
 }
