@@ -513,6 +513,7 @@
     "check": "tsc -p . --noEmit",
     "test:unit": "npm run build && node --test --test-force-exit --test-timeout=120000 \"test/**/*.test.js\" \"out/test/unit/**/*.test.js\"",
     "test:host": "npm run build && node out/test/host/runTest.js",
+    "test:e2e": "npm run build && node test/e2e/run.js",
     "test": "npm run check && npm run test:unit",
     "vscode:prepublish": "npm run build",
     "vsix:package": "node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --out artifacts/multiagentsystem.vsix && node scripts/verify-vsix.js artifacts/multiagentsystem.vsix && node scripts/release-candidate.js artifacts/multiagentsystem.vsix artifacts/release-candidate.json"
@@ -522,6 +523,7 @@
     "@types/vscode": "1.95.0",
     "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "4.0.0",
+    "playwright-core": "1.64.0",
     "typescript": "7.0.2"
   },
   "dependencies": {

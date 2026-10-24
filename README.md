@@ -2,6 +2,8 @@
 
 在 VS Code 裡管理同一個 GitHub 專案中的多個 CLI coding agent（Claude Code、Codex CLI、agy 與自訂 CLI）。每個 agent 都在可以直接輸入的真實 terminal 中執行；PM 與 worker 依身份組分工，以 GitHub Issues／PRs 交付，並在套件內閱讀報告、review 與合併。支援 macOS 與 Windows。
 
+**第一次使用？請看[使用教學](docs/USER_GUIDE.md)**：5 分鐘入門，並依管理者驗收清單的每一項說明從哪裡點、會看到什麼（截圖由 e2e 測試自動產生）。
+
 ## 下載最新測試版：0.0.3 Beta 8
 
 **[下載 VSIX 安裝檔（Beta 8）](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.8/multiagentsystem.vsix)** · [GitHub Release 頁面](https://github.com/Disesfgewu/multiagentSystem/releases/tag/v0.0.3-beta.8) · [release-candidate.json](https://github.com/Disesfgewu/multiagentSystem/releases/download/v0.0.3-beta.8/release-candidate.json) · [安裝、升級、回復與已知限制](docs/BETA_0.0.3.md)

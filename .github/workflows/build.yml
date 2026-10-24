@@ -81,3 +81,26 @@ jobs:
       - run: node out/test/host/runTest.js
         env:
           VSCODE_VERSION: ${{ matrix.vscode }}
+
+  # The real VS Code driven with the mouse and keyboard (#361): each #360 item is clicked through and checked on the screen, with
+  # synthetic CLIs and no first-use download. The screenshots and REPORT.md are uploaded every time, so a reviewer can look at them.
+  e2e:
+    name: End-to-end screens (macos-latest, VS Code 1.95.0)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-report
+          path: artifacts/e2e/
+          if-no-files-found: warn

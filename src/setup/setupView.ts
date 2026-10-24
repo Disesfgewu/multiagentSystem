@@ -524,6 +524,8 @@ function withoutForce<T extends { force?: boolean; confirm?: string }>(options: 
   return (options.force !== undefined || options.confirm !== undefined) && !isExtensionTestMode() ? { ...options, force: undefined, confirm: undefined } : options;
 }
 
+const { skipsFirstUseDownload } = require('./firstUse') as { skipsFirstUseDownload(mode: number, env: NodeJS.ProcessEnv): boolean };
+
 export function registerSetup(context: vscode.ExtensionContext): void {
   const controller = new SetupController(context);
   active = controller;
@@ -553,5 +555,5 @@ export function registerSetup(context: vscode.ExtensionContext): void {
   );
   // Extension Host tests install a synthetic archive explicitly. Production activation performs
   // the first-use setup automatically; it never reads a URL or executable from the workspace.
-  if (context.extensionMode !== vscode.ExtensionMode.Test) void controller.autoPrepare();
+  if (!skipsFirstUseDownload(context.extensionMode, process.env)) void controller.autoPrepare();
 }
