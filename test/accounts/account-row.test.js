@@ -95,7 +95,8 @@ test('a saved check keeps the reduced identity and never an e-mail address; a re
   assert.equal(new AccountCheckStore(store).load(['acct-4']).size, 0);
 });
 
-const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/accountCommands.ts'), 'utf8');
+// Line endings normalized: a Windows checkout has CRLF, and the patterns below are written with \n.
+const source = fs.readFileSync(path.join(__dirname, '../../src/accounts/accountCommands.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 test('the e-mail address goes only to the screen: the display map is read for the row, the details, the side bar count and the Workbench card, and never stored or logged (#352, #357)', () => {
   const uses = [...source.matchAll(/checkDisplays\.(\w+)\(/g)].map((match) => match[1]);

@@ -15,7 +15,7 @@ import { registerExportCommands } from './export/commands';
 import { registerDispatchCommands } from './dispatch/commands';
 import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerCommandCenter } from './commandCenter/commandCenter';
-import { registerHomeView } from './home/homeView';
+import { registerHomeView } from './sidebar/homeView';
 import { registerOverview } from './overview/overviewView';
 import { registerReports } from './reports/reportsView';
 import { PROVIDERS, CliProvider, errorMessage, validateTerminalName } from './agents';

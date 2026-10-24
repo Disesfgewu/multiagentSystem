@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { homeItems, TABS } = require('../../src/home/model');
+const { homeItems, TABS } = require('../../src/sidebar/model');
 
 test('the side bar keeps one view: Open Workbench first, then one line each for agents, what needs you and accounts (#357)', () => {
   const items = homeItems({ agents: { running: 3, waiting: 1 }, accounts: { total: 2, signedIn: 1, attention: 1 } });

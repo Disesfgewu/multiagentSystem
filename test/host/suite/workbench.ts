@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import * as vscode from 'vscode';
 import { COMMAND_CENTER_VIEW_TYPE, commandCenterForTests } from '../../../src/commandCenter/commandCenter';
-import { HOME_VIEW, WORKBENCH_COMMAND, homeTreeForTests } from '../../../src/home/homeView';
+import { HOME_VIEW, WORKBENCH_COMMAND, homeTreeForTests } from '../../../src/sidebar/homeView';
 
 /**
  * #357 in a real Extension Host: the side bar's one view lists Open Workbench and one line each for agents, what needs the person

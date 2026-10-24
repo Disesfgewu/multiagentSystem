@@ -6,7 +6,7 @@ import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsVi
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
 import { observationsFor, ACCOUNT_COMMANDS, accountEmail, onDidChangeAccounts } from '../accounts/accountCommands';
-import { WORKBENCH_COMMAND } from '../home/homeView';
+import { WORKBENCH_COMMAND } from '../sidebar/homeView';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
