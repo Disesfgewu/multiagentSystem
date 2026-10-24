@@ -338,11 +338,13 @@ const ITEMS = [
           await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
           const frame = await workbenchFrame(page);
           await frame.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
+          // The last agent started reports its state through its hooks a moment later (#378): wait, with a limit, until every card has.
           const deadline = Date.now() + 30000;
           let text = '';
           while (Date.now() < deadline) {
             text = await frame.locator('body').innerText();
-            if (/Agents \(4\)/.test(text)) break;
+            const waiting = (await frame.locator('section[data-id]').allInnerTexts()).filter((card) => /E2E Agent/.test(card) && /waiting for input/.test(card));
+            if (/Agents \(4\)/.test(text) && waiting.length === 4) break;
             await page.waitForTimeout(500);
           }
           check('four agent cards', text, /Agents \(4\)/);
