@@ -72,6 +72,8 @@ const SCRIPT = String.raw`
     badges.appendChild(el('span', 'badge badge-' + card.status.state, card.status.text));
     // What needs a look is a small yellow tag in words (#357); the reason is in the details below.
     if (card.ide && /not connected/.test(card.ide)) badges.appendChild(el('span', 'tag tag-warn', 'VS Code not connected'));
+    // Connected to this window (#354): said as plainly as the opposite, so the owner sees /ide will work for this agent.
+    else if (card.ide && /^VS Code: connected/.test(card.ide)) badges.appendChild(el('span', 'tag tag-ok', 'VS Code connected'));
     if (card.trust && /asks once/.test(card.trust)) badges.appendChild(el('span', 'tag tag-warn', 'will ask to trust the folder'));
     if (card.permission && card.permission.attention) badges.appendChild(el('span', 'tag tag-warn', 'auto mode not in effect'));
     head.appendChild(badges);
@@ -360,6 +362,7 @@ const STYLE = `
   .badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
   .tag { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
   .tag-warn { background: transparent; color: var(--vscode-editorWarning-foreground); border: 1px solid var(--vscode-editorWarning-foreground); }
+  .tag-ok { background: transparent; color: var(--vscode-charts-green); border: 1px solid var(--vscode-charts-green); }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }

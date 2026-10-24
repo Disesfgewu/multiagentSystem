@@ -112,7 +112,17 @@
 尚未完成，見 #353、#357（Ask 分頁）。
 
 ## 6. 直接在 VS Code 上工作
-從擴充套件啟動的 Claude Code agent，現在會連到這個 VS Code 視窗（#354）。agent 卡片上會顯示 `VS Code: connected through this window's Claude Code port (…)`。連不上時，會顯示原因與下一步。e2e 步驟與截圖之後補上。
+**要做什麼**：讓從工作台啟動的 Claude Code agent 連到這個 VS Code 視窗，在 agent 的終端機輸入 `/ide` 時，它看得到你開的檔案，改動也會以 diff 顯示在這個視窗。
+
+**前提**：這個 VS Code 視窗裝了並啟用 Claude Code 擴充套件。它會在 `~/.claude/ide/` 留下一個鎖檔，裡面寫著它的 port 和這個視窗開的資料夾。本擴充套件只讀 port、資料夾和程序編號（用來確認那個視窗還開著），不讀也不轉送裡面的 token。
+
+**從哪裡點**：工作台 → **Agents** → **Start agent…**，和平常一樣啟動。
+
+**會看到什麼**：卡片右上角有綠色的 **VS Code connected**；**Details** 裡寫著 `VS Code: connected through this window's Claude Code port (…)`。連不上時，卡片改成黃色的 **VS Code not connected**，Details 寫原因與下一步。
+
+![agent 連到這個視窗](user-guide/images/06-start-connected-agent.png)
+
+e2e 的環境沒有 Claude Code 擴充套件，所以鎖檔由 e2e 自己寫；在真機上輸入 `/ide` 並看到 diff 的部分列在 #135。
 
 **常見問題**：卡片顯示 `VS Code: not connected (no VS Code window has registered with Claude Code …)`。
 - 原因：VS Code 的 Claude Code 擴充套件沒有安裝或沒有啟用。
