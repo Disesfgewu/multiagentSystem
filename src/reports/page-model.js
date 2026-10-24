@@ -108,6 +108,8 @@ function buildPageModel(input) {
     posts: posts.slice(-MAX_POSTS),
     pr,
     notes,
+    // How the comments were read ('ok', 'rate_limited', …): when to read again depends on it.
+    commentsRead: input.comments && typeof input.comments.kind === 'string' ? line(input.comments.kind, 30) : 'not read',
     links
   };
 }

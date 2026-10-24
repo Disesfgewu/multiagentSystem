@@ -561,7 +561,7 @@ const ITEMS = [
     title: 'Issues and pull requests shown like GitHub',
     issue: '#353',
     acceptance: 'not-done',
-    pending: '#353: comment from the page, Comment and tell PM, Discuss with PM, and review, merge and close from the page (the next PRs)',
+    pending: '#353: review, merge and close from the page (the next PR); a comment is published only with a signed-in GitHub account, so posting is checked by the host tests and the real-repository walk-through (#135)',
     steps: [
       {
         name: 'open-issue-page',
@@ -611,6 +611,48 @@ const ITEMS = [
           while (Date.now() < deadline && !/github-page\.js/.test(await tab.innerText().catch(() => ''))) await page.waitForTimeout(250);
           check('the file\'s diff opens in the editor', await tab.innerText(), /github-page\.js/);
           check('with the lines the pull request adds', await page.locator('.editor-instance .view-lines').first().innerText(), /Built\s+with\s+textContent\s+only/); // the editor draws spaces as non-breaking ones
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'write-comment',
+        does: 'Back on "Issue #12", type "**Thanks**, please summarise the open points." in the comment box at the bottom and click "Preview".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).first().click();
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          check('the comment box is there, with both buttons', (await frame.locator('.composer .btn').allInnerTexts()).join(' | '), 'Write | Preview | Comment | Comment and tell PM');
+          check('it says what happens to a comment', await frame.locator('.composer').innerText(), /checked for private information, shown whole for confirmation, and only then published/);
+          const box = frame.locator('textarea.comment-box');
+          await box.fill('**Thanks**, please summarise the open points.');
+          await frame.locator('.composer .btn', { hasText: 'Preview' }).click();
+          await frame.locator('.composer .preview strong').first().waitFor({ timeout: 10000 });
+          check('the preview draws the Markdown as the page does', await frame.locator('.composer .preview').innerText(), /Thanks, please summarise the open points\./);
+          check('in bold where it was asked for', await frame.locator('.composer .preview strong').first().innerText(), 'Thanks');
+        }
+      },
+      {
+        name: 'ask-agent',
+        does: 'On Worker-01\'s comment click "Ask an agent…", choose "E2E Agent 1", read the window and click "Send Now".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          const post = frame.locator('.post', { hasText: 'I will start with the read-only page' }).first();
+          await post.locator('.btn', { hasText: 'Ask an agent…' }).click();
+          const answered = await drive(page, [
+            { when: /Which agent should read it and reply on Issue #12/, pick: 'E2E Agent 1' },
+            { dialog: /Ask this agent to read this post on Issue #12 and reply there/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('it asked which agent, then asked before typing anything', answered.join(' | '), /pick: [\s\S]*E2E Agent 1[\s\S]*dialog: Ask this agent to read this post on Issue #12 and reply there\? → Send Now/);
+          // What reached the agent is one line of numbers: the Issue and the comment id, never the comment's text.
+          await page.locator('.tabs-container .tab', { hasText: 'E2E Agent 1' }).first().click();
+          const deadline = Date.now() + 20000;
+          let terminal = '';
+          while (Date.now() < deadline) {
+            terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
+            if (/ID\s*1201/.test(terminal)) break;
+            await page.waitForTimeout(300);
+          }
+          check('the agent got one line naming Issue #12 and comment 1201', terminal.replace(/\s+/g, ''), /管理者請你閱讀Issue#12的留言（ID1201），並在Issue#12回覆你的看法。/);
+          check('and not the comment\'s text', terminal, (text) => !/read-only page: /.test(text));
           await clearNotifications(page);
         }
       }

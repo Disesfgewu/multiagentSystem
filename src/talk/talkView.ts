@@ -3,12 +3,14 @@ import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { isExtensionTestMode } from '../shared/testMode';
 import { confirmAndType, openStore } from '../dispatch/commands';
-import { currentReportDeps, OWNER_NOT_RECORDED, REPORT_SCHEME } from '../reports/reportsView';
+import { currentReportDeps, OWNER_NOT_RECORDED, REPORT_COMMANDS, REPORT_SCHEME } from '../reports/reportsView';
+import { setPageActions } from '../reports/githubPage';
 import { sendPublicFeedback } from '../reports/publicFeedback';
 import { privateStorage } from '../storage/storageCommands';
 
-const { buildNotifyPrompt, renderConversation, newComments, nextPoll, POLL_MS } = require('./conversation') as {
+const { buildNotifyPrompt, buildPostPrompt, renderConversation, newComments, nextPoll, POLL_MS } = require('./conversation') as {
   buildNotifyPrompt(input: unknown): { ok: true; prompt: string } | { ok: false; reason: string };
+  buildPostPrompt(input: unknown): { ok: true; prompt: string } | { ok: false; reason: string };
   renderConversation(input: unknown): string;
   newComments(seen: Set<number> | null, comments: unknown, ownerPosts: unknown): { ok: boolean; fresh: Array<{ id: number; author: { who: string; text: string } }>; seen: Set<number> | null };
   nextPoll(input: unknown): { delayMs: number; note: string };
@@ -197,12 +199,12 @@ async function chooseTarget(): Promise<Target | undefined> {
   return (await vscode.window.showQuickPick(items, { placeHolder: 'Talk to the PM on which Issue or pull request?', matchOnDescription: true }))?.target;
 }
 
+// Talk to PM via GitHub opens the Issue or pull request page (#353), where the conversation is shown and the comment box is.
 async function openConversation(): Promise<void> {
   if (!deps.trusted()) { void vscode.window.showWarningMessage('Trust this workspace before talking to the PM through GitHub.'); return; }
   const target = await chooseTarget();
   if (!target) return;
-  const document = await vscode.workspace.openTextDocument(talkUri(target));
-  await vscode.window.showTextDocument(document, { preview: false });
+  await vscode.commands.executeCommand(REPORT_COMMANDS.openPage, target);
 }
 
 /** What the comment's version is now (the report's evidence version): the same check the report page's publishing makes. */
@@ -218,53 +220,83 @@ async function currentVersion(repository: string, target: Target): Promise<strin
 }
 
 /**
- * Send Message. The order is what makes it safe: post (privacy check and confirmation inside), read the comment back from GitHub,
- * and only when it is there with exactly the text that was sent, offer to tell the PM agent. A comment that was not posted, or cannot
- * be found, tells nobody anything.
+ * Posting a comment, and telling the PM only once GitHub shows it. The order is what makes it safe: post (privacy check and
+ * confirmation inside), read the comment back from GitHub, and only when it is there with exactly the text that was sent, offer to tell
+ * the PM agent. A comment that was not posted, or cannot be found, tells nobody anything. `typed` is the text written in the Issue or
+ * pull request page (#353); without it the input box asks. Without `tellPm` the comment is posted and nobody is told.
  */
-async function sendMessage(sessions: SessionCommands, uri: vscode.Uri | undefined): Promise<{ ok: boolean; code?: string }> {
-  if (!deps.trusted()) { void vscode.window.showWarningMessage('Trust this workspace before talking to the PM through GitHub.'); return { ok: false, code: 'untrusted' }; }
-  const target = uri && uri.scheme === TALK_SCHEME ? targetOf(uri) : null;
-  if (!uri || !target) { void vscode.window.showInformationMessage('Open a conversation first (Talk to PM via GitHub).'); return { ok: false, code: 'no-conversation' }; }
+export async function commentOnGitHub(sessions: SessionCommands, target: Target, options: { typed?: string; tellPm: boolean; afterPost?: () => void }): Promise<{ ok: boolean; code?: string }> {
+  if (!deps.trusted()) { void vscode.window.showWarningMessage('Trust this workspace before writing on GitHub.'); return { ok: false, code: 'untrusted' }; }
   const report = currentReportDeps();
   const repository = await report.repository();
   if (!repository) { void vscode.window.showErrorMessage('No GitHub project is open.'); return { ok: false, code: 'no-repository' }; }
   const version = await currentVersion(repository, target);
   if (!version) { void vscode.window.showErrorMessage(`${where(target)} could not be read, so nothing was sent.`); return { ok: false, code: 'target-unreadable' }; }
-  const sent = await deps.send({ repository, kind: target.kind, number: target.number, version }, { interactive: true, conversation: true });
+  const sent = await deps.send({ repository, kind: target.kind, number: target.number, version }, { interactive: true, conversation: true, ...(options.typed !== undefined ? { typed: options.typed } : {}) });
   if (!sent.ok) {
-    if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The message was not sent (${sent.code ?? 'unknown'}). The PM was not told.`);
+    if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The comment was not sent (${sent.code ?? 'unknown'}).${options.tellPm ? ' The PM was not told.' : ''}`);
     return { ok: false, code: sent.code };
   }
+  options.afterPost?.();
   // Posted, but not recorded as the owner's (#346): the report will show it as unsigned. Said once, whatever happens next.
   if (sent.ownerRecorded === false && sent.commentId !== undefined) void vscode.window.showWarningMessage(`Your comment was posted.${OWNER_NOT_RECORDED}`);
   if (sent.commentId === undefined || typeof sent.body !== 'string') {
-    void vscode.window.showInformationMessage('This exact message was already sent before; the PM was not told again.');
+    void vscode.window.showInformationMessage(`This exact comment was already sent before${options.tellPm ? '; the PM was not told again' : ''}.`);
     return { ok: true, code: 'already-sent' };
   }
+  if (!options.tellPm) return { ok: true, code: 'posted' };
   // Read back from GitHub, past any cache: the PM is told only about a comment that is really there, with exactly the sent text.
   const reader = report.readerFor(repository);
   const back = reader ? await reader.getIssueComments(target.number, { forceRefresh: true }) : null;
   const items = back && (back.kind === 'ok' || back.kind === 'empty') && Array.isArray(back.data) ? back.data : null;
   const there = items !== null && items.some((item: any) => item && item.id === sent.commentId && item.body === sent.body);
-  void content.read(uri, { force: true });
   if (!there) {
     void vscode.window.showErrorMessage(`Your comment was posted but could not be read back from GitHub${back ? ` (${back.kind})` : ''}, so the PM agent was not told. Read the conversation again and tell the PM by hand if needed.`);
     return { ok: false, code: 'not-read-back' };
   }
   const notify = buildNotifyPrompt({ kind: target.kind, number: target.number, commentId: sent.commentId });
   if (!notify.ok) return { ok: false, code: notify.reason };
+  return typeToAgents(sessions, notify.prompt, { scope: 'role', role: 'pm' }, `Your comment is on ${where(target)}. Tell the PM agent to read it and reply there?`, 'pm-told', 'pm-not-told');
+}
+
+/** Types one line (numbers only) into the chosen agents, with `confirmAndType`'s own confirmation. */
+async function typeToAgents(sessions: SessionCommands, prompt: string, recipients: Target2, title: string, told: string, notTold: string): Promise<{ ok: boolean; code?: string }> {
   const opened = await openStore();
   if (!opened) return { ok: false, code: 'storage-unavailable' };
-  const roleOf = (session: { roleGroupId?: string }): string | undefined => {
-    if (!session.roleGroupId || session.roleGroupId === 'unassigned') return undefined;
-    try { const loaded = opened.get('roleGroups', session.roleGroupId); return loaded?.ok && loaded.found ? loaded.value?.group?.role : undefined; } catch { return undefined; }
-  };
-  const results = await confirmAndType({
-    sessions, roleOf, task: { prompt: notify.prompt, kind: 'talk', issueNumber: null }, target: { scope: 'role', role: 'pm' },
-    title: `Your comment is on ${where(target)}. Tell the PM agent to read it and reply there?`
-  });
-  return { ok: true, code: results && results.some((entry) => entry.outcome === 'sent') ? 'pm-told' : 'pm-not-told' };
+  const results = await confirmAndType({ sessions, roleOf: roleReader(opened), task: { prompt, kind: 'talk', issueNumber: null }, target: recipients, title });
+  return { ok: true, code: results && results.some((entry) => entry.outcome === 'sent') ? told : notTold };
+}
+type Target2 = Parameters<typeof confirmAndType>[0]['target'];
+const roleReader = (opened: any) => (session: { roleGroupId?: string }): string | undefined => {
+  if (!session.roleGroupId || session.roleGroupId === 'unassigned') return undefined;
+  try { const loaded = opened.get('roleGroups', session.roleGroupId); return loaded?.ok && loaded.found ? loaded.value?.group?.role : undefined; } catch { return undefined; }
+};
+
+/**
+ * Discuss with PM / Ask an agent (#353): the owner points an agent at one post of an Issue or PR. The agent is the PM, or one open
+ * session the owner picks; the line typed is built from numbers alone (`buildPostPrompt`) and `confirmAndType` asks first.
+ */
+export async function askAboutPost(sessions: SessionCommands, target: Target, post: { post: 'comment' | 'review' | 'inline'; id: number }, who: 'pm' | 'agent'): Promise<{ ok: boolean; code?: string }> {
+  if (!deps.trusted()) { void vscode.window.showWarningMessage('Trust this workspace before asking an agent.'); return { ok: false, code: 'untrusted' }; }
+  const made = buildPostPrompt({ kind: target.kind, number: target.number, post: post.post, postId: post.id });
+  if (!made.ok) return { ok: false, code: made.reason };
+  let recipients: Target2 = { scope: 'role', role: 'pm' };
+  if (who === 'agent') {
+    const open = sessions.list().filter((session) => session.terminalOpen);
+    if (open.length === 0) { void vscode.window.showInformationMessage('No agent has an open terminal to ask.'); return { ok: false, code: 'no-agent' }; }
+    const picked = await vscode.window.showQuickPick(open.map((session) => ({ label: session.codename ? `${session.codename} · ${session.name}` : session.name, description: `${session.provider} · ${session.stateLabel}`, id: session.id })), { placeHolder: `Which agent should read it and reply on ${where(target)}?`, ignoreFocusOut: true });
+    if (!picked) return { ok: false, code: 'cancelled' };
+    recipients = { scope: 'sessions', ids: [picked.id] };
+  }
+  return typeToAgents(sessions, made.prompt, recipients, `Ask ${who === 'pm' ? 'the PM agent' : 'this agent'} to read this post on ${where(target)} and reply there?`, 'agent-told', 'agent-not-told');
+}
+
+/** Send Message of the conversation document: the input box asks for the text, and the PM is told once GitHub shows it. */
+async function sendMessage(sessions: SessionCommands, uri: vscode.Uri | undefined): Promise<{ ok: boolean; code?: string }> {
+  if (!deps.trusted()) { void vscode.window.showWarningMessage('Trust this workspace before talking to the PM through GitHub.'); return { ok: false, code: 'untrusted' }; }
+  const target = uri && uri.scheme === TALK_SCHEME ? targetOf(uri) : null;
+  if (!uri || !target) { void vscode.window.showInformationMessage('Open a conversation first (Talk to PM via GitHub).'); return { ok: false, code: 'no-conversation' }; }
+  return commentOnGitHub(sessions, target, { tellPm: true, afterPost: () => { void content.read(uri, { force: true }); } });
 }
 
 /** Replaces parts of the outside world: only in the extension's own host tests. */
@@ -284,6 +316,12 @@ export function readForTests(uri: vscode.Uri): Promise<void> {
 }
 
 export function registerTalkCommands(context: vscode.ExtensionContext, sessions: SessionCommands): void {
+  // What the Issue and pull request page (#353) can do that writes or types: each is a function here, with all of its checks.
+  setPageActions({
+    trusted: () => deps.trusted(),
+    comment: (target, text, tellPm, afterPost) => commentOnGitHub(sessions, target, { typed: text, tellPm, afterPost }),
+    ask: (target, post, who) => askAboutPost(sessions, target, post, who)
+  });
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(TALK_SCHEME, content),
     // No argument is read by any of these: which conversation, the text and every confirmation come from this window.
