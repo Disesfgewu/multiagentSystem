@@ -126,15 +126,6 @@ export function formatShellCommandLine(
 }
 
 /**
- * What goes in front of a typed command line so that `dir` comes first on PATH for that program (issue #342: the per-session `gh`
- * wrapper). It is typed after the shell has read its profile, which may have reordered PATH (macOS login shells do).
- * - POSIX: `PATH='<dir>':"$PATH" ` applies to the one program typed after it.
- * - PowerShell: sets the terminal's own PATH and the process-only script policy (`RemoteSigned`, so the `gh.ps1` shim can run).
- * - cmd.exe: the same two for the program started after it. The CLI runs its own commands through Git Bash or PowerShell, which
- *   inherit them and find the shims; only `gh` typed into cmd.exe itself is not wrapped. Null for a folder cmd.exe would read
- *   differently (`%`, `^`, `"` and the like), which is refused rather than quoted.
- */
-/**
  * What goes in front of a typed command line so the screen shows a short line instead of the long command (#357): the screen is
  * cleared once the shell has read the line, and `note` is printed. The command itself is unchanged. A note with anything but plain
  * letters, digits, spaces and . : ( ) - is not printed (cmd.exe would read some of them), the screen is still cleared.
@@ -146,6 +137,15 @@ export function formatClearPrefix(note: string, shellType: ShellType): string {
   return `clear 2>/dev/null; ${plain ? `printf '%s\\n' ${quotePosix(plain)}; ` : ''}`;
 }
 
+/**
+ * What goes in front of a typed command line so that `dir` comes first on PATH for that program (issue #342: the per-session `gh`
+ * wrapper). It is typed after the shell has read its profile, which may have reordered PATH (macOS login shells do).
+ * - POSIX: `PATH='<dir>':"$PATH" ` applies to the one program typed after it.
+ * - PowerShell: sets the terminal's own PATH and the process-only script policy (`RemoteSigned`, so the `gh.ps1` shim can run).
+ * - cmd.exe: the same two for the program started after it. The CLI runs its own commands through Git Bash or PowerShell, which
+ *   inherit them and find the shims; only `gh` typed into cmd.exe itself is not wrapped. Null for a folder cmd.exe would read
+ *   differently (`%`, `^`, `"` and the like), which is refused rather than quoted.
+ */
 export function formatPathPrefix(dir: string, shellType: ShellType): string | null {
   assertNoControlChars(dir, 'path');
   if (dir.trim() === '') throw new TypeError('path must not be empty');

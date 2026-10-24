@@ -33,7 +33,7 @@ test('a terminal that exists is not "working": without hook evidence the state i
   for (const deliveryState of [undefined, null, { state: 'unknown', reason: 'no-hook-bridge', since: null }, { state: 'bogus' }, 'working', 5]) {
     const status = statusOf(session({ deliveryState }));
     assert.equal(status.state, 'unknown', JSON.stringify(deliveryState));
-    assert.equal(status.text, 'state unknown');
+    assert.equal(status.text, 'not reported yet');
   }
   assert.match(statusOf(session({ deliveryState: { state: 'unknown', reason: 'no-hook-bridge', since: null } })).source, /no hook evidence \(no-hook-bridge\)/);
   for (const state of ['waiting', 'ended']) assert.equal(statusOf(session({ deliveryState: hook(state) })).state, state);
@@ -280,9 +280,9 @@ test('the PM card carries the same report lines, so the pinned panel shows the l
   assert.deepEqual(built.pm[0].report.lines, ['Latest report (PR #9): no structured PM report yet', 'Review: approval approved · CI passing · 1 unresolved thread']);
 });
 
-test('the state text of every state is what the person reads: working, waiting for input, ended, state unknown', () => {
+test('the state text of every state is what the person reads: working, waiting for input, ended, not reported yet', () => {
   for (const [state, text] of [['working', 'working'], ['waiting', 'waiting for input'], ['ended', 'ended']]) assert.equal(statusOf(session({ deliveryState: hook(state) })).text, text, state);
-  assert.equal(statusOf(session({ deliveryState: undefined })).text, 'state unknown');
+  assert.equal(statusOf(session({ deliveryState: undefined })).text, 'not reported yet');
   assert.deepEqual(buildCards({ sessions: ['working', 'waiting', 'ended'].map((state) => session({ id: `s-${state}`, deliveryState: hook(state) })) }).agents.map((card) => card.status.text).sort(), ['ended', 'waiting for input', 'working']);
 });
 
