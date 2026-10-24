@@ -47,6 +47,9 @@ class Recorder {
       // Printed as it happens, so a run that is stopped from outside still says which step it was in.
       console.log(`e2e: ${item.id} ${step.name} …`);
       let timer;
+      globalThis.e2eLastAction = 'none yet';
+      // A heartbeat while the step runs: how long it has run and the last action it started or finished (#385).
+      const heartbeat = setInterval(() => console.log(`e2e:   … ${item.id} ${step.name} running for ${Math.round((Date.now() - started) / 1000)} s; last: ${globalThis.e2eLastAction}`), 15000);
       try {
         // A step that does not finish in time fails, with a screenshot, instead of holding the whole run (#353, PR #380 review).
         await Promise.race([
@@ -54,10 +57,12 @@ class Recorder {
           new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`the step did not finish in ${this.stepLimitMs / 1000} s`)), this.stepLimitMs); })
         ]);
         clearTimeout(timer);
+        clearInterval(heartbeat);
         await page.screenshot({ path: path.join(this.out, file) });
         entry.screenshot = file;
       } catch (error) {
         clearTimeout(timer);
+        clearInterval(heartbeat);
         entry.error = String(error && error.message ? error.message : error).split('\n')[0].slice(0, 400);
         console.log(`e2e: ${item.id} ${step.name} failed after ${Math.round((Date.now() - started) / 1000)} s: ${entry.error}`);
         const failed = `${item.id}-${step.name}-failed.png`;
