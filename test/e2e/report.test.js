@@ -56,7 +56,7 @@ test('an item is either accepted with nothing pending, or not done with what is 
   assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '01', '11', '02', '03']);
   // #352: item 03 adds a Codex account, sets a role group's default account, starts with it and switches an agent's account.
   const three = ITEMS.find((item) => item.id === '03');
-  assert.deepEqual(three.steps.map((step) => step.name), ['add-codex-account', 'set-default-account', 'see-default-first', 'start-with-default', 'switch-account']);
+  assert.deepEqual(three.steps.map((step) => step.name), ['add-codex-account', 'set-default-account', 'see-default-first', 'start-with-default', 'confirm-switch', 'switch-account']);
   const eleven = ITEMS.find((item) => item.id === '11');
   assert.ok(eleven.steps.some((step) => step.name === 'start-four-agents') && eleven.steps.some((step) => step.name === 'see-four-cards'), 'item 11 starts four agents and looks at their cards');
 });

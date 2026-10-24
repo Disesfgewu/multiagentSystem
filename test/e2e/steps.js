@@ -151,6 +151,9 @@ async function addClaudeAccount(page, name, signedIn) {
 }
 
 const ROLE = 'E2E Developers';
+// The codename at the start of a card ("Worker-05 · E2E Agent 5"), and the one the switched agent had before.
+const CODENAME = /\b([A-Z][A-Za-z]*-\d{2,4}) · E2E Agent 5/;
+const switched = { codename: null };
 const CODEX = 'Codex A';
 
 /** The rows of the list (quick pick) on the screen, top first, when its placeholder matches `when`; null when it is not shown. */
@@ -483,23 +486,38 @@ const ITEMS = [
         }
       },
       {
-        name: 'switch-account',
-        does: 'On the card of "E2E Agent 5" click "Switch account…", choose "Work A", read what will happen and click "Restart with This Account".',
-        run: async ({ page, check, box }) => {
-          const before = agentStarts(box).length;
+        name: 'confirm-switch',
+        does: 'On the card of "E2E Agent 5" (account "Work B") click "Switch account…", choose "Work A", and read the window that asks before anything stops.',
+        run: async ({ page, check }) => {
           await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
           const frame = await workbenchFrame(page);
           await frame.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
-          await frame.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().locator('button', { hasText: 'Switch account…' }).first().click();
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first();
+          const text = await card.innerText();
+          check('the card uses "Work B" before the switch', text, /Account: Work B \(owner-b@example\.test\)/);
+          switched.codename = (CODENAME.exec(text) ?? [])[1] ?? null;
+          check('and has a codename', switched.codename, (value) => typeof value === 'string');
+          await card.locator('button', { hasText: 'Switch account…' }).first().click();
           const rows = await waitForList(page, /Restart “E2E Agent 5” with which account/);
-          check('the list offers the other accounts, not the one it uses', rows.join(' | '), (text) => /Work A/.test(text) && !/Work B/.test(text));
+          check('the list offers the other accounts, not the one it uses', rows.join(' | '), (value) => /Work A/.test(value) && !/Work B/.test(value));
+          await drive(page, [{ when: /Restart “E2E Agent 5” with which account/, pick: ACCOUNT }], async (seen) => seen.length > 0, 30000);
+          const dialog = page.locator('.monaco-dialog-box', { hasText: 'Restart “E2E Agent 5” with the account “Work A”?' }).first();
+          await dialog.waitFor({ state: 'visible', timeout: 30000 });
+          check('it asks first, in a window of its own, saying what happens', await dialog.innerText(), (value) => /Restart “E2E Agent 5” with the account “Work A”\?/.test(value) && /same folder/.test(value) && /Restart with This Account/.test(value));
+          // The window stays open: the picture shows it over the card that still says "Work B"; the next step answers it.
+        }
+      },
+      {
+        name: 'switch-account',
+        does: 'Click "Restart with This Account".',
+        run: async ({ page, check, box }) => {
+          const before = agentStarts(box).length;
           const answered = await drive(page, [
-            { when: /Restart “E2E Agent 5” with which account/, pick: ACCOUNT },
             { dialog: /^Restart “E2E Agent 5” with the account “Work A”/, button: 'Restart with This Account' },
             ...START_ANSWERS
           ], async () => agentStarts(box).length > before, 90000);
-          check('it asked first, in a window of its own', answered.join(' | '), /dialog: Restart “E2E Agent 5” with the account “Work A”\? → Restart with This Account/);
-          check('the agent was started again with the account folder of "Work A"', require('node:path').basename(agentStarts(box).at(-1).configDir), (name) => !/work-b/i.test(name));
+          check('the agent restarted after the confirmation', answered[0] ?? '', /dialog: Restart “E2E Agent 5” with the account “Work A”\? → Restart with This Account/);
+          check('with the account folder of "Work A"', require('node:path').basename(agentStarts(box).at(-1).configDir), (name) => !/work-b/i.test(name));
           await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
           const again = await workbenchFrame(page);
           const deadline = Date.now() + 30000;
@@ -510,6 +528,8 @@ const ITEMS = [
             await page.waitForTimeout(500);
           }
           check('one card for it, now with "Work A"', cards.length === 1 && /Account: Work A \(owner-a@example\.test\)/.test(cards[0]), true);
+          check('it keeps its codename, so its GitHub signature does not change', (CODENAME.exec(cards[0] ?? '') ?? [])[1] ?? null, switched.codename);
+          await again.locator('section[data-id]', { hasText: 'E2E Agent 5' }).first().scrollIntoViewIfNeeded();
           await clearNotifications(page);
         }
       }
