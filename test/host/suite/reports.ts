@@ -69,7 +69,7 @@ export async function runReportChecks(): Promise<string> {
     assert.match(String(stale[0].label), /待我決策／待補證據 \(2\)/, 'old-head pass remains pending');
     setReportDepsForTests({ repository: async () => 'host/repo', readerFor: () => fakeReader() });
     const first = ((await reportTreeForTests('issue').getChildren(issueSections[0])) ?? [])[0];
-    assert.equal((first.command as { command?: string }).command, REPORT_COMMANDS.open, 'a list entry opens its report');
+    assert.equal((first.command as { command?: string }).command, REPORT_COMMANDS.openPage, 'a list entry opens its page (#353)');
 
     // a report opens in the editor with no number typed and no browser
     const opened = await vscode.commands.executeCommand<{ ok: boolean }>(REPORT_COMMANDS.open, { kind: 'issue', number: 12 });

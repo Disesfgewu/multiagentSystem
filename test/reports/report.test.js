@@ -93,9 +93,11 @@ test('the structured file list exposed alongside the report matches exactly what
   const files = ok([{ filename: 'src/x.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }, { filename: 'README.md', status: 'added', additions: 1, deletions: 0 }]);
   const built = buildPr({ files });
   assert.deepEqual(built.files, [
-    { filename: 'src/x.ts', path: 'src/x.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new' },
-    { filename: 'README.md', path: 'README.md', status: 'added', patch: null }
+    { filename: 'src/x.ts', path: 'src/x.ts', status: 'modified', patch: '@@ -1 +1 @@\n-old\n+new', additions: 1, deletions: 1 },
+    { filename: 'README.md', path: 'README.md', status: 'added', patch: null, additions: 1, deletions: 0 }
   ]);
+  // The counts are the ones the report shows; a count GitHub did not give is null, never 0 (#353 page).
+  assert.deepEqual(buildPr({ files: ok([{ filename: 'a.bin', status: 'added' }]) }).files.map((entry) => [entry.additions, entry.deletions]), [[null, null]]);
 });
 
 test('a file has a real repository path only when showing its name changed nothing, so it can be looked up on disk', () => {

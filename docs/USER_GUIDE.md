@@ -122,7 +122,36 @@
 尚未完成，見 #357（Broadcast 分頁）。
 
 ## 8. PR 與 Issue 像 GitHub 一樣呈現
-尚未完成，見 #353。
+
+**要做什麼**：在 VS Code 裡讀 Issue 和 PR，看起來像在 GitHub 上一樣。
+
+**從哪裡點**：工作台 → **Work** → **Open Issue or pull request…** → 從清單選一個（清單列出這個專案所有開啟中的 Issue 和 PR）。也可以用 Command Palette 的 `Multiagent: Open Issue or Pull Request Page`。舊的 Issues／PRs 報告清單點下去，開的也是這個頁面。
+
+**會看到什麼**：編輯區多一個分頁，例如 **Issue #12**。
+- 最上面是標題、狀態（open、closed、merged、draft）、標籤、誰在什麼時候開的。
+- 內文和每一則留言都會渲染 Markdown：標題、清單、勾選清單、粗體、程式碼、程式碼區塊、表格、引用、連結。
+- 每則留言的標頭都有一個徽章，寫著是誰寫的：`管理者`、`PM-01（自稱）`、`Worker-01（自稱）` 或 `未署名`。`管理者` 只出現在你從 VS Code 發出、之後也沒有被改過的留言上；`（自稱）` 表示是 agent 自己在第一行署的名字，只是它的說法，不是證明（所有 agent 和你共用同一個 GitHub 帳號）。徽章在留言內容的外面，所以留言裡就算打了 HTML，假裝成「管理者」徽章或 **Approve** 按鈕，也只會照原樣顯示成文字。
+
+![Issue 頁面](user-guide/images/08-open-issue-page.png)
+
+PR 頁面還會顯示：
+- head 的 commit、分支、CI 狀態與 review 狀態。
+- review 和留言依時間排在一起。
+- **Files changed**：點檔名就會開啟那個檔案的 diff，和文字報告裡點檔名一樣。
+- **Review comments on lines**：每則都寫著檔案和行號，按 **Go to …** 就會跳到 diff 的那一行。
+
+![PR 頁面](user-guide/images/08-open-pr-page.png)
+
+![點檔名開啟 diff](user-guide/images/08-open-file-diff.png)
+
+頁面上方有三個按鈕：**Refresh**（重新讀取）、**Open on GitHub**、**Open as text report**（原本的純文字報告，裡面有私人筆記、合併權限等資訊）。
+
+**安全**：GitHub 上的文字都不可信，因為 repo 是公開的。所以：
+- 頁面不載入任何外部資源。
+- 連結只接受 https 開頭的網址，或這個 repo 裡的路徑，而且一定在瀏覽器開啟。
+- 圖片不會載入，只會出現一個按鈕，按了才在瀏覽器開啟。這樣就沒有人能從圖片知道你讀過這則留言。
+
+**還不能做的事**：在頁面上留言、通知 PM、Discuss with PM、review、合併、關閉，會在 #353 接下來的 PR 加入。在那之前，請照舊用文字報告上方的按鈕。
 
 ## 9. 危險自動模式與模型切換
 尚未完成，見 #358。

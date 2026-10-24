@@ -78,7 +78,10 @@ function sandbox() {
     'terminal.integrated.env.osx': { PATH, PS1: '$ ', ENV: '' },
     'terminal.integrated.env.linux': { PATH, PS1: '$ ', ENV: '' }
   }, null, 2));
-  return { root, workspace, home, userData, extensions, bin, fakes, PATH };
+  // The synthetic GitHub the Issue and pull request pages read (#353); the extension reads it only in this run.
+  const github = path.join(root, 'github.json');
+  fs.writeFileSync(github, JSON.stringify(require('./github-fixture').fixture(), null, 2));
+  return { root, workspace, home, userData, extensions, bin, fakes, PATH, github };
 }
 
 async function main() {
@@ -99,7 +102,7 @@ async function main() {
       '--disable-workspace-trust',
       '--no-cached-data'
     ],
-    env: { ...process.env, HOME: box.home, USERPROFILE: box.home, PATH: box.PATH, CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', ELECTRON_RUN_AS_NODE: '', MULTIAGENT_E2E_NO_DOWNLOAD: '1', HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9', NO_PROXY: '' },
+    env: { ...process.env, HOME: box.home, USERPROFILE: box.home, PATH: box.PATH, CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', ELECTRON_RUN_AS_NODE: '', MULTIAGENT_E2E_NO_DOWNLOAD: '1', MULTIAGENT_E2E_GITHUB: box.github, HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9', NO_PROXY: '' },
     timeout: 120000
   });
   const recorder = new Recorder(OUT);
