@@ -196,14 +196,15 @@ async function create(): Promise<void> {
   const template = picked.template;
   let roleId: string | undefined;
   if (template.role === null) {
-    roleId = await vscode.window.showInputBox({ prompt: `Role id: ${fieldHelp('role')} Use lowercase letters, digits and hyphens.`,
+    roleId = await vscode.window.showInputBox({ prompt: `Role id: ${fieldHelp('role')} Use lowercase letters, digits and hyphens.`, ignoreFocusOut: true,
       validateInput: (text) => /^[a-z][a-z0-9-]{0,31}$/.test(text) ? undefined : 'Use a lowercase role id such as researcher.' });
     if (!roleId) return;
   }
   const provider = await vscode.window.showQuickPick(roleProviderChoices(),
     { placeHolder: fieldHelp('provider') ?? 'Choose the CLI provider', ignoreFocusOut: true });
   if (!provider) return;
-  const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: template.defaultName,
+  // Kept open when the focus moves (#357): opened from the Workbench, the page takes the focus back as the list before it closes.
+  const name = await vscode.window.showInputBox({ prompt: fieldHelp('name') ?? 'Role group name', value: template.defaultName, ignoreFocusOut: true,
     validateInput: (text) => text.trim() ? undefined : 'Enter a name.' });
   if (!name) return;
   const built = buildFromTemplate({ templateId: template.id, provider: provider.id, name, role: roleId, newId: `role-${randomUUID()}` });

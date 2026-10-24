@@ -219,7 +219,8 @@ const SCRIPT = String.raw`
     }
     pm.appendChild(decisionLines(state.decisions));
     layout.appendChild(pm);
-    var rest = el('main', 'agents ' + state.layout.mode);
+    // Not "agents grid": the .grid rule below lays out the cards, and would also have put the heading into a column of its own.
+    var rest = el('main', 'agents agents-' + state.layout.mode);
     rest.appendChild(el('h2', null, 'Agents (' + state.agents.length + ')'));
     if (state.agents.length === 0) {
       rest.appendChild(el('p', 'muted', 'No other agents are running.'));

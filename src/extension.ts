@@ -66,6 +66,7 @@ async function launchAgent(): Promise<void> {
   const name = await vscode.window.showInputBox({
     prompt: 'Terminal name',
     value: provider.label,
+    ignoreFocusOut: true,
     validateInput: validateTerminalName
   });
   if (!name) return;

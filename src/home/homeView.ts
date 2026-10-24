@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
-import { accountsAtAGlance } from '../accounts/accountCommands';
+import { accountsAtAGlance, onDidChangeAccounts } from '../accounts/accountCommands';
 
 const { homeItems } = require('./model') as {
   homeItems(input: { agents?: { running: number; waiting: number } | null; accounts?: { total: number; signedIn: number; attention: number } | null }): Array<{ id: string; label: string; description: string; tooltip: string; tab: string; state: 'normal' | 'attention' | 'unknown' }>;
@@ -55,6 +55,7 @@ export function registerHomeView(context: vscode.ExtensionContext, sessions: Ses
   const tree = current;
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider(HOME_VIEW, tree),
-    sessions.onDidChange(() => tree.refresh())
+    sessions.onDidChange(() => tree.refresh()),
+    onDidChangeAccounts(() => tree.refresh())
   );
 }

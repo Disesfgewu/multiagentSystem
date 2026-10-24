@@ -171,6 +171,8 @@ test('the Workbench has seven tabs; each says what it is for and has a next step
     assert.equal(tabs().find((entry) => entry.textContent === label).attrs['aria-selected'], 'true', label);
     assert.ok(app.textContent.includes('Next step'), `${label} has a next step`);
   }
+  // The card grid's own rule must not also lay out the agents section (the heading was put into a column of its own, #357).
+  assert.equal(nodes.some((entry) => entry.tag === 'main' && /(^| )grid( |$)/.test(entry.className)), false, 'the agents section is not a grid itself');
   // A next-step button posts only a fixed target name.
   tabs().find((entry) => entry.textContent === 'Broadcast').listeners.click();
   nodes.filter((entry) => entry.tag === 'button' && entry.textContent === 'Create broadcast notice…').at(-1).listeners.click();

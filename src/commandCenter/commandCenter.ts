@@ -5,7 +5,7 @@ import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } fro
 import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
-import { observationsFor, ACCOUNT_COMMANDS, accountEmail } from '../accounts/accountCommands';
+import { observationsFor, ACCOUNT_COMMANDS, accountEmail, onDidChangeAccounts } from '../accounts/accountCommands';
 import { WORKBENCH_COMMAND } from '../home/homeView';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
@@ -250,6 +250,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     vscode.commands.registerCommand(COMMAND_CENTER_COMMAND, () => open()),
     vscode.commands.registerCommand(WORKBENCH_COMMAND, (value?: unknown) => open(value)),
     sessions.onDidChange(() => scheduleRefresh()),
+    onDidChangeAccounts(() => scheduleRefresh()),
     { dispose: () => { panel?.dispose(); if (timer) clearTimeout(timer); } }
   );
 }

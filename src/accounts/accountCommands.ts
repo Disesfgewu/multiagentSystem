@@ -151,11 +151,16 @@ class UsageLogItem extends vscode.TreeItem {
 
 type AccountTreeItem = AccountItem | AccountMessage | SessionItem | UsageLogItem;
 
+// Fired whenever the accounts' rows are drawn again: an account added, changed, removed or checked (#357). The Workbench and the side
+// bar listen, so a new account or a finished sign-in check shows there without waiting for an agent to change.
+const accountsChanged = new vscode.EventEmitter<void>();
+export const onDidChangeAccounts = accountsChanged.event;
+
 class AccountTree implements vscode.TreeDataProvider<AccountTreeItem> {
   private readonly changed = new vscode.EventEmitter<AccountTreeItem | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  refresh(): void { this.changed.fire(undefined); }
+  refresh(): void { this.changed.fire(undefined); accountsChanged.fire(); }
   getTreeItem(item: AccountTreeItem): vscode.TreeItem { return item; }
 
   async getChildren(item?: AccountTreeItem): Promise<AccountTreeItem[]> {
@@ -379,7 +384,7 @@ async function create(): Promise<void> {
     void vscode.window.showWarningMessage(`${picked.label} can launch in a terminal, but separate account profiles are unavailable. Account isolation, identity verification and quota/usage are unknown. Use the CLI's default sign-in; no account profile or configuration folder was created.`);
     return;
   }
-  const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
+  const label = await vscode.window.showInputBox({ prompt: 'Account label (shown only on this machine)', placeHolder: 'Work, Personal, Research…', ignoreFocusOut: true, validateInput: (value) => value.trim() ? undefined : 'Enter a label.' });
   if (!label) return;
   const result = await accountService(() => sessions?.list() ?? []);
   if (!result.ok) { void vscode.window.showErrorMessage(result.message); return; }

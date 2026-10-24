@@ -31,7 +31,10 @@ const VSCODE_VERSION = process.env.MULTIAGENT_E2E_VSCODE ?? '1.95.0';
 
 function sandbox() {
   // Short names keep the profile path under the IPC socket length limit on macOS.
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'mas-e2e-')));
+  // Under /tmp where there is one (not the per-user temporary folder, whose path is particular to this computer): the paths a
+  // screenshot shows are then neutral.
+  const base = process.platform !== 'win32' && fs.existsSync('/tmp') ? '/tmp' : os.tmpdir();
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(base, 'mas-e2e-')));
   const workspace = path.join(root, 'project');
   const home = path.join(root, 'home');
   const userData = path.join(root, 'ud');
@@ -57,14 +60,21 @@ function sandbox() {
     'extensions.autoCheckUpdates': false,
     'window.restoreWindows': 'none',
     'window.newWindowDimensions': 'default',
+    // VS Code's own dialogs instead of the system's: a native modal is not part of the page, so it could not be clicked or seen.
+    'window.dialogStyle': 'custom',
     // VS Code's own network use goes through a proxy on a closed local port (updates, experiments and the marketplace are also off).
     // The extension's first-use download of the GitHub CLI is left out by MULTIAGENT_E2E_NO_DOWNLOAD (development mode only).
     'http.proxy': 'http://127.0.0.1:9',
     'http.proxySupport': 'override',
     'workbench.enableExperiments': false,
     'chat.commandCenter.enabled': false,
-    'terminal.integrated.env.osx': { PATH },
-    'terminal.integrated.env.linux': { PATH }
+    // The agents' terminals run a plain /bin/sh with a neutral prompt, so a screenshot never shows the user or the computer's name.
+    'terminal.integrated.profiles.osx': { 'E2E shell': { path: '/bin/sh', args: [] } },
+    'terminal.integrated.defaultProfile.osx': 'E2E shell',
+    'terminal.integrated.profiles.linux': { 'E2E shell': { path: '/bin/sh', args: [] } },
+    'terminal.integrated.defaultProfile.linux': 'E2E shell',
+    'terminal.integrated.env.osx': { PATH, PS1: '$ ', ENV: '' },
+    'terminal.integrated.env.linux': { PATH, PS1: '$ ', ENV: '' }
   }, null, 2));
   return { root, workspace, home, userData, extensions, bin, fakes, PATH };
 }
