@@ -5,7 +5,7 @@ import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } fro
 import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
-import { observationsFor, ACCOUNT_COMMANDS, accountEmail, onDidChangeAccounts } from '../accounts/accountCommands';
+import { observationsFor, ACCOUNT_COMMANDS, accountEmail, accountPlan, onDidChangeAccounts } from '../accounts/accountCommands';
 import { WORKBENCH_COMMAND } from '../sidebar/homeView';
 import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
@@ -76,7 +76,13 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
     if (!loaded.ok) return { rows: [], alerts: [] };
     const described = describeAccounts({ profiles: loaded.profiles, observations: observationsFor(loaded.profiles), context: { repoRoot: (accounts.store as { repoRoot: string }).repoRoot } });
     const details: Record<string, unknown> = {};
-    await Promise.all(loaded.profiles.slice(0, 50).map(async (profile: { id: string }) => { try { details[profile.id] = await quotaDetail(profile.id, sessionUse); } catch { details[profile.id] = null; } }));
+    await Promise.all(loaded.profiles.slice(0, 50).map(async (profile: { id: string }) => {
+      try {
+        const detail = await quotaDetail(profile.id, sessionUse);
+        // The plan of a Claude Code account comes from its sign-in check (#352); Codex reads its own from its session log.
+        details[profile.id] = detail && !detail.plan ? { ...detail, plan: accountPlan(profile.id) } : detail;
+      } catch { details[profile.id] = null; }
+    }));
     const profiles = loaded.profiles.map((profile: { id: string; label: string; provider: string }, index: number) => ({
       id: profile.id, label: profile.label, email: accountEmail(profile.id), provider: builtIn.get(profile.provider)?.label ?? profile.provider,
       health: described[index]?.health, identity: described[index]?.verifiedIdentity, issues: (described[index]?.issues ?? []).map((issue: { hint: string }) => issue.hint)
@@ -191,6 +197,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         const id = message.id;
         switch (message.action) {
           case 'create': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.create); break;
+          case 'addClaude': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.addClaude); break;
+          case 'addCodex': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.addCodex); break;
           case 'login': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.login, id); break;
           case 'check': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.check, id); break;
           case 'limits': await vscode.commands.executeCommand(ACCOUNT_COMMANDS.limits, { id }); break;

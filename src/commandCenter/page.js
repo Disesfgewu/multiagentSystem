@@ -234,7 +234,7 @@ const SCRIPT = String.raw`
     rest.appendChild(el('h2', null, 'Agents (' + state.agents.length + ')'));
     if (state.agents.length === 0) {
       rest.appendChild(el('p', 'muted', 'No other agents are running.'));
-      rest.appendChild(nextSteps('Next step', [['Start agent…', function () { open('startAgent'); }], ['Add account', function () { post({ type: 'accountAction', action: 'create' }); }], ['Create role group…', function () { open('createRole'); }]]));
+      rest.appendChild(nextSteps('Next step', [['Start agent…', function () { open('startAgent'); }], ['Add Claude Code account', function () { post({ type: 'accountAction', action: 'addClaude' }); }], ['Create role group…', function () { open('createRole'); }]]));
     }
     var grid = el('div', 'grid ' + state.layout.mode);
     state.agents.forEach(function (card) { grid.appendChild(cardNode(card, false)); });
@@ -246,11 +246,15 @@ const SCRIPT = String.raw`
   function accountsTab(panel) {
     var head = el('div', 'toolbar');
     head.appendChild(el('h2', null, 'Accounts (' + state.accounts.length + ')'));
-    head.appendChild(button('Add account', function () { post({ type: 'accountAction', action: 'create' }); }));
+    var adds = el('div', 'row');
+    adds.appendChild(button('Add Claude Code account', function () { post({ type: 'accountAction', action: 'addClaude' }); }));
+    adds.appendChild(button('Add Codex account', function () { post({ type: 'accountAction', action: 'addCodex' }); }));
+    adds.appendChild(button('Add with a folder you choose…', function () { post({ type: 'accountAction', action: 'create' }); }));
+    head.appendChild(adds);
     panel.appendChild(head);
     if (state.accounts.length === 0) {
       panel.appendChild(el('p', 'muted', 'No account profiles yet. Add one to see its sign-in and usage here.'));
-      panel.appendChild(nextSteps('Next step', [['Add account', function () { post({ type: 'accountAction', action: 'create' }); }]]));
+      panel.appendChild(nextSteps('Next step', [['Add Claude Code account', function () { post({ type: 'accountAction', action: 'addClaude' }); }], ['Add Codex account', function () { post({ type: 'accountAction', action: 'addCodex' }); }]]));
     }
     state.accounts.forEach(function (account) { panel.appendChild(accountNode(account)); });
   }

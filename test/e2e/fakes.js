@@ -7,6 +7,13 @@ const path = require('node:path');
  * Synthetic CLIs for the end-to-end run (#361): `claude`, `codex`, `agy` and `gh`, first on PATH. They never reach a network or a real
  * account. Each records how it was called (one JSON line per call in `calls.jsonl`), so a step can prove what the extension asked
  * for, and answers the few questions the extension asks with fixed, obviously fake data (e-mail addresses end in `example.test`).
+ *
+ * - `claude auth login` / `codex login` finish at once, as after a sign-in in the browser.
+ * - `claude auth status` answers for the account folder it was started with: `owner-b@example.test` for a folder whose name has
+ *   "work-b" in it, `owner-a@example.test` for any other, so two accounts are two different real accounts.
+ * - `claude` started as an agent does what Claude Code does with a status line: it runs the `statusLine` command of its account's
+ *   settings.json with a status line input on stdin (5-hour 32 %, weekly 10 %, weekly Opus 5 %), so the bridge the extension set
+ *   up writes the usage reading the account row shows.
  */
 
 const ACCOUNT = Object.freeze({ email: 'owner-a@example.test', orgName: 'Example Org', orgId: 'org-example', subscriptionType: 'max' });
@@ -16,16 +23,33 @@ function script(name, calls) {
   return `#!${process.execPath}
 'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cli: ${JSON.stringify(name)}, args, configDir: process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME || null }) + '\\n');
+const configDir = process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME || null;
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cli: ${JSON.stringify(name)}, args, configDir }) + '\\n');
 const has = (...words) => words.every((word) => args.includes(word));
+const email = configDir && /work-b/i.test(path.basename(configDir)) ? 'owner-b@example.test' : ${JSON.stringify(ACCOUNT.email)};
 if (has('--version')) { process.stdout.write(${JSON.stringify(name)} + ' 0.0.0-synthetic\\n'); process.exit(0); }
+if (${JSON.stringify(name)} === 'claude' && has('auth', 'login')) { process.stdout.write('Signed in (synthetic).\\n'); process.exit(0); }
+if (${JSON.stringify(name)} === 'codex' && has('login')) { process.stdout.write('Signed in (synthetic).\\n'); process.exit(0); }
 if (${JSON.stringify(name)} === 'claude' && has('auth', 'status')) {
-  process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: ${JSON.stringify(ACCOUNT.email)}, orgId: ${JSON.stringify(ACCOUNT.orgId)}, orgName: ${JSON.stringify(ACCOUNT.orgName)}, subscriptionType: ${JSON.stringify(ACCOUNT.subscriptionType)}, configDirectory: process.env.CLAUDE_CONFIG_DIR || null }));
+  process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email, orgId: ${JSON.stringify(ACCOUNT.orgId)}, orgName: ${JSON.stringify(ACCOUNT.orgName)}, subscriptionType: ${JSON.stringify(ACCOUNT.subscriptionType)}, configDirectory: configDir }));
   process.exit(0);
 }
 if (${JSON.stringify(name)} === 'gh' && has('auth', 'status')) { process.stdout.write('github.example.test\\n  Logged in to github.example.test account synthetic-owner\\n'); process.exit(0); }
-// Anything else: an agent session. It waits (like an interactive CLI) until its terminal is closed.
+// An agent session: like Claude Code, run the account's status line command with a status line input, then wait.
+if (${JSON.stringify(name)} === 'claude' && configDir) {
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8'));
+    const command = settings && settings.statusLine && settings.statusLine.command;
+    if (typeof command === 'string') {
+      const now = Math.floor(Date.now() / 1000);
+      const input = { session_id: 'synthetic-' + process.pid, model: { id: 'claude-sonnet-4-5', display_name: 'Sonnet' }, rate_limits: { five_hour: { used_percentage: 32, resets_at: now + 2 * 3600 + 120 }, seven_day: { used_percentage: 10, resets_at: now + 3 * 86400 }, seven_day_opus: { used_percentage: 5, resets_at: now + 3 * 86400 } } };
+      spawnSync('/bin/sh', ['-c', command], { input: JSON.stringify(input), env: process.env, timeout: 10000 });
+    }
+  } catch { /* no settings: nothing to report */ }
+}
 process.stdout.write('synthetic ' + ${JSON.stringify(name)} + ' ready\\n');
 setInterval(() => {}, 1 << 30);
 `;

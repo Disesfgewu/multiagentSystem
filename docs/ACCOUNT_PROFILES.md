@@ -69,3 +69,22 @@
 - 帳號詳情把「設定資料夾是否通過本擴充套件的安全檢查」與「CLI 是否確認它使用這個資料夾」分成兩行：CLI 沒裝或沒回報只會讓第二行是未確認，不會讓資料夾顯示為被拒絕。
 - **Windows 目前不執行這個檢查**：CLI 常是 `.cmd` 轉接檔，不經 shell 無法啟動，所以檢查直接回報「此檢查在 Windows 尚未支援」，身分維持未知（請改用 CLI 自己的狀態命令）；沒有在原生 Windows 實機驗證任何行為。
 - 逾時會停止整個行程群組（POSIX 上子行程自成群組，連它啟動的行程一起停；Windows 以 `taskkill /T /F` 嘗試，未實機驗證）。找到但無法執行（權限）與找不到分開回報。
+
+## 新增帳號精靈（#352）
+
+工作台的 Accounts 分頁有 **Add Claude Code account** 和 **Add Codex account** 兩個按鈕。Accounts and Sessions view 的標題列，以及 Command Palette 的 `Multiagent: Add Claude Code Account`、`Multiagent: Add Codex Account`，打開的也是同一個精靈。流程在 `src/accounts/add-account.js`，每一步都可以單獨測試：
+
+1. **輸入名稱**：只能是一行純文字，最多 60 個字元。
+2. **一次確認**：列出精靈接下來會做的每一件事。按 **Add and Sign In** 才會開始；按取消則什麼都不建立。
+3. **建立建議的資料夾**：建立 `~/multiagent-accounts/<provider>-<名稱>`，沿用既有的資料夾檢查。
+4. **儲存帳號**：儲存失敗時，剛建立的資料夾會被刪掉。
+5. **只限 Claude Code**：在這個資料夾自己的 `settings.json` 設定 status line bridge（用量）與 hook bridge（agent 狀態）。新資料夾裡沒有既有的設定，所以不會覆蓋任何東西。某個 bridge 設定失敗時，帳號照樣建立，並寫明之後要用哪個按鈕補設定。
+6. **開啟登入終端機**：執行 `claude auth login` 或 `codex login`，並使用這個資料夾。
+7. **檢查登入**：管理者按「I have signed in — check now」或關掉終端機之後，檢查一次；CLI 回報已登入，才算完成。
+
+每一步失敗時，都會寫明原因與下一步。
+
+這個指令不讀取任何參數，所以呼叫的人不能指定資料夾，也不能跳過確認。
+
+Extension Host 測試只能透過 `setAddAccountSeamsForTests` 把家目錄換成暫存資料夾、把登入終端機換成合成的，不會在真正的家目錄建立資料夾，也不會執行真正的登入。
+

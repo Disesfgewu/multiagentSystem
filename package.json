@@ -357,6 +357,8 @@
       { "command": "multiagentSystem.reports.configurePublisher", "title": "Multiagent: Configure Public Feedback Publisher" },
       { "command": "multiagentSystem.reports.configureMergeAuthority", "title": "Multiagent: Configure Pull Request Merge Authority" },
       { "command": "multiagentSystem.accounts.refresh", "title": "Multiagent: Refresh Accounts", "icon": "$(refresh)" },
+      { "command": "multiagentSystem.accounts.addClaude", "title": "Multiagent: Add Claude Code Account", "icon": "$(person-add)" },
+      { "command": "multiagentSystem.accounts.addCodex", "title": "Multiagent: Add Codex Account" },
       { "command": "multiagentSystem.accounts.create", "title": "Multiagent: Create Account Profile", "icon": "$(add)" },
       { "command": "multiagentSystem.accounts.details", "title": "Multiagent: Show Account Details", "icon": "$(info)" },
       { "command": "multiagentSystem.accounts.edit", "title": "Multiagent: Edit Account Profile" },
@@ -461,6 +463,7 @@
           "when": "view == multiagentSystem.githubView",
           "group": "navigation"
         },
+        { "command": "multiagentSystem.accounts.addClaude", "when": "view == multiagentSystem.accountsView", "group": "navigation@0" },
         { "command": "multiagentSystem.accounts.create", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
         { "command": "multiagentSystem.accounts.refresh", "when": "view == multiagentSystem.accountsView", "group": "navigation" },
         { "command": "multiagentSystem.roles.create", "when": "view == multiagentSystem.rolesView", "group": "navigation" },

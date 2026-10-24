@@ -165,7 +165,9 @@ function buildCards(input) {
 const { UNKNOWN_REASONS } = require('../accounts/quota-gate');
 const { parseCodename } = require('../sessions/codenames');
 const WINDOW_LABELS = Object.freeze({ five_hour: '5-hour', seven_day: 'Weekly', seven_day_opus: 'Weekly (Opus)', seven_day_sonnet: 'Weekly (Sonnet)' });
-const ACCOUNT_ACTIONS = Object.freeze(['create', 'login', 'check', 'limits', 'usageLog', 'configureStatusLine', 'details']);
+const ACCOUNT_ACTIONS = Object.freeze(['create', 'addClaude', 'addCodex', 'login', 'check', 'limits', 'usageLog', 'configureStatusLine', 'details']);
+// The actions that make a new account: they name no account (#352 wizard).
+const NEW_ACCOUNT_ACTIONS = Object.freeze(['create', 'addClaude', 'addCodex']);
 // What a person can do about a missing reading, where there is something to click. Codes not listed have only the explanation.
 const NEXT_STEP = Object.freeze({
   'bridge-not-enabled': { action: 'configureStatusLine', label: 'Enable the Claude status line bridge' },
@@ -351,7 +353,7 @@ function parseMessage(raw, knownIds, accountIds) {
     // Creating an account names no account; every other action names one that is on the screen.
     if (typeof raw.action !== 'string' || !ACCOUNT_ACTIONS.includes(raw.action)) return { ok: false, reason: 'invalid-field' };
     message.action = raw.action;
-    if (raw.action === 'create') return raw.id === undefined ? { ok: true, message } : { ok: false, reason: 'unexpected-field' };
+    if (NEW_ACCOUNT_ACTIONS.includes(raw.action)) return raw.id === undefined ? { ok: true, message } : { ok: false, reason: 'unexpected-field' };
     if (typeof raw.id !== 'string' || !ID.test(raw.id) || !accounts.has(raw.id)) return { ok: false, reason: 'unknown-id' };
     message.id = raw.id;
     return { ok: true, message };
