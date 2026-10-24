@@ -3,7 +3,8 @@
 /**
  * The #360 items, as the owner reaches them: only mouse clicks and keys on what is on the screen (the command palette is the
  * keyboard's way in). Each step says what it does (`does`, used in REPORT.md and the user guide) and checks text on the screen.
- * New items are added by the PR that builds them (#361: "every user-facing PR adds its own steps").
+ * New items are added by the PR that builds them (#361: "every user-facing PR adds its own steps"). An item is `acceptance: 'accepted'`
+ * only when its steps check exactly what #360 asks the owner to see; until then it is `not-done` with what is still `pending`.
  */
 
 const COMMAND_PALETTE = process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P';
@@ -44,6 +45,8 @@ const ITEMS = [
     id: '00',
     title: 'The Multiagent side bar',
     issue: '#357 (the side bar is to keep one entry; this records how it looks today)',
+    acceptance: 'not-done',
+    pending: '#357: the side bar still has 9 views; it is to keep one entry (Open Workbench)',
     steps: [
       {
         name: 'open-side-bar',
@@ -63,6 +66,8 @@ const ITEMS = [
     id: '11',
     title: 'One screen with every agent working on this project',
     issue: '#357 (Agents tab), #368',
+    acceptance: 'not-done',
+    pending: '#357: start at least 3 agents with the synthetic CLIs and check that the screen shows 3 cards with their codename, account and mode',
     steps: [
       {
         name: 'open-command-center',

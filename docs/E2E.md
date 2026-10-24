@@ -18,6 +18,18 @@
 - CI 的 `End-to-end screens` job（macOS）每次都會上傳整個資料夾，artifact 名稱是 `e2e-report`。
 - `npm run test:e2e -- --update-guide`：所有項目都通過時，把截圖複製到 `docs/user-guide/images/`，供 [使用教學](USER_GUIDE.md) 使用。
 
+## 「檢查通過」不等於「已驗收」
+報告把兩件事分開寫：
+- **checks**：每一步的檢查是否成立。
+- **accepted (#360)**：這一項是否已經符合 #360 的驗收條件。
+
+每一項在 `steps.js` 裡標出 `acceptance`：
+- `accepted`：步驟檢查的內容，正是 #360 要管理者看到的。
+- `framework`：只證明畫面到得了。
+- `not-done`：功能還沒做；用 `pending` 寫明還差什麼，以及負責的 issue。
+
+只有標成 `accepted`、而且每個檢查都成立的項目，報告才會寫「accepted」；檢查通過但沒有標成 accepted 的項目，會寫「checks pass — NOT DONE (…)」。目前的兩項（側欄、指揮台）都還是 `not-done`，要等 #357 完成。
+
 ## 新增一項
 每個面向使用者的 PR，都要在 `test/e2e/steps.js` 補上自己那一項（#360 的編號）：
 - 每一步寫明 `does`，也就是管理者要按哪裡。

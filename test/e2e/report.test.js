@@ -19,18 +19,35 @@ test('the e2e report records each check, stops an item at its first failure, run
     { name: 'second', does: 'Does the second thing.', run: async ({ check }) => { ran.push('01-second'); check('the e-mail is shown', 'no e-mail', /@example\.test/); } },
     { name: 'third', does: 'Never runs.', run: async () => { ran.push('01-third'); } }
   ] };
-  const passing = { id: '02', title: 'Passing item', issue: '#2', steps: [{ name: 'only', does: 'Clicks.', run: async ({ check }) => { ran.push('02-only'); check('equal', 'x', 'x'); } }] };
+  const passing = { id: '02', title: 'Passing item', issue: '#2', acceptance: 'not-done', pending: '#357: three cards', steps: [{ name: 'only', does: 'Clicks.', run: async ({ check }) => { ran.push('02-only'); check('equal', 'x', 'x'); } }] };
   assert.equal(await recorder.item(failing, fakePage(), {}), false);
   assert.equal(await recorder.item(passing, fakePage(), {}), true);
   assert.deepEqual(ran, ['01-first', '01-second', '02-only'], 'the failing item stops; the next item still runs');
   recorder.write({ vscode: '1.95.0' });
   const report = fs.readFileSync(path.join(out, 'REPORT.md'), 'utf8');
-  assert.match(report, /\*\*1 of 2 items passed\*\*/);
+  assert.match(report, /\*\*checks: 1 of 2 items passed; accepted \(#360\): 0 of 2\*\*/);
   assert.match(report, /\| 01 \| Failing item \| FAIL \|/);
   assert.match(report, /✔ a title is shown — saw: `Accounts \(0\)`/);
   assert.match(report, /✘ the e-mail is shown — saw: `no e-mail`/);
   assert.match(report, /!\[01 second\]\(01-second-failed\.png\)/, 'a failed step keeps a screenshot of the moment it failed');
   assert.match(report, /!\[02 only\]\(02-only\.png\)/);
+  assert.match(report, /\| 02 \| Passing item \| checks pass — NOT DONE \(#357: three cards\) \|/, 'passing checks are not called accepted');
+  assert.match(report, /Still to do for the acceptance: #357: three cards/);
+  assert.doesNotMatch(report, /\| 02 \| Passing item \| accepted \|/);
   assert.deepEqual(recorder.screenshots(), ['01-first.png', '02-only.png'], 'only passed steps are offered to the user guide');
   assert.ok(fs.existsSync(path.join(out, 'report.json')));
+});
+
+test('only an item marked accepted whose checks all held is reported as accepted; anything unmarked is not done (#371)', () => {
+  const { Recorder: R } = require('./report');
+  assert.equal(R.verdict({ ok: true, acceptance: 'accepted' }), 'accepted');
+  assert.equal(R.verdict({ ok: false, acceptance: 'accepted' }), 'FAIL');
+  assert.equal(R.verdict({ ok: true, acceptance: 'framework' }), 'checks pass — framework check only, not accepted');
+  assert.equal(R.verdict({ ok: true, acceptance: 'not-done', pending: '#357' }), 'checks pass — NOT DONE (#357)');
+});
+
+test('the items of this framework are not marked accepted until #357 builds what #360 asks for (#371)', () => {
+  const { ITEMS } = require('./steps');
+  for (const item of ITEMS) assert.notEqual(item.acceptance, 'accepted', item.id);
+  for (const item of ITEMS) assert.match(item.pending ?? '', /#357/, item.id);
 });
