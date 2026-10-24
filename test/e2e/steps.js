@@ -758,7 +758,7 @@ const ITEMS = [
     title: 'Skills and shared memory that save tokens',
     issue: '#359',
     acceptance: 'not-done',
-    pending: '#359: an agent is told only the list of its role group\'s skills (and a shared memory with a size limit), the Workbench shows how much each agent was given, and the usage log compares sessions (the next pull requests)',
+    pending: 'Proven here: the library, and an agent given only the list of its role group\'s skills (their files in its own session folder, readable through --add-dir) with how much it was given shown on its card. Not proven: that a real CLI reads a skill when it needs one, and how many tokens that saves in practice (#135: two sessions of the same task compared in the usage log).',
     steps: [
       {
         name: 'add-starter-skills',
@@ -801,6 +801,43 @@ const ITEMS = [
           await tab.waitFor({ timeout: 20000 });
           check('it opens as SKILL.md in the editor', await tab.innerText(), /SKILL\.md/);
           check('with its name, its one line and its steps', await page.locator('.editor-instance .view-lines').first().innerText(), (text) => /name:\s*run-tests/.test(text) && /Find\s+the\s+test\s+command/.test(text));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'start-agent-with-skills',
+        does: 'Start "E2E Agent 7" of "E2E Developers" as before, then open its card\'s Details.',
+        run: async ({ page, check, box }) => {
+          const before = agentStarts(box).length;
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E Agent 7' },
+            { when: /Choose a role group for this agent/, pick: ROLE },
+            { when: /Choose an account for this new session/, pick: ACCOUNT },
+            ...START_ANSWERS
+          ], async () => agentStarts(box).length > before, 90000);
+          const args = agentStarts(box).at(-1).args;
+          const at = args.indexOf('--add-dir');
+          check('Claude Code may read the skills folder of this session', at >= 0 ? args[at + 1] : '', (dir) => /[/\\]sessions[/\\][^/\\]+[/\\]skills$/.test(dir));
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = args[at + 1];
+          check('which holds the role group\'s skill, and only it', fs.readdirSync(dir).join(', '), 'run-tests');
+          const context = fs.readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8');
+          check('its instructions list the skill with its file', context, (text) => text.includes(`- run-tests: `) && text.includes(`(file: ${path.join(dir, 'run-tests', 'SKILL.md')})`));
+          check('but not the skill\'s text', context, (text) => !/Find the test command once per session/.test(text));
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 7' }).first();
+          await card.waitFor({ timeout: 30000 });
+          await card.locator('summary', { hasText: 'Details' }).first().click();
+          const details = await card.locator('details').first().innerText();
+          check('the card says what it was given', details, /Prepared for this agent: \d+ rules?, \d+ shared notes? and 1 skill \(listed, not their text\)/);
+          check('and how much, as an estimate', details, /Given at start: about [\d,]+ tokens \(an estimate\) — rules [\d,]+ characters, shared notes [\d,]+, skills list [\d,]+/);
+          for (let tries = 0; tries < 5; tries += 1) {
+            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 7' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+          }
           await clearNotifications(page);
         }
       }

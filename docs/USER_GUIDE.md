@@ -217,10 +217,24 @@ PR 頁面還會顯示：
 
 agent 提出的 skill 只會成為「suggested by an agent」，你按 **Approve…** 之後才會生效。
 
-**還沒做的部分**（#359 接下來的 PR）：
-- agent 啟動時真的只注入這份 skill 清單。
-- 共享記憶的大小上限。
-- 工作台顯示每個 agent 被注入了多少字與 tokens。
+**agent 啟動時拿到什麼**：身份組的 agent 啟動時，指示裡只有一段 **Skills**，列出這個身份組可用的 skill。每個 skill 一行，寫著名稱、什麼時候用，以及檔案位置。skill 的內容不會放進指示裡；agent 覺得用得上時，才去讀那個檔案。
+- skill 檔案寫在這個 agent 自己的私人資料夾，**不會寫進專案**，所以不會被誤 commit。
+- Claude Code 啟動時會帶 `--add-dir <那個 skills 資料夾>`，只開放這一個資料夾，讓它讀檔時不必再問。Codex 直接讀檔案路徑。agy 和其他指示一樣，要手動貼上。
+- **Claude Code 是看清單、需要時才自己讀檔**，不是用它原生的 skill 自動載入機制（PM 決定，見 #359）。省 tokens 的方式相同：只有清單會佔用每次啟動的指示。
+- 關掉的 skill、別的身份組的 skill、還沒核准的 agent 建議，都不會出現在清單裡。
+- 確認啟動之後，如果 skill 在 agent 真正啟動前被改過、被加入或被關掉，這次啟動會被判定為過期，請重新確認，避免 agent 拿到你沒看過的清單。
+
+**看得到給了多少**：在 agent 卡片按 **Details** 會看到：
+- `Prepared for this agent: 7 rules, 0 shared notes and 1 skill (listed, not their text)`。
+- `Given at start: about 650 tokens (an estimate) — rules 1,234 characters, shared notes 0, skills list 456`。
+
+token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1），只顯示實際給了多少，不推算「省了多少」。
+
+![agent 拿到 skill 清單](user-guide/images/10-start-agent-with-skills.png)
+
+**共享記憶的上限**：共享記憶本來就有 2,000 字的上限，超出的筆數會寫明。
+
+**還沒驗證的部分**：真實的 CLI 是否真的會在需要時讀 skill，以及實際省了多少 tokens（比較兩個做相同工作的 session 的用量紀錄），列在 #135 的實機項目。
 
 ## 11. 一個畫面看到所有 agent
 

@@ -17,6 +17,8 @@ const SCRIPT = String.raw`
   var root = document.getElementById('app');
   var state = null;
   var dragId = null;
+  // The cards whose Details are open: the cards are drawn again at every refresh, and an open Details stays open.
+  var openDetails = {};
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -87,6 +89,8 @@ const SCRIPT = String.raw`
       body.appendChild(el('div', null, 'Mode: ' + card.mode));
       body.appendChild(el('div', null, 'Doing: ' + card.task.text));
       var details = el('details');
+      if (openDetails[card.id]) details.open = true;
+      details.addEventListener('toggle', function () { if (details.open) openDetails[card.id] = true; else delete openDetails[card.id]; });
       details.appendChild(el('summary', null, 'Details'));
       var more = function (text, className) { details.appendChild(el('div', className || 'detail', text)); };
       more('Model: ' + card.model + ' (' + card.modelNote + ')');
@@ -98,6 +102,7 @@ const SCRIPT = String.raw`
       if (card.ide) more(card.ide, /not connected/.test(card.ide) ? 'detail alert' : 'detail');
       if (card.trust) more(card.trust, /asks once/.test(card.trust) ? 'detail alert' : 'detail');
       if (card.injected) more(card.injected);
+      if (card.given) more(card.given);
       if (card.assigned) more('Handed: ' + card.assigned);
       more('Worktree: ' + card.worktree);
       card.report.lines.forEach(function (text, index) { more(text, index === 0 ? 'detail report-head' : 'detail'); });

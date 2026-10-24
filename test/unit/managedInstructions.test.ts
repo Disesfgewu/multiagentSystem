@@ -977,3 +977,48 @@ test('without a role group, the provider still makes its own review digest (#362
   assert.match(claude ?? '', /^sha256:/);
   assert.notEqual(await review('codex', 'session-noGroup-0002'), claude);
 });
+
+test('an agent is given the list of its role group\'s skills, with their files in its own session folder; a changed skill makes the confirmation stale (#359)', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-inst-skills-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = new FakeStore(privateDir);
+  store.put('roleGroups', 'worker-1', makeRoleRecord('worker-1', 1, 'worker'));
+  const skill = (name: string, over: Record<string, unknown> = {}) => ({ name, description: `When to use ${name}.`, body: `STEPS OF ${name.toUpperCase()}`, roles: ['worker-1'], state: 'active', source: 'owner', revision: 1, ...over });
+  store.put('skills', 'run-tests', skill('run-tests'));
+  store.put('skills', 'other-role', skill('other-role', { roles: ['someone-else'] }));
+  store.put('skills', 'turned-off', skill('turned-off', { state: 'disabled' }));
+  store.put('skills', 'suggested', skill('suggested', { state: 'candidate', source: 'agent' }));
+
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-skills-12345678', privateDir });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const skillsDir = path.join(privateDir, 'sessions', 'session-skills-12345678', 'skills');
+  assert.deepEqual(result.argv.slice(2), ['--add-dir', skillsDir], 'Claude may read the skills folder, and only it');
+  const context = fs.readFileSync(result.argv[1], 'utf8');
+  assert.match(context, new RegExp(`- run-tests: When to use run-tests\\. \\(file: ${skillsDir.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`));
+  for (const absent of ['other-role', 'turned-off', 'suggested', 'STEPS OF RUN-TESTS']) assert.equal(context.includes(absent), false, absent);
+  assert.match(fs.readFileSync(path.join(skillsDir, 'run-tests', 'SKILL.md'), 'utf8'), /STEPS OF RUN-TESTS/);
+  assert.deepEqual(fs.readdirSync(skillsDir), ['run-tests']);
+  assert.deepEqual(result.injectedCounts, { rules: result.injectedCounts.rules, memories: 0, skills: 1 });
+  assert.ok(result.injectedSizes && result.injectedSizes.skills.chars > 0 && result.injectedSizes.total.tokens > 0);
+  assert.deepEqual(result.snapshot.skillBindings, [{ name: 'run-tests', revision: 1 }]);
+
+  assert.deepEqual(await isSnapshotStale(result.snapshot, { store, repoRoot }), { stale: false });
+  // What the person confirms covers the list: another revision of a skill is another digest, so a confirmation is not reused.
+  store.put('skills', 'run-tests', skill('run-tests', { revision: 2, body: 'CHANGED' }));
+  const again = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-skills-87654321', privateDir });
+  assert.ok(again.ok && again.digest !== result.digest && again.reviewDigest !== result.reviewDigest, 'a changed skill changes what is confirmed');
+  if (again.ok) cleanupSessionPlan(again.plan);
+  store.put('skills', 'run-tests', skill('run-tests'));
+  store.put('skills', 'run-tests', skill('run-tests', { revision: 2, body: 'CHANGED' }));
+  assert.deepEqual(await isSnapshotStale(result.snapshot, { store, repoRoot }), { stale: true, reason: 'skills-changed' });
+  store.put('skills', 'run-tests', skill('run-tests'));
+  store.put('skills', 'new-one', skill('new-one'));
+  assert.deepEqual(await isSnapshotStale(result.snapshot, { store, repoRoot }), { stale: true, reason: 'skills-changed' }, 'a skill added in the meantime counts too');
+  cleanupSessionPlan(result.plan);
+  assert.equal(fs.existsSync(path.join(skillsDir, 'run-tests', 'SKILL.md')), false, 'the skill files go with the session');
+});

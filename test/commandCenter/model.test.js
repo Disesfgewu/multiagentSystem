@@ -394,3 +394,21 @@ test('the Knowledge tab lists each skill in short plain lines; a long descriptio
   assert.equal(built.items[1].problem, 'the steps contain wording that tells an agent to ignore its rules');
   assert.deepEqual(buildSkills({ ok: false, reason: 'storage-unavailable' }), { known: false, text: 'Skills: unknown (the library could not be read).', items: [] });
 });
+
+test('a card says what its agent was given: rules, notes and skills counted, and the size with an estimate of tokens (#359)', () => {
+  const { describeSizes, describeInjected } = require('../../src/commandCenter/model');
+  assert.equal(describeInjected({ rules: 7, memories: 1, skills: 2 }), 'Prepared for this agent: 7 rules, 1 shared note and 2 skills (listed, not their text) (the CLI is told; not proof it read them)');
+  assert.equal(describeInjected({ rules: 1, memories: 0 }), 'Prepared for this agent: 1 rule and 0 shared notes (the CLI is told; not proof it read them)', 'as before when no skills were counted');
+  assert.equal(describeInjected({ rules: -1, memories: 0 }), 'Rules and notes given to this agent: unknown (not started in this window)');
+  const size = (chars, tokens) => ({ chars, tokens });
+  assert.equal(describeSizes({ rules: size(1234, 300), memories: size(0, 0), skills: size(456, 114), total: size(1800, 450) }), 'Given at start: about 450 tokens (an estimate) — rules 1,234 characters, shared notes 0, skills list 456');
+  for (const bad of [null, {}, { rules: size(1, 1), memories: size(1, 1), skills: size(1, 1) }, { rules: size(-1, 1), memories: size(1, 1), skills: size(1, 1), total: size(1, 1) }]) assert.equal(describeSizes(bad), null, JSON.stringify(bad));
+});
+
+test('the card\'s Details carry what the agent was given, from its session (#359)', () => {
+  const size = (chars, tokens) => ({ chars, tokens });
+  const [card] = build([session({ injectedCounts: { rules: 2, memories: 0, skills: 1 }, injectedSizes: { rules: size(100, 25), memories: size(0, 0), skills: size(80, 20), total: size(200, 50) } })]).agents;
+  assert.equal(card.given, 'Given at start: about 50 tokens (an estimate) — rules 100 characters, shared notes 0, skills list 80');
+  assert.match(card.injected, /and 1 skill \(listed, not their text\)/);
+  assert.equal(build([session()]).agents[0].given, null, 'nothing is said when it is not known');
+});

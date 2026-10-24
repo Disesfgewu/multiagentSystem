@@ -290,3 +290,60 @@ test('a failure while writing removes only what was created, by the same identit
   assert.deepEqual(fs.readdirSync(path.dirname(plan.files[0].path)).sort(), before, 'nothing of ours, nothing of theirs removed');
   assert.equal(fs.readFileSync(plan.files[1].path, 'utf8'), 'already there');
 });
+
+// ---- skills (#359): the list, not the text ----
+const { renderSections, measureSections, estimateTokens } = require('../../src/memory/injection');
+const skills = [
+  { name: 'run-tests', description: 'Run the project\'s tests and report the counts.', content: '---\nname: run-tests\n---\n\nSECRET-STEPS-OF-RUN-TESTS\n' },
+  { name: 'claim-issue', description: 'Take an issue without colliding.', content: '---\nname: claim-issue\n---\n\nSTEPS-OF-CLAIM-ISSUE\n' },
+  { name: '../escape', description: 'Not a skill name.', content: 'x' }
+];
+
+test('an agent is told only each skill\'s name, one line and file; the files are this session\'s own (#359)', (t) => {
+  const p = paths(t);
+  const plan = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true }, skills }));
+  const skillsDir = path.join(p.privateDir, 'sessions', 'abcdef123456', 'skills');
+  const context = plan.files[0].content;
+  assert.match(context, /## Skills\nStep-by-step procedures you can use\. Read a skill's file only when its line fits what you are about to do; do not read them all\.\n- claim-issue: Take an issue without colliding\. \(file: .*claim-issue[/\\]SKILL\.md\)\n- run-tests: /);
+  assert.equal(context.includes('SECRET-STEPS-OF-RUN-TESTS'), false, 'a skill\'s text is not in the instructions');
+  assert.equal(context.includes('escape'), false, 'a name that is not a skill name is left out');
+  assert.deepEqual(plan.files.slice(1).map((file) => path.relative(skillsDir, file.path).split(path.sep).join('/')).sort(), ['claim-issue/SKILL.md', 'run-tests/SKILL.md']);
+  assert.match(plan.files.find((file) => file.path.endsWith(path.join('run-tests', 'SKILL.md'))).content, /SECRET-STEPS-OF-RUN-TESTS/);
+  // Claude Code may read that skills folder and nothing else of the session (#359, PM decision).
+  assert.deepEqual(plan.argv, ['--append-system-prompt-file', plan.files[0].path, '--add-dir', skillsDir]);
+  assert.notEqual(plan.argv[3], path.dirname(skillsDir));
+  for (const file of plan.files) assert.ok(file.path.startsWith(p.privateDir), 'nothing is written outside the private folder');
+  // Without skills: no folder is opened to the CLI, and the instructions are exactly what they were.
+  const none = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true } }));
+  assert.deepEqual(none.argv, ['--append-system-prompt-file', none.files[0].path]);
+  assert.equal(none.files[0].content, renderContext({ roleGroup, rules, memories }));
+});
+
+test('Codex lists its skills next to its profile in CODEX_HOME; agy gets them with the manual plan (#359)', (t) => {
+  const p = paths(t);
+  const codex = planInjection(base(p, { provider: 'codex', codexHome: p.codexHome, capabilities: { profileFlag: true }, skills }));
+  const folder = path.join(p.codexHome, 'mas-abcdef123456-skills');
+  assert.deepEqual(codex.argv, ['-p', 'mas-abcdef123456']);
+  const text = JSON.parse(/^developer_instructions = (".*")\n$/s.exec(codex.files[0].content)[1]);
+  assert.ok(text.includes(`(file: ${path.join(folder, 'run-tests', 'SKILL.md')})`), text);
+  assert.equal(text.includes('SECRET-STEPS-OF-RUN-TESTS'), false);
+  assert.deepEqual(codex.files.slice(1).map((file) => file.path).sort(), [path.join(folder, 'claim-issue', 'SKILL.md'), path.join(folder, 'run-tests', 'SKILL.md')]);
+  const agy = planInjection(base(p, { provider: 'agy', skills }));
+  assert.equal(agy.method, 'manual');
+  assert.ok(agy.files.some((file) => file.path.endsWith(path.join('skills', 'run-tests', 'SKILL.md'))));
+  assert.match(agy.files[0].content, /- run-tests: /);
+});
+
+test('how much an agent is given is measured per part, with an estimate of tokens (#359)', () => {
+  const parts = renderSections({ roleGroup, rules, memories, skills: skills.slice(0, 2).map((skill) => ({ ...skill, file: `/p/${skill.name}/SKILL.md` })) });
+  const sizes = measureSections(parts);
+  assert.equal(sizes.rules.chars, Array.from(parts.rules).length);
+  assert.equal(sizes.skills.chars, Array.from(parts.skills).length);
+  assert.equal(sizes.total.chars, Array.from(parts.head + parts.rules + parts.memories + parts.skills).length);
+  assert.ok(sizes.skills.chars > 0 && sizes.skills.chars < 500, 'the list is short: names, lines and paths only');
+  assert.equal(estimateTokens(''), 0);
+  assert.equal(estimateTokens('abcd'), 1);
+  assert.equal(estimateTokens('abcde'), 2);
+  assert.equal(estimateTokens('中文字'), 3, 'one per CJK character');
+  assert.equal(estimateTokens('中文 abcd'), 2 + 2);
+});

@@ -70,5 +70,22 @@ private storage (collection `skills`), managed from the Workbench's Knowledge ta
   repository** writes the chosen ones to both locations after a confirmation that lists every
   file, and never replaces a file that is already there.
 
-Telling an agent at start only the names and one-line descriptions of its role group's skills
-(not their text), and showing how much each agent was given, are the next parts of #359.
+### What an agent is given (#359, PM decision recorded on the issue)
+
+At start, an agent of a role group gets, in its instructions, only a **Skills** section: one line
+per skill of that role group (on, approved, still passing its checks), with its name, its
+description and the path of its file. The skill's text is not in the instructions.
+
+- Each file is written as `SKILL.md` in the session's own private folder:
+  `<private>/sessions/<session>/skills/<name>/SKILL.md` (Claude Code and the manual plan), or next to
+  the session's profile in `CODEX_HOME` (`mas-<session>-skills/<name>/SKILL.md`). Nothing is written
+  into the repository, and `.git/info/exclude` is not touched.
+- Claude Code is started with `--add-dir <that skills folder>` (only that folder, not the session
+  folder), so it can read a skill without asking. Codex reads the path. agy gets the manual plan.
+- Claude Code therefore reads the list and opens a skill when it needs it; this is not Claude
+  Code's native skill loading.
+- The skills' names and revisions are part of the instruction digest and of the snapshot: a skill
+  changed, added, turned off or removed between the confirmation and the start makes it stale.
+- The Workbench card shows how many rules, notes and skills were prepared, and their size:
+  characters per part and an estimate of tokens (one per CJK character, one per four other
+  characters). Nothing claims how many tokens were saved.
