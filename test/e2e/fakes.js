@@ -13,7 +13,8 @@ const path = require('node:path');
  *   "work-b" in it, `owner-a@example.test` for any other, so two accounts are two different real accounts.
  * - `codex app-server` answers `initialize` with the CODEX_HOME it was started with and `account/read` with a ChatGPT sign-in,
  *   `codex-owner@example.test` on the Plus plan, then keeps running until it is stopped, like the real server.
- * - `claude` started as an agent does what Claude Code does with a status line: it runs the `statusLine` command of its account's
+ * - `claude` started as an agent does what Claude Code does with a status line (with a synthetic session cost, so the usage log has
+ *   a reading of each agent, #359): it runs the `statusLine` command of its account's
  *   settings.json with a status line input on stdin (5-hour 32 %, weekly 10 %, weekly Opus 5 %), so the bridge the extension set
  *   up writes the usage reading the account row shows; then it runs the Stop hooks with a hook input (permission mode auto), so
  *   the hook bridge reports the agent as waiting.
@@ -66,7 +67,7 @@ if (${JSON.stringify(name)} === 'claude' && configDir) {
     const command = settings && settings.statusLine && settings.statusLine.command;
     if (typeof command === 'string') {
       const now = Math.floor(Date.now() / 1000);
-      const input = { session_id: 'synthetic-' + process.pid, model: { id: 'claude-sonnet-4-5', display_name: 'Sonnet' }, rate_limits: { five_hour: { used_percentage: 32, resets_at: now + 2 * 3600 + 120 }, seven_day: { used_percentage: 10, resets_at: now + 3 * 86400 }, seven_day_opus: { used_percentage: 5, resets_at: now + 3 * 86400 } } };
+      const input = { session_id: 'synthetic-' + process.pid, model: { id: 'claude-sonnet-4-5', display_name: 'Sonnet' }, rate_limits: { five_hour: { used_percentage: 32, resets_at: now + 2 * 3600 + 120 }, seven_day: { used_percentage: 10, resets_at: now + 3 * 86400 }, seven_day_opus: { used_percentage: 5, resets_at: now + 3 * 86400 } }, cost: { total_cost_usd: ((process.pid % 9) + 1) / 100 } };
       spawnSync('/bin/sh', ['-c', command], { input: JSON.stringify(input), env: process.env, timeout: 10000 });
     }
     // Like Claude Code at the end of a turn: run the account's Stop hooks with the hook input, so the agent shows as waiting.

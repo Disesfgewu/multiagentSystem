@@ -32,8 +32,9 @@ import { gateAccountLaunch, recordCodexSessionReading } from '../accounts/quotaG
 import { detectShellType, shellFileName } from '../terminals/shellDetect';
 import { isExtensionTestMode, requireInteractive } from '../shared/testMode';
 import { isOwnUiItem } from '../shared/uiOrigin';
-const { recordReading } = require('../accounts/usage-log') as {
-  recordReading(input: { snapshot: unknown; openStore: () => Promise<unknown> }): Promise<{ recorded: boolean; reason: string }>;
+const { recordReading, givenFrom } = require('../accounts/usage-log') as {
+  givenFrom(sizes: unknown, counts: unknown): unknown;
+  recordReading(input: { snapshot: unknown; openStore: () => Promise<unknown>; given?: unknown }): Promise<{ recorded: boolean; reason: string }>;
 };
 import { prepareIsolationForStart } from '../isolation/enforcedStart';
 import { writeClaudeSettings, removeClaudeSettings } from '../providers/attribution';
@@ -414,7 +415,8 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     if (!view) return;
     // A Codex session has no usage in its own observation; its account's session log is read whenever the session's observation changes.
     if (view.provider === 'codex' && typeof view.accountProfileId === 'string' && view.accountProfileId !== 'unassigned') await recordCodexSessionReading(view.accountProfileId, () => manager.list());
-    await recordReading({ snapshot: observations.enrich([view])[0]?.providerObservation, openStore: async () => { const opened = await privateStorage()?.use(); return opened?.ok ? opened.store : null; } });
+    // What the session was given at its start goes with each reading (#359), so two sessions can be compared in the log.
+    await recordReading({ snapshot: observations.enrich([view])[0]?.providerObservation, given: givenFrom((view as any).injectedSizes, (view as any).injectedCounts), openStore: async () => { const opened = await privateStorage()?.use(); return opened?.ok ? opened.store : null; } });
   };
   context.subscriptions.push(observations.onDidChange((sessionId) => { changed.fire(); void recordUsage(sessionId); }), { dispose: () => observations.dispose() });
   const manager = new SessionManager<vscode.Terminal>({

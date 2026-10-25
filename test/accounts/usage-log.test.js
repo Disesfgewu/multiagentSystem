@@ -24,7 +24,7 @@ function open(t) {
 
 test('an entry comes from what the provider reported: unknown figures stay unknown, estimates are marked, the newest time is used', () => {
   const made = entryFromSnapshot(snapshot());
-  assert.deepEqual({ ...made }, entry());
+  assert.deepEqual({ ...made }, { ...entry(), given: null }, 'what the session was given is unknown unless it is told');
   assert.equal(made.cacheWriteTokens, null, 'a figure that was not reported is not zero');
   assert.equal(entryFromSnapshot(snapshot({ usage: [obs('usage.input_tokens', 5)] })).measurement, 'actual');
   assert.equal(entryFromSnapshot(snapshot({ usage: [obs('usage.input_tokens', 5, 'estimated')] })).measurement, 'estimated');
@@ -82,7 +82,7 @@ test('a stored record that cannot be read is an error, not an empty log; an inva
 test('what is stored holds no prompt, path or credential: only the fixed fields, and nothing else is accepted', () => {
   const checked = validateEntry({ ...entry(), prompt: 'secret prompt', path: '/synthetic/project', token: 'abc', label: 'My Account' });
   assert.equal(checked.ok, true);
-  assert.deepEqual(Object.keys(checked.entry).sort(), ['accountProfileId', 'at', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens', 'provider', 'sessionId', 'source']);
+  assert.deepEqual(Object.keys(checked.entry).sort(), ['accountProfileId', 'at', 'cacheReadTokens', 'cacheWriteTokens', 'costUsd', 'inputTokens', 'measurement', 'model', 'outputTokens', 'provider', 'sessionId', 'source'].concat('given').sort());
   assert.equal(JSON.stringify(checked.entry).includes('secret prompt'), false);
 });
 
@@ -238,4 +238,53 @@ test('when there are too many sessions the ones kept are those with the most rec
   }
   assert.deepEqual(sessionsByRecency([entry({ sessionId: 'a', at: '2026-10-21T00:00:00.000Z' }), entry({ sessionId: 'b', at: '2026-10-21T00:00:00.000Z' })], 5), ['a', 'b'], 'equal times: by id');
   for (const bad of [undefined, null, 'x', [null, 5, {}, { sessionId: 3 }, { sessionId: 'x', at: 'never' }]]) assert.deepEqual(sessionsByRecency(bad), []);
+});
+
+test('each reading carries what its session was given at the start: counts only, unknown when not told (#359)', () => {
+  const { givenFrom } = require('../../src/accounts/usage-log');
+  const size = (chars, tokens) => ({ chars, tokens });
+  const given = givenFrom({ rules: size(10, 3), memories: size(0, 0), skills: size(5, 2), total: size(15, 334) }, { rules: 7, memories: 0, skills: 1 });
+  assert.deepEqual(given, { tokens: 334, rules: 7, notes: 0, skills: 1 });
+  assert.equal(givenFrom(null, null), null);
+  assert.deepEqual(givenFrom({ total: size(1, 9) }, null), { tokens: 9, rules: null, notes: null, skills: null });
+  assert.deepEqual({ ...entryFromSnapshot(snapshot(), given) }.given, given);
+  for (const bad of [{ tokens: -1 }, { tokens: 1.5 }, { tokens: 3, skills: 'x' }, { tokens: 3, prompt: 'secret' }, 'x']) {
+    assert.equal(validateEntry({ ...entry(), given: bad }).ok, false, JSON.stringify(bad));
+  }
+  assert.equal(validateEntry({ ...entry() }).entry.given, null, 'an older entry without it is read as unknown');
+});
+
+test('two sessions are compared side by side: what each was given and its latest reading, with differences only where both are known (#359)', () => {
+  const { compareSessions, parseComparison, comparisonAddress } = require('../../src/accounts/usage-log');
+  const at = (hour) => `2026-10-26T0${hour}:00:00.000Z`;
+  const entries = [
+    entry({ sessionId: 's-with', at: at(1), inputTokens: 1000, outputTokens: 200, costUsd: 0.04, given: { tokens: 334, rules: 7, notes: 0, skills: 1 } }),
+    entry({ sessionId: 's-with', at: at(0), inputTokens: 10, outputTokens: 2, costUsd: 0.01, given: { tokens: 334, rules: 7, notes: 0, skills: 1 } }),
+    entry({ sessionId: 's-without', at: at(2), inputTokens: 1500, outputTokens: null, costUsd: 0.03, given: { tokens: 120, rules: 7, notes: 0, skills: 0 } }),
+    entry({ sessionId: 's-old', at: at(3), costUsd: 0.02, given: null })
+  ];
+  const names = { 's-with': 'With skills', 's-without': 'Without skills', 's-old': 'Old' };
+  const lines = compareSessions(entries, 's-with', 's-without', { nameOf: (id) => names[id] });
+  const text = lines.join('\n');
+  const row = (label) => lines.find((line) => line.startsWith(label));
+  assert.match(lines[0], /^PRIVATE — /);
+  assert.match(text, /does not say how much was saved/);
+  assert.match(row('Given at start'), /about 334 tokens\s+about 120 tokens\s+−214 tokens$/);
+  assert.match(row('  rules / notes / skills'), /7 \/ 0 \/ 1\s+7 \/ 0 \/ 0$/);
+  assert.match(row('Input tokens'), /1,000\s+1,500\s+\+500 tokens$/, 'the latest reading of each, not the first');
+  assert.match(row('Output tokens'), /200\s+—\s+—$/, 'no difference when one figure was not reported');
+  assert.match(row('Cost'), /\$0\.0400\s+\$0\.0300\s+−\$0\.0100$/);
+  const same = compareSessions([entry({ sessionId: 'x1', costUsd: 0.03 }), entry({ sessionId: 'x2', costUsd: 0.03 })], 'x1', 'x2');
+  assert.match(same.find((line) => line.startsWith('Cost')), /\$0\.0300\s+\$0\.0300\s+same$/, 'an equal figure is "same", not a signed zero');
+  assert.ok(compareSessions(entries, 's-with', 's-without').slice(0, 6).every((line) => line.length <= 110), 'the explanation fits an editor');
+  assert.match(row('Latest reading'), /\(2 in the log\).*\(1 in the log\)/);
+  assert.equal(/saved \d|savings|% less/i.test(text), false, 'no claim of savings');
+  const withOld = compareSessions(entries, 's-with', 's-old', { nameOf: (id) => names[id] });
+  assert.match(withOld.find((line) => line.startsWith('Given at start')), /about 334 tokens\s+unknown\s+—$/, 'what an older session was given is unknown, not zero');
+  const oldFirst = compareSessions(entries, 's-old', 's-with', { nameOf: (id) => names[id] });
+  assert.match(oldFirst.find((line) => line.startsWith('Given at start')), /\(estimate\)\s+unknown\s+about 334 tokens\s+—$/, 'in either column');
+  assert.equal(compareSessions(entries, 's-with', 's-with'), null);
+  assert.equal(compareSessions(entries, 's-with', 's-missing'), null);
+  assert.deepEqual(parseComparison(comparisonAddress('*', 's-with', 's-old')), { account: '*', first: 's-with', second: 's-old' });
+  for (const bad of ['*~a', '*~a~a', 'bad id~a~b', '*~a~b~c', 7]) assert.equal(parseComparison(bad), undefined, String(bad));
 });

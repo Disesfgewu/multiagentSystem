@@ -4,7 +4,10 @@ import { SessionCommands } from '../sessions/sessionCommands';
 import { accountService } from './accountRuntime';
 import { builtIn } from '../providers/registry';
 
-const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddress, sessionsByRecency } = require('./usage-log') as {
+const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddress, sessionsByRecency, compareSessions, comparisonAddress, parseComparison } = require('./usage-log') as {
+  compareSessions(entries: any[], first: string, second: string, options?: { nameOf?: (id: string) => string }): string[] | null;
+  comparisonAddress(account: string, first: string, second: string): string;
+  parseComparison(query: string): { account: string; first: string; second: string } | undefined;
   sessionsByRecency(entries: any[], limit?: number): string[];
   addressOf(account: string, session?: string): string;
   parseAddress(query: string): { account: string; session?: string } | undefined;
@@ -17,9 +20,11 @@ const { UsageLog, describeLog, exportRows, toCsv, toJson, addressOf, parseAddres
 
 export const USAGE_COMMANDS = {
   showLog: 'multiagentSystem.usage.showLog',
+  compare: 'multiagentSystem.usage.compareSessions',
   exportLog: 'multiagentSystem.usage.exportLog'
 } as const;
 export const USAGE_LOG_SCHEME = 'multiagent-usage-log';
+const COMPARE_PATH = '/token-usage-compare.txt';
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const ALL = '*';
@@ -70,11 +75,27 @@ async function pickSession(sessions: SessionCommands, account: string): Promise<
   return picked ? { cancelled: false, session: picked.id } : { cancelled: true };
 }
 
+/** One short line for the session picker: what it was given at its start, from its readings. */
+function describeGiven(entries: any[], id: string): string {
+  const given = entries.find((entry) => entry.sessionId === id && entry.given)?.given;
+  return given ? `given about ${Number(given.tokens).toLocaleString('en-US')} tokens at start${Number.isSafeInteger(given.skills) ? `, ${given.skills} skill${given.skills === 1 ? '' : 's'}` : ''}` : 'what it was given is unknown';
+}
+
 class UsageLogDocument implements vscode.TextDocumentContentProvider {
   readonly changed = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.changed.event;
   constructor(private readonly sessions: SessionCommands) {}
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+    if (uri.path === COMPARE_PATH) {
+      const chosen = parseComparison(uri.query);
+      if (!chosen) return 'No valid pair of sessions was selected.\n';
+      const read = await readEntries(chosen.account);
+      if (!read.ok) return `${read.reason}\n`;
+      const names = new Map<string, string>();
+      for (const id of [chosen.first, chosen.second]) names.set(id, await sessionName(this.sessions, id));
+      const lines = compareSessions(read.entries, chosen.first, chosen.second, { nameOf: (id) => names.get(id) ?? id });
+      return lines ? `${lines.join('\n')}\n` : 'One of the two sessions has no reading in the usage log any more.\n';
+    }
     const address = parseAddress(uri.query);
     if (!address) return 'No valid account was selected.\n';
     const read = await readEntries(address.account, address.session);
@@ -97,6 +118,23 @@ export function registerUsageLogCommands(context: vscode.ExtensionContext, sessi
       const chosen = await pickSession(sessions, account);
       if (chosen.cancelled) return;
       const uri = vscode.Uri.from({ scheme: USAGE_LOG_SCHEME, path: '/token-usage-log.txt', query: addressOf(account, chosen.session) });
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, { preview: true });
+    }),
+    // Two sessions of the log side by side (#359): chosen from the sessions that have readings, then opened as a read-only document.
+    vscode.commands.registerCommand(USAGE_COMMANDS.compare, async () => {
+      const account = await pickAccount(sessions, undefined);
+      if (!account) return;
+      const read = await readEntries(account);
+      if (!read.ok) { void vscode.window.showErrorMessage(read.reason); return; }
+      const ids = sessionsByRecency(read.entries, 50);
+      if (ids.length < 2) { void vscode.window.showInformationMessage('The usage log has fewer than two sessions with readings for this choice, so there is nothing to compare yet.'); return; }
+      const items = await Promise.all(ids.map(async (id) => ({ label: await sessionName(sessions, id), id, description: describeGiven(read.entries, id) })));
+      const first = await vscode.window.showQuickPick(items, { placeHolder: 'First session to compare', ignoreFocusOut: true });
+      if (!first) return;
+      const second = await vscode.window.showQuickPick(items.filter((item) => item.id !== first.id), { placeHolder: `Compare "${first.label}" with which session?`, ignoreFocusOut: true });
+      if (!second) return;
+      const uri = vscode.Uri.from({ scheme: USAGE_LOG_SCHEME, path: COMPARE_PATH, query: comparisonAddress(account, first.id, second.id) });
       const document = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(document, { preview: true });
     }),
