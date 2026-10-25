@@ -401,13 +401,15 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
   loadBoard: [], openWorkItem: ['kind', 'number'],
   // The Broadcast tab (#357): the text the person typed, and either one role group on the screen or agents on the screen.
-  broadcastPreview: ['text', 'group', 'ids'], broadcastSend: ['text', 'group', 'ids']
+  broadcastPreview: ['text', 'group', 'ids'], broadcastSend: ['text', 'group', 'ids'],
+  // The Ask tab (#357, #360 item 5): what is selected now; ask one agent on the screen the typed question, with the selection or not.
+  askContext: [], askSend: ['id', 'question', 'withSelection']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -490,6 +492,14 @@ function parseMessage(raw, knownIds, accountIds, skillNames, boardItems, knownGr
     if (raw.kind !== 'issue' && raw.kind !== 'pullRequest') return { ok: false, reason: 'invalid-field' };
     if (!Number.isSafeInteger(raw.number) || raw.number < 1 || !items.has(`${raw.kind}:${raw.number}`)) return { ok: false, reason: 'unknown-item' };
     return { ok: true, message: { type: raw.type, kind: raw.kind, number: raw.number } };
+  }
+  if (raw.type === 'askSend') {
+    // An agent on the screen, the question the person typed (checked again by the prompt builder) and whether to include the selection.
+    const known = knownIds instanceof Set ? knownIds : new Set();
+    if (typeof raw.id !== 'string' || !ID.test(raw.id) || !known.has(raw.id)) return { ok: false, reason: 'unknown-id' };
+    if (typeof raw.question !== 'string' || raw.question.length > 2000) return { ok: false, reason: 'invalid-text' };
+    if (typeof raw.withSelection !== 'boolean') return { ok: false, reason: 'invalid-field' };
+    return { ok: true, message: { type: raw.type, id: raw.id, question: raw.question, withSelection: raw.withSelection } };
   }
   if (raw.type === 'broadcastPreview' || raw.type === 'broadcastSend') {
     // What the person typed (checked again by the task builder), and exactly one target: a role group of an agent on the screen, or

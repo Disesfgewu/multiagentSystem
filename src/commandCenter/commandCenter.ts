@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } from '../overview/overviewView';
+import { askAgent, currentSelection, readAnswer } from '../ask/ask';
 import { boardData, decisionCountsSnapshot, pullRequestSummary, REPORT_COMMANDS } from '../reports/reportsView';
 const { buildBoard } = require('./board') as { buildBoard(input: unknown): { state: string; reason?: string; columns: Array<{ cards: Array<{ kind: string; number: number }> }>; notes?: string[] } };
 import { privateStorage } from '../storage/storageCommands';
@@ -37,7 +38,7 @@ const LAYOUT_KEY = 'commandCenter.layout';
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string; number?: number; text?: string; group?: string; ids?: string[] };
+type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string; number?: number; text?: string; group?: string; ids?: string[]; question?: string; withSelection?: boolean };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -46,7 +47,7 @@ let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | n
 export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
   try { return teamReader ? await teamReader() : null; } catch { return null; }
 }
-let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown } | undefined;
+let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown; ask(): unknown } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
   if (!controllerForTest) throw new Error('The Command Center is only exposed in Extension Host tests.');
@@ -95,6 +96,8 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
   } catch { return { rows: [], alerts: [] }; }
 }
 
+const ASK_WAIT_MS = 10 * 60 * 1000;
+const { parseMarkdown } = require('../reports/markdown') as { parseMarkdown(text: string, options: { links: string[] }): { blocks: unknown[]; truncated: boolean } };
 const { reasonText: broadcastReason } = require('../broadcast/deliver') as { reasonText(reason: string): string };
 
 /** The Command Center: a read-only team screen in the editor area (issue #309). Everything it shows comes from the existing services. */
@@ -133,6 +136,31 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   const idsOf = (message: Message): string[] => (typeof message.group === 'string' ? shownCards().filter((card) => card.roleGroupId === message.group).map((card) => card.id as string) : message.ids ?? []);
   const labelOf = (id: string): string => { const card = shownCards().find((entry) => entry.id === id); return card ? `${card.codename ? `${card.codename} · ` : ''}${card.name}` : `session ${id.slice(0, 8)}`; };
   let lastBroadcast: unknown = null;
+  // The Ask tab (#357): one question at a time; its answer file is looked at until it is there, or for ten minutes at most.
+  let lastAsk: unknown = null;
+  let askTimer: ReturnType<typeof setInterval> | undefined;
+  const tellAsk = (message: Record<string, unknown>): void => { lastAsk = { type: 'askState', ...message }; if (panel) void panel.webview.postMessage(lastAsk); };
+  const watchAnswer = (asked: { file: string; root: string }, label: string): void => {
+    if (askTimer) clearInterval(askTimer);
+    const started = Date.now();
+    const look = (): void => {
+      const read = readAnswer(asked);
+      if (read.state === 'answered') {
+        clearInterval(askTimer); askTimer = undefined;
+        const tree = parseMarkdown(read.text, { links: [] });
+        tellAsk({ state: 'answered', from: label, blocks: tree.blocks, truncated: tree.truncated, file: asked.file });
+      } else if (read.state === 'invalid') {
+        clearInterval(askTimer); askTimer = undefined;
+        tellAsk({ state: 'invalid', from: label, reason: read.reason, file: asked.file });
+      } else if (Date.now() - started > ASK_WAIT_MS) {
+        clearInterval(askTimer); askTimer = undefined;
+        tellAsk({ state: 'timeout', from: label, reason: `No answer was written in ${ASK_WAIT_MS / 60000} minutes. Look at the agent's terminal; it may still be working on it, or have answered there.`, file: asked.file });
+      }
+    };
+    askTimer = setInterval(look, 1500);
+    context.subscriptions.push({ dispose: () => { if (askTimer) clearInterval(askTimer); } });
+    look();
+  };
   const tellPage = (message: unknown): void => { lastBroadcast = message; if (panel) void panel.webview.postMessage(message); };
   const payload = () => {
     if (!cached) return null;
@@ -198,6 +226,22 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'openWorkItem':
         await vscode.commands.executeCommand(REPORT_COMMANDS.openPage, { kind: message.kind, number: message.number });
         return { ok: true, command: message.type };
+      // The Ask tab (#357, #360 item 5): which code would go with the question, in words.
+      case 'askContext': {
+        const selection = currentSelection();
+        tellAsk({ state: 'context', selection: selection.ok ? { file: selection.file, startLine: selection.startLine, endLine: selection.endLine } : null, reason: selection.ok ? null : selection.reason });
+        return { ok: true, command: message.type };
+      }
+      // Asked through the shared confirmation; the answer is read only from the file named for this question.
+      case 'askSend': {
+        const card = shownCards().find((entry) => entry.id === message.id);
+        const label = card ? `${card.codename ? `${card.codename} · ` : ''}${card.name}` : 'the agent';
+        const asked = await askAgent(sessions, { sessionId: message.id as string, question: message.question ?? '', withSelection: message.withSelection === true });
+        if (!asked.ok) { tellAsk({ state: 'refused', from: label, reason: asked.reason }); return { ok: true, command: message.type }; }
+        tellAsk({ state: 'waiting', from: label, file: asked.file });
+        watchAnswer(asked, label);
+        return { ok: true, command: message.type };
+      }
       // The Broadcast tab (#357, #360 item 7): what would be typed and to whom; nothing is typed.
       case 'broadcastPreview': {
         const ids = idsOf(message);
@@ -309,7 +353,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     }
   };
   teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
-  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast };
+  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast, ask: () => lastAsk };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
   // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).

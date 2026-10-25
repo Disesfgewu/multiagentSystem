@@ -114,6 +114,8 @@ export interface SessionCommands {
   list(): SessionView[];
   /** Types one prompt line into a running session's terminal (administrator broadcast delivery). Not a VS Code command: only code in this extension can call it. */
   sendPrompt(id: string, prompt: string): void;
+  /** Where a session's agent writes the answers of the Ask tab (#357), and the private folder around it; null when it has none. */
+  answerFolder(id: string): { dir: string; root: string } | null;
   onDidChange(listener: () => void): vscode.Disposable;
 }
 
@@ -1251,5 +1253,5 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     }
     changed.fire();
   }).catch((error) => failure(error, true));
-  return { launch, launchWithAccount: startWithAccount, list: () => withIdeLabels(observations.enrich(manager.list())), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), onDidChange: (listener) => changed.event(listener) };
+  return { launch, launchWithAccount: startWithAccount, list: () => withIdeLabels(observations.enrich(manager.list())), sendPrompt: (id, prompt) => manager.sendPrompt(id, prompt), answerFolder: (id) => manager.answerFolder(id), onDidChange: (listener) => changed.event(listener) };
 }

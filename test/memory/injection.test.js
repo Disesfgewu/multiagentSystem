@@ -53,7 +53,10 @@ test('Claude plan passes a file path in argv and keeps content in a private file
   const p = paths(t);
   const plan = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true } }));
   assert.equal(plan.method, 'append-system-prompt-file');
-  assert.deepEqual(plan.argv, ['--append-system-prompt-file', plan.files[0].path]);
+  // The folder of this session's skills and Ask answers is opened even without skills (#357), and nothing else of the session.
+  const skillsDir = path.join(p.privateDir, 'sessions', 'abcdef123456', 'skills');
+  assert.deepEqual(plan.argv, ['--append-system-prompt-file', plan.files[0].path, '--add-dir', skillsDir]);
+  assert.equal(plan.answersDir, path.join(skillsDir, '_answers'));
   assert.ok(plan.files[0].path.startsWith(p.privateDir));
   for (const arg of plan.argv) {
     assert.equal(arg.includes('Migrations run before tests.'), false);
@@ -210,7 +213,7 @@ test('cleanup removes exactly what the plan created and reports it', (t) => {
   const { p, plan, file } = written(t);
   assert.equal(fs.existsSync(file), true);
   const first = cleanupPlan(plan);
-  assert.deepEqual(first, { removed: 4, skipped: [] }, 'the file and the three directories this call created');
+  assert.deepEqual(first, { removed: 6, skipped: [] }, 'the file, the three directories this call created, and the skills and answers folders (#357)');
   assert.equal(fs.existsSync(p.privateDir), false);
   assert.deepEqual(cleanupPlan(plan), { removed: 0, skipped: [] }, 'a second cleanup is a no-op');
 });
@@ -313,9 +316,9 @@ test('an agent is told only each skill\'s name, one line and file; the files are
   assert.deepEqual(plan.argv, ['--append-system-prompt-file', plan.files[0].path, '--add-dir', skillsDir]);
   assert.notEqual(plan.argv[3], path.dirname(skillsDir));
   for (const file of plan.files) assert.ok(file.path.startsWith(p.privateDir), 'nothing is written outside the private folder');
-  // Without skills: no folder is opened to the CLI, and the instructions are exactly what they were.
+  // Without skills: the same one folder is opened (the Ask answers are written in it, #357), and the instructions are exactly what they were.
   const none = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true } }));
-  assert.deepEqual(none.argv, ['--append-system-prompt-file', none.files[0].path]);
+  assert.deepEqual(none.argv, ['--append-system-prompt-file', none.files[0].path, '--add-dir', skillsDir]);
   assert.equal(none.files[0].content, renderContext({ roleGroup, rules, memories }));
 });
 
@@ -384,9 +387,9 @@ test('notes the size limit leaves out are listed by their first line, and writte
   const codexNotes = path.join(p.codexHome, 'mas-abcdef123456-skills', '_left-out-notes.md');
   assert.ok(codex.files.some((file) => file.path === codexNotes));
   assert.ok(codex.shown.text.includes(`Their full text is in ${codexNotes};`));
-  // Without the notes (only a count, as before), the line stays as it was and nothing is written or opened.
+  // Without the notes (only a count, as before), the line stays as it was and nothing more is written; the one folder is opened as always.
   const counted = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true }, omitted: { count: 2, chars: 300, reason: 'budget' } }));
   assert.ok(counted.files[0].content.includes('- (2 more reviewed notes were left out to stay within the size limit.)'));
   assert.equal(counted.files.length, 1);
-  assert.deepEqual(counted.argv, ['--append-system-prompt-file', counted.files[0].path]);
+  assert.deepEqual(counted.argv, ['--append-system-prompt-file', counted.files[0].path, '--add-dir', path.dirname(notesFile)]);
 });

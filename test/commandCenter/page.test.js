@@ -329,3 +329,61 @@ test('the Broadcast tab: a role group or chosen agents, a preview from the exten
   assert.ok(app.textContent.includes('This cannot be sent: it is empty.'));
   assert.equal(last('button', 'Send…').disabled, true, 'a refused text cannot be sent');
 });
+
+test('the Ask tab: one agent, the question and the selection; the answer is the agent\'s text, drawn inert (#357, #360 item 5)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', value: '', checked: false, title: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node, createTextNode: (text) => ({ textContent: String(text), tag: '#text', listeners: {} }) }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const base = { role: 'worker', roleName: 'Developers', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', mode: 'Auto', terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false, status: { state: 'waiting', text: 'waiting for input', source: 'hooks' } };
+  const pm = withFacts({ ...base, id: 'pm-1', codename: 'PM-01', name: 'Lead', role: 'pm' });
+  const worker = withFacts({ ...base, id: 'w-1', codename: 'Worker-01', name: 'One' });
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [pm], agents: [worker], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab' && entry.textContent === 'Ask').at(-1).listeners.click();
+  const json = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(json(posted.at(-1)), { type: 'askContext' }, 'it asks which code is selected');
+  listeners.message({ data: { type: 'askState', state: 'context', selection: { file: 'src/a.js', startLine: 3, endLine: 7 }, reason: null } });
+  assert.ok(app.textContent.includes('Selected: src/a.js, lines 3–7'));
+  const last = (tag, text) => nodes.filter((entry) => entry.tag === tag && (text === undefined || entry.textContent === text)).at(-1);
+  assert.equal(last('option', 'PM-01 · Lead — waiting for input').selected, true, 'the PM is asked by default');
+  const box = last('textarea');
+  box.value = 'What does this do?';
+  last('button', 'Ask…').listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'askSend', id: 'pm-1', question: 'What does this do?', withSelection: true });
+  listeners.message({ data: { type: 'askState', state: 'waiting', from: 'PM-01 · Lead', file: '/p/_answers/0123456789abcdef.md' } });
+  assert.ok(app.textContent.includes('Asked PM-01 · Lead. Waiting for the answer…'));
+  const before = posted.length;
+  listeners.message({ data: { type: 'askState', state: 'answered', from: 'PM-01 · Lead', truncated: false, blocks: [
+    { t: 'heading', level: 2, inline: [{ t: 'text', v: 'What it does' }] },
+    { t: 'paragraph', inline: [{ t: 'text', v: 'It adds. See ' }, { t: 'link', link: 0, c: [{ t: 'text', v: 'the docs' }] }, { t: 'text', v: '.' }] },
+    { t: 'code', text: 'add(1, 2)' }
+  ] } });
+  assert.ok(app.textContent.includes('Answer from PM-01 · Lead'));
+  assert.ok(app.textContent.includes('Written by the agent — only its text, shown as data. Links in it are not opened.'));
+  assert.ok(app.textContent.includes('It adds. See the docs.'));
+  const inert = last('span', 'the docs');
+  assert.equal(inert.className, 'md-inert');
+  assert.equal(Object.keys(inert.listeners).length, 0, 'a link in an answer does nothing');
+  assert.equal(nodes.some((entry) => entry.tag === 'a'), false, 'no link element is made');
+  assert.equal(posted.length, before, 'showing an answer sends nothing');
+  for (const [state, text] of [['timeout', 'No answer was written in 10 minutes.'], ['invalid', 'The answer is a link to another file, so it is not read.'], ['refused', 'agy cannot be asked here.']]) {
+    listeners.message({ data: { type: 'askState', state, from: 'x', reason: text } });
+    assert.ok(app.textContent.includes(text), state);
+  }
+  // Without the selection: the box is unticked and the question goes alone.
+  last('input').checked = false;
+  last('input').listeners.change();
+  last('button', 'Ask…').listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'askSend', id: 'pm-1', question: 'What does this do?', withSelection: false });
+});

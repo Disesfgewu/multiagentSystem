@@ -99,6 +99,10 @@ function tomlString(text) {
   return JSON.stringify(text).replace(/\u007f/g, '\\u007f');
 }
 
+// The folder the Ask tab's answers are written to (#357), inside the folder the agent may use. Not a skill name (those begin with a letter
+// or digit), so a skill can never be called the same.
+const ANSWERS_DIR = '_answers';
+
 // Builds a launch plan. The context text only ever goes into files under a
 // private directory; argv carries a file path or a profile name, never content.
 // `shown` is exactly the text the CLI is given, with the skill files where they are written, for the person to confirm.
@@ -143,8 +147,10 @@ function planInjection(options) {
       provider,
       method: 'append-system-prompt-file',
       files: [{ path: file, content: text }, ...listed.map((skill) => ({ path: skill.file, content: skill.content })), ...(notes ? [notes] : [])],
-      // Claude Code may read the skills folder of this session (the skills and the notes left out), and nothing else of it.
-      argv: ['--append-system-prompt-file', file, ...(listed.length > 0 || notes ? ['--add-dir', skillsDir] : [])],
+      // Claude Code may use the skills folder of this session (the skills, the notes left out and the answers it is asked to write,
+      // #357 Ask), and nothing else of it. It is opened even without skills: questions from the Ask tab are answered in it.
+      argv: ['--append-system-prompt-file', file, '--add-dir', skillsDir],
+      answersDir: nodePath.join(skillsDir, ANSWERS_DIR),
       shown: { text, skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       ...scope
     };
@@ -163,6 +169,8 @@ function planInjection(options) {
       method: 'profile-developer-instructions',
       files: [{ path: file, content: `developer_instructions = ${tomlString(textWith(listed, notes))}\n` }, ...listed.map((skill) => ({ path: skill.file, content: skill.content })), ...(notes ? [notes] : [])],
       argv: ['-p', profileName],
+      // Where Codex is asked to write the answers of the Ask tab (#357): next to its skills, in CODEX_HOME.
+      answersDir: nodePath.join(codexHome, `${profileName}-skills`, ANSWERS_DIR),
       // What Codex is given lists its skills where they are written, next to its profile (#359): the confirmation shows this text.
       shown: { text: textWith(listed, notes), skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       root: codexHome,
@@ -320,6 +328,11 @@ function writePlan(plan, context) {
       }
       assertOutsideRepo(resolvers(context).realpath(nodePath.dirname(file.path)), plan, context);
     }
+    // The folder an agent writes its answers to exists from the start, under the same rules as every other folder of the plan.
+    if (typeof plan.answersDir === 'string') {
+      ensureDirectory(plan, plan.answersDir, created, context);
+      assertOutsideRepo(resolvers(context).realpath(plan.answersDir), plan, context);
+    }
   } catch (error) {
     // Whatever was created before the failure is removed by the same rules; an
     // entry whose identity was not recorded yet is left alone rather than guessed.
@@ -336,4 +349,4 @@ function cleanupPlan(plan) {
   return plan.created ? removeCreated(plan.created) : { removed: 0, skipped: [] };
 }
 
-module.exports = { renderContext, renderSections, measureSections, estimateTokens, planInjection, writePlan, cleanupPlan };
+module.exports = { renderContext, renderSections, measureSections, estimateTokens, planInjection, writePlan, cleanupPlan, ANSWERS_DIR };

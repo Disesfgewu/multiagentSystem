@@ -448,6 +448,96 @@ const SCRIPT = String.raw`
     panel.appendChild(nextSteps('Next step', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]));
   }
 
+  // The Ask tab (#357, #360 item 5): a question to one agent, with the selected code or not; the agent writes its answer to a file the
+  // extension named, and it is shown here as the agent's text: drawn from a tree with textContent, and nothing in it does anything.
+  var ask = { target: null, withSelection: true, context: null, status: null, asked: false };
+  var askBox = null;
+  function mdInline(nodes, parent) {
+    (nodes || []).forEach(function (node) {
+      if (!node || typeof node !== 'object') return;
+      if (node.t === 'text') parent.appendChild(document.createTextNode(String(node.v)));
+      else if (node.t === 'code') parent.appendChild(el('code', null, node.v));
+      else if (node.t === 'break') parent.appendChild(el('br'));
+      else if (node.t === 'strong' || node.t === 'em' || node.t === 'del') { var wrap = el(node.t); mdInline(node.c, wrap); parent.appendChild(wrap); }
+      // A link or an image in an answer is shown as its words only: an answer cannot open anything.
+      else if (node.t === 'link' || node.t === 'span') { var span = el('span', 'md-inert'); span.title = 'Links in an answer are not opened'; mdInline(node.c, span); parent.appendChild(span); }
+      else if (node.t === 'image') parent.appendChild(el('span', 'md-inert', '[Image: ' + (node.alt || 'no description') + ']'));
+    });
+  }
+  function mdBlocks(list, parent) {
+    (list || []).forEach(function (block) {
+      if (!block || typeof block !== 'object') return;
+      if (block.t === 'heading') { var h = el('h' + Math.min(6, Math.max(3, block.level + 2))); mdInline(block.inline, h); parent.appendChild(h); }
+      else if (block.t === 'paragraph') { var p = el('p'); mdInline(block.inline, p); parent.appendChild(p); }
+      else if (block.t === 'code') { var pre = el('pre', 'md-code'); pre.appendChild(el('code', null, block.text)); parent.appendChild(pre); }
+      else if (block.t === 'quote') { var q = el('blockquote'); mdBlocks(block.blocks, q); parent.appendChild(q); }
+      else if (block.t === 'rule') parent.appendChild(el('hr'));
+      else if (block.t === 'list') { var listNode = el(block.ordered ? 'ol' : 'ul'); (block.items || []).forEach(function (item) { var li = el('li'); if (item.checked === true || item.checked === false) li.appendChild(document.createTextNode(item.checked ? '☑ ' : '☐ ')); mdBlocks(item.blocks, li); listNode.appendChild(li); }); parent.appendChild(listNode); }
+      else if (block.t === 'table') { var table = el('table', 'md-table'); var head = el('tr'); (block.head || []).forEach(function (cell) { var th = el('th'); mdInline(cell, th); head.appendChild(th); }); table.appendChild(head); (block.rows || []).forEach(function (row) { var tr = el('tr'); row.forEach(function (cell) { var td = el('td'); mdInline(cell, td); tr.appendChild(td); }); table.appendChild(tr); }); parent.appendChild(table); }
+    });
+  }
+  function askTab(panel) {
+    var cards = (state.pm || []).concat(state.agents || []);
+    if (ask.target && !cards.some(function (card) { return card.id === ask.target; })) ask.target = null;
+    if (!ask.target && cards.length) ask.target = (state.pm && state.pm[0] ? state.pm[0] : cards[0]).id;
+    if (!ask.asked) { ask.asked = true; post({ type: 'askContext' }); }
+    panel.appendChild(el('p', null, 'Ask one agent a question, for example what the selected code does. It writes its answer to a file of its own, and the answer is shown here.'));
+    if (cards.length === 0) panel.appendChild(el('p', 'muted', 'No agent is running.'));
+    else {
+      panel.appendChild(el('h3', null, 'Ask'));
+      var select = el('select', 'ask-agent');
+      cards.forEach(function (card) { var option = el('option', null, (card.codename ? card.codename + ' · ' : '') + card.name + ' — ' + card.status.text); option.value = card.id; if (card.id === ask.target) option.selected = true; select.appendChild(option); });
+      select.addEventListener('change', function () { ask.target = select.value; });
+      panel.appendChild(select);
+      var include = el('label', 'ask-include');
+      var box = el('input');
+      box.type = 'checkbox';
+      box.checked = ask.withSelection;
+      box.addEventListener('change', function () { ask.withSelection = box.checked; render(); });
+      include.appendChild(box);
+      include.appendChild(document.createTextNode(' Include the code selected in the editor'));
+      panel.appendChild(include);
+      var where = ask.context && ask.context.selection ? 'Selected: ' + ask.context.selection.file + ', lines ' + ask.context.selection.startLine + '–' + ask.context.selection.endLine : (ask.context && ask.context.reason ? ask.context.reason : 'Looking at the editor…');
+      var row = el('div', 'row');
+      row.appendChild(el('span', ask.withSelection ? null : 'muted', where));
+      row.appendChild(button('Use the current selection', function () { post({ type: 'askContext' }); }, 'Read the selection of the last editor again'));
+      panel.appendChild(row);
+      if (!askBox) {
+        askBox = el('textarea', 'ask-text');
+        askBox.rows = 3;
+        askBox.maxLength = 500;
+        askBox.placeholder = 'Your question, for example: What does this function do, and when is it called?';
+      }
+      panel.appendChild(askBox);
+      var actions = el('div', 'row');
+      actions.appendChild(button('Ask…', function () {
+        if (!ask.target || !askBox.value.trim()) return;
+        ask.status = { state: 'asking' };
+        render();
+        post({ type: 'askSend', id: ask.target, question: askBox.value, withSelection: ask.withSelection });
+      }, 'The extension shows you the whole question and asks you to confirm before anything is typed'));
+      panel.appendChild(actions);
+      var status = ask.status;
+      if (status) {
+        var out = el('section', 'ask-answer');
+        if (status.state === 'asking') out.appendChild(el('p', 'muted', 'Waiting for your confirmation in the window…'));
+        else if (status.state === 'refused') out.appendChild(el('p', 'alert', status.reason));
+        else if (status.state === 'waiting') { out.appendChild(el('p', null, 'Asked ' + status.from + '. Waiting for the answer…')); out.appendChild(el('p', 'muted', 'It is written to ' + status.file + ' and shown here when it is there (up to ten minutes).')); }
+        else if (status.state === 'timeout' || status.state === 'invalid') out.appendChild(el('p', 'alert', status.reason));
+        else if (status.state === 'answered') {
+          out.appendChild(el('h3', null, 'Answer from ' + status.from));
+          out.appendChild(el('p', 'muted', 'Written by the agent — only its text, shown as data. Links in it are not opened.'));
+          var md = el('div', 'md-answer');
+          mdBlocks(status.blocks, md);
+          if (status.truncated) md.appendChild(el('p', 'muted', 'The answer is longer than is shown here.'));
+          out.appendChild(md);
+        }
+        panel.appendChild(out);
+      }
+    }
+    panel.appendChild(nextSteps('Next step', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]));
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -468,7 +558,7 @@ const SCRIPT = String.raw`
     else if (tab === 'accounts') accountsTab(panel);
     else if (tab === 'work') workTab(panel);
     else if (tab === 'broadcast') broadcastTab(panel);
-    else if (tab === 'ask') placeholderTab(panel, 'Ask the PM or an agent a question, for example what the selected code does.', '#353', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]);
+    else if (tab === 'ask') askTab(panel);
     else if (tab === 'knowledge') knowledgeTab(panel);
     else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
     root.appendChild(panel);
@@ -480,6 +570,12 @@ const SCRIPT = String.raw`
     if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; showingWork(); render(); return; }
     if (data && data.type === 'board' && data.board && typeof data.board === 'object') { board = data; if (tab === 'work') render(); return; }
     if (data && data.type === 'broadcastPreview') { bc.preview = data.ok ? { ok: true, prompt: String(data.prompt), recipients: Array.isArray(data.recipients) ? data.recipients : [] } : { ok: false, reason: String(data.reason) }; if (tab === 'broadcast') render(); return; }
+    if (data && data.type === 'askState') {
+      if (data.state === 'context') ask.context = { selection: data.selection && typeof data.selection === 'object' ? data.selection : null, reason: data.reason ? String(data.reason) : null };
+      else ask.status = data;
+      if (tab === 'ask') render();
+      return;
+    }
     if (data && data.type === 'broadcastResults') { bc.results = { sent: data.sent === true, results: Array.isArray(data.results) ? data.results : [] }; if (tab === 'broadcast') render(); return; }
     if (!data || data.type !== 'state' || typeof data.state !== 'object' || data.state === null) return;
     state = data.state;
@@ -511,6 +607,11 @@ const STYLE = `
   .bc-text { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px; }
   .bc-preview, .bc-results { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px 10px; margin: 8px 0; }
   .bc-line { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--vscode-textCodeBlock-background); padding: 6px; }
+  .ask-agent { margin: 4px 0; } .ask-include { display: block; margin: 6px 0; cursor: pointer; }
+  .ask-text { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px; margin: 6px 0; }
+  .ask-answer { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px 12px; margin: 8px 0; }
+  .md-answer { overflow-wrap: anywhere; line-height: 1.5; } .md-code { background: var(--vscode-textCodeBlock-background); padding: 6px 8px; overflow-x: auto; }
+  .md-inert { text-decoration: underline dotted; } .md-table td, .md-table th { border: 1px solid var(--vscode-panel-border); padding: 2px 6px; }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }

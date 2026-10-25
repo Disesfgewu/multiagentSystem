@@ -53,11 +53,13 @@ test('an item is either accepted with nothing pending, or not done with what is 
     else assert.match(item.pending ?? '', /#\d+/, `${item.id} says which issue finishes it`);
   }
   // #357: the side bar keeps one entry, and one screen shows every agent with its codename, account and mode.
-  assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '01', '11', '02', '03', '08', '04', '07', '10']);
+  assert.deepEqual(ITEMS.filter((item) => item.acceptance === 'accepted').map((item) => item.id), ['00', '01', '11', '02', '03', '08', '04', '05', '07', '10']);
   // #397: item 12 shows the board on a synthetic GitHub and opens one card; it agrees with a real repository only once #135 says so.
   assert.deepEqual(ITEMS.find((item) => item.id === '12').steps.map((step) => step.name), ['see-board', 'open-from-board']);
   // #357: item 07 previews a line for a role group, sends it after the extension's confirmation and shows each agent's result.
   assert.deepEqual(ITEMS.find((item) => item.id === '07').steps.map((step) => step.name), ['preview-broadcast', 'send-broadcast', 'see-in-terminal']);
+  // #357: item 05 asks the PM agent about selected code and shows the answer it wrote, as data.
+  assert.deepEqual(ITEMS.find((item) => item.id === '05').steps.map((step) => step.name), ['select-code', 'ask-agent']);
   // #383: item 04 (after 08, which sets who publishes) sees which decisions are on and why, starts a PM agent and asks it about the
   // PM's review (one line of numbers reaches its terminal), approves the pull request and closes the Issue.
   assert.deepEqual(ITEMS.find((item) => item.id === '04').steps.map((step) => step.name), ['see-decisions', 'start-pm-agent', 'discuss-with-pm', 'approve-pr', 'close-issue']);

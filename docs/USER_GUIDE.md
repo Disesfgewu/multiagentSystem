@@ -156,7 +156,38 @@
 - 處理方式：發一次留言（第 8 章），或在 Command Palette 執行 **Configure PM Publisher**。
 
 ## 5. 直接問問題
-尚未完成，見 #353、#357（Ask 分頁）。
+
+**要做什麼**：問某一個 agent 一個問題，例如「這段選起來的程式在做什麼」，並在工作台直接看到它的回答。
+
+**從哪裡點**：工作台 → **Ask**。
+
+**怎麼做**：
+1. 在編輯器選取要問的程式碼（可以不選）。
+2. 在工作台 → **Ask**，從清單選要問的 agent（預設是 PM agent）。
+3. 勾選 **Include the code selected in the editor** 時，下方會寫出 `Selected: 檔名, lines 1–4`。改過選取範圍後，按 **Use the current selection** 重新讀取。
+4. 在文字框寫問題，例如 `What does this function do, and when is it called?`，按 **Ask…**。
+5. 擴充套件會跳出確認視窗，裡面有完整的問題，選取的程式碼也在其中。按 **Send Now** 才會打進那個 agent 的終端機。
+6. 下方顯示 `Asked … Waiting for the answer…` 和回答檔的位置。agent 寫好回答後，會出現 **Answer from** 加上 agent 名稱，回答以文字顯示。
+
+![選取程式碼](user-guide/images/05-select-code.png)
+
+![agent 的回答](user-guide/images/05-ask-agent.png)
+
+**你會看到什麼**：
+- 回答上方寫著 `Written by the agent — only its text, shown as data. Links in it are not opened.`。回答只當作文字顯示，裡面的連結和按鈕都按不了。
+- 10 分鐘內沒有回答時，會顯示 `No answer was written in 10 minutes.`。agent 可能還在處理，或者直接在終端機回答了，請去看它的終端機。
+- 回答檔是捷徑、不是一般檔案、超過 64 KB、不是 UTF-8 文字，或不在 agent 自己的資料夾裡時，回答不會顯示，畫面會寫出原因。
+
+**它怎麼運作**：
+- 打進終端機的內容只有問題（有勾選時加上程式碼），以及一句「把回答用 Markdown 寫到這個檔案」。
+- 這個檔案放在 agent 自己的私人資料夾裡，路徑是 `skills/_answers/<問題編號>.md`，和 skills 放在同一個資料夾。工作台只讀這次問題的那一個檔案。
+- Claude Code agent 啟動時會被允許使用這個資料夾，所以現在每個 Claude Code agent 啟動時都會加上 `--add-dir`，即使沒有指派 skills 也一樣。Codex 的資料夾放在它的 `CODEX_HOME` 旁邊。
+
+**限制**：
+- agy 沒有自己的資料夾，不能在這裡問，畫面會寫出原因。
+- Codex 能不能寫入這個資料夾，還沒有用真的 Codex 驗證過（#135）。
+- agent 停止後，回答檔仍然留在它的私人資料夾裡。
+- 切到其他分頁再切回工作台時，這個分頁會重新開始，畫面上的問題和回答不會保留。
 
 ## 6. 直接在 VS Code 上工作
 **要做什麼**：讓從工作台啟動的 Claude Code agent 連到這個 VS Code 視窗，在 agent 的終端機輸入 `/ide` 時，它看得到你開的檔案，改動也會以 diff 顯示在這個視窗。

@@ -929,6 +929,65 @@ const ITEMS = [
     ]
   },
   {
+    id: '05',
+    title: 'Ask an agent what a piece of code does, and read the answer here',
+    issue: '#357 (Ask tab)',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'select-code',
+        does: 'Open "add.js" (Quick Open: Ctrl/Cmd+P, type "add.js", Enter) and select all of it.',
+        run: async ({ page, check, box }) => {
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(box.workspace, 'add.js'), 'function add(a, b) {\n  return a + b;\n}\nmodule.exports = { add };\n');
+          await page.keyboard.press(process.platform === 'darwin' ? 'Meta+P' : 'Control+P');
+          const input = page.locator('.quick-input-widget .quick-input-box input').first();
+          await timed('Quick Open', () => input.waitFor({ state: 'visible', timeout: 10000 }));
+          await input.fill('add.js');
+          await timed('add.js in the list', () => page.locator('.quick-input-widget .quick-input-list .monaco-list-row', { hasText: 'add.js' }).first().waitFor({ timeout: 10000 }));
+          await pressEnter(page);
+          const tab = page.locator('.tabs-container .tab', { hasText: 'add.js' }).first();
+          await timed('the add.js tab', () => tab.waitFor({ timeout: 15000 }));
+          await page.locator('.editor-instance .view-lines').first().click();
+          await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+          check('the code is open in the editor', await page.locator('.editor-instance .view-lines').first().innerText(), /function\s+add\(a,\s+b\)/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'ask-agent',
+        does: 'In the Workbench click "Ask", click "Use the current selection", keep "E2E PM agent", type "What does this do?" and click "Ask…"; read the window and click "Send Now".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
+          const frame = await workbenchFrame(page);
+          await timed('the Ask tab', () => frame.locator('button[role="tab"]', { hasText: 'Ask' }).first().click());
+          await frame.locator('button', { hasText: 'Use the current selection' }).first().click();
+          const deadline = Date.now() + 15000;
+          let where = '';
+          while (Date.now() < deadline && !/Selected: add\.js/.test(where)) { where = await frame.locator('.tab-panel').first().innerText().catch(() => ''); await pause(300); }
+          check('it says which code goes with the question', where, /Selected: add\.js, lines 1–4/);
+          check('the PM agent is asked by default', await frame.locator('select.ask-agent option:checked').innerText(), /E2E PM agent/);
+          await frame.locator('textarea.ask-text').fill('What does this do?');
+          await frame.locator('button', { hasText: 'Ask…' }).first().click();
+          const answered = await drive(page, [
+            { dialog: /^Ask E2E PM agent this question\?/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the extension asked first, showing the whole question with the code', answered.join(' | '), /dialog: Ask E2E PM agent this question\?[\s\S]*→ Send Now/);
+          const answer = frame.locator('.ask-answer');
+          const until = Date.now() + 30000;
+          let text = '';
+          while (Date.now() < until && !/Answer from/.test(text)) { text = await answer.innerText().catch(() => ''); await pause(500); }
+          check('the agent\'s answer is shown here', text, /Answer from PM-\d+ · E2E PM agent[\s\S]*What it does[\s\S]*add returns the sum of its two arguments\./);
+          check('marked as the agent\'s text, with links that open nothing', text, /Written by the agent — only its text, shown as data\. Links in it are not opened\./);
+          check('a link in the answer is not a link', await frame.locator('.ask-answer a').count(), 0);
+          await answer.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
     id: '12',
     title: 'A work-order board: every Issue in the column of its stage',
     issue: '#397 (#355 slice 1)',
@@ -1111,7 +1170,7 @@ const ITEMS = [
           const fs = require('node:fs');
           const path = require('node:path');
           const dir = args[at + 1];
-          check('which holds the role group\'s skill, and only it', fs.readdirSync(dir).join(', '), 'run-tests');
+          check('which holds the role group\'s skill, and only it (beside the folder its Ask answers go to, #357)', fs.readdirSync(dir).sort().join(', '), '_answers, run-tests');
           const context = fs.readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8');
           check('its instructions list the skill with its file', context, (text) => text.includes(`- run-tests: `) && text.includes(`(file: ${path.join(dir, 'run-tests', 'SKILL.md')})`));
           check('but not the skill\'s text', context, (text) => !/Find the test command once per session/.test(text));
