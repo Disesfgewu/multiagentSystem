@@ -93,22 +93,10 @@ const SCRIPT = String.raw`
       details.addEventListener('toggle', function () { if (details.open) openDetails[card.id] = true; else delete openDetails[card.id]; });
       details.appendChild(el('summary', null, 'Details'));
       var more = function (text, className) { details.appendChild(el('div', className || 'detail', text)); };
-      more('Model: ' + card.model + ' (' + card.modelNote + ')');
-      if (card.autoMode) more(card.autoMode);
-      if (card.permission) {
-        more(card.permission.text, card.permission.attention ? 'detail alert' : 'detail');
-        card.permission.lines.forEach(function (text) { more(text); });
-      }
-      if (card.ide) more(card.ide, /not connected/.test(card.ide) ? 'detail alert' : 'detail');
-      if (card.trust) more(card.trust, /asks once/.test(card.trust) ? 'detail alert' : 'detail');
-      if (card.injected) more(card.injected);
-      if (card.given) more(card.given);
-      if (card.assigned) more('Handed: ' + card.assigned);
-      more('Worktree: ' + card.worktree);
+      // Each fact once, in plain words (#357); the extension decides the lines and which need a look.
+      (card.facts || []).forEach(function (fact) { more(fact.text, fact.alert ? 'detail alert' : 'detail'); });
       card.report.lines.forEach(function (text, index) { more(text, index === 0 ? 'detail report-head' : 'detail'); });
-      more('State: ' + card.status.source);
       details.appendChild(quotaBlock(card));
-      card.details.forEach(function (text) { more(text); });
       var tools = el('div', 'row');
       tools.appendChild(button(card.collapsed ? 'Expand' : 'Collapse', function () { post({ type: 'toggleCollapse', id: card.id }); }));
       tools.appendChild(button(card.pinned ? 'Unpin' : 'Pin', function () { post({ type: 'togglePin', id: card.id }); }));

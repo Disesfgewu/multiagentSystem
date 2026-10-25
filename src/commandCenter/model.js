@@ -93,6 +93,60 @@ function modeWord(label) {
   return 'unknown';
 }
 
+// The lines of the overview's tooltip that say something the card does not already say elsewhere (#357): the role, provider,
+// account, mode, VS Code, folder trust, Git reading, state, issue and pull request are all on the card or in its Details already.
+// The overview's general note that a role group's rules are not sent is left out: "Given at start" says what this agent was given.
+const EXTRA_LINES = [
+  [/^Branch: (?!unknown$)/, (text) => text],
+  [/^CI: (?!unknown$)/, (text) => text],
+  [/^Session cost: (?!unknown$)/, (text) => text],
+  [/^Account: .*\(identity verified by the CLI\)$/, () => 'Sign-in: the CLI confirmed which account this is'],
+  [/^Instructions: /, (text) => text],
+  // Only when something is wrong with how its events are matched to this terminal; the normal case says nothing.
+  [/^Provider session: (?!the observation file's id is consistent)/, (text) => text.replace(/^Provider session:/, 'CLI session:')]
+];
+function extraLines(tooltipLines) {
+  const out = [];
+  for (const text of tooltipLines) {
+    const rule = EXTRA_LINES.find(([pattern]) => pattern.test(text));
+    if (rule) out.push(rule[1](text));
+  }
+  return out;
+}
+
+/** What the agent was given at its start, in one line (#359, #357): what was prepared, about how many tokens, and what that proves. */
+function describeGiven(counts, sizes) {
+  if (!isPlain(counts) || !isCount(counts.rules) || !isCount(counts.memories)) return 'Given at start: unknown (it was not started in this window)';
+  const skills = isCount(counts.skills) ? counts.skills : null;
+  const parts = [plural(counts.rules, 'rule'), plural(counts.memories, 'shared note'), ...(skills === null ? [] : [`${plural(skills, 'skill')} (their names, not their text)`])];
+  const tokens = describeSizes(sizes) ? ` — about ${sizes.total.tokens.toLocaleString('en-US')} tokens (an estimate)` : '';
+  return `Given at start: ${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}${tokens}. The CLI is told about them; that does not prove it read them.`;
+}
+
+/**
+ * The Details of a card, in order and each said once (#357): the model, the mode, VS Code, folder trust, what it was given, a task
+ * typed into it, its folder, where its state comes from, then what only the overview knows. `alert` marks what needs a look.
+ */
+function detailFacts(card, tooltipLines) {
+  const facts = [];
+  const add = (text, alert = false) => { if (typeof text === 'string' && text !== '') facts.push({ text, alert }); };
+  const actual = (tooltipLines.find((text) => /^Actual model: /.test(text)) ?? '').replace(/^Actual model: /, '');
+  add(`Model: asked for ${card.model}; ${actual && actual !== UNKNOWN ? `the CLI reports ${actual}` : 'the CLI has not said which one it uses yet'}`);
+  // The mode the CLI reports, when it does; otherwise the mode that was asked for. One of the two, never both.
+  if (card.permission && (card.permissionReported || card.permission.attention || !card.autoMode)) {
+    add(card.permission.text, card.permission.attention);
+    for (const text of card.permission.lines) add(text);
+  } else add(card.autoMode);
+  if (card.ide) add(card.ide, /not connected/.test(card.ide));
+  if (card.trust) add(card.trust, /asks once/.test(card.trust));
+  add(card.givenLine);
+  if (card.assigned) add(`Handed: ${card.assigned}`);
+  add(`Folder (Git): ${card.worktree}`);
+  add(`State: ${card.status.source}`);
+  for (const text of extraLines(tooltipLines)) add(text);
+  return facts;
+}
+
 function buildCards(input) {
   const { sessions, agents = [], accounts = [], roles = {}, reports = {}, assignments = {}, emails = {} } = isPlain(input) ? input : {};
   // The e-mail address of each account from this window's last sign-in check (#357): shown on the card only, never stored.
@@ -148,8 +202,12 @@ function buildCards(input) {
       trust: line(session.trustLabel, '', 260) || null,
       injected: describeInjected(session.injectedCounts),
       given: describeSizes(session.injectedSizes),
+      givenLine: describeGiven(session.injectedCounts, session.injectedSizes),
+      permissionReported: isPlain(session.reportedPermissionMode),
       alert: gate === 'block' ? 'quota: new agents on this account are held back' : gate === 'confirm' ? 'quota: needs confirmation' : gate === 'warn' ? 'quota: near the limit' : null
     });
+    const card = cards[cards.length - 1];
+    card.facts = detailFacts(card, details);
   }
   return {
     pm: cards.filter((card) => isPm(card.role)),
@@ -452,4 +510,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { describeSizes, describeInjected, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { describeSizes, describeInjected, describeGiven, detailFacts, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
