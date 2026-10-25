@@ -1089,3 +1089,31 @@ test('notes past the size limit are listed by title and written whole into the f
   cleanupSessionPlan(result.plan);
   assert.equal(fs.existsSync(notesFile), false, 'the notes file goes with the session');
 });
+
+test('a snapshot is stale once a note the size limit left out is changed, switched off, or another is left out (#359, PR #395 review)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  const note = (id: string, title: string, over: any = {}) => memNote(id, `${title} ${'Details of this note. '.repeat(55)}`, { createdAt: `2026-10-2${id.slice(-1)}T00:00:00.000Z`, ...over });
+  const notes = [note('mem_1', 'First note fits.'), note('mem_2', 'Second note is left out.')];
+  memoryFile(privateDir, notes);
+  const prepared = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-lst-12345678', privateDir });
+  assert.ok(prepared.ok);
+  if (!prepared.ok) return;
+  t.after(() => cleanupSessionPlan(prepared.plan));
+  assert.deepEqual(prepared.snapshot.memoryBindings, [{ id: 'mem_1', version: 2 }]);
+  assert.deepEqual(prepared.snapshot.leftOutMemoryBindings, [{ id: 'mem_2', version: 2 }]);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: false });
+  for (const [what, changed] of [
+    ['a new version of the note left out', [notes[0], note('mem_2', 'Second note is left out.', { version: 3 })]],
+    ['the note left out switched off', [notes[0], note('mem_2', 'Second note is left out.', { disabled: true })]],
+    ['another note left out', [...notes, note('mem_3', 'Third note is left out too.')]]
+  ] as const) {
+    memoryFile(privateDir, changed as unknown as any[]);
+    assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: true, reason: 'memory-changed' }, what);
+  }
+  memoryFile(privateDir, notes);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: false }, 'the same notes again: not stale');
+  // A snapshot that had left-out notes, for a role group that no longer reads notes, is stale too.
+  store.put('roleGroups', 'worker-1', roleWithMemory('off'));
+  assert.deepEqual(await isSnapshotStale({ ...prepared.snapshot, memoryBindings: [] }, { store, repoRoot }), { stale: true, reason: 'memory-changed' });
+});
