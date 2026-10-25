@@ -12,14 +12,14 @@ import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
 import { onDidChangeSkillLibrary, skillLibrarySummary } from '../skills/libraryCommands';
-import { DISPATCH_COMMANDS, readAssignments } from '../dispatch/commands';
+import { DISPATCH_COMMANDS, readAssignments, previewBroadcast, sendBroadcast } from '../dispatch/commands';
 
 const model = require('./model') as {
   buildCards(input: Record<string, unknown>): { pm: any[]; agents: any[]; accounts: any[]; counts: { agents: number; pm: number } };
   describeDecisions(counts: unknown): { issues: unknown; pullRequests: unknown };
   normalizeLayout(raw: unknown): Layout;
   arrange(cards: any[], layout: Layout): any[];
-  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>, boardItems?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>, boardItems?: Set<string>, groups?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
   buildSkills(summary: unknown): { known: boolean; text: string; items: Array<{ name: string }> };
   SKILL_ACTIONS: Record<string, string>;
   buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
@@ -37,7 +37,7 @@ const LAYOUT_KEY = 'commandCenter.layout';
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string; number?: number };
+type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string; number?: number; text?: string; group?: string; ids?: string[] };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -46,7 +46,7 @@ let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | n
 export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
   try { return teamReader ? await teamReader() : null; } catch { return null; }
 }
-let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown } | undefined;
+let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
   if (!controllerForTest) throw new Error('The Command Center is only exposed in Extension Host tests.');
@@ -95,6 +95,8 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
   } catch { return { rows: [], alerts: [] }; }
 }
 
+const { reasonText: broadcastReason } = require('../broadcast/deliver') as { reasonText(reason: string): string };
+
 /** The Command Center: a read-only team screen in the editor area (issue #309). Everything it shows comes from the existing services. */
 export function registerCommandCenter(context: vscode.ExtensionContext, sessions: SessionCommands): void {
   let cached: { pm: any[]; agents: any[]; accounts: any[]; alerts: string[]; decisions: unknown; notes: string[]; skills?: ReturnType<typeof model.buildSkills> } | undefined;
@@ -125,6 +127,13 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     })();
     return boardReading;
   };
+  // The Broadcast tab (#357): the role groups of the agents on the screen, and who a target names.
+  const shownCards = (): any[] => [...(cached?.pm ?? []), ...(cached?.agents ?? [])];
+  const knownGroups = (): Set<string> => new Set(shownCards().map((card) => card.roleGroupId).filter((id): id is string => typeof id === 'string'));
+  const idsOf = (message: Message): string[] => (typeof message.group === 'string' ? shownCards().filter((card) => card.roleGroupId === message.group).map((card) => card.id as string) : message.ids ?? []);
+  const labelOf = (id: string): string => { const card = shownCards().find((entry) => entry.id === id); return card ? `${card.codename ? `${card.codename} · ` : ''}${card.name}` : `session ${id.slice(0, 8)}`; };
+  let lastBroadcast: unknown = null;
+  const tellPage = (message: unknown): void => { lastBroadcast = message; if (panel) void panel.webview.postMessage(message); };
   const payload = () => {
     if (!cached) return null;
     return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null) };
@@ -170,7 +179,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
 
   const handle = async (raw: unknown): Promise<CommandCenterResult> => {
-    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds(), knownSkills(), boardItems);
+    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds(), knownSkills(), boardItems, knownGroups());
     if (!parsed.ok) return { ok: false, reason: parsed.reason };
     const message = parsed.message;
     switch (message.type) {
@@ -189,6 +198,24 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'openWorkItem':
         await vscode.commands.executeCommand(REPORT_COMMANDS.openPage, { kind: message.kind, number: message.number });
         return { ok: true, command: message.type };
+      // The Broadcast tab (#357, #360 item 7): what would be typed and to whom; nothing is typed.
+      case 'broadcastPreview': {
+        const ids = idsOf(message);
+        const preview = previewBroadcast(sessions, { text: message.text ?? '', ids });
+        tellPage(preview.ok
+          ? { type: 'broadcastPreview', ok: true, prompt: preview.prompt, recipients: preview.recipients.map((entry) => ({ label: labelOf(entry.id), decision: entry.decision, reason: entry.reason })) }
+          : { type: 'broadcastPreview', ok: false, reason: preview.reason });
+        return { ok: true, command: message.type };
+      }
+      // Sent through the shared flow: its own modal shows the whole line and the list, and nothing is typed until it is confirmed.
+      case 'broadcastSend': {
+        const results = await sendBroadcast(sessions, { text: message.text ?? '', ids: idsOf(message) });
+        tellPage(results
+          ? { type: 'broadcastResults', sent: true, results: results.map((entry) => ({ label: labelOf(entry.sessionId), outcome: entry.outcome, reason: broadcastReason(entry.reason) })) }
+          : { type: 'broadcastResults', sent: false, results: [] });
+        void refresh();
+        return { ok: true, command: message.type };
+      }
       case 'setLayout':
       case 'reorder':
       case 'toggleCollapse':
@@ -282,7 +309,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     }
   };
   teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
-  controller = { handle, state: payload, refresh, board: () => lastBoard };
+  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
   // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).

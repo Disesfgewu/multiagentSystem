@@ -24,6 +24,7 @@ import { runCodexQuotaChecks } from './codexQuota';
 import { runCommandCenterChecks, runCommandCenterManyAgentsChecks } from './commandCenter';
 import { runWorkbenchChecks } from './workbench';
 import { runWorkBoardChecks } from './workBoard';
+import { runBroadcastTabChecks } from './broadcastTab';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
@@ -1091,6 +1092,7 @@ export async function run(): Promise<void> {
   await runCommandCenterManyAgentsChecks(workspace);
   await runWorkbenchChecks();
   await runWorkBoardChecks();
+  await runBroadcastTabChecks();
   await runBroadcastDeliveryChecks(workspace);
   await runMemoryPanelChecks(workspace);
   await runReviewJumpChecks();

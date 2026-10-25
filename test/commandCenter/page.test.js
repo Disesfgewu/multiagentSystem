@@ -269,3 +269,63 @@ test('a card\'s Details that the person opened stay open when the cards are draw
   listeners.message({ data: { type: 'state', state } });
   assert.equal(detailsOf().open, false, 'closed stays closed');
 });
+
+test('the Broadcast tab: a role group or chosen agents, a preview from the extension, then Send; results per agent (#357, #360 item 7)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', value: '', checked: false, disabled: false,
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node, createTextNode: (text) => ({ textContent: String(text) }) }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const base = { role: 'worker', roleName: 'Developers', roleGroupId: 'role-dev', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', mode: 'Auto', terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false };
+  const cards = [withFacts({ ...base, id: 's-1', codename: 'Worker-01', name: 'One', status: { state: 'waiting', text: 'waiting for input', source: 'hooks' } }), withFacts({ ...base, id: 's-2', codename: 'Worker-02', name: 'Two', status: { state: 'working', text: 'working', source: 'hooks' } })];
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: cards, accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab' && entry.textContent === 'Broadcast').at(-1).listeners.click();
+  const last = (tag, text) => nodes.filter((entry) => entry.tag === tag && (text === undefined || entry.textContent === text)).at(-1);
+  // The role group is chosen by default: the one of the agents on the screen, with how many are running.
+  assert.equal(last('option').textContent, 'Developers (2 running)');
+  assert.equal(last('button', 'Send…').disabled, true, 'nothing can be sent before a preview');
+  const box = last('textarea');
+  box.value = 'Please pull main and run the tests.';
+  box.listeners.input();
+  last('button', 'Preview').listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posted.at(-1))), { type: 'broadcastPreview', text: 'Please pull main and run the tests.', group: 'role-dev' });
+  listeners.message({ data: { type: 'broadcastPreview', ok: true, prompt: '[Task from the administrator] "Please pull main and run the tests." …', recipients: [{ label: 'Worker-01 · One', decision: 'send', reason: 'waiting for input' }, { label: 'Worker-02 · Two', decision: 'skip', reason: 'the CLI is busy working' }] } });
+  assert.ok(app.textContent.includes('Worker-01 · One — will receive it (waiting for input)'));
+  assert.ok(app.textContent.includes('Worker-02 · Two — skipped: the CLI is busy working'));
+  assert.equal(last('button', 'Send…').disabled, false, 'the previewed text can be sent');
+  // Changing the text after the preview: Send waits for a new preview.
+  box.value = 'Something else.';
+  box.listeners.input();
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: cards, accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  assert.equal(last('button', 'Send…').disabled, true, 'a changed text is not the previewed one');
+  assert.ok(app.textContent.includes('out of date'));
+  box.value = 'Please pull main and run the tests.';
+  box.listeners.input();
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: cards, accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  last('button', 'Send…').listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posted.at(-1))), { type: 'broadcastSend', text: 'Please pull main and run the tests.', group: 'role-dev' });
+  listeners.message({ data: { type: 'broadcastResults', sent: true, results: [{ label: 'Worker-01 · One', outcome: 'sent', reason: 'waiting for input' }, { label: 'Worker-02 · Two', outcome: 'skipped', reason: 'the CLI is busy working' }] } });
+  assert.ok(app.textContent.includes('Typed into 1 of 2 agents'));
+  assert.ok(app.textContent.includes('Worker-02 · Two — not sent: the CLI is busy working'));
+  // Chosen agents instead: the ids of the agents ticked.
+  last('button', 'Chosen agents').listeners.click();
+  const ticks = nodes.filter((entry) => entry.tag === 'input' && entry.type === 'checkbox');
+  ticks.at(-1).checked = true;
+  ticks.at(-1).listeners.change();
+  last('button', 'Preview').listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(posted.at(-1))), { type: 'broadcastPreview', text: 'Please pull main and run the tests.', ids: ['s-2'] });
+  // A refusal of the text is shown as it is.
+  listeners.message({ data: { type: 'broadcastPreview', ok: false, reason: 'This cannot be sent: it is empty.' } });
+  assert.ok(app.textContent.includes('This cannot be sent: it is empty.'));
+  assert.equal(last('button', 'Send…').disabled, true, 'a refused text cannot be sent');
+});

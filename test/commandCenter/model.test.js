@@ -136,7 +136,7 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
   // The board (#397): loadBoard carries nothing; openWorkItem names only an item the board showed, by kind and number.
   const items = new Set(['issue:12', 'pullRequest:7']);
   assert.deepEqual(parseMessage({ type: 'loadBoard' }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'loadBoard' } });
@@ -147,6 +147,19 @@ test('the command list is exactly what the page can send: it stops or restarts n
     [{ type: 'openWorkItem', kind: 'issue', number: 12, url: 'https://evil.test' }, 'unexpected-field'], [{ type: 'loadBoard', repository: 'x/y' }, 'unexpected-field']
   ]) assert.deepEqual(parseMessage(raw, new Set(), new Set(), new Set(), items), { ok: false, reason }, JSON.stringify(raw));
   assert.equal(parseMessage({ type: 'openWorkItem', kind: 'issue', number: 12 }, new Set(), new Set(), new Set()).ok, false, 'without a board, nothing can be opened');
+  // The Broadcast tab (#357): the typed text and exactly one target on the screen, a role group or agents; nothing else.
+  const cards = new Set(['s-1', 's-2']);
+  const groups = new Set(['role-a']);
+  const parse = (raw) => parseMessage(raw, cards, new Set(), new Set(), new Set(), groups);
+  assert.deepEqual(parse({ type: 'broadcastPreview', text: 'Run the tests.', group: 'role-a' }), { ok: true, message: { type: 'broadcastPreview', text: 'Run the tests.', group: 'role-a' } });
+  assert.deepEqual(parse({ type: 'broadcastSend', text: 'Run the tests.', ids: ['s-1', 's-2'] }), { ok: true, message: { type: 'broadcastSend', text: 'Run the tests.', ids: ['s-1', 's-2'] } });
+  for (const [raw, reason] of [
+    [{ type: 'broadcastSend', text: 'x', group: 'role-a', ids: ['s-1'] }, 'invalid-target'], [{ type: 'broadcastSend', text: 'x' }, 'invalid-target'],
+    [{ type: 'broadcastSend', text: 'x', group: 'role-b' }, 'unknown-group'], [{ type: 'broadcastSend', text: 'x', ids: ['s-9'] }, 'unknown-id'],
+    [{ type: 'broadcastSend', text: 'x', ids: [] }, 'unknown-id'], [{ type: 'broadcastSend', text: 'x', ids: ['s-1', 's-1'] }, 'unknown-id'],
+    [{ type: 'broadcastSend', text: 'x'.repeat(1501), ids: ['s-1'] }, 'invalid-text'], [{ type: 'broadcastSend', text: 5, ids: ['s-1'] }, 'invalid-text'],
+    [{ type: 'broadcastSend', text: 'x', ids: ['s-1'], confirm: false }, 'unexpected-field']
+  ]) assert.deepEqual(parse(raw), { ok: false, reason }, JSON.stringify(raw));
   // skillAction (#359) names a skill on screen and one fixed action; the skill's text and every confirmation come from the command.
   const skills = new Set(['run-tests']);
   assert.deepEqual(parseMessage({ type: 'skillAction', action: 'roles', name: 'run-tests' }, new Set(), new Set(), skills), { ok: true, message: { type: 'skillAction', action: 'roles', name: 'run-tests' } });
@@ -479,4 +492,10 @@ test('the card says how many shared notes did not fit the size limit, and only w
   assert.equal(describeGiven({ rules: 7, memories: 1, skills: 1, leftOutNotes: 2 }), 'Given at start: 7 rules, 1 shared note and 1 skill (their names, not their text). 2 more shared notes did not fit the size limit (listed by title only). The CLI is told about them; that does not prove it read them.');
   assert.match(describeGiven({ rules: 7, memories: 1, leftOutNotes: 1 }), /\. 1 more shared note did not fit the size limit \(listed by title only\)\./);
   for (const none of [0, -1, undefined, 'x']) assert.equal(/did not fit/.test(describeGiven({ rules: 7, memories: 1, leftOutNotes: none })), false, String(none));
+});
+
+test('a card carries its role group, so the Broadcast tab can send to everyone of one (#357)', () => {
+  assert.equal(build([session({ roleGroupId: 'g-worker' })]).agents[0].roleGroupId, 'g-worker');
+  assert.equal(build([session({ roleGroupId: 'unassigned' })]).agents[0].roleGroupId, null);
+  assert.equal(build([session({ roleGroupId: undefined })]).agents[0].roleGroupId, null);
 });
