@@ -83,3 +83,12 @@ test('a step that does not finish in time fails with a screenshot and the run go
   assert.equal(recorder.items[0].steps.length, 1, 'the item stops at the step that failed');
   fs.rmSync(out, { recursive: true, force: true });
 });
+
+test('an action that does not end fails with its name after its limit (#385)', async () => {
+  const { timed } = require('./steps');
+  const started = Date.now();
+  await assert.rejects(timed('the stuck thing', () => new Promise(() => {}), 50), /the stuck thing did not finish in 0\.05 s/);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(await timed('a quick thing', async () => 7), 7);
+  assert.equal(globalThis.e2eLastAction, 'finished: a quick thing');
+});
