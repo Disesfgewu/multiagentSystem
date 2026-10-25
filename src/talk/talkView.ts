@@ -8,6 +8,8 @@ import { setPageActions } from '../reports/githubPage';
 import { sendPublicFeedback } from '../reports/publicFeedback';
 import { privateStorage } from '../storage/storageCommands';
 
+// Which kind of private data stopped a post, in words, never the value (#389).
+const { blockedSentence } = require('../publish/blocked-words') as { blockedSentence(found: unknown): string };
 const { buildNotifyPrompt, buildPostPrompt, renderConversation, newComments, nextPoll, POLL_MS } = require('./conversation') as {
   buildNotifyPrompt(input: unknown): { ok: true; prompt: string } | { ok: false; reason: string };
   buildPostPrompt(input: unknown): { ok: true; prompt: string } | { ok: false; reason: string };
@@ -240,7 +242,7 @@ export async function commentOnGitHub(sessions: SessionCommands, target: Target,
       void vscode.window.showErrorMessage(`The comment was not sent: ${sent.code === 'publisher-not-configured' ? 'no GitHub account is set to publish your comments for this repository yet' : 'the signed-in GitHub account is not the one set to publish'}.${told}`, 'Configure PM Publisher').then((picked) => {
         if (picked) void vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher);
       });
-    } else if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The comment was not sent (${sent.code ?? 'unknown'}).${told}`);
+    } else if (sent.code !== 'cancelled') void vscode.window.showErrorMessage(`The comment was not sent (${sent.code ?? 'unknown'}).${blockedSentence(sent.found)}${told}`);
     return { ok: false, code: sent.code };
   }
   options.afterPost?.();

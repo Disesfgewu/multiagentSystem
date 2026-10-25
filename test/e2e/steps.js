@@ -869,20 +869,19 @@ const ITEMS = [
       },
       {
         name: 'approve-pr',
-        does: 'Back on "PR #7", type "Thanks, approved." in the comment box at the bottom, click "Approve", read the whole review in the window and click "Submit formal review".',
+        does: 'Back on "PR #7", type "Checked on this head: the page draws Markdown as a tree." in the comment box at the bottom, click "Approve", read the whole review in the window and click "Submit formal review".',
         run: async ({ page, check }) => {
           await page.locator('.tabs-container .tab', { hasText: 'PR #7' }).first().click();
           const frame = await pageFrame(page, 'Read-only Issue and pull request page');
-          // Temporarily a plain review: "Checked on this head: the page draws Markdown as a tree." is blocked by the privacy scan, which
-          // matches every stored string as a substring (#389). Put the original sentence back once #389 is fixed.
-          await frame.locator('textarea.comment-box').fill('Thanks, approved.');
+          // An ordinary sentence: before #389 the privacy scan stopped it because a stored word appeared inside it.
+          await frame.locator('textarea.comment-box').fill('Checked on this head: the page draws Markdown as a tree.');
           await settled(page, frame);
           await frame.locator('.decisions .btn', { hasText: /^Approve$/ }).first().click();
           const dialog = page.locator('.monaco-dialog-box', { hasText: 'Submit formal GitHub review (approve) to example/project PR #7' }).first();
           await dialog.waitFor({ state: 'visible', timeout: 30000 });
-          check('the confirmation names the head and shows the whole review', await dialog.innerText(), /head 1234567890abcdef1234567890abcdef12345678[\s\S]*Thanks, approved\./);
+          check('the confirmation names the head and shows the whole review', await dialog.innerText(), /head 1234567890abcdef1234567890abcdef12345678[\s\S]*Checked on this head: the page draws Markdown as a tree\./);
           await dialog.locator('.monaco-button', { hasText: 'Submit formal review' }).click();
-          const posted = frame.locator('.post', { hasText: 'Thanks, approved' }).first();
+          const posted = frame.locator('.post', { hasText: 'Checked on this head' }).first();
           // The review on the page, or the message that says why it was not submitted.
           let refused = '';
           const deadline = Date.now() + 30000;

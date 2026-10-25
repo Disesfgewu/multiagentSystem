@@ -317,7 +317,12 @@ class Broker {
       return deny('content-scan-failed');
     }
     if (!isPlain(result) || result.status !== 'clear' || result.blocked !== false) {
-      return deny('content-blocked', { scanStatus: isPlain(result) && typeof result.status === 'string' ? result.status : 'error' });
+      // What was found, by kind and by the caller's own id for it (never the text that matched), so the person can be told which
+      // kind of private data to take out (#389).
+      const found = isPlain(result) && Array.isArray(result.findings)
+        ? result.findings.slice(0, 20).filter(isPlain).map((finding) => ({ category: typeof finding.category === 'string' ? finding.category : 'unknown', ...(typeof finding.id === 'string' ? { id: finding.id } : {}) }))
+        : [];
+      return deny('content-blocked', { scanStatus: isPlain(result) && typeof result.status === 'string' ? result.status : 'error', found });
     }
     if (result.privateReference !== 'supplied' && this.d.privateReferencesChecked !== true) return deny('private-reference-unchecked');
     return null;

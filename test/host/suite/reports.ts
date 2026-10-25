@@ -4,6 +4,7 @@ import { REPORT_COMMANDS, REPORT_SCHEME, reportBadgeForTests, reportText, report
 import { closeIssueReport, deleteMergedBranchReport, installPublicFeedbackTestOverrides, setPublicFeedbackTestMode } from '../../../src/reports/publicFeedback';
 import { outsideTestMode } from './nonInteractiveGate';
 import { privateStorage } from '../../../src/storage/storageCommands';
+const { blockedSentence } = require('../../../src/publish/blocked-words') as { blockedSentence(found: unknown): string };
 const { OwnerPostStore, bodyHash } = require('../../../src/reports/ownerPosts') as { bodyHash(body: string): string; OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: boolean; comments?: Map<number, string | null>; reviews?: Map<number, string | null> } } };
 const { saveFeedback, readFeedback } = require('../../../src/reports/feedback-store') as {
   saveFeedback(store: unknown, target: unknown, input: { note: string; headSha: string | null }, expectedRevision: number | null): { ok: boolean; reason?: string; record?: { revision: number } };
@@ -253,13 +254,16 @@ export async function runReportChecks(): Promise<string> {
       confirm: async () => true,
       comment: async (_session, _repository, number, body) => { published.push({ number, body }); return { ok: true, number: 9001 }; }
     });
-    for (const blockedBody of [
-      'Repeating private note: Please add a second test',
-      'Leaking token ghp_1234567890abcdefghijklmnopqrstuvwx12 in public',
-      'Leaking local path /Users/pm/private-notes.md in public'
-    ]) {
-      const blocked = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: blockedBody, interactive: false });
-      assert.deepEqual(blocked, { ok: false, code: 'content-blocked' }, blockedBody);
+    // Each is stopped, and the result says which kind of private data it holds, never the value (#389).
+    for (const [blockedBody, kind, secret] of [
+      ['Repeating private note: Please add a second test', /your private note on a report/, 'Please add a second test'],
+      ['Leaking token ghp_1234567890abcdefghijklmnopqrstuvwx12 in public', /password, token or key/, 'ghp_1234567890'],
+      ['Leaking local path /Users/pm/private-notes.md in public', /path of this computer/, '/Users/pm']
+    ] as const) {
+      const blocked = await vscode.commands.executeCommand<{ ok: boolean; code?: string; found?: unknown }>(REPORT_COMMANDS.publicFeedback, { body: blockedBody, interactive: false });
+      assert.deepEqual([blocked.ok, blocked.code], [false, 'content-blocked'], blockedBody);
+      assert.match(blockedSentence(blocked.found), kind, blockedBody);
+      assert.equal(JSON.stringify(blocked).includes(secret), false, 'the private value is not in the result');
     }
     assert.equal(published.length, 0, 'blocked content never reaches the transport');
     const openedStore = await privateStorage()?.use();
@@ -369,7 +373,9 @@ export async function runReportChecks(): Promise<string> {
         return { ok: true, number: 501 };
       }
     });
-    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Leaking private note: Please add a second test', interactive: false }), { ok: false, code: 'content-blocked' });
+    const leakedReview = await vscode.commands.executeCommand<{ ok: boolean; code?: string; found?: unknown }>(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: 'Leaking private note: Please add a second test', interactive: false });
+    assert.deepEqual([leakedReview.ok, leakedReview.code], [false, 'content-blocked']);
+    assert.match(blockedSentence(leakedReview.found), /your private note on a report/);
     assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.reviewPullRequest, { decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', interactive: false }), { ok: true, ownerRecorded: true });
     assert.equal((await ownerRecord()).reviews?.get(501), bodyHash('結論：Pass｜head `' + HEAD + '` Verified in report.'), 'the submitted review\'s id is in the owner record, with the hash of exactly the text that was sent');
     assert.deepEqual(reviewsSent, [{ number: 7, decision: 'approve', body: '結論：Pass｜head `' + HEAD + '` Verified in report.', expectedHeadSha: HEAD }]);
@@ -574,7 +580,9 @@ export async function runReportChecks(): Promise<string> {
       confirm: async () => true,
       comment: async () => { throw new Error('synthetic uncertain response'); }
     });
-    assert.deepEqual(await vscode.commands.executeCommand(REPORT_COMMANDS.publicFeedback, { body: 'Leaking Private issue note kept on this machine', interactive: false }), { ok: false, code: 'content-blocked' });
+    const leakedIssueNote = await vscode.commands.executeCommand<{ ok: boolean; code?: string; found?: unknown }>(REPORT_COMMANDS.publicFeedback, { body: 'Leaking Private issue note kept on this machine', interactive: false });
+    assert.deepEqual([leakedIssueNote.ok, leakedIssueNote.code], [false, 'content-blocked']);
+    assert.match(blockedSentence(leakedIssueNote.found), /your private note on a report/);
     const unknownSend = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'A distinct public issue comment.', interactive: false });
     assert.deepEqual(unknownSend, { ok: false, code: 'outcome-unknown' });
     const refusedRetry = await vscode.commands.executeCommand<{ ok: boolean; code?: string }>(REPORT_COMMANDS.publicFeedback, { body: 'A distinct public issue comment.', interactive: false });

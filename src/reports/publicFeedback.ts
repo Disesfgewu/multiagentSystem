@@ -6,16 +6,18 @@ import { WorktreeService } from '../projects/worktrees';
 import { COLLECTIONS } from '../storage/extensionStorage';
 const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { record(input: { repository: string; kind: 'comment' | 'review'; id: number; number: number; body: string }): { ok: boolean } } };
 const { classifyWrite } = require('./writeOutcome') as { classifyWrite(response: { ok: boolean; status: number }, verified: boolean): 'done' | 'refused' | 'unknown' };
-const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> } };
+const { Broker } = require('../broker/broker') as { Broker: new (deps: Record<string, unknown>) => { request(value: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; found?: Found }> } };
+// What the privacy scan found when it stopped a post (#389): kinds and ids only, never the text; the message says which kind.
+export type Found = Array<{ category: string; id?: string }>;
+const foundOf = (result: { reason?: string; found?: Found }): { found?: Found } => (result.reason === 'content-blocked' && Array.isArray(result.found) ? { found: result.found } : {});
 
 const REPOSITORY = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/;
 const SHA = /^[a-f0-9]{40}$/i;
 const POLICY_ID = 'public-feedback-publisher';
 const MERGE_POLICY_ID = 'merge-authority-policy';
 const COLLECTION = 'policies';
-const MAX_PRIVATE_REFS = 5000;
-const PUBLIC_KEYS = new Set(['kind', 'targetKind', 'provider', 'role', 'state', 'status', 'scope', 'type', 'mode', 'decision', 'unknownQuota', 'repository', 'headSha', 'version', 'requestedModel', 'createdAt', 'updatedAt', 'configuredAt', 'expiresAt', 'revokedAt', 'savedAt']);
-const PUBLIC_VALUES = new Set(['unassigned', 'allow', 'deny', 'ask', 'unknown', 'claude', 'codex', 'agy', 'issue', 'pullRequest', 'worker', 'researcher', 'pm', 'human', 'approve', 'request_changes', 'comment', 'merged']);
+// The private values the scan looks for, collected from the private store (#389: free-form fields only, as whole words).
+const { collectPrivateReferences } = require('../publish/private-references') as { collectPrivateReferences(store: unknown, collections: readonly string[], options: { skip(collection: string, id: string): boolean; hash(text: string): string }): { knownValues: Array<{ id: string; value: string }>; rules: Array<{ id: string; text: string }> } | null };
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 const recordId = (repository: string, kind: string, number: number): string => `public-feedback-${hash(repository.toLowerCase()).slice(0, 20)}-${kind}-${number}`;
 const reviewRecordId = (repository: string, number: number): string => `pr-review-${hash(repository.toLowerCase()).slice(0, 20)}-${number}`;
@@ -118,39 +120,9 @@ function saveBy(store: Store, id: string, expectedKind: string, target: PublicTa
   return store.put(COLLECTION, id, { kind: expectedKind, repository: target.repository, number: target.number, version: target.version, ...value })?.ok === true;
 }
 function privateReferences(store: Store): { knownValues: Array<{ id: string; value: string }>; rules: Array<{ id: string; text: string }> } | null {
-  const knownValues: Array<{ id: string; value: string }> = [];
-  const rules: Array<{ id: string; text: string }> = [];
-  let unreadable = false;
-  const visit = (value: unknown, id: string, keyName?: string): void => {
-    if (unreadable) return;
-    if (typeof value === 'string') {
-      if (PUBLIC_VALUES.has(value)) return;
-      if (knownValues.length >= MAX_PRIVATE_REFS) { unreadable = true; return; }
-      knownValues.push({ id, value });
-      if (keyName === 'note' || keyName === 'text') rules.push({ id, text: value });
-      return;
-    }
-    if (Array.isArray(value)) { value.forEach((entry, index) => visit(entry, `${id}-${index}`, keyName)); return; }
-    if (value && typeof value === 'object') {
-      for (const [key, entry] of Object.entries(value)) {
-        if (PUBLIC_KEYS.has(key)) continue;
-        visit(entry, `${id}-${key}`, key);
-      }
-    }
-  };
-  for (const collection of COLLECTIONS) {
-    const listed = store.list(collection);
-    if (!listed?.ok || !Array.isArray(listed.items)) return null;
-    for (const item of listed.items) {
-      if (!item || typeof item.id !== 'string' || !item.value || typeof item.value !== 'object' || Array.isArray(item.value)) return null;
-      if (collection === 'policies' && (item.id === POLICY_ID || item.id === MERGE_POLICY_ID || item.id.startsWith('public-feedback-') || item.id.startsWith('pr-review-') || item.id.startsWith('pr-merge-') || item.id.startsWith('broker-req-'))) continue;
-      if (collection === 'reportFeedback' && (typeof (item.value as any).note !== 'string' || (item.value as any).note.trim() === '')) return null;
-      if (collection === 'broadcasts' && (typeof (item.value as any).text !== 'string' || (item.value as any).text.trim() === '')) return null;
-      visit(item.value, `${collection}-${hash(item.id).slice(0, 12)}`);
-      if (unreadable) return null;
-    }
-  }
-  return { knownValues, rules };
+  // What this extension publishes itself (the publisher, the merge authority and the records of its own posts) is not looked for.
+  const own = (collection: string, id: string): boolean => collection === 'policies' && (id === POLICY_ID || id === MERGE_POLICY_ID || id.startsWith('public-feedback-') || id.startsWith('pr-review-') || id.startsWith('pr-merge-') || id.startsWith('broker-req-'));
+  try { return collectPrivateReferences(store, COLLECTIONS, { skip: own, hash }); } catch { return null; }
 }
 async function currentVersion(target: PublicTarget): Promise<string | null> {
   const reader: any = githubReaderFor(target.repository); if (!reader) return null;
@@ -360,7 +332,7 @@ function recordOwnerPost(store: Store, repository: string, kind: 'comment' | 're
  * does not stop the next one (the report page's feedback stays one per version). A message whose outcome is unknown, or that is
  * still being sent, still blocks the next until it is resolved, so a retry can never post the same text twice by itself.
  */
-export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; typed?: string; interactive?: boolean; conversation?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; commentId?: number; body?: string }> {
+export async function sendPublicFeedback(target: PublicTarget, input?: { body?: unknown; typed?: string; interactive?: boolean; conversation?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; commentId?: number; body?: string; found?: Found }> {
   let ownerRecorded = false;
   // GitHub's id for the comment this call posted (not set when it was already sent before): talking to the PM (#343) reads it back.
   let commentId: number | undefined;
@@ -406,10 +378,10 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'comment', requestId, target: target.kind === 'issue' ? 'issue' : 'pr', number: target.number, body });
-  return result.ok ? { ok: true, ownerRecorded, ...(commentId !== undefined ? { commentId, body: body as string } : {}) } : { ok: false, code: result.reason ?? 'write-refused' };
+  return result.ok ? { ok: true, ownerRecorded, ...(commentId !== undefined ? { commentId, body: body as string } : {}) } : { ok: false, code: result.reason ?? 'write-refused', ...foundOf(result) };
 }
 
-export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean; chosen?: { decision: ReviewDecision; typed?: string } }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
+export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean; chosen?: { decision: ReviewDecision; typed?: string } }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean; found?: Found }> {
   let ownerRecorded = false;
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
@@ -469,7 +441,7 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
     config: { pmActorId: configured.actorId, pmLogin: configured.login }, project: { repository }, store, scanOptions: refs, privateReferencesChecked: true
   });
   const result = await broker.request({ operation: 'reviewPr', requestId, number: target.number, decision: pickedDecision, body, expectedHeadSha: target.version.toLowerCase() });
-  return result.ok ? { ok: true, ownerRecorded } : { ok: false, code: result.reason ?? 'write-refused' };
+  return result.ok ? { ok: true, ownerRecorded } : { ok: false, code: result.reason ?? 'write-refused', ...foundOf(result) };
 }
 
 export async function mergePullRequestReport(target: PublicTarget, input?: { interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
