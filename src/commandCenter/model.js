@@ -399,9 +399,11 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem']);
 const SHAPES = Object.freeze({
-  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name']
+  ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
+  // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
+  loadBoard: [], openWorkItem: ['kind', 'number']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -460,7 +462,7 @@ function buildSkills(summary) {
  * screen. Anything else (an unknown command, an extra field, a wrong type, a long list) is refused, never partly obeyed.
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
-function parseMessage(raw, knownIds, accountIds, skillNames) {
+function parseMessage(raw, knownIds, accountIds, skillNames, boardItems) {
   if (!isPlain(raw) || typeof raw.type !== 'string' || !COMMANDS.includes(raw.type)) return { ok: false, reason: 'unknown-command' };
   const allowed = SHAPES[raw.type];
   const extra = Object.keys(raw).filter((key) => key !== 'type' && !allowed.includes(key));
@@ -474,6 +476,13 @@ function parseMessage(raw, knownIds, accountIds, skillNames) {
     if (typeof raw.action !== 'string' || !Object.hasOwn(SKILL_ACTIONS, raw.action)) return { ok: false, reason: 'invalid-field' };
     if (typeof raw.name !== 'string' || !SKILL_NAME.test(raw.name) || !names.has(raw.name)) return { ok: false, reason: 'unknown-skill' };
     return { ok: true, message: { type: raw.type, action: raw.action, name: raw.name } };
+  }
+  if (raw.type === 'openWorkItem') {
+    // Only an item the board showed: "issue:12" or "pullRequest:7".
+    const items = boardItems instanceof Set ? boardItems : new Set();
+    if (raw.kind !== 'issue' && raw.kind !== 'pullRequest') return { ok: false, reason: 'invalid-field' };
+    if (!Number.isSafeInteger(raw.number) || raw.number < 1 || !items.has(`${raw.kind}:${raw.number}`)) return { ok: false, reason: 'unknown-item' };
+    return { ok: true, message: { type: raw.type, kind: raw.kind, number: raw.number } };
   }
   if (raw.type === 'accountAction') {
     // Creating an account names no account; every other action names one that is on the screen.

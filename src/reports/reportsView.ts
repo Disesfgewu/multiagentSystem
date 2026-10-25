@@ -486,6 +486,33 @@ export async function pageResult(kind: Kind, number: number): Promise<{ ok: true
   return { ok: true, repository: read.repository, model, version, facts: await pageWriteFacts({ repository: read.repository, kind, number, state: model.state, snapshot: read.snapshot }) };
 }
 
+/**
+ * What the Work tab's board (#397) is built from: the open Issues and pull requests, the ones merged lately, and for each open pull
+ * request (at most 30, the most recently updated) its snapshot (head and checks), conversation and reviews, plus the record of the
+ * owner's own posts. Read only, through the same cached reader as the reports; a read that fails is passed on as it came.
+ */
+export async function boardData(): Promise<{ ok: false; text: string } | { ok: true; repository: string; issues: Result; pullRequests: Result; merged: Result; details: Record<string, { snapshot: any; comments: Result; reviews: Result }>; ownerPosts: OwnerPosts | null }> {
+  const repository = await deps.repository();
+  if (!repository) return { ok: false, text: 'No GitHub project is open here (or this workspace is not trusted yet, and reading it would run Git in it), so the board is not shown.' };
+  const reader = deps.readerFor(repository);
+  if (!reader) return { ok: false, text: 'GitHub could not be reached for this project.' };
+  try {
+    const [issues, pullRequests, merged] = await Promise.all([reader.listIssues({ state: 'open' }), reader.listPullRequests({ state: 'open' }), reader.listPullRequests({ state: 'closed' })]);
+    const open = (pullRequests && (pullRequests as any).kind === 'ok' && Array.isArray((pullRequests as any).data) ? (pullRequests as any).data : [])
+      .filter((pr: any) => pr && Number.isSafeInteger(pr.number))
+      .sort((a: any, b: any) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+      .slice(0, 30);
+    const details: Record<string, { snapshot: any; comments: Result; reviews: Result }> = {};
+    await Promise.all(open.map(async (pr: any) => {
+      const [snapshot, comments, reviews] = await Promise.all([reader.getPullRequestSnapshot(pr.number), reader.getIssueComments(pr.number), reader.getReviews(pr.number)]);
+      details[String(pr.number)] = { snapshot, comments, reviews };
+    }));
+    return { ok: true, repository, issues, pullRequests, merged, details, ownerPosts: await readOwnerPosts(repository) };
+  } catch {
+    return { ok: false, text: 'The board could not be read from GitHub. Try again with Refresh.' };
+  }
+}
+
 /** Failures are written into the report, not thrown. */
 export async function reportText(kind: Kind, number: number): Promise<string> { return (await reportResult(kind, number)).text; }
 

@@ -190,6 +190,10 @@ const SCRIPT = String.raw`
     { id: 'broadcast', label: 'Broadcast' }, { id: 'ask', label: 'Ask' }, { id: 'knowledge', label: 'Knowledge' }, { id: 'setup', label: 'Setup' }
   ];
   var tab = 'agents';
+  // The Work tab's board (#397): asked for the first time the tab is shown, and again with its Refresh.
+  var board = null;
+  var boardAsked = false;
+  function showingWork() { if (tab === 'work' && !boardAsked) { boardAsked = true; post({ type: 'loadBoard' }); } }
   function open(target) { post({ type: 'open', target: target }); }
   function nextSteps(title, steps) {
     var box = el('div', 'next');
@@ -203,7 +207,7 @@ const SCRIPT = String.raw`
     var bar = el('div', 'tabs');
     bar.setAttribute('role', 'tablist');
     TABS.forEach(function (entry) {
-      var node = button(entry.label, function () { tab = entry.id; render(); });
+      var node = button(entry.label, function () { tab = entry.id; showingWork(); render(); });
       node.className = 'tab' + (tab === entry.id ? ' tab-selected' : '');
       node.setAttribute('role', 'tab');
       node.setAttribute('aria-selected', tab === entry.id ? 'true' : 'false');
@@ -305,6 +309,45 @@ const SCRIPT = String.raw`
     panel.appendChild(nextSteps('Rules and shared memory', [['Team rules…', function () { post({ type: 'editTeamRules' }); }], ['Add shared memory note…', function () { open('memoryAdd'); }], ['Review suggested memory…', function () { open('memoryReview'); }]]));
   }
 
+  // The work-order board (#397): every open Issue in the column of its stage, read from GitHub and the agents, never written.
+  function workTab(panel) {
+    panel.appendChild(nextSteps('Next step', [['Refresh board', function () { board = null; render(); post({ type: 'loadBoard' }); }], ['Open Issue or pull request…', function () { open('openGitHubPage'); }], ['Browse GitHub…', function () { open('browseGitHub'); }], ['Assign Issue…', function () { post({ type: 'assignIssue' }); }], ['Export report…', function () { post({ type: 'exportReport' }); }]]));
+    if (!board) { panel.appendChild(el('p', 'muted', 'Reading the board from GitHub…')); return; }
+    var data = board.board;
+    panel.appendChild(el('p', 'muted', 'Read from GitHub ' + (typeof board.readAt === 'string' ? board.readAt.replace('T', ' ').slice(0, 16) + ' UTC' : 'at an unknown time') + '. Each stage comes from GitHub and the agents; nothing here is written anywhere.'));
+    if (data.state !== 'ok') { panel.appendChild(el('p', 'alert', data.reason || 'The board could not be read.')); return; }
+    (data.notes || []).forEach(function (text) { panel.appendChild(el('p', 'alert', text)); });
+    var lanes = el('div', 'board');
+    data.columns.forEach(function (column) {
+      var lane = el('section', 'lane');
+      lane.setAttribute('data-column', column.id);
+      lane.appendChild(el('h3', null, column.label + ' (' + column.count + ')'));
+      column.cards.forEach(function (card) {
+        var item = el('article', 'work-card');
+        var title = button((card.kind === 'issue' ? '#' : 'PR #') + card.number + ' ' + card.title, function () { post({ type: 'openWorkItem', kind: card.kind, number: card.number }); }, 'Open its page');
+        title.className = 'btn link-btn';
+        item.appendChild(title);
+        if (card.kind === 'issue') item.appendChild(el('div', 'muted', 'Agent: ' + card.agent));
+        if (card.pr) {
+          item.appendChild(el('div', null, (card.kind === 'issue' ? 'PR #' + card.pr.number + ' · ' : '') + 'head ' + card.pr.head + ' · ' + card.pr.ci));
+          if (card.pr.verdict) item.appendChild(el('div', null, 'PM: ' + card.pr.verdict));
+        }
+        if (card.refs && card.refs.length) item.appendChild(el('div', 'muted', 'Closes ' + card.refs.join(', ')));
+        item.appendChild(el('div', 'muted', 'In this column: ' + card.inColumn));
+        var row = el('div', 'row');
+        if (card.kind === 'issue' && card.pr) row.appendChild(button('Open PR', function () { post({ type: 'openWorkItem', kind: 'pullRequest', number: card.pr.number }); }));
+        if (card.agentId) row.appendChild(button('Focus terminal', function () { post({ type: 'focus', id: card.agentId }); }));
+        if (row.children.length) item.appendChild(row);
+        lane.appendChild(item);
+      });
+      if (column.more > 0) lane.appendChild(el('p', 'muted', column.more + ' more not listed (the board shows 30 cards at most).'));
+      if (column.count === 0) lane.appendChild(el('p', 'muted', 'none'));
+      lanes.appendChild(lane);
+    });
+    panel.appendChild(lanes);
+    panel.appendChild(decisionLines(state.decisions));
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -323,10 +366,7 @@ const SCRIPT = String.raw`
     panel.setAttribute('aria-labelledby', 'tab-' + tab);
     if (tab === 'agents') agentsTab(panel);
     else if (tab === 'accounts') accountsTab(panel);
-    else if (tab === 'work') {
-      panel.appendChild(decisionLines(state.decisions));
-      placeholderTab(panel, 'Issues and pull requests of this project, and what waits for your decision.', '#353', [['Open Issue or pull request…', function () { open('openGitHubPage'); }], ['Browse GitHub…', function () { open('browseGitHub'); }], ['Assign Issue…', function () { post({ type: 'assignIssue' }); }], ['Export report…', function () { post({ type: 'exportReport' }); }]]);
-    } else if (tab === 'broadcast') placeholderTab(panel, 'Tell every agent of a role group, or the agents you choose, the same thing.', '#357', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]);
+    else if (tab === 'work') workTab(panel); else if (tab === 'broadcast') placeholderTab(panel, 'Tell every agent of a role group, or the agents you choose, the same thing.', '#357', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]);
     else if (tab === 'ask') placeholderTab(panel, 'Ask the PM or an agent a question, for example what the selected code does.', '#353', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]);
     else if (tab === 'knowledge') knowledgeTab(panel);
     else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
@@ -336,7 +376,8 @@ const SCRIPT = String.raw`
 
   window.addEventListener('message', function (event) {
     var data = event.data;
-    if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; render(); return; }
+    if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; showingWork(); render(); return; }
+    if (data && data.type === 'board' && data.board && typeof data.board === 'object') { board = data; if (tab === 'work') render(); return; }
     if (!data || data.type !== 'state' || typeof data.state !== 'object' || data.state === null) return;
     state = data.state;
     render();
@@ -356,6 +397,12 @@ const STYLE = `
   .tag { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
   .tag-warn { background: transparent; color: var(--vscode-editorWarning-foreground); border: 1px solid var(--vscode-editorWarning-foreground); }
   .tag-ok { background: transparent; color: var(--vscode-charts-green); border: 1px solid var(--vscode-charts-green); }
+  .board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; align-items: start; margin: 8px 0; }
+  @media (max-width: 900px) { .board { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .lane { min-width: 0; border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; background: var(--vscode-sideBar-background); overflow-wrap: anywhere; }
+  .lane h3 { margin: 0 0 6px; font-size: 0.95em; }
+  .work-card { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; margin-bottom: 6px; background: var(--vscode-editor-background); font-size: 0.9em; display: flex; flex-direction: column; gap: 2px; }
+  .btn.link-btn { background: transparent; color: var(--vscode-textLink-foreground); padding: 0; text-align: left; font-weight: 600; }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }

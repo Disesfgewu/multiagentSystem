@@ -929,6 +929,53 @@ const ITEMS = [
     ]
   },
   {
+    id: '12',
+    title: 'A work-order board: every Issue in the column of its stage',
+    issue: '#397 (#355 slice 1)',
+    acceptance: 'not-done',
+    pending: 'Proven here on a synthetic GitHub: the columns, the cards (agent, PR, head, checks, the PM verdict from a trusted author only, time in the column) and opening one. Not proven: that the board agrees with a real repository (#135).',
+    steps: [
+      {
+        name: 'see-board',
+        does: 'In the Workbench click the "Work" tab.',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click().catch(() => {});
+          await clickInWorkbench(page, 'Refresh board', { tab: 'Work' });
+          const frame = await workbenchFrame(page);
+          const lane = (id) => frame.locator(`.lane[data-column="${id}"]`);
+          await timed('the board', () => lane('changes').locator('.work-card').first().waitFor({ timeout: 30000 }));
+          const cards = async (id) => (await textsOf(lane(id).locator('.work-card .link-btn'), `the ${id} cards`)).join(' | ');
+          check('the stages, in order', (await textsOf(frame.locator('.lane h3'), 'the column titles')).map((title) => title.replace(/ \(\d+\)$/, '')).join(' | '), '待辦 Backlog | 可領取 Ready | 進行中 In progress | 待審查 Waiting for review | 需修改 Needs changes | 已合併 Merged');
+          check('an Issue nobody has taken is in the backlog', await cards('backlog'), /#20 Write the release notes/);
+          check('a ready one can be claimed', await cards('ready'), /#21 Add a dark theme screenshot/);
+          check('one with a draft pull request is in progress', await cards('inProgress'), /#22 Cache the GitHub reads/);
+          check('one with a pull request and no verdict waits for review', await cards('review'), /#24 Explain the usage log/);
+          check('the PM\'s Needs changes moves it to Needs changes', await cards('changes'), /#26 Fix the account picker/);
+          check('a merged pull request, with the Issue it closes', await textOf(lane('merged').locator('.work-card').first(), 'the merged card'), /PR #28 Show the merge result[\s\S]*Closes #29[\s\S]*merged \d+h ago/);
+          const forged = lane('review').locator('.work-card', { hasText: '#30 ' }).first();
+          check('a verdict typed by another account moves nothing', await textOf(forged, 'the card of #30'), /PM: none yet/);
+          const changed = lane('changes').locator('.work-card').first();
+          check('the card says the PR, head, checks, the verdict and since when', await textOf(changed, 'the card of #26'), (text) => /PR #27 · head abcdefa · checks failed/.test(text) && /PM: Needs changes by PM-01 for head abcdefa · this head/.test(text) && /In this column: verdict \d+[mhd] ago/.test(text) && /Agent: no agent/.test(text));
+          await frame.locator('.board').first().scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'open-from-board',
+        does: 'Click "#26 Fix the account picker" on the board.',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('.lane[data-column="changes"] .link-btn', { hasText: '#26 Fix the account picker' }).first().click();
+          const tab = page.locator('.tabs-container .tab', { hasText: 'Issue #26' }).first();
+          await timed('the Issue #26 tab', () => tab.waitFor({ timeout: 30000 }));
+          const issuePage = await pageFrame(page, 'Fix the account picker');
+          check('its page opens in the editor', await textOf(issuePage.locator('h1'), 'the page title'), /Fix the account picker\s*#26/);
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
     id: '10',
     title: 'Skills and shared memory that save tokens',
     issue: '#359',

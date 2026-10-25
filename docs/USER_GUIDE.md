@@ -337,6 +337,45 @@ token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1）�
 - **卡片寫 `state unknown`**：agent 還沒回報狀態，畫面不會猜測。
 - **側欄寫 `Needs you: 1 account`**：打開 Accounts 分頁，看那個帳號寫了什麼，例如額度橋接還沒設定。
 
+## 12. 工單看板：每張 Issue 在哪個階段
+
+**要做什麼**：一個畫面看出每張工單（Issue）在哪個階段、誰在做、PR 的 head 與 CI、PM 最後的結論，以及停在這個階段多久。
+
+**從哪裡點**：工作台 → **Work**。第一次打開這個分頁時會讀一次；之後按 **Refresh board** 重新讀。
+
+**會看到什麼**：六欄，每欄寫著張數：
+- **待辦 Backlog**：沒有 `ready` 標籤，也沒有 agent 或 PR。
+- **可領取 Ready**：有 `ready` 標籤，還沒有人做。
+- **進行中 In progress**：有 agent 在做，或 PR 還是草稿。
+- **待審查 Waiting for review**：有 PR，而且 PM 還沒對目前的 head 下結論；或結論是 Pass，等你合併（卡片寫 `waiting for merge`）。
+- **需修改 Needs changes**：PM 最後的結論是 Needs changes。之後推了新的 head 也一樣，直到 PM 下新的結論。
+- **已合併 Merged**：最近兩週合併的 PR，以及它關閉的 Issue。
+
+每張卡片寫著：
+- 負責的 agent 代號，沒有就寫 `no agent`；
+- PR 編號、head 前 7 碼、CI；
+- PM 的結論：誰寫的、針對哪個 head；
+- 在這一欄停了多久。
+
+讀不到的寫 `unknown`。按卡片標題會打開那張 Issue 的頁面（第 8 章）；**Open PR** 打開 PR 頁面；有 agent 時，**Focus terminal** 會切到它的終端機。
+
+![工單看板](user-guide/images/12-see-board.png)
+
+![從看板打開 Issue](user-guide/images/12-open-from-board.png)
+
+**哪些結論算數**：只有 repo 擁有者的帳號、而且是你自己從 VS Code 發的（`管理者`），或第一行署名 PM（例如 `— PM-01`）的留言或 review，才會被當成結論。任何人都能在留言裡打「結論：Pass」，所以其他帳號、worker 或沒有署名的留言都不會讓卡片換欄。
+
+**和 GitHub 比少點幾次**：
+- 在 GitHub 上，要知道 N 張工單各自的階段、誰在做、CI 和 PM 結論，每張大約要點 4 到 5 次：Issues 列表 → Issue → 連結的 PR → Checks → 往下找最後一則 PM 結論。總共約 4N 到 5N 次。
+- 在看板上，打開工作台、按 **Work**，共 2 次。
+
+**限制**：
+- 看板最多顯示 30 張卡片，優先順序是：需修改、待審查、進行中、可領取、待辦、已合併。沒列出的會寫出還有幾張。
+- 遇到 GitHub 的流量限制時，看板會說明原因，以及什麼時候可以再讀。
+- 未信任的工作區不會讀取（偵測 repo 需要在工作區裡執行 Git）。
+- 「已驗收」（已發佈並走查通過）這一欄還沒有做。
+- 看板只讀取，不會寫入 GitHub。
+
 ## 限制
 
 e2e 測試證明的是「畫面與流程」。以下項目仍需要管理者在實機確認（#135）：
