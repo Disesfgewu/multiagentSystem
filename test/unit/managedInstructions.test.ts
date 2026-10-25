@@ -1002,7 +1002,7 @@ test('an agent is given the list of its role group\'s skills, with their files i
   assert.match(context, new RegExp(`- run-tests: When to use run-tests\\. \\(file: ${skillsDir.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}`));
   for (const absent of ['other-role', 'turned-off', 'suggested', 'STEPS OF RUN-TESTS']) assert.equal(context.includes(absent), false, absent);
   assert.match(fs.readFileSync(path.join(skillsDir, 'run-tests', 'SKILL.md'), 'utf8'), /STEPS OF RUN-TESTS/);
-  assert.deepEqual(fs.readdirSync(skillsDir), ['_answers', 'run-tests'], 'the skill, and the folder its Ask answers go to (#357)');
+  assert.deepEqual(fs.readdirSync(skillsDir).sort(), ['_answers', 'run-tests'], 'the skill, and the folder its Ask answers go to (#357)');
   assert.deepEqual(result.injectedCounts, { rules: result.injectedCounts.rules, memories: 0, skills: 1, leftOutNotes: 0 });
   assert.ok(result.injectedSizes && result.injectedSizes.skills.chars > 0 && result.injectedSizes.total.tokens > 0);
   assert.deepEqual(result.snapshot.skillBindings, [{ name: 'run-tests', revision: 1 }]);
