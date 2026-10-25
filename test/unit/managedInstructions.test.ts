@@ -1055,3 +1055,65 @@ test('what the person confirms names the skill files where they are written: for
   t.after(() => cleanupSessionPlan(claude.plan));
   assert.equal(claude.renderedContext, fs.readFileSync(claude.argv[1], 'utf8'));
 });
+
+test('notes past the size limit are listed by title and written whole into the folder the agent may read; they count in what is confirmed (#359)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  const note = (id: string, title: string, version = 2) => memNote(id, `${title} ${'Details of this note. '.repeat(55)}`, { version, createdAt: `2026-10-2${id.slice(-1)}T00:00:00.000Z` });
+  memoryFile(privateDir, [note('mem_1', 'First note fits.'), note('mem_2', 'Second note does not fit.'), note('mem_3', 'Third note does not fit either.')]);
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-cap-12345678', privateDir });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  t.after(() => cleanupSessionPlan(result.plan));
+  const folder = path.join(privateDir, 'sessions', 'session-cap-12345678', 'skills');
+  const notesFile = path.join(folder, '_left-out-notes.md');
+  const context = fs.readFileSync(result.argv[1], 'utf8');
+  assert.equal(result.injectedCounts.memories, 1, 'one note fits in 2,000 characters');
+  assert.ok(context.includes(`Their full text is in ${notesFile};`), context);
+  assert.ok(context.includes('  - Second note does not fit. Details') && context.includes('  - Third note does not fit either. Details'));
+  assert.ok(context.split('\n').filter((line) => line.startsWith('  - ')).every((line) => Array.from(line.slice(4)).length <= 80), 'each title is 80 characters at most');
+  assert.ok(context.includes(`- First note fits. ${'Details of this note. '.repeat(55).trim()}`), 'the note that fits is whole');
+  assert.equal(context.includes(`Second note does not fit. ${'Details of this note. '.repeat(55).trim()}`), false, 'a note left out is not');
+  const written = fs.readFileSync(notesFile, 'utf8');
+  assert.ok(written.includes(`Second note does not fit. ${'Details of this note. '.repeat(55).trim()}`) && written.includes('## Third note does not fit either.'));
+  assert.deepEqual(result.argv.slice(2), ['--add-dir', folder], 'the one folder it may read, with no skills in it');
+  assert.equal(result.renderedContext, context, 'the person confirms exactly this');
+  // A left-out note that changes changes what is confirmed.
+  memoryFile(privateDir, [note('mem_1', 'First note fits.'), note('mem_2', 'Second note does not fit.', 3), note('mem_3', 'Third note does not fit either.')]);
+  const again = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-cap-87654321', privateDir });
+  assert.ok(again.ok);
+  if (!again.ok) return;
+  t.after(() => cleanupSessionPlan(again.plan));
+  assert.notEqual(again.digest, result.digest);
+  assert.notEqual(again.reviewDigest, result.reviewDigest);
+  cleanupSessionPlan(result.plan);
+  assert.equal(fs.existsSync(notesFile), false, 'the notes file goes with the session');
+});
+
+test('a snapshot is stale once a note the size limit left out is changed, switched off, or another is left out (#359, PR #395 review)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  const note = (id: string, title: string, over: any = {}) => memNote(id, `${title} ${'Details of this note. '.repeat(55)}`, { createdAt: `2026-10-2${id.slice(-1)}T00:00:00.000Z`, ...over });
+  const notes = [note('mem_1', 'First note fits.'), note('mem_2', 'Second note is left out.')];
+  memoryFile(privateDir, notes);
+  const prepared = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-lst-12345678', privateDir });
+  assert.ok(prepared.ok);
+  if (!prepared.ok) return;
+  t.after(() => cleanupSessionPlan(prepared.plan));
+  assert.deepEqual(prepared.snapshot.memoryBindings, [{ id: 'mem_1', version: 2 }]);
+  assert.deepEqual(prepared.snapshot.leftOutMemoryBindings, [{ id: 'mem_2', version: 2 }]);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: false });
+  for (const [what, changed] of [
+    ['a new version of the note left out', [notes[0], note('mem_2', 'Second note is left out.', { version: 3 })]],
+    ['the note left out switched off', [notes[0], note('mem_2', 'Second note is left out.', { disabled: true })]],
+    ['another note left out', [...notes, note('mem_3', 'Third note is left out too.')]]
+  ] as const) {
+    memoryFile(privateDir, changed as unknown as any[]);
+    assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: true, reason: 'memory-changed' }, what);
+  }
+  memoryFile(privateDir, notes);
+  assert.deepEqual(await isSnapshotStale(prepared.snapshot, { store, repoRoot }), { stale: false }, 'the same notes again: not stale');
+  // A snapshot that had left-out notes, for a role group that no longer reads notes, is stale too.
+  store.put('roleGroups', 'worker-1', roleWithMemory('off'));
+  assert.deepEqual(await isSnapshotStale({ ...prepared.snapshot, memoryBindings: [] }, { store, repoRoot }), { stale: true, reason: 'memory-changed' });
+});

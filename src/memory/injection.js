@@ -18,6 +18,22 @@ const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
  * saves tokens. The parts are kept apart so the Workbench can show how much of each an agent was given.
  * @param {{ roleGroup?: any, rules?: any, memories?: any[], omitted?: any, skills?: Array<{ name: string, description: string, file: string }> }} [input]
  */
+const TITLE_CHARS = 80;
+// Not a skill name (those start with a letter or digit), so it can share the skills folder without meeting one.
+const LEFT_OUT_FILE = '_left-out-notes.md';
+/** A note's first line, as its title: at most 80 characters, cut at a character, with "…" when it was cut. */
+function noteTitle(content) {
+  const first = String(content ?? '').split('\n').map((text) => text.replace(/\s+/g, ' ').trim()).find((text) => text !== '') ?? '(empty note)';
+  const chars = Array.from(first);
+  return chars.length > TITLE_CHARS ? `${chars.slice(0, TITLE_CHARS - 1).join('')}…` : first;
+}
+
+/** The notes the size limit left out, in full, as the file the agent may read (#359). */
+function leftOutNotesFile(items) {
+  const blocks = [...items].sort((a, b) => byCodeUnit(a.id, b.id)).map((item) => `## ${noteTitle(item.content)}\n\n${item.content}\n\n(source: ${item.source.ref}; verified: ${item.verifiedAt.slice(0, 10)})`);
+  return `# Project notes left out of your instructions\n\nReviewed notes of this project for your role group that did not fit in the size limit. Read one only when it fits what you are about to do.\n\n${blocks.join('\n\n')}\n`;
+}
+
 function renderSections({ roleGroup, rules, memories = [], omitted, skills = [] } = {}) {
   const lines = [roleGroup && typeof roleGroup.name === 'string' && roleGroup.name.trim() !== '' ? `# Role: ${roleGroup.name.trim()}` : '# Instructions'];
   const instructions = rules && Array.isArray(rules.instructions) ? rules.instructions : [];
@@ -41,9 +57,14 @@ function renderSections({ roleGroup, rules, memories = [], omitted, skills = [] 
   const memoryLines = [...(Array.isArray(memories) ? memories : [])]
     .sort((a, b) => byCodeUnit(a.id, b.id))
     .map((item) => `- ${item.content} (source: ${item.source.ref}; verified: ${item.verifiedAt.slice(0, 10)})`);
-  // What the size limit left out is said, not dropped silently, so the model knows the list is partial.
+  // What the size limit left out is said, not dropped silently, so the model knows the list is partial. When the notes were written
+  // to a file it may read (#359), each is listed by its first line, and the file is named: it reads one only when it fits its task.
   const left = omitted && Number.isInteger(omitted.count) && omitted.count > 0 ? omitted.count : 0;
-  if (left > 0) memoryLines.push(`- (${left} more reviewed ${left === 1 ? 'note was' : 'notes were'} left out to stay within the size limit.)`);
+  const listed = left > 0 && typeof omitted.file === 'string' && Array.isArray(omitted.items) ? omitted.items : null;
+  if (listed) {
+    memoryLines.push(`- (${left} more reviewed ${left === 1 ? 'note was' : 'notes were'} left out to stay within the size limit. Their full text is in ${omitted.file}; read it only when one of these fits what you are about to do:)`);
+    for (const item of [...listed].sort((a, b) => byCodeUnit(a.id, b.id))) memoryLines.push(`  - ${noteTitle(item.content)}`);
+  } else if (left > 0) memoryLines.push(`- (${left} more reviewed ${left === 1 ? 'note was' : 'notes were'} left out to stay within the size limit.)`);
   const memoryText = memoryLines.length > 0 ? ['', '', '## Project notes (reviewed, role-scoped)', ...memoryLines].join('\n') : '';
   // Sorted by name, like the notes, so the same skills give the same text at every start.
   const skillLines = [...(Array.isArray(skills) ? skills : [])]
@@ -96,13 +117,16 @@ function planInjection(options) {
   // profile in CODEX_HOME), never into the repository: the instructions list them by name, one line and that file.
   const skillFiles = (folder) => (Array.isArray(skills) ? skills : []).filter((skill) => SKILL_NAME.test(skill.name) && typeof skill.content === 'string')
     .map((skill) => ({ name: skill.name, description: skill.description, file: nodePath.join(folder, skill.name, 'SKILL.md'), content: skill.content }));
-  const textWith = (listed) => renderContext({ roleGroup, rules, memories, omitted, skills: listed });
-  const text = textWith(skillFiles(nodePath.join(sessionDir, 'skills')));
+  // The notes the size limit left out go into the same readable folder as the skills, as one file (#359): no other folder is opened.
+  const leftOut = omitted && Array.isArray(omitted.items) ? omitted.items.filter((item) => item && typeof item.content === 'string' && item.source && typeof item.source.ref === 'string' && typeof item.verifiedAt === 'string') : [];
+  const notesIn = (folder) => (leftOut.length > 0 ? { path: nodePath.join(folder, LEFT_OUT_FILE), content: leftOutNotesFile(leftOut) } : null);
+  const textWith = (listed, notes) => renderContext({ roleGroup, rules, memories, omitted: notes && omitted ? { ...omitted, file: notes.path, items: leftOut } : omitted, skills: listed });
+  const text = textWith(skillFiles(nodePath.join(sessionDir, 'skills')), notesIn(nodePath.join(sessionDir, 'skills')));
   const scope = { root: privateDir, repoRoot, exclusiveDir: sessionDir };
   const manual = () => ({
     provider,
     method: 'manual',
-    files: [{ path: nodePath.join(sessionDir, 'context.md'), content: text }, ...skillFiles(nodePath.join(sessionDir, 'skills')).map((skill) => ({ path: skill.file, content: skill.content }))],
+    files: [{ path: nodePath.join(sessionDir, 'context.md'), content: text }, ...skillFiles(nodePath.join(sessionDir, 'skills')).map((skill) => ({ path: skill.file, content: skill.content })), ...[notesIn(nodePath.join(sessionDir, 'skills'))].filter(Boolean)],
     argv: [],
     shown: { text, skills: skillFiles(nodePath.join(sessionDir, 'skills')).map(({ name, description, file }) => ({ name, description, file })) },
     ...scope,
@@ -114,12 +138,13 @@ function planInjection(options) {
     const file = nodePath.join(sessionDir, 'claude-context.md');
     const skillsDir = nodePath.join(sessionDir, 'skills');
     const listed = skillFiles(skillsDir);
+    const notes = notesIn(skillsDir);
     return {
       provider,
       method: 'append-system-prompt-file',
-      files: [{ path: file, content: text }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
-      // Claude Code may read the skills folder of this session, and nothing else of it.
-      argv: ['--append-system-prompt-file', file, ...(listed.length > 0 ? ['--add-dir', skillsDir] : [])],
+      files: [{ path: file, content: text }, ...listed.map((skill) => ({ path: skill.file, content: skill.content })), ...(notes ? [notes] : [])],
+      // Claude Code may read the skills folder of this session (the skills and the notes left out), and nothing else of it.
+      argv: ['--append-system-prompt-file', file, ...(listed.length > 0 || notes ? ['--add-dir', skillsDir] : [])],
       shown: { text, skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       ...scope
     };
@@ -132,13 +157,14 @@ function planInjection(options) {
     if (!homeCheck.ok) throw new Error(`CODEX_HOME rejected: ${homeCheck.problems.join(', ')}`);
     const file = nodePath.join(codexHome, `${profileName}.config.toml`);
     const listed = skillFiles(nodePath.join(codexHome, `${profileName}-skills`));
+    const notes = notesIn(nodePath.join(codexHome, `${profileName}-skills`));
     return {
       provider,
       method: 'profile-developer-instructions',
-      files: [{ path: file, content: `developer_instructions = ${tomlString(textWith(listed))}\n` }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
+      files: [{ path: file, content: `developer_instructions = ${tomlString(textWith(listed, notes))}\n` }, ...listed.map((skill) => ({ path: skill.file, content: skill.content })), ...(notes ? [notes] : [])],
       argv: ['-p', profileName],
       // What Codex is given lists its skills where they are written, next to its profile (#359): the confirmation shows this text.
-      shown: { text: textWith(listed), skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
+      shown: { text: textWith(listed, notes), skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       root: codexHome,
       repoRoot,
       exclusiveDir: null

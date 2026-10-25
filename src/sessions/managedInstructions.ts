@@ -49,6 +49,8 @@ export interface InstructionSnapshot {
   broadcastBindings: BroadcastBinding[];
   /** The shared notes this snapshot was composed with (id and version). A change to any of them makes the snapshot stale. */
   memoryBindings: Array<{ id: string; version: number }>;
+  /** The shared notes the size limit left out, given as a file (#359), by id and version. A change to any of them makes it stale too. */
+  leftOutMemoryBindings?: Array<{ id: string; version: number }>;
   /** The skills this snapshot lists (#359), by name and revision. A skill changed, added, turned off or removed makes the snapshot stale. */
   skillBindings?: Array<{ name: string; revision: number }>;
   /** The version of the team rules this snapshot was composed with (0: none were written). A newer version makes the snapshot stale. */
@@ -264,8 +266,10 @@ export async function prepareInstructionSnapshot(
     } catch {
       return { ok: false, code: 'memory-unavailable', message: 'Shared memory could not be opened. The agent was not started.' };
     }
-    if (memories.length > 0 && digest !== null) {
-      const memoryDigest = crypto.createHash('sha256').update(JSON.stringify(memories.map((item) => [item.id, item.version]))).digest('hex');
+    // The notes the size limit leaves out are given too, as a file the agent may read (#359): they count in what is confirmed.
+    const leftOut: any[] = Array.isArray(memoryOmitted?.items) ? memoryOmitted.items : [];
+    if ((memories.length > 0 || leftOut.length > 0) && digest !== null) {
+      const memoryDigest = crypto.createHash('sha256').update(JSON.stringify([...memories, ...leftOut.map((item) => ({ ...item, leftOut: true }))].map((item) => [item.id, item.version, item.leftOut === true]))).digest('hex');
       digest = `sha256:${crypto.createHash('sha256').update(`${digest}\n${memoryDigest}`).digest('hex')}`;
     }
   }
@@ -291,7 +295,7 @@ export async function prepareInstructionSnapshot(
   // permissions), each composed rule and the shared notes. The effective permissions follow from the role group and the rules.
   let reviewDigest: string | null = null;
   if (digest !== null) {
-    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]), skills: skills.map((skill) => [skill.name, skill.revision]) }, (_key, value) => {
+    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]), leftOutNotes: (Array.isArray(memoryOmitted?.items) ? memoryOmitted.items : []).map((item: any) => [item.id, item.version]), skills: skills.map((skill) => [skill.name, skill.revision]) }, (_key, value) => {
       if (Array.isArray(value)) return value.filter((entry) => !(entry && typeof entry === 'object' && (entry as { id?: unknown }).id === CODENAME_RULE_ID));
       return value;
     });
@@ -376,6 +380,7 @@ export async function prepareInstructionSnapshot(
     targetSessionId,
     broadcastBindings,
     memoryBindings: memories.map((item) => ({ id: item.id, version: item.version })),
+    leftOutMemoryBindings: (Array.isArray(memoryOmitted?.items) ? memoryOmitted.items : []).map((item: any) => ({ id: item.id, version: item.version })),
     skillBindings: skills.map((skill) => ({ name: skill.name, revision: skill.revision })),
     teamRulesVersion,
     codename: options.codename ?? null,
@@ -451,7 +456,10 @@ export async function isSnapshotStale(
         if (chosen.unavailable) return { stale: true, reason: 'memory-unavailable' };
         const now2 = JSON.stringify(chosen.items.map((item: any) => [item.id, item.version]));
         if (now2 !== JSON.stringify((snapshot.memoryBindings ?? []).map((item) => [item.id, item.version]))) return { stale: true, reason: 'memory-changed' };
-      } else if ((snapshot.memoryBindings ?? []).length > 0) return { stale: true, reason: 'memory-changed' };
+        // The notes left out are given too, as a file: one changed, switched off or newly left out is as stale as one in the instructions.
+        const leftNow = JSON.stringify((Array.isArray(chosen.omitted?.items) ? chosen.omitted.items : []).map((item: any) => [item.id, item.version]));
+        if (leftNow !== JSON.stringify((snapshot.leftOutMemoryBindings ?? []).map((item) => [item.id, item.version]))) return { stale: true, reason: 'memory-changed' };
+      } else if ((snapshot.memoryBindings ?? []).length > 0 || (snapshot.leftOutMemoryBindings ?? []).length > 0) return { stale: true, reason: 'memory-changed' };
     } catch { return { stale: true, reason: 'memory-unavailable' }; }
   }
   // The skills of the role group changed since the snapshot (#359): the agent would be given a list the person did not confirm.

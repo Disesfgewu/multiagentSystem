@@ -290,7 +290,10 @@ test('what the size limit leaves out is reported, never dropped silently', (t) =
   const tight = read(store, { budgetChars: 160 });
   assert.equal(tight.items.length, 2);
   assert.equal(tight.truncated, true);
-  assert.deepEqual(tight.omitted, { count: 2, chars: 2 * 'Packaging script note number 0 describes release builds in some detail here.'.length, reason: 'budget' });
+  const { items: leftOut, ...counted } = tight.omitted;
+  assert.deepEqual(counted, { count: 2, chars: 2 * 'Packaging script note number 0 describes release builds in some detail here.'.length, reason: 'budget' });
+  // The notes themselves come too, so the launch can list them and write them where the agent can read them (#359).
+  assert.deepEqual(leftOut.map((item) => item.source.ref).sort(), tight.items.length === 2 ? ['docs/0.md', 'docs/1.md', 'docs/2.md', 'docs/3.md'].filter((ref) => !tight.items.some((item) => item.source.ref === ref)) : []);
   assert.ok(tight.usedChars <= 160);
 
   const none = read(store, { budgetChars: 0 });

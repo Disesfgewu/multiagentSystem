@@ -420,10 +420,16 @@ class MemoryStore {
     let used = 0;
     let omittedCount = 0;
     let omittedChars = 0;
+    // The notes the budget leaves out, in the same order: the launch lists them by their first line and writes them where the agent
+    // can read them when it needs them (#359).
+    const leftOut = [];
     for (const { item } of scored) {
       if (used + item.content.length > limit) {
         omittedCount += 1;
         omittedChars += item.content.length;
+        const copy = { ...item };
+        if (item.privacyDomain !== privacyDomain) copy.sharedFrom = item.privacyDomain;
+        leftOut.push(copy);
         continue;
       }
       used += item.content.length;
@@ -433,7 +439,7 @@ class MemoryStore {
     }
     const result = { items: selected, usedChars: used, truncated: omittedCount > 0, unavailable };
     if (withheld > 0) result.withheld = withheld;
-    if (omittedCount > 0) result.omitted = { count: omittedCount, chars: omittedChars, reason: 'budget' };
+    if (omittedCount > 0) result.omitted = { count: omittedCount, chars: omittedChars, reason: 'budget', items: leftOut };
     if (wasAsked && valid && budgetChars > MAX_BUDGET_CHARS) result.budgetClamped = MAX_BUDGET_CHARS;
     return result;
   }

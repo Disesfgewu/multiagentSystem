@@ -354,3 +354,39 @@ test('how much an agent is given is measured per part, with an estimate of token
   assert.equal(estimateTokens('中文字'), 3, 'one per CJK character');
   assert.equal(estimateTokens('中文 abcd'), 2 + 2);
 });
+
+test('notes the size limit leaves out are listed by their first line, and written whole where the agent may read them (#359)', (t) => {
+  const p = paths(t);
+  const long = `Deploys go through the staging pipeline first, ${'and then several approval gates '.repeat(4)}before production.\nMore lines.`;
+  const leftOut = [
+    { id: 'mem_z', content: long, source: { ref: 'docs/DEPLOY.md' }, verifiedAt: '2026-01-04T00:00:00.000Z' },
+    { id: 'mem_y', content: '\n  Flaky test: retry the browser suite once.\nDetails follow.', source: { ref: 'docs/TESTS.md' }, verifiedAt: '2026-01-05T00:00:00.000Z' }
+  ];
+  const omitted = { count: 2, chars: 300, reason: 'budget', items: leftOut };
+  const plan = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true }, omitted }));
+  const skillsDir = path.join(p.privateDir, 'sessions', 'abcdef123456', 'skills');
+  const notesFile = path.join(skillsDir, '_left-out-notes.md');
+  const context = plan.files[0].content;
+  assert.ok(context.includes(`- (2 more reviewed notes were left out to stay within the size limit. Their full text is in ${notesFile}; read it only when one of these fits what you are about to do:)`), context);
+  assert.ok(context.includes('  - Flaky test: retry the browser suite once.'), 'the first line that is not empty is the title');
+  const title = context.split('\n').find((line) => line.startsWith('  - Deploys'));
+  assert.equal(Array.from(title.slice(4)).length, 80, 'a long first line is cut to 80 characters');
+  assert.ok(title.endsWith('…'));
+  assert.equal(context.includes('More lines.'), false, 'only the titles are in the instructions');
+  const written = plan.files.find((file) => file.path === notesFile);
+  assert.ok(written && written.content.includes(long) && written.content.includes('(source: docs/DEPLOY.md; verified: 2026-01-04)'), 'the file has each note whole, with its source');
+  // The notes share the one folder Claude Code may read: it is opened even without skills, and no other folder is.
+  assert.deepEqual(plan.argv, ['--append-system-prompt-file', plan.files[0].path, '--add-dir', skillsDir]);
+  assert.equal(plan.shown.text, context);
+  for (const file of plan.files) assert.ok(file.path.startsWith(p.privateDir));
+  // Codex: next to its profile, like its skills.
+  const codex = planInjection(base(p, { provider: 'codex', codexHome: p.codexHome, capabilities: { profileFlag: true }, omitted }));
+  const codexNotes = path.join(p.codexHome, 'mas-abcdef123456-skills', '_left-out-notes.md');
+  assert.ok(codex.files.some((file) => file.path === codexNotes));
+  assert.ok(codex.shown.text.includes(`Their full text is in ${codexNotes};`));
+  // Without the notes (only a count, as before), the line stays as it was and nothing is written or opened.
+  const counted = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true }, omitted: { count: 2, chars: 300, reason: 'budget' } }));
+  assert.ok(counted.files[0].content.includes('- (2 more reviewed notes were left out to stay within the size limit.)'));
+  assert.equal(counted.files.length, 1);
+  assert.deepEqual(counted.argv, ['--append-system-prompt-file', counted.files[0].path]);
+});
