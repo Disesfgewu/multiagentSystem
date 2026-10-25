@@ -808,9 +808,70 @@ const ITEMS = [
         }
       },
       {
-        name: 'approve-pr',
-        does: 'Type "Thanks, approved." in the comment box at the bottom, click "Approve", read the whole review in the window and click "Submit formal review".',
+        name: 'start-pm-agent',
+        does: 'Run "Multiagent: Create Role Group" from the Command Palette (the Agents tab offers "Create role group…" only before the first one): the PM template, Claude Code, the name "E2E PM", "Create Role Group". Then in the Workbench\'s Agents tab "Start agent…": Claude Code, the name "E2E PM agent", the account "Work A", the role group "E2E PM", the CLI default model; confirm the windows that ask.',
+        run: async ({ page, check, box }) => {
+          await timed('the command "Multiagent: Create Role Group"', () => runCommand(page, 'Multiagent: Create Role Group'));
+          const created = await drive(page, [
+            { when: /Start from a template/, pick: 'PM' },
+            { when: /Which command-line agent runs this role/, pick: 'Claude Code' },
+            { when: /A label you will recognise/, type: 'E2E PM' },
+            { dialog: /^Create role group/, button: 'Create Role Group' }
+          ], async (seen) => seen.some((line) => /Create Role Group/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the PM role group was created after its confirmation', created.join(' | '), /pick: [\s\S]*PM[\s\S]*Create Role Group/);
+          await clearNotifications(page);
+          const started = () => require('./fakes').readCalls(box.fakes.calls).filter((call) => call.cli === 'claude' && !call.args.includes('auth') && !call.args.includes('--version')).length;
+          const before = started();
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E PM agent' },
+            { when: /Choose an account for this new session/, pick: ACCOUNT },
+            { when: /Choose a role group for this agent/, pick: 'E2E PM' },
+            { when: /Select a model/, pick: 'Use CLI default model' },
+            { dialog: /Account isolation is not verified/, button: 'Continue' },
+            { dialog: /auto mode|Auto mode/, button: 'I Understand, Continue' },
+            { dialog: /Effective agent instructions prepared/, button: 'Start Agent' },
+            { dialog: /usage|quota|limit/i, button: 'Start Anyway' }
+          ], async () => started() > before, 90000);
+          check('the PM agent was started', started(), before + 1);
+          const terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
+          check('its terminal says it starts as the PM', terminal, /Multiagent: starting Claude Code \(PM-\d{2}\)/);
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'discuss-with-pm',
+        does: 'Back on "PR #7", under PM-01\'s review "Needs changes: one line comment below." click "Discuss with PM", read the window and click "Send Now". Then look at the "E2E PM agent" terminal.',
         run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'PR #7' }).first().click();
+          const frame = await pageFrame(page, 'Read-only Issue and pull request page');
+          await settled(page, frame);
+          const review = frame.locator('.post', { hasText: 'Needs changes: one line comment below.' }).first();
+          await review.locator('.btn', { hasText: 'Discuss with PM' }).click();
+          const answered = await drive(page, [
+            { dialog: /Ask the PM agent to read this post on PR #7 and reply there/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box .monaco-button:visible', { hasText: 'Send Now' }).first().isVisible().catch(() => false)), 60000);
+          check('it asked before typing anything to the PM', answered.join(' | '), /dialog: Ask the PM agent to read this post on PR #7 and reply there\? → Send Now/);
+          // What reached the PM is one line of numbers: the pull request and the review id, never the review's text.
+          await page.locator('.tabs-container .tab', { hasText: 'E2E PM agent' }).first().click();
+          const deadline = Date.now() + 20000;
+          let terminal = '';
+          while (Date.now() < deadline) {
+            terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => '');
+            if (/ID\s*7101/.test(terminal)) break;
+            await pause(300);
+          }
+          check('the PM got one line naming PR #7 and review 7101', terminal.replace(/\s+/g, ''), /管理者請你閱讀PR#7的review（ID7101），並在PR#7回覆你的看法。/);
+          check('and not the review\'s text', terminal, (text) => !/one line comment below/.test(text));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'approve-pr',
+        does: 'Back on "PR #7", type "Thanks, approved." in the comment box at the bottom, click "Approve", read the whole review in the window and click "Submit formal review".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'PR #7' }).first().click();
           const frame = await pageFrame(page, 'Read-only Issue and pull request page');
           // Temporarily a plain review: "Checked on this head: the page draws Markdown as a tree." is blocked by the privacy scan, which
           // matches every stored string as a substring (#389). Put the original sentence back once #389 is fixed.
