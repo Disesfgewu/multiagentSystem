@@ -1000,6 +1000,7 @@ const ITEMS = [
           await timed('the preview', () => preview.waitFor({ timeout: 20000 }));
           const text = await textOf(preview, 'the preview');
           check('the preview shows the exact line', text, /\[Task from the administrator\][\s\S]*Please pull main and run the tests before you push\./);
+          check('and says nothing about an Issue that is not there (#400)', text, (value) => !/The Issue text above/.test(value) && /Reply when you are done or blocked\./.test(value));
           check('and who gets it now', text, /E2E Agent 1 — will receive it/);
           check('Send is on for the previewed text', await frame.locator('button', { hasText: 'Send…' }).first().isDisabled(), false);
           await preview.scrollIntoViewIfNeeded();
@@ -1034,6 +1035,7 @@ const ITEMS = [
           let terminal = '';
           while (Date.now() < deadline && !/run the tests before you push/.test(terminal)) { terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => ''); await pause(300); }
           check('E2E Agent 1 got the line in its terminal', terminal.replace(/\s+/g, ' '), /\[Task from the administrator\].*run the tests before you push/);
+          check('without a word about an Issue (#400)', terminal.replace(/\s+/g, ' '), (value) => !/The Issue text above/.test(value));
           await clearNotifications(page);
         }
       }
