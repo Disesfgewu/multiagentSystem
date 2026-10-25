@@ -409,7 +409,7 @@ export async function sendPublicFeedback(target: PublicTarget, input?: { body?: 
   return result.ok ? { ok: true, ownerRecorded, ...(commentId !== undefined ? { commentId, body: body as string } : {}) } : { ok: false, code: result.reason ?? 'write-refused' };
 }
 
-export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
+export async function reviewPullRequestReport(target: PublicTarget, input?: { decision?: unknown; body?: unknown; interactive?: boolean; chosen?: { decision: ReviewDecision; typed?: string } }): Promise<{ ok: boolean; code?: string; ownerRecorded?: boolean }> {
   let ownerRecorded = false;
   if (target.kind !== 'pullRequest' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !SHA.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
@@ -422,12 +422,15 @@ export async function reviewPullRequestReport(target: PublicTarget, input?: { de
   if (old === 'unreadable') return { ok: false, code: 'private-storage-unavailable' };
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
   const allowBypass = testMode && input?.interactive === false;
-  const pickedDecision = allowBypass ? input?.decision : (input?.decision !== undefined && allowBypass ? input.decision : await hooks.pickReviewDecision());
+  // `chosen`: the button pressed on the Issue or pull request page (#383) and what was typed there as the review. The review is still
+  // shown whole in the confirmation below; with nothing typed, the input box asks for it as from the text report.
+  const pickedDecision = allowBypass ? input?.decision : input?.chosen !== undefined ? input.chosen.decision : await hooks.pickReviewDecision();
   if (pickedDecision === undefined) return { ok: false, code: 'cancelled' };
   if (pickedDecision !== 'approve' && pickedDecision !== 'request_changes' && pickedDecision !== 'comment') return { ok: false, code: 'invalid-review-decision' };
   if (old?.status === 'done' && old.version === target.version && old.decision === pickedDecision) return { ok: true, code: 'already-reviewed' };
   const initialDraft = old?.status === 'draft' && old.version === target.version && typeof old.body === 'string' ? old.body : '';
-  const body = allowBypass ? input?.body : (input?.body !== undefined && allowBypass ? input.body : await hooks.promptReview(initialDraft, pickedDecision));
+  const typed = input?.chosen?.typed;
+  const body = allowBypass ? input?.body : typeof typed === 'string' && typed.trim() !== '' ? typed : await hooks.promptReview(initialDraft, pickedDecision);
   if (body === undefined) return { ok: false, code: 'cancelled' };
   if (!plainText(body)) return { ok: false, code: 'invalid-review-body' };
   const requestId = old?.status === 'draft' && old.version === target.version && old.decision === pickedDecision && old.body === body && typeof old.requestId === 'string' ? old.requestId : `review_${randomBytes(12).toString('hex')}`;
@@ -568,7 +571,7 @@ export async function deleteMergedBranchReport(target: PublicTarget, input?: { i
   return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
 }
 
-export async function closeIssueReport(target: PublicTarget, input?: { reason?: unknown; interactive?: boolean }): Promise<{ ok: boolean; code?: string }> {
+export async function closeIssueReport(target: PublicTarget, input?: { reason?: unknown; interactive?: boolean; chosen?: CloseReason }): Promise<{ ok: boolean; code?: string }> {
   if (target.kind !== 'issue' || !REPOSITORY.test(target.repository) || !Number.isSafeInteger(target.number) || target.number < 1 || !/^[a-f0-9]{40,64}$/i.test(target.version)) return { ok: false, code: 'report-evidence-unavailable' };
   const opened = await privateStorage()?.use(); const store = useStore(opened);
   if (!store) return { ok: false, code: 'private-storage-unavailable' };
@@ -581,7 +584,8 @@ export async function closeIssueReport(target: PublicTarget, input?: { reason?: 
   if (old?.status === 'unknown' || old?.status === 'sending') return { ok: false, code: 'outcome-unknown' };
   // The confirmation and the reason come from the person. Only the Extension Host tests may supply them.
   const allowBypass = testMode && input?.interactive === false;
-  const picked = allowBypass ? input?.reason : await hooks.pickCloseReason();
+  // `chosen`: the button pressed on the Issue page (#383); the confirmation below still asks.
+  const picked = allowBypass ? input?.reason : input?.chosen !== undefined ? input.chosen : await hooks.pickCloseReason();
   if (picked === undefined) return { ok: false, code: 'cancelled' };
   if (picked !== 'completed' && picked !== 'not_planned') return { ok: false, code: 'invalid-close-reason' };
   if (old?.status === 'done' && old.version === target.version && old.reason === picked) return { ok: true, code: 'already-closed' };
@@ -609,4 +613,62 @@ export async function closeIssueReport(target: PublicTarget, input?: { reason?: 
   });
   const result = await broker.request({ operation: 'closeIssue', requestId, number: target.number, reason: picked });
   return result.ok ? { ok: true } : { ok: false, code: result.reason ?? 'write-refused' };
+}
+
+const { assessMerge } = require('../delivery/merge') as { assessMerge(snapshot: unknown, input: Record<string, unknown>): { ok: boolean; reason?: string } };
+const { evaluatePublishRequest } = require('../publish-policy') as { evaluatePublishRequest(request: Record<string, unknown>, config: Record<string, unknown>): { allowed: boolean; reason: string } };
+export type PageWriteFacts = {
+  publisher: 'configured' | 'none' | 'unreadable';
+  pending: Record<'review' | 'merge' | 'branch' | 'close', 'clear' | 'unknown' | 'unreadable'>;
+  state: string;
+  authority?: MergeAuthorityMode | 'unreadable';
+  review?: { ok: boolean; reason?: string } | null;
+  merge?: { ok: boolean; reason?: string } | null;
+};
+// The GitHub id of a pull request's author, once found: the page is read again every 45 seconds and the author does not change.
+const authorIds = new Map<string, string>();
+
+/**
+ * What the Issue and pull request page (#383) needs to know to turn its decision buttons on or off: the same records and checks the
+ * four functions above use (publisher, merge authority, the record of earlier attempts, the publication policy for a review and the
+ * merge assessment of the snapshot the page was read from). Nothing is written and nothing is asked. What cannot be read stays
+ * "unreadable" (or null), and the page then shows the button off with "unknown".
+ */
+export async function pageWriteFacts(input: { repository: string; kind: Kind; number: number; state: string; snapshot?: unknown }): Promise<PageWriteFacts | null> {
+  if (!REPOSITORY.test(input.repository) || !Number.isSafeInteger(input.number) || input.number < 1) return null;
+  let store: Store | null = null;
+  try { store = useStore(await privateStorage()?.use()); } catch { store = null; }
+  if (!store) return null;
+  const configured = publisher(store, input.repository);
+  const pendingOf = (id: string, kind: string): 'clear' | 'unknown' | 'unreadable' => {
+    const old = previousBy(store!, id, kind);
+    return old === 'unreadable' ? 'unreadable' : old?.status === 'unknown' || old?.status === 'sending' ? 'unknown' : 'clear';
+  };
+  const pending = {
+    review: pendingOf(reviewRecordId(input.repository, input.number), 'pr-review-request-v1'),
+    merge: pendingOf(mergeRecordId(input.repository, input.number), 'pr-merge-request-v1'),
+    branch: pendingOf(branchRecordId(input.repository, input.number), 'pr-branch-delete-request-v1'),
+    close: pendingOf(closeRecordId(input.repository, input.number), 'issue-close-request-v1')
+  };
+  const facts: PageWriteFacts = { publisher: configured === 'unreadable' ? 'unreadable' : configured ? 'configured' : 'none', pending, state: input.state };
+  if (input.kind !== 'pullRequest' || !configured || configured === 'unreadable') return facts;
+  facts.authority = mergeAuthorityOf(store, input.repository);
+  const snapshot = input.snapshot as any;
+  const author = snapshot?.pullRequest?.data?.author;
+  const headSha = typeof snapshot?.headSha === 'string' ? snapshot.headSha : null;
+  if (typeof author !== 'string' || !headSha) { facts.review = null; facts.merge = null; return facts; }
+  // Who opened the pull request, as a GitHub id (the policy compares ids, never logins); found without asking to sign in.
+  const key = `${configured.actorId}:${author.toLowerCase()}`;
+  let authorId = author.toLowerCase() === configured.login.toLowerCase() ? configured.actorId : authorIds.get(key) ?? null;
+  if (!authorId) {
+    const auth = await hooks.session(false);
+    if (!auth) { facts.review = { ok: false, reason: 'github-sign-in-required' }; facts.merge = facts.review; return facts; }
+    authorId = await hooks.authorId(auth, author, configured);
+    if (authorId) authorIds.set(key, authorId);
+  }
+  if (!authorId) { facts.review = null; facts.merge = null; return facts; }
+  const review = evaluatePublishRequest({ operation: 'reviewPr', role: 'pm', actorId: configured.actorId, pullRequest: { authorId, headSha, state: snapshot?.pullRequest?.data?.state } }, { pmActorId: configured.actorId });
+  facts.review = review.allowed ? { ok: true } : { ok: false, reason: review.reason };
+  facts.merge = facts.authority === 'unreadable' ? null : assessMerge(snapshot, { role: 'pm', actorId: configured.actorId, authorId, pmLogin: configured.login, policyConfig: { pmActorId: configured.actorId, pmLogin: configured.login, mergeAuthority: facts.authority }, expectedNumber: input.number });
+  return facts;
 }

@@ -52,7 +52,7 @@ export async function runGitHubPageChecks(): Promise<void> {
     assert.ok(tabs.some((tab) => tab.label === 'Issue #353' && tab.input instanceof vscode.TabInputWebview), `the page is an editor tab (${tabs.map((tab) => tab.label).join(', ')})`);
 
     // Anything the page was not given is refused before it reaches a command.
-    for (const [raw, reason] of [[{ type: 'openLink', link: 1 }, 'unknown-link'], [{ type: 'openFile', file: 0 }, 'unknown-file'], [{ type: 'merge', id: 900 }, 'unknown-command'], [{ type: 'openLink', link: 0, url: 'javascript:x' }, 'unexpected-field']] as const) {
+    for (const [raw, reason] of [[{ type: 'openLink', link: 1 }, 'unknown-link'], [{ type: 'openFile', file: 0 }, 'unknown-file'], [{ type: 'merge', id: 900 }, 'unexpected-field'], [{ type: 'approveAll' }, 'unknown-command'], [{ type: 'openLink', link: 0, url: 'javascript:x' }, 'unexpected-field']] as const) {
       assert.deepEqual(await issue.send(raw), { ok: false, reason }, JSON.stringify(raw));
     }
 

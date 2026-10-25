@@ -35,14 +35,15 @@ function fixture() {
     // The synthetic GitHub account the run publishes with (#353).
     owner: 'e2e-owner',
     issues: [
-      { number: 12, title: 'Show Issues and pull requests like GitHub', state: 'open', labels: ['ready', 'ui'], assignees: [], author: 'shared-account', createdAt: at(22, 9), body: ISSUE_BODY }
+      { number: 12, title: 'Show Issues and pull requests like GitHub', state: 'open', isPullRequest: false, labels: ['ready', 'ui'], assignees: [], author: 'shared-account', createdAt: at(22, 9), body: ISSUE_BODY }
     ],
     pullRequests: [
       {
         number: 7, title: 'Read-only Issue and pull request page', state: 'open', draft: false, merged: false, labels: ['ready'], author: 'shared-account', createdAt: at(24, 8),
         headSha: HEAD, headRef: 'feat/github-page', headRepository: 'example/project', baseRef: 'main', referencedIssues: [{ number: 12 }],
         body: '— Worker-01\nThe page for **#12**.\n\n- Markdown as a tree\n- badges outside the content',
-        snapshot: { status: 'complete', consistent: true, headSha: HEAD, approval: { status: 'changes_requested', headSha: HEAD }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD }, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{ name: 'unit tests', state: 'passing', completedAt: at(24, 9) }], statuses: [] } }, unresolvedThreads: 1 }
+        // What the checks of a decision read (#383): the pull request as the snapshot has it.
+        snapshot: { status: 'complete', consistent: true, number: 7, headSha: HEAD, pullRequest: { kind: 'ok', data: { number: 7, title: 'Read-only Issue and pull request page', body: '— Worker-01', state: 'open', merged: false, draft: false, mergeable: true, author: 'shared-account', headSha: HEAD, headRef: 'feat/github-page', headRepository: 'example/project', baseRef: 'main' } }, approval: { status: 'changes_requested', headSha: HEAD }, checksSummary: { state: 'passing', requiredState: 'passing', headSha: HEAD }, checks: { kind: 'ok', data: { headSha: HEAD, checkRuns: [{ name: 'unit tests', state: 'passing', completedAt: at(24, 9) }], statuses: [] } }, unresolvedThreads: 1 }
       }
     ],
     comments: {

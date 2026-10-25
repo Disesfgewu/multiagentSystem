@@ -75,7 +75,7 @@ test('the page may ask only fixed things, each naming a number it was given (#35
   }
   const refused = [
     [null, 'not-an-object'], [[], 'not-an-object'], ['openLink', 'not-an-object'],
-    [{ type: 'merge' }, 'unknown-command'], [{ type: 'toString' }, 'unknown-command'], [{ type: '__proto__' }, 'unknown-command'],
+    [{ type: 'approveAll' }, 'unknown-command'], [{ type: 'toString' }, 'unknown-command'], [{ type: '__proto__' }, 'unknown-command'],
     [{ type: 'openLink', link: 2 }, 'unknown-link'], [{ type: 'openLink', link: -1 }, 'invalid-number'], [{ type: 'openLink', link: '0' }, 'invalid-number'], [{ type: 'openLink', link: 0.5 }, 'invalid-number'],
     [{ type: 'openLink', link: 0, url: 'https://evil.test' }, 'unexpected-field'], [{ type: 'refresh', text: 'x' }, 'unexpected-field'],
     [{ type: 'openFile', file: 1 }, 'unknown-file'], [{ type: 'openInline', id: 302 }, 'unknown-comment'], [{ type: 'openInline' }, 'invalid-number'],
@@ -84,10 +84,32 @@ test('the page may ask only fixed things, each naming a number it was given (#35
     [{ type: 'comment', text: 'x' }, 'invalid-choice'], [{ type: 'comment', text: 'x', tellPm: true, number: 9 }, 'unexpected-field'], [{ type: 'preview' }, 'invalid-text'],
     [{ type: 'ask', post: 'comment', id: 402, who: 'pm' }, 'unknown-post'], [{ type: 'ask', post: 'review', id: 401, who: 'pm' }, 'unknown-post'], [{ type: 'ask', post: 'issue', id: 401, who: 'pm' }, 'invalid-choice'],
     [{ type: 'ask', post: 'comment', id: 401, who: 'worker-01' }, 'invalid-choice'], [{ type: 'ask', post: 'comment', id: 401, who: 'pm', session: 'abc' }, 'unexpected-field'],
-    [{ type: 'merge', id: 7 }, 'unknown-command'], [{ type: 'type', text: 'rm -rf' }, 'unknown-command']
+    [{ type: 'merge', id: 7 }, 'unexpected-field'], [{ type: 'type', text: 'rm -rf' }, 'unknown-command']
   ];
   for (const [raw, reason] of refused) assert.deepEqual(parsePageMessage(raw, known), { ok: false, reason }, JSON.stringify(raw));
-  assert.deepEqual(Object.keys(SHAPES).sort(), ['ask', 'comment', 'openFile', 'openInline', 'openLink', 'openOnGitHub', 'openText', 'preview', 'ready', 'refresh'], 'the writes are a comment and asking about a post; no review, merge or close yet');
+  assert.deepEqual(Object.keys(SHAPES).sort(), ['ask', 'close', 'comment', 'deleteBranch', 'merge', 'openFile', 'openInline', 'openLink', 'openOnGitHub', 'openText', 'preview', 'ready', 'refresh', 'review'], 'the writes are a comment, asking about a post and the four decisions (#383)');
+});
+
+test('a decision is a fixed name, only on its own kind of page, and a review carries only the typed text (#383)', () => {
+  const pr = { links: 0, files: 0, inline: new Set(), posts: new Set(), kind: 'pullRequest' };
+  const issue = { ...pr, kind: 'issue' };
+  for (const good of [{ type: 'review', decision: 'approve', text: '' }, { type: 'review', decision: 'request_changes', text: 'Please add a test.' }, { type: 'merge' }, { type: 'deleteBranch' }]) {
+    assert.deepEqual(parsePageMessage(good, pr), { ok: true, message: good }, JSON.stringify(good));
+    assert.deepEqual(parsePageMessage(good, issue), { ok: false, reason: 'wrong-page' }, JSON.stringify(good));
+  }
+  for (const good of [{ type: 'close', reason: 'completed' }, { type: 'close', reason: 'not_planned' }]) {
+    assert.deepEqual(parsePageMessage(good, issue), { ok: true, message: good });
+    assert.deepEqual(parsePageMessage(good, pr), { ok: false, reason: 'wrong-page' });
+  }
+  const refused = [
+    [{ type: 'review', decision: 'comment', text: '' }, pr, 'invalid-choice'], [{ type: 'review', decision: 'approve' }, pr, 'invalid-text'],
+    [{ type: 'review', decision: 'approve', text: 'x'.repeat(65537) }, pr, 'invalid-text'], [{ type: 'review', decision: 'approve', text: '', headSha: 'a'.repeat(40) }, pr, 'unexpected-field'],
+    [{ type: 'merge', number: 7 }, pr, 'unexpected-field'], [{ type: 'merge', method: 'rebase' }, pr, 'unexpected-field'], [{ type: 'deleteBranch', branch: 'main' }, pr, 'unexpected-field'],
+    [{ type: 'close', reason: 'duplicate' }, issue, 'invalid-choice'], [{ type: 'close' }, issue, 'invalid-choice'], [{ type: 'close', reason: 'completed', number: 3 }, issue, 'unexpected-field'],
+    // A page whose kind is not known gets no decision at all.
+    [{ type: 'merge' }, { ...pr, kind: undefined }, 'wrong-page']
+  ];
+  for (const [raw, known, reason] of refused) assert.deepEqual(parsePageMessage(raw, known), { ok: false, reason }, JSON.stringify(raw));
 });
 
 test('the page loads nothing from outside and never turns text into HTML (#353)', () => {

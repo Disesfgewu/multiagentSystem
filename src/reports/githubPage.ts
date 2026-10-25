@@ -3,12 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { isExtensionTestMode } from '../shared/testMode';
 
 type PostKind = 'comment' | 'review' | 'inline';
-type Known = { links: number; files: number; inline: Set<number>; posts: Set<string> };
-type Message = { type: string; link?: number; file?: number; id?: number; text?: string; tellPm?: boolean; post?: PostKind; who?: 'pm' | 'agent' };
+type Known = { links: number; files: number; inline: Set<number>; posts: Set<string>; kind?: Kind };
+type Message = { type: string; link?: number; file?: number; id?: number; text?: string; tellPm?: boolean; post?: PostKind; who?: 'pm' | 'agent'; decision?: 'approve' | 'request_changes'; reason?: 'completed' | 'not_planned' };
 const { renderPage, parsePageMessage } = require('./github-page') as {
   renderPage(input: { nonce: string }): string;
   parsePageMessage(raw: unknown, known: Known): { ok: true; message: Message } | { ok: false; reason: string };
 };
+type Ability = { ok: boolean; code?: string; reason: string | null };
+const { abilitiesFor } = require('./page-actions') as { abilitiesFor(input: { kind: Kind; writer: boolean; trusted: boolean; version: boolean; facts: unknown }): Record<string, Ability> };
 const { safeHref, parseMarkdown } = require('./markdown') as { safeHref(raw: unknown, base: unknown): string | null; parseMarkdown(text: unknown, options?: Record<string, unknown>): { blocks: unknown[]; truncated: boolean; links: string[] } };
 const { nextPoll, POLL_MS } = require('../talk/conversation') as { nextPoll(input: unknown): { delayMs: number; note: string }; POLL_MS: number };
 
@@ -19,7 +21,8 @@ type PageModel = {
   pr: { files: Array<{ filename: string }>; inline: Array<{ id: number; file: number | null; line: number | null }> } | null;
 };
 export type PageSource = {
-  read(kind: Kind, number: number): Promise<{ ok: true; model: PageModel; repository: string } | { ok: false; text: string }>;
+  // `version`: what the page's decisions are bound to (the head shown, or the Issue's digest); `facts`: what turns them on or off (#383).
+  read(kind: Kind, number: number): Promise<{ ok: true; model: PageModel; repository: string; version?: string | null; facts?: unknown } | { ok: false; text: string }>;
   openFileDiff(kind: Kind, number: number, filename: string, line?: number): Thenable<unknown>;
   openText(kind: Kind, number: number): Thenable<unknown>;
 };
@@ -29,6 +32,13 @@ export type PageActions = {
   comment(target: { kind: Kind; number: number }, text: string, tellPm: boolean, afterPost: () => void): Promise<{ ok: boolean; code?: string }>;
   ask(target: { kind: Kind; number: number }, post: { post: PostKind; id: number }, who: 'pm' | 'agent'): Promise<{ ok: boolean; code?: string }>;
 };
+/** The decisions of the page (#383): review, merge, delete branch, close. Given by the reports module, each through its existing function. */
+export type PageAction = 'approve' | 'requestChanges' | 'merge' | 'deleteBranch' | 'closeCompleted' | 'closeNotPlanned';
+export type PageWrites = { run(target: { repository: string; kind: Kind; number: number; version: string }, action: PageAction, typed: string): Promise<{ ok: boolean; code?: string }> };
+let writes: PageWrites | null = null;
+export function setPageWrites(next: PageWrites | null): void { writes = next; }
+/** The decisions in use (the host tests put back what they replaced). */
+export function currentPageWrites(): PageWrites | null { return writes; }
 let actions: PageActions | null = null;
 export function setPageActions(next: PageActions | null): void { actions = next; }
 /** The actions in use (the host tests put back what they replaced). */
@@ -57,6 +67,9 @@ const postKeys = (model: PageModel): string[] => [
 class GitHubPage {
   private model: PageModel | null = null;
   private repository: string | null = null;
+  private version: string | null = null;
+  private facts: unknown = null;
+  private abilities: Record<string, Ability> = {};
   private readonly disposables: vscode.Disposable[] = [];
   private reading = 0;
   private seen: Set<string> | null = null;
@@ -77,6 +90,7 @@ class GitHubPage {
 
   /** What this page was last given (for tests: the page model, never the HTML), and which posts are marked new. */
   get shown(): PageModel | null { return this.model; }
+  get shownAbilities(): Record<string, Ability> { return this.abilities; }
   get newPosts(): string[] { return [...this.fresh]; }
   get nextReadMs(): number { return this.delayMs; }
 
@@ -100,6 +114,8 @@ class GitHubPage {
       else for (const key of keys) if (!this.seen.has(key)) { this.seen.add(key); this.fresh.add(key); }
       this.model = result.model;
       this.repository = result.repository;
+      this.version = typeof result.version === 'string' ? result.version : null;
+      this.facts = result.facts ?? null;
       this.panel.title = `${this.kind === 'issue' ? 'Issue' : 'PR'} #${this.number}`;
       this.post(planned.note);
     }
@@ -109,8 +125,10 @@ class GitHubPage {
   private post(note: string): void {
     if (!this.model) return;
     const trusted = actions !== null && actions.trusted();
+    // Which decisions are on, from the checks of this reading; what the page is told is also what a click is held to.
+    this.abilities = abilitiesFor({ kind: this.kind, writer: writes !== null, trusted, version: this.version !== null, facts: this.facts });
     void this.panel.webview.postMessage({
-      type: 'page', model: this.model, readAt: new Date().toISOString(), note, fresh: [...this.fresh],
+      type: 'page', model: this.model, readAt: new Date().toISOString(), note, fresh: [...this.fresh], abilities: this.abilities,
       write: trusted ? { ok: true } : { ok: false, reason: actions === null ? 'Writing is not available in this window.' : 'Trust this workspace to comment or ask an agent; until then this page only reads.' }
     });
   }
@@ -126,7 +144,7 @@ class GitHubPage {
     const model = this.model;
     const known: Known = {
       links: model ? model.links.length : 0, files: model?.pr ? model.pr.files.length : 0,
-      inline: new Set(model?.pr ? model.pr.inline.map((entry) => entry.id) : []), posts: new Set(model ? postKeys(model) : [])
+      inline: new Set(model?.pr ? model.pr.inline.map((entry) => entry.id) : []), posts: new Set(model ? postKeys(model) : []), kind: this.kind
     };
     const parsed = parsePageMessage(raw, known);
     if (!parsed.ok) return { ok: false, reason: parsed.reason };
@@ -182,6 +200,23 @@ class GitHubPage {
         const done = await actions.ask(target, { post: message.post as PostKind, id: message.id as number }, message.who as 'pm' | 'agent');
         return { ok: done.ok, code: done.code };
       }
+      case 'review':
+      case 'merge':
+      case 'deleteBranch':
+      case 'close': {
+        const action: PageAction = message.type === 'review' ? (message.decision === 'approve' ? 'approve' : 'requestChanges')
+          : message.type === 'close' ? (message.reason === 'completed' ? 'closeCompleted' : 'closeNotPlanned') : message.type;
+        if (!writes || !actions || !actions.trusted()) return { ok: false, reason: 'untrusted' };
+        // A button the page showed off is refused here too, whatever the page sent; then the function checks everything again.
+        if (this.abilities[action]?.ok !== true) return { ok: false, reason: 'not-allowed', code: this.abilities[action]?.code ?? 'unknown' };
+        if (!this.repository || !this.version) return { ok: false, reason: 'not-read' };
+        const done = await writes.run({ repository: this.repository, kind: this.kind, number: this.number, version: this.version }, action, message.type === 'review' ? (message.text as string) : '');
+        // A review that was sent empties the comment box it was written in, as a comment does.
+        if (done.ok && message.type === 'review') void this.panel.webview.postMessage({ type: 'posted' });
+        // Read again whatever happened: the page shows the new state (merged, closed, the new review) or what stopped it.
+        await this.load();
+        return { ok: done.ok, ...(done.code !== undefined ? { code: done.code } : {}) };
+      }
       default:
         return { ok: false, reason: 'unknown-command' };
     }
@@ -190,6 +225,17 @@ class GitHubPage {
 
 const pages = new Map<string, GitHubPage>();
 const keyOf = (kind: Kind, number: number): string => `${kind}:${number}`;
+
+/**
+ * After something that changes what the pages may do (a publisher or merge authority set, a decision made from the text report), each
+ * open page is read again: a visible one now, a hidden one as soon as it is shown, so no button keeps a reason that no longer holds.
+ */
+export function readOpenPagesAgain(): void {
+  for (const page of pages.values()) {
+    if (page.panel.visible) void page.load();
+    else page.stop();
+  }
+}
 
 /** Opens the page of one Issue or pull request, or brings its open tab to the front and reads it again. */
 export async function openGitHubPage(source: PageSource, value: unknown): Promise<{ ok: boolean; code?: string }> {
@@ -214,8 +260,8 @@ export async function openGitHubPage(source: PageSource, value: unknown): Promis
 }
 
 /** For the extension's own tests: what the open page of an item shows, which posts are new, and the page's message handler. */
-export function githubPageForTests(kind: Kind, number: number): { model: PageModel | null; newPosts: string[]; nextReadMs: number; send(raw: unknown): Promise<{ ok: boolean; reason?: string; code?: string }>; reload(): Promise<void>; stop(): void } | null {
+export function githubPageForTests(kind: Kind, number: number): { model: PageModel | null; abilities: Record<string, Ability>; newPosts: string[]; nextReadMs: number; send(raw: unknown): Promise<{ ok: boolean; reason?: string; code?: string }>; reload(): Promise<void>; stop(): void } | null {
   if (!isExtensionTestMode()) throw new Error('This is only exposed in Extension Host tests.');
   const page = pages.get(keyOf(kind, number));
-  return page ? { get model() { return page.shown; }, get newPosts() { return page.newPosts; }, get nextReadMs() { return page.nextReadMs; }, send: (raw) => page.handle(raw), reload: () => page.load(), stop: () => page.stop() } : null;
+  return page ? { get model() { return page.shown; }, get abilities() { return page.shownAbilities; }, get newPosts() { return page.newPosts; }, get nextReadMs() { return page.nextReadMs; }, send: (raw) => page.handle(raw), reload: () => page.load(), stop: () => page.stop() } : null;
 }

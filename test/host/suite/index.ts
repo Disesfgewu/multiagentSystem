@@ -28,6 +28,7 @@ import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
 import { runTalkToPmChecks } from './talkToPm';
 import { runGitHubPageWriteChecks } from './githubPageWrite';
+import { runGitHubPageDecideChecks } from './githubPageDecide';
 import { runAccountsViewChecks } from './accountsView';
 import { runAddAccountWizardChecks } from './addAccountWizard';
 import { runMemoryPanelChecks } from './memoryPanel';
@@ -1100,6 +1101,7 @@ export async function run(): Promise<void> {
   await runDiscussWithPmChecks(workspace);
   await runTalkToPmChecks(workspace);
   await runGitHubPageWriteChecks(workspace);
+  await runGitHubPageDecideChecks();
   await runAccountsViewChecks();
   await runAddAccountWizardChecks();
   console.log(await runManagedInstructionsChecks(workspace));

@@ -106,7 +106,44 @@
 ![換帳號後：同一個代號，新的帳號](user-guide/images/03-switch-account.png)
 
 ## 4. 和 PM agent 一起 review reports
-尚未完成，見 #353。
+
+**要做什麼**：直接在 Issue 或 PR 頁面上做決定：Approve、Request changes、Merge、Delete branch、Close。也可以照第 8 章的方式，先請 PM agent 讀某一則留言並回覆。
+
+**從哪裡點**：照第 8 章打開 Issue 或 PR 頁面，在 head 與檢查結果下方找到 **Decide**。
+
+**會看到什麼**：
+- PR 頁面有 **Approve**、**Request changes**、**Merge**、**Delete branch** 四個按鈕。
+- Issue 頁面有 **Close as completed**、**Close as not planned** 兩個按鈕。
+- 現在能做的按鈕是亮的。不能做的按鈕是停用的，旁邊寫著原因，例如：
+  - `Merge authority is "Human only": merge it on GitHub yourself, or change it (command: Configure Merge Authority).`
+  - `Only the branch of a merged pull request can be deleted.`
+  - `Checks failed on this head.`
+  - `There are unresolved review threads.`
+  - `Trust this workspace first; until then this page only reads.`
+- 原因來自原本文字報告用的同一組檢查：發佈帳號、合併權限、CI、未解決的討論、分支規則、這個 head 的 review。讀不到的項目會寫 `unknown`，按鈕維持停用。
+
+![Decide：哪些能按、哪些不能、為什麼](user-guide/images/04-see-decisions.png)
+
+**Approve／Request changes**：
+1. 在頁面最下方的留言框寫好 review 內容（留言框是空的話，會跳出輸入框問你）。
+2. 按 **Approve** 或 **Request changes**。
+3. 確認視窗會列出 repo、PR 編號、head 的 commit，以及整段 review 內容。按 **Submit formal review** 才會送出。
+
+送出時，review 綁定這個頁面讀到的 head：如果在你讀完之後有人推了新的 commit，就會拒絕送出，什麼都不會發生，請按 **Refresh** 重新讀取。送出後頁面會自動重新讀取，新的 review 會出現在對話裡，標著 `管理者` 和 `review: approved`。
+
+![Approve 之後](user-guide/images/04-approve-pr.png)
+
+**Merge**：合併權限設成 PM 可以合併，而且這個 head 已經 approve、CI 通過、沒有未解決的討論時才會亮。按下後會跳出確認視窗，再檢查一次所有條件才會合併。合併後頁面會顯示 `merged`，**Delete branch** 變成可以按。
+
+**Close**：在 Issue 頁面按 **Close as completed** 或 **Close as not planned**，確認視窗寫著關閉的方式，按 **Close Issue** 才會關閉。關閉後狀態變成 `closed (completed)`，兩個按鈕都停用，原因寫 `The Issue is already closed.`。
+
+![關閉 Issue 之後](user-guide/images/04-close-issue.png)
+
+**每個動作都要你按確認**：頁面本身不能直接寫到 GitHub。它只會把按了哪個按鈕告訴擴充套件，由擴充套件跳出自己的確認視窗、重新檢查，然後才送出；按取消就什麼都不做。頁面只能送出固定的動作名稱；review 的文字是你在留言框打的，會在確認視窗裡完整列出。
+
+**常見問題**：按鈕旁寫 `No GitHub account is set to publish for this repository yet`。
+- 原因：還沒有設定由哪個 GitHub 帳號替你發佈。
+- 處理方式：發一次留言（第 8 章），或在 Command Palette 執行 **Configure PM Publisher**。
 
 ## 5. 直接問問題
 尚未完成，見 #353、#357（Ask 分頁）。
@@ -185,7 +222,7 @@ PR 頁面還會顯示：
 
 **Talk to PM via GitHub**（工作台 **Ask** 分頁，或 Command Palette）：現在開的也是這個頁面。
 
-**還不能做的事**：PR 的 Approve、Request changes、Merge、Delete branch，以及 Issue 的 Close，會在 #353 的下一個 PR 加入。在那之前，請照舊用文字報告上方的按鈕（頁面上的 **Open as text report**）。
+**Approve、Merge、Close**：在頁面的 **Decide** 區塊，見第 4 章。
 
 ## 9. 危險自動模式與模型切換
 尚未完成，見 #358。
