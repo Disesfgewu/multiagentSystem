@@ -277,7 +277,7 @@ test('two sessions are compared side by side: what each was given and its latest
   const same = compareSessions([entry({ sessionId: 'x1', costUsd: 0.03 }), entry({ sessionId: 'x2', costUsd: 0.03 })], 'x1', 'x2');
   assert.match(same.find((line) => line.startsWith('Cost')), /\$0\.0300\s+\$0\.0300\s+same$/, 'an equal figure is "same", not a signed zero');
   assert.ok(compareSessions(entries, 's-with', 's-without').slice(0, 6).every((line) => line.length <= 110), 'the explanation fits an editor');
-  assert.match(row('Latest reading'), /\(2 in the log\).*\(1 in the log\)/);
+  assert.match(row('Latest reading'), /2026-10-26 01:00 \(2\)\s+2026-10-26 02:00 \(1\)/);
   assert.equal(/saved \d|savings|% less/i.test(text), false, 'no claim of savings');
   const withOld = compareSessions(entries, 's-with', 's-old', { nameOf: (id) => names[id] });
   assert.match(withOld.find((line) => line.startsWith('Given at start')), /about 334 tokens\s+unknown\s+—$/, 'what an older session was given is unknown, not zero');

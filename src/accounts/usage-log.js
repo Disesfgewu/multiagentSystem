@@ -287,7 +287,7 @@ function compareSessions(entries, firstId, secondId, { nameOf = (id) => `session
     ['Cache write tokens', cells(a.latest.cacheWriteTokens?.toLocaleString('en-US')), cells(b.latest.cacheWriteTokens?.toLocaleString('en-US')), signed(a.latest.cacheWriteTokens, b.latest.cacheWriteTokens, tokens)],
     ['Cost', a.latest.costUsd === null ? '—' : usd(a.latest.costUsd), b.latest.costUsd === null ? '—' : usd(b.latest.costUsd), signed(a.latest.costUsd, b.latest.costUsd, usd)],
     ['Measured as', mark(a.latest), mark(b.latest), ''],
-    ['Latest reading', `${a.latest.at} (${a.readings} in the log)`, `${b.latest.at} (${b.readings} in the log)`, '']
+    ['Latest reading', `${a.latest.at.slice(0, 16).replace('T', ' ')} (${a.readings})`, `${b.latest.at.slice(0, 16).replace('T', ' ')} (${b.readings})`, '']
   ];
   const widths = [0, 1, 2].map((column) => Math.max(...rows.map((row) => Array.from(row[column]).length)));
   const pad = (text, width) => text + ' '.repeat(Math.max(0, width - Array.from(text).length));
@@ -297,7 +297,7 @@ function compareSessions(entries, firstId, secondId, { nameOf = (id) => `session
     'Each session\'s latest reported reading, and what it was given at its start.',
     '"ESTIMATE" is a local estimate (for Claude Code, its list-price cost); a dash means it was not reported.',
     'These are the numbers only: it does not say how much was saved. That needs two sessions of the same task',
-    'on a real CLI (#135).',
+    'on a real CLI (#135). "Latest reading" is its time (UTC), with how many readings of it are in the log.',
     '',
     ...rows.map((row) => `${pad(row[0], widths[0])}   ${pad(row[1], widths[1])}   ${pad(row[2], widths[2])}   ${row[3]}`.trimEnd())
   ];

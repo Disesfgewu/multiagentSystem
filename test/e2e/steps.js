@@ -932,8 +932,8 @@ const ITEMS = [
     id: '10',
     title: 'Skills and shared memory that save tokens',
     issue: '#359',
-    acceptance: 'not-done',
-    pending: 'Proven here: the library, an agent given only the list of its role group\'s skills (their files in its own session folder, readable through --add-dir) with how much it was given shown on its card, and two sessions compared side by side in the usage log (what each was given, its reported cost). Not proven: that a real CLI reads a skill when it needs one, and how many tokens that saves on the same task (#135).',
+    acceptance: 'accepted',
+    // Accepted by the PM (2026-10-26). What a real CLI does with a skill, and the tokens saved on one task, are #135's real-machine items.
     steps: [
       {
         name: 'add-starter-skills',
