@@ -328,7 +328,14 @@ test('Codex lists its skills next to its profile in CODEX_HOME; agy gets them wi
   assert.ok(text.includes(`(file: ${path.join(folder, 'run-tests', 'SKILL.md')})`), text);
   assert.equal(text.includes('SECRET-STEPS-OF-RUN-TESTS'), false);
   assert.deepEqual(codex.files.slice(1).map((file) => file.path).sort(), [path.join(folder, 'claim-issue', 'SKILL.md'), path.join(folder, 'run-tests', 'SKILL.md')]);
+  // What the person confirms is exactly what Codex is given, with the skill files where they are written (#359, #387 review).
+  assert.equal(codex.shown.text, text);
+  assert.deepEqual(codex.shown.skills.map((skill) => skill.file).sort(), [path.join(folder, 'claim-issue', 'SKILL.md'), path.join(folder, 'run-tests', 'SKILL.md')]);
+  assert.equal(JSON.stringify(codex.shown).includes('SECRET-STEPS-OF-RUN-TESTS'), false, 'the confirmation lists skills, not their text');
+  const claude = planInjection(base(p, { provider: 'claude', capabilities: { appendSystemPromptFile: true }, skills }));
+  assert.equal(claude.shown.text, claude.files[0].content, 'for Claude Code, the file it is given');
   const agy = planInjection(base(p, { provider: 'agy', skills }));
+  assert.equal(agy.shown.text, agy.files[0].content, 'and for a manual plan, the file to paste');
   assert.equal(agy.method, 'manual');
   assert.ok(agy.files.some((file) => file.path.endsWith(path.join('skills', 'run-tests', 'SKILL.md'))));
   assert.match(agy.files[0].content, /- run-tests: /);
