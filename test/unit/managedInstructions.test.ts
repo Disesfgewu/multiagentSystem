@@ -1055,3 +1055,37 @@ test('what the person confirms names the skill files where they are written: for
   t.after(() => cleanupSessionPlan(claude.plan));
   assert.equal(claude.renderedContext, fs.readFileSync(claude.argv[1], 'utf8'));
 });
+
+test('notes past the size limit are listed by title and written whole into the folder the agent may read; they count in what is confirmed (#359)', async (t) => {
+  const { privateDir, repoRoot, store } = sandbox(t);
+  store.put('roleGroups', 'worker-1', roleWithMemory('role-group'));
+  const note = (id: string, title: string, version = 2) => memNote(id, `${title} ${'Details of this note. '.repeat(55)}`, { version, createdAt: `2026-10-2${id.slice(-1)}T00:00:00.000Z` });
+  memoryFile(privateDir, [note('mem_1', 'First note fits.'), note('mem_2', 'Second note does not fit.'), note('mem_3', 'Third note does not fit either.')]);
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-cap-12345678', privateDir });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  t.after(() => cleanupSessionPlan(result.plan));
+  const folder = path.join(privateDir, 'sessions', 'session-cap-12345678', 'skills');
+  const notesFile = path.join(folder, '_left-out-notes.md');
+  const context = fs.readFileSync(result.argv[1], 'utf8');
+  assert.equal(result.injectedCounts.memories, 1, 'one note fits in 2,000 characters');
+  assert.ok(context.includes(`Their full text is in ${notesFile};`), context);
+  assert.ok(context.includes('  - Second note does not fit. Details') && context.includes('  - Third note does not fit either. Details'));
+  assert.ok(context.split('\n').filter((line) => line.startsWith('  - ')).every((line) => Array.from(line.slice(4)).length <= 80), 'each title is 80 characters at most');
+  assert.ok(context.includes(`- First note fits. ${'Details of this note. '.repeat(55).trim()}`), 'the note that fits is whole');
+  assert.equal(context.includes(`Second note does not fit. ${'Details of this note. '.repeat(55).trim()}`), false, 'a note left out is not');
+  const written = fs.readFileSync(notesFile, 'utf8');
+  assert.ok(written.includes(`Second note does not fit. ${'Details of this note. '.repeat(55).trim()}`) && written.includes('## Third note does not fit either.'));
+  assert.deepEqual(result.argv.slice(2), ['--add-dir', folder], 'the one folder it may read, with no skills in it');
+  assert.equal(result.renderedContext, context, 'the person confirms exactly this');
+  // A left-out note that changes changes what is confirmed.
+  memoryFile(privateDir, [note('mem_1', 'First note fits.'), note('mem_2', 'Second note does not fit.', 3), note('mem_3', 'Third note does not fit either.')]);
+  const again = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'worker-1', targetSessionId: 'session-cap-87654321', privateDir });
+  assert.ok(again.ok);
+  if (!again.ok) return;
+  t.after(() => cleanupSessionPlan(again.plan));
+  assert.notEqual(again.digest, result.digest);
+  assert.notEqual(again.reviewDigest, result.reviewDigest);
+  cleanupSessionPlan(result.plan);
+  assert.equal(fs.existsSync(notesFile), false, 'the notes file goes with the session');
+});

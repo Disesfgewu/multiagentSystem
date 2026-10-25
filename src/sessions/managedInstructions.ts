@@ -264,8 +264,10 @@ export async function prepareInstructionSnapshot(
     } catch {
       return { ok: false, code: 'memory-unavailable', message: 'Shared memory could not be opened. The agent was not started.' };
     }
-    if (memories.length > 0 && digest !== null) {
-      const memoryDigest = crypto.createHash('sha256').update(JSON.stringify(memories.map((item) => [item.id, item.version]))).digest('hex');
+    // The notes the size limit leaves out are given too, as a file the agent may read (#359): they count in what is confirmed.
+    const leftOut: any[] = Array.isArray(memoryOmitted?.items) ? memoryOmitted.items : [];
+    if ((memories.length > 0 || leftOut.length > 0) && digest !== null) {
+      const memoryDigest = crypto.createHash('sha256').update(JSON.stringify([...memories, ...leftOut.map((item) => ({ ...item, leftOut: true }))].map((item) => [item.id, item.version, item.leftOut === true]))).digest('hex');
       digest = `sha256:${crypto.createHash('sha256').update(`${digest}\n${memoryDigest}`).digest('hex')}`;
     }
   }
@@ -291,7 +293,7 @@ export async function prepareInstructionSnapshot(
   // permissions), each composed rule and the shared notes. The effective permissions follow from the role group and the rules.
   let reviewDigest: string | null = null;
   if (digest !== null) {
-    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]), skills: skills.map((skill) => [skill.name, skill.revision]) }, (_key, value) => {
+    const reviewed = JSON.stringify({ provider, group: group ?? null, rules: effectiveRules, memories: memories.map((item) => [item.id, item.version]), leftOutNotes: (Array.isArray(memoryOmitted?.items) ? memoryOmitted.items : []).map((item: any) => [item.id, item.version]), skills: skills.map((skill) => [skill.name, skill.revision]) }, (_key, value) => {
       if (Array.isArray(value)) return value.filter((entry) => !(entry && typeof entry === 'object' && (entry as { id?: unknown }).id === CODENAME_RULE_ID));
       return value;
     });
