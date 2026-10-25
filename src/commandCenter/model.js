@@ -176,6 +176,8 @@ function buildCards(input) {
       // The agent's codename (issue #342), what it signs GitHub posts with; only a well-formed one is shown.
       codename: parseCodename(session.codename) ? session.codename : null,
       role,
+      // Which role group it belongs to (#357 Broadcast tab: everyone of one group); only an id the session itself carries.
+      roleGroupId: typeof session.roleGroupId === 'string' && session.roleGroupId !== 'unassigned' ? session.roleGroupId : null,
       roleName: line(roleInfo && roleInfo.name, role ? role : session.roleGroupId === 'unassigned' || !session.roleGroupId ? 'no role group' : UNKNOWN),
       provider: line(session.providerLabel ?? session.provider),
       account: account ? `${line(account.label, 'Account')}${emailOf(session.accountProfileId) ? ` (${emailOf(session.accountProfileId)})` : ''}` : (session.accountProfileId && session.accountProfileId !== 'unassigned' ? 'profile missing' : 'CLI default sign-in'),
@@ -399,11 +401,13 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
-  loadBoard: [], openWorkItem: ['kind', 'number']
+  loadBoard: [], openWorkItem: ['kind', 'number'],
+  // The Broadcast tab (#357): the text the person typed, and either one role group on the screen or agents on the screen.
+  broadcastPreview: ['text', 'group', 'ids'], broadcastSend: ['text', 'group', 'ids']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -462,7 +466,10 @@ function buildSkills(summary) {
  * screen. Anything else (an unknown command, an extra field, a wrong type, a long list) is refused, never partly obeyed.
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
-function parseMessage(raw, knownIds, accountIds, skillNames, boardItems) {
+const MAX_BROADCAST_TEXT = 1500;
+const MAX_BROADCAST_IDS = 50;
+
+function parseMessage(raw, knownIds, accountIds, skillNames, boardItems, knownGroups) {
   if (!isPlain(raw) || typeof raw.type !== 'string' || !COMMANDS.includes(raw.type)) return { ok: false, reason: 'unknown-command' };
   const allowed = SHAPES[raw.type];
   const extra = Object.keys(raw).filter((key) => key !== 'type' && !allowed.includes(key));
@@ -483,6 +490,20 @@ function parseMessage(raw, knownIds, accountIds, skillNames, boardItems) {
     if (raw.kind !== 'issue' && raw.kind !== 'pullRequest') return { ok: false, reason: 'invalid-field' };
     if (!Number.isSafeInteger(raw.number) || raw.number < 1 || !items.has(`${raw.kind}:${raw.number}`)) return { ok: false, reason: 'unknown-item' };
     return { ok: true, message: { type: raw.type, kind: raw.kind, number: raw.number } };
+  }
+  if (raw.type === 'broadcastPreview' || raw.type === 'broadcastSend') {
+    // What the person typed (checked again by the task builder), and exactly one target: a role group of an agent on the screen, or
+    // agents on the screen. Nothing else; the extension turns the group into its agents itself.
+    if (typeof raw.text !== 'string' || raw.text.length > MAX_BROADCAST_TEXT) return { ok: false, reason: 'invalid-text' };
+    const groups = knownGroups instanceof Set ? knownGroups : new Set();
+    const known = knownIds instanceof Set ? knownIds : new Set();
+    if ((raw.group === undefined) === (raw.ids === undefined)) return { ok: false, reason: 'invalid-target' };
+    if (raw.group !== undefined) {
+      if (typeof raw.group !== 'string' || !ID.test(raw.group) || !groups.has(raw.group)) return { ok: false, reason: 'unknown-group' };
+      return { ok: true, message: { type: raw.type, text: raw.text, group: raw.group } };
+    }
+    if (!Array.isArray(raw.ids) || raw.ids.length === 0 || raw.ids.length > MAX_BROADCAST_IDS || new Set(raw.ids).size !== raw.ids.length || !raw.ids.every((id) => typeof id === 'string' && ID.test(id) && known.has(id))) return { ok: false, reason: 'unknown-id' };
+    return { ok: true, message: { type: raw.type, text: raw.text, ids: [...raw.ids] } };
   }
   if (raw.type === 'accountAction') {
     // Creating an account names no account; every other action names one that is on the screen.

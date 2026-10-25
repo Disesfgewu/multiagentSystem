@@ -976,6 +976,70 @@ const ITEMS = [
     ]
   },
   {
+    id: '07',
+    title: 'Broadcast one line to a role group',
+    issue: '#357 (Broadcast tab)',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'preview-broadcast',
+        does: 'In the Workbench click "Broadcast", choose the role group "E2E Developers", type "Please pull main and run the tests before you push." and click "Preview".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click().catch(() => {});
+          const frame = await workbenchFrame(page);
+          await timed('the Broadcast tab', () => frame.locator('button[role="tab"]', { hasText: 'Broadcast' }).first().click());
+          await timed('the role group list', () => frame.locator('select.bc-group').waitFor({ timeout: 20000 }));
+          const options = await textsOf(frame.locator('select.bc-group option'), 'the role groups');
+          const developers = options.find((label) => label.startsWith(`${ROLE} (`));
+          check('the role groups of the running agents are offered, with how many run', options.join(' | '), (text) => Boolean(developers) && /E2E Developers \(\d+ running\)/.test(text));
+          await frame.locator('select.bc-group').selectOption({ label: developers });
+          await frame.locator('textarea.bc-text').fill('Please pull main and run the tests before you push.');
+          check('Send waits for a preview', await frame.locator('button', { hasText: 'Send…' }).first().isDisabled(), true);
+          await frame.locator('button', { hasText: 'Preview' }).first().click();
+          const preview = frame.locator('.bc-preview');
+          await timed('the preview', () => preview.waitFor({ timeout: 20000 }));
+          const text = await textOf(preview, 'the preview');
+          check('the preview shows the exact line', text, /\[Task from the administrator\][\s\S]*Please pull main and run the tests before you push\./);
+          check('and who gets it now', text, /E2E Agent 1 — will receive it/);
+          check('Send is on for the previewed text', await frame.locator('button', { hasText: 'Send…' }).first().isDisabled(), false);
+          await preview.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'send-broadcast',
+        does: 'Click "Send…", read the window and click "Send Now".',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('button', { hasText: 'Send…' }).first().click();
+          const answered = await drive(page, [
+            { dialog: /^Type this into the chosen agents\?/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the extension asked before typing anything', answered.join(' | '), /dialog: Type this into the chosen agents\?[\s\S]*→ Send Now/);
+          const results = frame.locator('.bc-results');
+          await timed('the results', () => results.waitFor({ timeout: 30000 }));
+          const text = await textOf(results, 'the results');
+          check('each agent says whether it got it', text, (value) => /Typed into [1-9]\d* of \d+ agents/.test(value) && /E2E Agent 1 — sent/.test(value));
+          check('and that typing is not proof it was read', text, /"Typed" is not proof/);
+          await results.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'see-in-terminal',
+        does: 'Open the "E2E Agent 1" terminal.',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'E2E Agent 1' }).first().click();
+          const deadline = Date.now() + 20000;
+          let terminal = '';
+          while (Date.now() < deadline && !/run the tests before you push/.test(terminal)) { terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => ''); await pause(300); }
+          check('E2E Agent 1 got the line in its terminal', terminal.replace(/\s+/g, ' '), /\[Task from the administrator\].*run the tests before you push/);
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
     id: '10',
     title: 'Skills and shared memory that save tokens',
     issue: '#359',

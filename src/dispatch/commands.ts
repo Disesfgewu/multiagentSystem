@@ -13,7 +13,7 @@ const { buildTaskPrompt, planTask, targetLabel, branchNameFor, MAX_TEXT_CHARS } 
   MAX_TEXT_CHARS: number;
 };
 const { DispatchStore } = require('./store') as { DispatchStore: new (store: Store) => { record(raw: unknown): { ok: boolean; reason?: string }; list(): { ok: boolean; items?: Array<{ kind: string; issueNumber: number | null; at: string; results: Array<{ sessionId: string; outcome: string }> }>; reason?: string } } };
-const { describePlan } = require('../broadcast/deliver') as { describePlan(plan: unknown): string[] };
+const { describePlan, reasonText } = require('../broadcast/deliver') as { describePlan(plan: unknown): string[]; reasonText(reason: string): string };
 const { roleProviderChoices } = require('../roles/provider-choices') as { roleProviderChoices(): Array<{ id: string; label: string; detail: string }> };
 
 export type Target = { scope: 'all' } | { scope: 'role'; role: string } | { scope: 'provider'; provider: string } | { scope: 'sessions'; ids: string[] };
@@ -240,6 +240,33 @@ export async function confirmAndType(input: { sessions: SessionCommands; roleOf:
   const sent = results.filter((entry) => entry.outcome === 'sent').length;
   void vscode.window.showInformationMessage(`Typed into ${sent} of ${results.length} session${results.length === 1 ? '' : 's'}. "Typed" is not proof that the agent read it or will do it.`);
   return results;
+}
+
+/**
+ * The Workbench's Broadcast tab (#357, #360 item 7): what would be typed and to whom, before anything is. The same task line the "Send
+ * task" command builds (with its checks), and for each chosen session whether it can receive it now. Nothing is typed or stored.
+ */
+export function previewBroadcast(sessions: SessionCommands, input: { text: string; ids: string[] }): { ok: false; reason: string } | { ok: true; prompt: string; recipients: Array<{ id: string; decision: string; reason: string }> } {
+  const built = buildTaskPrompt({ text: input.text });
+  if (!built.ok) return { ok: false, reason: `This cannot be sent: ${refusal(built.reason)}.` };
+  const plan = planTask({ prompt: built.prompt, target: { scope: 'sessions', ids: input.ids }, sessions: sessions.list(), roleOf: () => undefined });
+  if (!plan.ok) return { ok: false, reason: `This cannot be sent (${plan.reason}).` };
+  return { ok: true, prompt: built.prompt, recipients: plan.recipients.map((entry: Recipient) => ({ id: entry.id, decision: entry.decision, reason: reasonText(entry.reason) })) };
+}
+
+/**
+ * Sends the Broadcast tab's text to the chosen sessions through the shared flow (`confirmAndType`): the one modal with the whole line
+ * and the list, the second button for agents whose state is unknown, the fresh look after confirming, the typing and its record.
+ * Returns what happened to each session, or null when it was not sent (declined, refused, untrusted).
+ */
+export async function sendBroadcast(sessions: SessionCommands, input: { text: string; ids: string[] }, trusted: () => boolean = () => vscode.workspace.isTrusted): Promise<Array<{ sessionId: string; outcome: 'sent' | 'skipped'; reason: string }> | null> {
+  if (!trusted()) { void vscode.window.showWarningMessage('Trust this workspace before typing into agents.'); return null; }
+  const built = buildTaskPrompt({ text: input.text });
+  if (!built.ok) { void vscode.window.showErrorMessage(`This cannot be sent: ${refusal(built.reason)}.`); return null; }
+  const opened = await openStore();
+  if (!opened) return null;
+  const results = await confirmAndType({ sessions, roleOf: () => undefined, task: built, target: { scope: 'sessions', ids: input.ids }, title: 'Type this into the chosen agents?' });
+  return results ? results.map((entry) => ({ sessionId: entry.sessionId, outcome: entry.outcome, reason: entry.reason })) : null;
 }
 
 /** The latest Issue each session was handed, for the Command Center cards. An unreadable log is "no information", never a guess. */

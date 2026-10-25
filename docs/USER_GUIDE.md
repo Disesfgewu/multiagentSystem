@@ -176,7 +176,34 @@ e2e 的環境沒有 Claude Code 擴充套件，所以鎖檔由 e2e 自己寫；�
 - 處理方式：安裝或啟用它，然後重新開啟這個 session。
 
 ## 7. 對同一個身份組廣播 prompt
-尚未完成，見 #357（Broadcast 分頁）。
+
+**要做什麼**：一次對某個身份組裡所有正在執行的 agent，或你勾選的幾個 agent，輸入同一行指示。
+
+**從哪裡點**：工作台 → **Broadcast**。
+
+**怎麼做**：
+1. **Send to**：選 **A role group**，從清單選身份組（括號裡是正在執行的 agent 數）；或選 **Chosen agents**，勾選要送的 agent。
+2. **What to type**：寫一行指示，例如 `Please pull main and run the tests before you push.`。
+3. 按 **Preview**。預覽會列出實際會打進終端機的那一行，以及每個 agent 現在能不能收到：
+   - `will receive it (waiting for input)`：會收到；
+   - `skipped: the CLI is busy working`：不會送；
+   - 狀態不明的 agent 會在確認視窗另外問你。
+
+   只有預覽過、而且之後沒有改過的文字才能送出。改了文字或對象，就要重新預覽。
+4. 按 **Send…**，擴充套件會跳出確認視窗，列出整行文字和對象。按 **Send Now** 才會打進終端機。
+5. 下方顯示結果，例如 `Typed into 5 of 5 agents`，以及每個 agent 是 `sent` 或 `not sent:` 加原因。「Typed」只代表已經打進終端機，不代表 agent 讀了或會照做。
+
+![預覽](user-guide/images/07-preview-broadcast.png)
+
+![送出結果](user-guide/images/07-send-broadcast.png)
+
+![agent 的終端機收到這一行](user-guide/images/07-see-in-terminal.png)
+
+**限制**：
+- 只送一行，最多 1,500 字。
+- 會經過和 **Send task…** 相同的檢查，看起來像私人資料、或想改寫 agent 規則的文字會被拒絕，並寫出原因。
+- 每次送出都會記錄。
+- 切到其他分頁再切回工作台時，這個分頁會重新開始，預覽和結果不會保留。
 
 ## 8. PR 與 Issue 像 GitHub 一樣呈現
 

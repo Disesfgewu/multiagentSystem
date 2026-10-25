@@ -348,6 +348,106 @@ const SCRIPT = String.raw`
     panel.appendChild(decisionLines(state.decisions));
   }
 
+  // The Broadcast tab (#357, #360 item 7): one line to every agent of a role group, or to the agents chosen; preview, then send through
+  // the extension's own confirmation, then what happened to each agent. Kept across redraws: the choices and the text being written.
+  var bc = { mode: 'group', group: null, ids: {}, text: '', preview: null, previewKey: null, results: null };
+  var bcBox = null;
+  function bcTarget() {
+    if (bc.mode === 'group') return bc.group ? { group: bc.group } : null;
+    var ids = Object.keys(bc.ids).filter(function (id) { return bc.ids[id]; });
+    return ids.length ? { ids: ids } : null;
+  }
+  function bcKey() { return JSON.stringify([bc.text, bcTarget()]); }
+  function broadcastTab(panel) {
+    var cards = (state.pm || []).concat(state.agents || []);
+    var groups = [];
+    cards.forEach(function (card) { if (card.roleGroupId && !groups.some(function (entry) { return entry.id === card.roleGroupId; })) groups.push({ id: card.roleGroupId, name: card.roleName }); });
+    if (bc.group && !groups.some(function (entry) { return entry.id === bc.group; })) bc.group = null;
+    if (!bc.group && groups.length) bc.group = groups[0].id;
+    panel.appendChild(el('p', null, 'Type one line into every running agent of a role group, or into the agents you choose. Each agent gets it only when its CLI is waiting for input.'));
+    if (cards.length === 0) { panel.appendChild(el('p', 'muted', 'No agent is running.')); }
+    else {
+      var modes = el('div', 'row');
+      [['group', 'A role group'], ['agents', 'Chosen agents']].forEach(function (entry) {
+        var node = button(entry[1], function () { bc.mode = entry[0]; render(); }, null);
+        node.className = bc.mode === entry[0] ? 'btn btn-on' : 'btn';
+        node.setAttribute('aria-pressed', bc.mode === entry[0] ? 'true' : 'false');
+        modes.appendChild(node);
+      });
+      panel.appendChild(el('h3', null, 'Send to'));
+      panel.appendChild(modes);
+      var who = el('div', 'bc-who');
+      if (bc.mode === 'group') {
+        var select = el('select', 'bc-group');
+        groups.forEach(function (entry) {
+          var option = el('option', null, entry.name + ' (' + cards.filter(function (card) { return card.roleGroupId === entry.id; }).length + ' running)');
+          option.value = entry.id;
+          if (entry.id === bc.group) option.selected = true;
+          select.appendChild(option);
+        });
+        select.addEventListener('change', function () { bc.group = select.value; bc.preview = null; render(); });
+        who.appendChild(select);
+      } else {
+        cards.forEach(function (card) {
+          var label = el('label', 'bc-agent');
+          var box = el('input');
+          box.type = 'checkbox';
+          box.checked = Boolean(bc.ids[card.id]);
+          box.addEventListener('change', function () { bc.ids[card.id] = box.checked; bc.preview = null; render(); });
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(' ' + (card.codename ? card.codename + ' · ' : '') + card.name + ' — ' + card.status.text));
+          who.appendChild(label);
+        });
+      }
+      panel.appendChild(who);
+      panel.appendChild(el('h3', null, 'What to type'));
+      if (!bcBox) {
+        bcBox = el('textarea', 'bc-text');
+        bcBox.rows = 3;
+        bcBox.maxLength = 1500;
+        bcBox.placeholder = 'One line, for example: Please pull main and run the tests before you push.';
+        bcBox.addEventListener('input', function () { bc.text = bcBox.value; });
+      }
+      panel.appendChild(bcBox);
+      var actions = el('div', 'row');
+      var target = bcTarget();
+      var previewButton = button('Preview', function () { var chosen = bcTarget(); if (!chosen || !bc.text.trim()) return; bc.previewKey = bcKey(); bc.preview = 'asking'; bc.results = null; render(); var message = { type: 'broadcastPreview', text: bc.text }; if (chosen.group) message.group = chosen.group; else message.ids = chosen.ids; post(message); }, 'See the exact line and who gets it; nothing is typed');
+      previewButton.disabled = !target;
+      actions.appendChild(previewButton);
+      // Send only what was previewed: the same text and the same agents.
+      var ready = bc.preview && bc.preview !== 'asking' && bc.preview.ok && bc.previewKey === bcKey();
+      var sendButton = button('Send…', function () { var chosen = bcTarget(); if (!chosen) return; var message = { type: 'broadcastSend', text: bc.text }; if (chosen.group) message.group = chosen.group; else message.ids = chosen.ids; bc.results = 'asking'; render(); post(message); }, ready ? 'The extension asks you to confirm before anything is typed' : 'Preview it first');
+      sendButton.disabled = !ready;
+      actions.appendChild(sendButton);
+      panel.appendChild(actions);
+      if (bc.preview === 'asking') panel.appendChild(el('p', 'muted', 'Preparing the preview…'));
+      else if (bc.preview && !bc.preview.ok) panel.appendChild(el('p', 'alert', bc.preview.reason));
+      else if (bc.preview) {
+        var box2 = el('section', 'bc-preview');
+        box2.appendChild(el('h3', null, 'Preview' + (bc.previewKey === bcKey() ? '' : ' (out of date: preview again)')));
+        box2.appendChild(el('pre', 'bc-line', bc.preview.prompt));
+        bc.preview.recipients.forEach(function (entry) {
+          var words = entry.decision === 'send' ? 'will receive it (' + entry.reason + ')' : entry.decision === 'unknown' ? 'state unknown: asked separately before it is typed' : 'skipped: ' + entry.reason;
+          box2.appendChild(el('div', entry.decision === 'skip' ? 'muted' : null, entry.label + ' — ' + words));
+        });
+        panel.appendChild(box2);
+      }
+      if (bc.results === 'asking') panel.appendChild(el('p', 'muted', 'Waiting for your confirmation in the window…'));
+      else if (bc.results) {
+        var box3 = el('section', 'bc-results');
+        if (!bc.results.sent) box3.appendChild(el('p', 'muted', 'Nothing was typed.'));
+        else {
+          var sent = bc.results.results.filter(function (entry) { return entry.outcome === 'sent'; }).length;
+          box3.appendChild(el('h3', null, 'Typed into ' + sent + ' of ' + bc.results.results.length + ' agents'));
+          bc.results.results.forEach(function (entry) { box3.appendChild(el('div', entry.outcome === 'sent' ? null : 'muted', entry.label + ' — ' + (entry.outcome === 'sent' ? 'sent' : 'not sent: ' + entry.reason))); });
+          box3.appendChild(el('p', 'muted', '"Typed" is not proof that the agent read it or will do it.'));
+        }
+        panel.appendChild(box3);
+      }
+    }
+    panel.appendChild(nextSteps('Next step', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]));
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -366,7 +466,8 @@ const SCRIPT = String.raw`
     panel.setAttribute('aria-labelledby', 'tab-' + tab);
     if (tab === 'agents') agentsTab(panel);
     else if (tab === 'accounts') accountsTab(panel);
-    else if (tab === 'work') workTab(panel); else if (tab === 'broadcast') placeholderTab(panel, 'Tell every agent of a role group, or the agents you choose, the same thing.', '#357', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]);
+    else if (tab === 'work') workTab(panel);
+    else if (tab === 'broadcast') broadcastTab(panel);
     else if (tab === 'ask') placeholderTab(panel, 'Ask the PM or an agent a question, for example what the selected code does.', '#353', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]);
     else if (tab === 'knowledge') knowledgeTab(panel);
     else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
@@ -378,6 +479,8 @@ const SCRIPT = String.raw`
     var data = event.data;
     if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; showingWork(); render(); return; }
     if (data && data.type === 'board' && data.board && typeof data.board === 'object') { board = data; if (tab === 'work') render(); return; }
+    if (data && data.type === 'broadcastPreview') { bc.preview = data.ok ? { ok: true, prompt: String(data.prompt), recipients: Array.isArray(data.recipients) ? data.recipients : [] } : { ok: false, reason: String(data.reason) }; if (tab === 'broadcast') render(); return; }
+    if (data && data.type === 'broadcastResults') { bc.results = { sent: data.sent === true, results: Array.isArray(data.results) ? data.results : [] }; if (tab === 'broadcast') render(); return; }
     if (!data || data.type !== 'state' || typeof data.state !== 'object' || data.state === null) return;
     state = data.state;
     render();
@@ -403,6 +506,11 @@ const STYLE = `
   .lane h3 { margin: 0 0 6px; font-size: 0.95em; }
   .work-card { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px; margin-bottom: 6px; background: var(--vscode-editor-background); font-size: 0.9em; display: flex; flex-direction: column; gap: 2px; }
   .btn.link-btn { background: transparent; color: var(--vscode-textLink-foreground); padding: 0; text-align: left; font-weight: 600; }
+  .btn-on { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .bc-who { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; } .bc-agent { cursor: pointer; }
+  .bc-text { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px; }
+  .bc-preview, .bc-results { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px 10px; margin: 8px 0; }
+  .bc-line { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--vscode-textCodeBlock-background); padding: 6px; }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }
