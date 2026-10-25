@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import { SessionCommands } from '../sessions/sessionCommands';
 import { collectOverview, OVERVIEW_OPEN_PULL_REQUEST, OVERVIEW_OPEN_REPORT } from '../overview/overviewView';
-import { decisionCountsSnapshot, pullRequestSummary } from '../reports/reportsView';
+import { boardData, decisionCountsSnapshot, pullRequestSummary, REPORT_COMMANDS } from '../reports/reportsView';
+const { buildBoard } = require('./board') as { buildBoard(input: unknown): { state: string; reason?: string; columns: Array<{ cards: Array<{ kind: string; number: number }> }>; notes?: string[] } };
 import { privateStorage } from '../storage/storageCommands';
 import { accountService } from '../accounts/accountRuntime';
 import { observationsFor, ACCOUNT_COMMANDS, accountEmail, accountPlan, onDidChangeAccounts } from '../accounts/accountCommands';
@@ -18,7 +19,7 @@ const model = require('./model') as {
   describeDecisions(counts: unknown): { issues: unknown; pullRequests: unknown };
   normalizeLayout(raw: unknown): Layout;
   arrange(cards: any[], layout: Layout): any[];
-  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
+  parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>, boardItems?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
   buildSkills(summary: unknown): { known: boolean; text: string; items: Array<{ name: string }> };
   SKILL_ACTIONS: Record<string, string>;
   buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
@@ -36,7 +37,7 @@ const LAYOUT_KEY = 'commandCenter.layout';
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
 type Layout = { mode: 'grid' | 'list'; order: string[]; collapsed: string[]; pinned: string[] };
-type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string };
+type Message = { type: string; action?: string; id?: string; name?: string; mode?: 'grid' | 'list'; order?: string[]; kind?: 'issue' | 'pullRequest'; target?: string; number?: number };
 export type CommandCenterResult = { ok: boolean; reason?: string; command?: string };
 
 let panel: vscode.WebviewPanel | undefined;
@@ -45,7 +46,7 @@ let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | n
 export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
   try { return teamReader ? await teamReader() : null; } catch { return null; }
 }
-let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void> } | undefined;
+let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
   if (!controllerForTest) throw new Error('The Command Center is only exposed in Extension Host tests.');
@@ -105,6 +106,25 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   const knownIds = (): Set<string> => new Set([...(cached?.pm ?? []), ...(cached?.agents ?? [])].map((card) => card.id as string));
   const knownAccountIds = (): Set<string> => new Set((cached?.accounts ?? []).map((row) => row.id as string));
   const knownSkills = (): Set<string> => new Set((cached?.skills?.items ?? []).map((skill) => skill.name));
+  // The items the board last showed (#397): only these can be opened from it.
+  let boardItems = new Set<string>();
+  let lastBoard: unknown = null;
+  let boardReading: Promise<void> | null = null;
+  const loadBoard = (): Promise<void> => {
+    if (boardReading) return boardReading;
+    boardReading = (async () => {
+      try {
+        const read = await boardData();
+        const board = read.ok
+          ? buildBoard({ repository: read.repository, issues: read.issues, pullRequests: read.pullRequests, merged: read.merged, details: read.details, ownerPosts: read.ownerPosts, agents: [...(cached?.pm ?? []), ...(cached?.agents ?? [])] })
+          : { state: 'unavailable', reason: read.text, columns: [] };
+        boardItems = new Set(board.columns.flatMap((column) => column.cards.map((card) => `${card.kind}:${card.number}`)));
+        lastBoard = board;
+        if (panel) void panel.webview.postMessage({ type: 'board', board, readAt: new Date().toISOString() });
+      } finally { boardReading = null; }
+    })();
+    return boardReading;
+  };
   const payload = () => {
     if (!cached) return null;
     return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null) };
@@ -150,7 +170,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   };
 
   const handle = async (raw: unknown): Promise<CommandCenterResult> => {
-    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds(), knownSkills());
+    const parsed = model.parseMessage(raw, knownIds(), knownAccountIds(), knownSkills(), boardItems);
     if (!parsed.ok) return { ok: false, reason: parsed.reason };
     const message = parsed.message;
     switch (message.type) {
@@ -160,6 +180,14 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         return { ok: true, command: message.type };
       case 'refresh':
         await refresh();
+        return { ok: true, command: message.type };
+      // The Work tab's board (#397): read when the tab is shown and on its Refresh; only read, never written.
+      case 'loadBoard':
+        await loadBoard();
+        return { ok: true, command: message.type };
+      // An item of the board opens on its own page (#353), as from the Open Issue or pull request list.
+      case 'openWorkItem':
+        await vscode.commands.executeCommand(REPORT_COMMANDS.openPage, { kind: message.kind, number: message.number });
         return { ok: true, command: message.type };
       case 'setLayout':
       case 'reorder':
@@ -254,7 +282,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     }
   };
   teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
-  controller = { handle, state: payload, refresh };
+  controller = { handle, state: payload, refresh, board: () => lastBoard };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
   // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).

@@ -136,7 +136,17 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'open', 'openPullRequest', 'openReport', 'openReports', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'assignIssue', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  // The board (#397): loadBoard carries nothing; openWorkItem names only an item the board showed, by kind and number.
+  const items = new Set(['issue:12', 'pullRequest:7']);
+  assert.deepEqual(parseMessage({ type: 'loadBoard' }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'loadBoard' } });
+  assert.deepEqual(parseMessage({ type: 'openWorkItem', kind: 'issue', number: 12 }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'openWorkItem', kind: 'issue', number: 12 } });
+  for (const [raw, reason] of [
+    [{ type: 'openWorkItem', kind: 'issue', number: 7 }, 'unknown-item'], [{ type: 'openWorkItem', kind: 'pullRequest', number: 12 }, 'unknown-item'],
+    [{ type: 'openWorkItem', kind: 'issue', number: '12' }, 'unknown-item'], [{ type: 'openWorkItem', kind: 'commit', number: 12 }, 'invalid-field'],
+    [{ type: 'openWorkItem', kind: 'issue', number: 12, url: 'https://evil.test' }, 'unexpected-field'], [{ type: 'loadBoard', repository: 'x/y' }, 'unexpected-field']
+  ]) assert.deepEqual(parseMessage(raw, new Set(), new Set(), new Set(), items), { ok: false, reason }, JSON.stringify(raw));
+  assert.equal(parseMessage({ type: 'openWorkItem', kind: 'issue', number: 12 }, new Set(), new Set(), new Set()).ok, false, 'without a board, nothing can be opened');
   // skillAction (#359) names a skill on screen and one fixed action; the skill's text and every confirmation come from the command.
   const skills = new Set(['run-tests']);
   assert.deepEqual(parseMessage({ type: 'skillAction', action: 'roles', name: 'run-tests' }, new Set(), new Set(), skills), { ok: true, message: { type: 'skillAction', action: 'roles', name: 'run-tests' } });
