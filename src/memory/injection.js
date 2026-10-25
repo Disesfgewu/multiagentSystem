@@ -80,6 +80,7 @@ function tomlString(text) {
 
 // Builds a launch plan. The context text only ever goes into files under a
 // private directory; argv carries a file path or a profile name, never content.
+// `shown` is exactly the text the CLI is given, with the skill files where they are written, for the person to confirm.
 function planInjection(options) {
   const { provider, roleGroup, rules, memories, omitted, privateDir, repoRoot, sessionToken,
     codexHome, capabilities = {}, context, skills = [] } = options;
@@ -103,6 +104,7 @@ function planInjection(options) {
     method: 'manual',
     files: [{ path: nodePath.join(sessionDir, 'context.md'), content: text }, ...skillFiles(nodePath.join(sessionDir, 'skills')).map((skill) => ({ path: skill.file, content: skill.content }))],
     argv: [],
+    shown: { text, skills: skillFiles(nodePath.join(sessionDir, 'skills')).map(({ name, description, file }) => ({ name, description, file })) },
     ...scope,
     note: 'Open the file and paste it into the terminal as the first message.'
   });
@@ -118,6 +120,7 @@ function planInjection(options) {
       files: [{ path: file, content: text }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
       // Claude Code may read the skills folder of this session, and nothing else of it.
       argv: ['--append-system-prompt-file', file, ...(listed.length > 0 ? ['--add-dir', skillsDir] : [])],
+      shown: { text, skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       ...scope
     };
   }
@@ -134,6 +137,8 @@ function planInjection(options) {
       method: 'profile-developer-instructions',
       files: [{ path: file, content: `developer_instructions = ${tomlString(textWith(listed))}\n` }, ...listed.map((skill) => ({ path: skill.file, content: skill.content }))],
       argv: ['-p', profileName],
+      // What Codex is given lists its skills where they are written, next to its profile (#359): the confirmation shows this text.
+      shown: { text: textWith(listed), skills: listed.map(({ name, description, file: path }) => ({ name, description, file: path })) },
       root: codexHome,
       repoRoot,
       exclusiveDir: null

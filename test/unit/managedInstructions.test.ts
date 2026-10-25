@@ -1022,3 +1022,36 @@ test('an agent is given the list of its role group\'s skills, with their files i
   cleanupSessionPlan(result.plan);
   assert.equal(fs.existsSync(path.join(skillsDir, 'run-tests', 'SKILL.md')), false, 'the skill files go with the session');
 });
+
+test('what the person confirms names the skill files where they are written: for Codex next to its profile in CODEX_HOME (#359, #387 review)', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mas-inst-codex-skills-'));
+  const privateDir = path.join(tmpDir, 'private');
+  const codexHome = path.join(tmpDir, 'codex-home');
+  const repoRoot = path.join(tmpDir, 'project');
+  fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = new FakeStore(privateDir);
+  store.put('roleGroups', 'codex-role-1', makeRoleRecord('codex-role-1', 1, 'worker', 'codex'));
+  store.put('skills', 'run-tests', { name: 'run-tests', description: 'When to use run-tests.', body: 'STEPS OF RUN-TESTS', roles: ['codex-role-1'], state: 'active', source: 'owner', revision: 1 });
+  const result = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'codex', roleGroupId: 'codex-role-1', targetSessionId: 'session-codexsk-1234', privateDir, codexHome });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  t.after(() => cleanupSessionPlan(result.plan));
+  const written = path.join(codexHome, 'mas-session-codexsk-1234-skills', 'run-tests', 'SKILL.md');
+  assert.match(fs.readFileSync(written, 'utf8'), /STEPS OF RUN-TESTS/, 'the skill file is next to the profile');
+  assert.ok(result.renderedContext?.includes(`(file: ${written})`), result.renderedContext ?? '');
+  assert.equal(result.renderedContext?.includes(path.join(privateDir, 'sessions')), false, 'not the session folder Codex never reads');
+  // Exactly the text the profile gives Codex.
+  const toml = fs.readFileSync(path.join(codexHome, 'mas-session-codexsk-1234.config.toml'), 'utf8');
+  assert.equal(JSON.parse(/^developer_instructions = (".*")\n$/s.exec(toml)![1]), result.renderedContext);
+  // And Claude Code is shown its own context file.
+  store.put('roleGroups', 'claude-role-1', makeRoleRecord('claude-role-1', 1, 'worker'));
+  store.put('skills', 'run-tests', { name: 'run-tests', description: 'When to use run-tests.', body: 'STEPS OF RUN-TESTS', roles: ['claude-role-1'], state: 'active', source: 'owner', revision: 1 });
+  const claude = await prepareInstructionSnapshot({ store, repoRoot, repoId: 'owner/repo', provider: 'claude', roleGroupId: 'claude-role-1', targetSessionId: 'session-claudesk-1234', privateDir });
+  assert.ok(claude.ok);
+  if (!claude.ok) return;
+  t.after(() => cleanupSessionPlan(claude.plan));
+  assert.equal(claude.renderedContext, fs.readFileSync(claude.argv[1], 'utf8'));
+});

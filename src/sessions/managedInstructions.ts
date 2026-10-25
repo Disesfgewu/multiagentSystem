@@ -338,6 +338,12 @@ export async function prepareInstructionSnapshot(
       writePlan(plan, options.context);
       method = plan.method;
       argv = plan.argv;
+      // The person confirms the text the CLI is given: for Codex its skills are next to its profile in CODEX_HOME, not in the session
+      // folder (#359, #387 review).
+      if (plan.shown && typeof plan.shown.text === 'string') {
+        renderedContext = plan.shown.text;
+        injectedSizes = measureSections(renderSections({ ...contextInput, skills: plan.shown.skills }));
+      }
 
       if (provider === 'claude' && plan.method === 'append-system-prompt-file') {
         injectionState = 'prepared';
