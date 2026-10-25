@@ -50,6 +50,7 @@ const { worktreeInProject } = require('./reopenScope') as { worktreeInProject(wo
 export const SESSION_COMMANDS = {
   list: 'multiagentSystem.sessions.list',
   restartWithAccount: 'multiagentSystem.sessions.restartWithAccount',
+  restart: 'multiagentSystem.sessions.restart',
   start: 'multiagentSystem.sessions.start',
   focus: 'multiagentSystem.sessions.focus',
   stop: 'multiagentSystem.sessions.stop',
@@ -852,27 +853,53 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
       'Restart with This Account'
     );
     if (answer !== 'Restart with This Account') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    return startAgain(prior, choice.id === 'unassigned' ? undefined : choice.id, launch);
+  }
+
+  /**
+   * Stops an agent (or releases what a closed one held) and starts it again in the same folder with the same role group, name and model,
+   * and with the account given. It keeps its codename, so its GitHub signature does not change. If the new session did not start, the
+   * stopped one stays listed and can be reopened.
+   */
+  async function startAgain(prior: SessionView, accountProfileId: string | undefined, launch: false | undefined): Promise<SessionOutcome> {
     // A card whose terminal already closed (every card after a window reload) has nothing to stop, only what it held to release.
     if (prior.terminalOpen) await stopSessionNow(prior.id);
     else await releaseSessionResources(prior.id);
     changed.fire();
-    // The agent keeps its codename, so its GitHub signature does not change: it moves from the old session to the new one.
     const restarted = await startWithAccount({
       interactive: true,
       provider: prior.provider,
       cwd: prior.worktree,
       name: prior.name,
       roleGroupId: prior.roleGroupId !== 'unassigned' ? prior.roleGroupId : undefined,
-      accountProfileId: choice.id === 'unassigned' ? undefined : choice.id,
+      accountProfileId,
       requestedModel: prior.requestedModel,
       ...(launch === false ? { launch } : {})
     }, { codenameFrom: prior.id });
-    // The agent is shown once, as its new session. If the new one did not start, the stopped one stays and can be reopened.
+    // The agent is shown once, as its new session.
     if (restarted.ok) {
       try { await manager.forget(prior.id); } catch { /* it stays listed with its terminal closed */ }
       changed.fire();
     }
     return restarted;
+  }
+
+  /**
+   * The card's "Restart…" (#357): the same agent started again with the same account, after one confirmation. Only the session id is read;
+   * a stuck or fallen-back agent (auto mode no longer in effect, #362) gets a fresh conversation this way.
+   */
+  async function restart(value: unknown): Promise<SessionOutcome> {
+    const raw = value && typeof value === 'object' ? (value as { id?: unknown; launch?: unknown }) : {};
+    const launch = isExtensionTestMode() && raw.launch === false ? false : undefined;
+    const prior = typeof raw.id === 'string' ? manager.get(raw.id) : undefined;
+    if (!prior) return failure(Object.assign(new Error('session-not-found'), { code: 'session-not-found' }), true);
+    const answer = await vscode.window.showWarningMessage(
+      `Restart “${prior.name}”?`,
+      { modal: true, detail: `${prior.terminalOpen ? 'Its terminal closes and the agent in it stops. ' : ''}It starts again in the same folder (${prior.worktree}) with the same role group, name, account and model, and a new conversation. Its instructions are prepared again and its codename stays.` },
+      'Restart Agent'
+    );
+    if (answer !== 'Restart Agent') return { ok: false, code: 'cancelled', message: 'Cancelled.' };
+    return startAgain(prior, prior.accountProfileId !== 'unassigned' ? prior.accountProfileId : undefined, launch);
   }
 
   async function act(action: 'focus' | 'stop' | 'reopen', value: unknown, fromOwnUi = false): Promise<SessionOutcome> {
@@ -1233,6 +1260,7 @@ export function registerSessionCommands(context: vscode.ExtensionContext): Sessi
     vscode.commands.registerCommand(SESSION_COMMANDS.list, (value?: unknown) => list(value)),
     // Interactive only: it reads the session id and nothing else (#352).
     vscode.commands.registerCommand(SESSION_COMMANDS.restartWithAccount, (value?: unknown) => restartWithAccount(value)),
+    vscode.commands.registerCommand(SESSION_COMMANDS.restart, (value?: unknown) => restart(value)),
     // start, stop and reopen launch or end terminals and take account quota: outside test mode they
     // always run interactively, and reopen's `acknowledgeUnknown` cannot skip its warning.
     vscode.commands.registerCommand(SESSION_COMMANDS.start, (value?: unknown) => launch(requireInteractive(options(value)))),

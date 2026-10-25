@@ -425,6 +425,7 @@
         "title": "Multiagent: Sessions"
       },
       { "command": "multiagentSystem.sessions.restartWithAccount", "title": "Multiagent: Restart Session with Another Account" },
+      { "command": "multiagentSystem.sessions.restart", "title": "Multiagent: Restart Agent" },
       { "command": "multiagentSystem.sessions.focus", "title": "Multiagent: Focus Session Terminal", "icon": "$(eye)" },
       { "command": "multiagentSystem.sessions.stop", "title": "Multiagent: Stop Session Terminal", "icon": "$(debug-stop)" },
       { "command": "multiagentSystem.sessions.reopen", "title": "Multiagent: Reopen Session in a New Terminal", "icon": "$(debug-restart)" },
