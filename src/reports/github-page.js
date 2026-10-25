@@ -166,6 +166,39 @@ const SCRIPT = String.raw`
     return node;
   }
 
+  // The decisions (#383): each button is on only when the extension's checks allow it now, and an off one says why. A click asks the
+  // extension, which confirms with the person and checks everything again; a review takes what is written in the comment box below.
+  var DECISIONS = {
+    pullRequest: [
+      ['approve', 'Approve', function () { post({ type: 'review', decision: 'approve', text: box ? box.value : '' }); }, 'Submit a formal review that approves this head (the comment box below is its text; you confirm first)'],
+      ['requestChanges', 'Request changes', function () { post({ type: 'review', decision: 'request_changes', text: box ? box.value : '' }); }, 'Submit a formal review that requests changes (the comment box below is its text; you confirm first)'],
+      ['merge', 'Merge', function () { post({ type: 'merge' }); }, 'Merge this head after every check passes again (you confirm first)'],
+      ['deleteBranch', 'Delete branch', function () { post({ type: 'deleteBranch' }); }, 'Delete the merged branch (you confirm first)']
+    ],
+    issue: [
+      ['closeCompleted', 'Close as completed', function () { post({ type: 'close', reason: 'completed' }); }, 'Close this Issue as completed (you confirm first)'],
+      ['closeNotPlanned', 'Close as not planned', function () { post({ type: 'close', reason: 'not_planned' }); }, 'Close this Issue as not planned (you confirm first)']
+    ]
+  };
+  function decisions(m) {
+    var section = el('section', 'decisions');
+    section.appendChild(el('h2', null, 'Decide'));
+    var list = el('div', 'decision-list');
+    (DECISIONS[m.kind] || []).forEach(function (entry) {
+      var ability = page.abilities && page.abilities[entry[0]];
+      var ok = Boolean(ability && ability.ok);
+      var item = el('div', 'decision');
+      var node = button(entry[1], entry[2], ok ? entry[3] : (ability && ability.reason) || 'unknown', ok ? 'btn btn-primary' : 'btn');
+      node.disabled = !ok;
+      item.appendChild(node);
+      if (!ok) item.appendChild(el('span', 'muted decision-why', (ability && ability.reason) || 'unknown: it could not be checked, so it stays off.'));
+      list.appendChild(item);
+    });
+    section.appendChild(list);
+    if (m.kind === 'pullRequest') section.appendChild(el('div', 'muted', 'Approve and Request changes use the text in the comment box at the bottom as the review; with the box empty you are asked for it.'));
+    return section;
+  }
+
   function render() {
     var scrolled = window.scrollY;
     root.textContent = '';
@@ -206,6 +239,7 @@ const SCRIPT = String.raw`
       pr.appendChild(el('div', null, 'Checks: ' + m.pr.ci + ' · Review: ' + m.pr.approval));
       root.appendChild(pr);
     }
+    root.appendChild(decisions(m));
     m.notes.forEach(function (text) { root.appendChild(el('div', 'note', text)); });
 
     var timeline = el('section', 'timeline');
@@ -280,7 +314,7 @@ const SCRIPT = String.raw`
     if (data.type === 'page') {
       // A reading that changed nothing on the page only updates its status line: the page is not drawn again, so nothing moves
       // under the pointer or loses its place while the person reads, writes or clicks.
-      var shown = JSON.stringify([data.model, data.fresh, data.write, data.error]);
+      var shown = JSON.stringify([data.model, data.fresh, data.write, data.error, data.abilities]);
       page = data;
       if (shown === drawn && statusLine) { showStatus(); return; }
       drawn = shown;
@@ -333,6 +367,8 @@ const STYLE = `
   .note-new { border-color: var(--vscode-focusBorder); }
   .composer { margin-top: 24px; border-top: 1px solid var(--vscode-panel-border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
   .comment-box { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 6px; resize: vertical; }
+  .decisions { margin-bottom: 10px; } .decision-list { display: flex; flex-direction: column; gap: 4px; } .decision { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); } .btn-primary:hover { background: var(--vscode-button-hoverBackground); }
   .preview { min-height: 4em; } .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
 
@@ -366,20 +402,26 @@ const MAX_TEXT = 65536;
 const SHAPES = Object.freeze({
   ready: {}, refresh: {}, openOnGitHub: {}, openText: {},
   openLink: { link: 'index' }, openFile: { file: 'index' }, openInline: { id: 'index' },
-  preview: { text: 'text' }, comment: { text: 'text', tellPm: 'boolean' }, ask: { post: 'post', id: 'index', who: 'who' }
+  preview: { text: 'text' }, comment: { text: 'text', tellPm: 'boolean' }, ask: { post: 'post', id: 'index', who: 'who' },
+  // The decisions (#383): a fixed name, and for a review what was typed in the comment box (shown whole before it is sent).
+  review: { decision: 'decision', text: 'text' }, merge: {}, deleteBranch: {}, close: { reason: 'closeReason' }
 });
+// Which page each decision belongs to: one sent from the other kind of page is refused.
+const KIND_OF = Object.freeze({ review: 'pullRequest', merge: 'pullRequest', deleteBranch: 'pullRequest', close: 'issue' });
 const FIELD_OK = Object.freeze({
   index: (value) => Number.isSafeInteger(value) && value >= 0,
   text: (value) => typeof value === 'string' && value.length <= MAX_TEXT,
   boolean: (value) => typeof value === 'boolean',
   post: (value) => value === 'comment' || value === 'review' || value === 'inline',
-  who: (value) => value === 'pm' || value === 'agent'
+  who: (value) => value === 'pm' || value === 'agent',
+  decision: (value) => value === 'approve' || value === 'request_changes',
+  closeReason: (value) => value === 'completed' || value === 'not_planned'
 });
 
 /**
  * @param {unknown} raw what the page posted
- * @param {{ links: number, files: number, inline: Set<number>, posts?: Set<string> }} known how many links and files the page was
- *   given, its line comment ids, and its posts as "kind:id"
+ * @param {{ links: number, files: number, inline: Set<number>, posts?: Set<string>, kind?: 'issue' | 'pullRequest' }} known how many
+ *   links and files the page was given, its line comment ids, its posts as "kind:id", and which kind of page it is
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
 function parsePageMessage(raw, known) {
@@ -395,6 +437,7 @@ function parsePageMessage(raw, known) {
   if (type === 'openFile' && raw.file >= known.files) return { ok: false, reason: 'unknown-file' };
   if (type === 'openInline' && !known.inline.has(raw.id)) return { ok: false, reason: 'unknown-comment' };
   if (type === 'ask' && !(known.posts instanceof Set && known.posts.has(`${raw.post}:${raw.id}`))) return { ok: false, reason: 'unknown-post' };
+  if (Object.hasOwn(KIND_OF, type) && known.kind !== KIND_OF[type]) return { ok: false, reason: 'wrong-page' };
   const message = { type };
   for (const key of Object.keys(fields)) message[key] = raw[key];
   return { ok: true, message };

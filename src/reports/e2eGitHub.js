@@ -48,14 +48,15 @@ function fixtureReader(fixture) {
 }
 
 /**
- * The synthetic GitHub's side of publishing (#353): a signed-in account and a comment call that adds the comment to the fixture, so
- * the page reads it back as GitHub would. Everything else of publishing (the privacy check, the confirmation, the owner record) is
- * the real code. Used only together with the reader above, under the same condition.
+ * The synthetic GitHub's side of publishing (#353, #383): a signed-in account, and comment, review and close calls that change the
+ * fixture, so the page reads the result back as GitHub would. Everything else of publishing (the privacy check, the confirmation, the
+ * owner record, the publication policy) is the real code. Used only together with the reader above, under the same condition.
  */
 function fixtureWriteHooks(fixture) {
   const login = typeof fixture.owner === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(fixture.owner) ? fixture.owner : 'e2e-owner';
   const session = { id: 'e2e-session', accessToken: 'synthetic', account: { id: '4242', label: login }, scopes: [] };
   const comments = (fixture.comments ??= {});
+  const reviews = (fixture.reviews ??= {});
   let nextId = 900001;
   const versionOf = (target) => {
     if (target.kind === 'issue') {
@@ -74,6 +75,26 @@ function fixtureWriteHooks(fixture) {
       const id = nextId++;
       (comments[String(number)] ??= []).push({ id, author: login, createdAt: new Date().toISOString(), body });
       return { ok: true, number: id };
+    },
+    snapshot: async (target) => { const pull = byNumber(fixture.pullRequests, target.number); return pull && pull.snapshot ? pull.snapshot : { status: 'unavailable' }; },
+    // The publisher is the fixture's owner; every other account is someone else.
+    authorId: async (_auth, name) => (name === login ? '4242' : /^[A-Za-z0-9-]{1,39}$/.test(name) ? '5151' : null),
+    review: async (_auth, _repository, number, decision, body, expectedHeadSha) => {
+      const id = nextId++;
+      const state = decision === 'approve' ? 'APPROVED' : decision === 'request_changes' ? 'CHANGES_REQUESTED' : 'COMMENTED';
+      (reviews[String(number)] ??= []).push({ id, reviewer: login, state, submittedAt: new Date().toISOString(), commitId: expectedHeadSha, body });
+      // GitHub's summary of the reviews follows, as it would.
+      const pull = byNumber(fixture.pullRequests, number);
+      if (pull && pull.snapshot && state !== 'COMMENTED') pull.snapshot.approval = { ...(pull.snapshot.approval ?? {}), status: state === 'APPROVED' ? 'approved' : 'changes_requested', headSha: expectedHeadSha };
+      return { ok: true, number: id };
+    },
+    issue: async (target) => { const found = byNumber(fixture.issues, target.number); return found ? ok(found) : missing; },
+    closeIssue: async (_auth, _repository, number, reason) => {
+      const found = byNumber(fixture.issues, number);
+      if (!found || (reason !== 'completed' && reason !== 'not_planned')) return { ok: false };
+      found.state = 'closed';
+      found.stateReason = reason;
+      return { ok: true, number };
     }
   };
 }

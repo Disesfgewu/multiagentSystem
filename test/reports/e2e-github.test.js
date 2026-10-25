@@ -31,12 +31,23 @@ test('the synthetic GitHub publishes into the fixture, so the page reads the com
   const { fixtureWriteHooks } = require('../../src/reports/e2eGitHub');
   const fixture = JSON.parse(JSON.stringify({ ...FIXTURE, owner: 'e2e-owner', issues: [{ number: 12, state: 'open', title: 'x', body: 'b' }] }));
   const hooks = fixtureWriteHooks(fixture);
-  assert.deepEqual(Object.keys(hooks).sort(), ['comment', 'repository', 'session', 'user', 'version'], 'no confirmation, prompt or privacy check is replaced');
+  assert.deepEqual(Object.keys(hooks).sort(), ['authorId', 'closeIssue', 'comment', 'issue', 'repository', 'review', 'session', 'snapshot', 'user', 'version'], 'no confirmation, prompt, merge, branch deletion or privacy check is replaced');
   assert.deepEqual(await hooks.user(await hooks.session()), { id: 4242, login: 'e2e-owner' });
   assert.equal(await hooks.version({ kind: 'issue', number: 12 }), require('node:crypto').createHash('sha256').update('x\0b').digest('hex'));
   const posted = await hooks.comment(null, null, 12, 'Hello');
   assert.equal(posted.ok, true);
   assert.deepEqual((await fixtureReader(fixture).getIssueComments(12)).data.at(-1), { id: posted.number, author: 'e2e-owner', createdAt: fixture.comments[12].at(-1).createdAt, body: 'Hello' });
+  // A review and a close change the fixture, so the page reads them back (#383); the owner is told apart from everyone else.
+  assert.equal(await hooks.authorId(null, 'e2e-owner'), '4242');
+  assert.equal(await hooks.authorId(null, 'shared-account'), '5151');
+  assert.equal(await hooks.authorId(null, 'not a login'), null);
+  const reviewed = await hooks.review(null, null, 7, 'approve', 'Looks right.', 'a'.repeat(40));
+  assert.equal(reviewed.ok, true);
+  assert.deepEqual((await fixtureReader(fixture).getReviews(7)).data.at(-1), { id: reviewed.number, reviewer: 'e2e-owner', state: 'APPROVED', submittedAt: fixture.reviews[7].at(-1).submittedAt, commitId: 'a'.repeat(40), body: 'Looks right.' });
+  assert.deepEqual(await hooks.closeIssue(null, null, 12, 'wontfix'), { ok: false });
+  assert.deepEqual(await hooks.closeIssue(null, null, 99, 'completed'), { ok: false });
+  assert.deepEqual(await hooks.closeIssue(null, null, 12, 'not_planned'), { ok: true, number: 12 });
+  assert.deepEqual((await hooks.issue({ number: 12 })).data, { number: 12, state: 'closed', stateReason: 'not_planned', title: 'x', body: 'b' });
   // The publishing side checks the same condition again before it uses any of this.
   // Line endings normalized: a Windows checkout has CRLF, and the pattern below is written with \n.
   const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/reports/publicFeedback.ts'), 'utf8').replace(/\r\n/g, '\n');

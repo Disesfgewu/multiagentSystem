@@ -786,6 +786,89 @@ const ITEMS = [
     ]
   },
   {
+    id: '04',
+    title: 'The owner and the PM review together: approve, merge and close from the page',
+    issue: '#383',
+    acceptance: 'accepted',
+    steps: [
+      {
+        name: 'see-decisions',
+        does: 'Go back to the "PR #7" tab and look at "Decide" under the pull request\'s head and checks.',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'PR #7' }).first().click();
+          const frame = await pageFrame(page, 'Read-only Issue and pull request page');
+          await settled(page, frame);
+          const decide = frame.locator('.decisions');
+          check('the four decisions of a pull request', (await textsOf(decide.locator('.decision .btn'), 'the decision buttons')).join(' | '), 'Approve | Request changes | Merge | Delete branch');
+          check('Approve and Request changes are on', await timed('enabled decisions', () => decide.locator('.decision .btn:not([disabled])').allInnerTexts()), (texts) => texts.join(' | ') === 'Approve | Request changes');
+          check('Merge is off, and says why: merge authority is Human only', await textOf(decide.locator('.decision', { hasText: 'Merge' }).first(), 'the Merge line'), /Merge authority is "Human only"/);
+          check('Delete branch is off until the pull request is merged', await textOf(decide.locator('.decision', { hasText: 'Delete branch' }).first(), 'the Delete branch line'), /Only the branch of a merged pull request can be deleted/);
+          await decide.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'approve-pr',
+        does: 'Type "Thanks, approved." in the comment box at the bottom, click "Approve", read the whole review in the window and click "Submit formal review".',
+        run: async ({ page, check }) => {
+          const frame = await pageFrame(page, 'Read-only Issue and pull request page');
+          // Temporarily a plain review: "Checked on this head: the page draws Markdown as a tree." is blocked by the privacy scan, which
+          // matches every stored string as a substring (#389). Put the original sentence back once #389 is fixed.
+          await frame.locator('textarea.comment-box').fill('Thanks, approved.');
+          await settled(page, frame);
+          await frame.locator('.decisions .btn', { hasText: /^Approve$/ }).first().click();
+          const dialog = page.locator('.monaco-dialog-box', { hasText: 'Submit formal GitHub review (approve) to example/project PR #7' }).first();
+          await dialog.waitFor({ state: 'visible', timeout: 30000 });
+          check('the confirmation names the head and shows the whole review', await dialog.innerText(), /head 1234567890abcdef1234567890abcdef12345678[\s\S]*Thanks, approved\./);
+          await dialog.locator('.monaco-button', { hasText: 'Submit formal review' }).click();
+          const posted = frame.locator('.post', { hasText: 'Thanks, approved' }).first();
+          // The review on the page, or the message that says why it was not submitted.
+          let refused = '';
+          const deadline = Date.now() + 30000;
+          while (Date.now() < deadline && !(await posted.isVisible().catch(() => false))) {
+            refused = await page.locator('.notifications-toasts', { hasText: 'was not submitted' }).first().innerText().catch(() => '');
+            if (refused) break;
+            await pause(250);
+          }
+          check('no message says the review was not submitted', refused, '');
+          check('the review is on the page, approved, with the 管理者 badge', await posted.locator('.post-head').innerText(), (text) => /管理者/.test(text) && /review: approved/.test(text));
+          check('the comment box is empty again', await frame.locator('textarea.comment-box').inputValue(), '');
+          check('the review summary follows', await frame.locator('.pr-box').innerText(), /Review: approved/);
+          await posted.scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'close-issue',
+        does: 'Go to the "Issue #12" tab, click "Close as completed" under "Decide", read the window and click "Close Issue".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Issue #12' }).first().click();
+          const frame = await pageFrame(page, 'Show Issues and pull requests like GitHub');
+          await settled(page, frame);
+          check('an Issue offers the two ways to close it', (await textsOf(frame.locator('.decisions .decision .btn'), 'the decision buttons')).join(' | '), 'Close as completed | Close as not planned');
+          await frame.locator('.decisions .btn', { hasText: 'Close as completed' }).first().click();
+          const dialog = page.locator('.monaco-dialog-box', { hasText: 'Close example/project Issue #12 as completed?' }).first();
+          await dialog.waitFor({ state: 'visible', timeout: 30000 });
+          check('the confirmation says what closing does', await dialog.innerText(), /visible to everyone and does not remove the Issue/);
+          await dialog.locator('.monaco-button', { hasText: 'Close Issue' }).click();
+          const state = frame.locator('.meta .state');
+          const deadline = Date.now() + 30000;
+          let refused = '';
+          while (Date.now() < deadline && !/closed/.test(await state.innerText().catch(() => ''))) {
+            refused = await page.locator('.notifications-toasts', { hasText: 'was not closed' }).first().innerText().catch(() => '');
+            if (refused) break;
+            await pause(250);
+          }
+          check('no message says the Issue was not closed', refused, '');
+          check('the page shows the Issue closed as completed', await state.innerText(), 'closed (completed)');
+          check('and both close buttons are off, saying why', await textOf(frame.locator('.decisions'), 'the Decide section'), (text) => (text.match(/The Issue is already closed\./g) ?? []).length === 2);
+          await frame.locator('.top').scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      }
+    ]
+  },
+  {
     id: '10',
     title: 'Skills and shared memory that save tokens',
     issue: '#359',

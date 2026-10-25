@@ -4,9 +4,9 @@ import { WorktreeService } from '../projects/worktrees';
 import { githubReaderFor } from '../github/githubCommands';
 import { rateLimitMessage } from '../github/controller';
 import { privateStorage } from '../storage/storageCommands';
-import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode, useE2eGitHubForPublishing } from './publicFeedback';
+import { closeIssueReport, deleteMergedBranchReport, configureMergeAuthority, configurePublicFeedback, mergePullRequestReport, pageWriteFacts, PageWriteFacts, PublicTarget, readMergeAuthority, reviewPullRequestReport, sendPublicFeedback, setPublicFeedbackTestMode, useE2eGitHubForPublishing } from './publicFeedback';
 import { requireInteractive } from '../shared/testMode';
-import { openGitHubPage, PageSource } from './githubPage';
+import { openGitHubPage, PageAction, PageSource, PageWrites, readOpenPagesAgain, setPageWrites } from './githubPage';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
 const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Map<number, string>; reviews: Map<number, string> } | { ok: false; reason: string } } };
@@ -465,17 +465,23 @@ async function reportResult(kind: Kind, number: number): Promise<ReportResult> {
  * The Issue or pull request page (#353): the page model, and the same evidence a text report records, kept under the report's own
  * address so a file of the page opens its diff exactly as a file of the text report does.
  */
-export async function pageResult(kind: Kind, number: number): Promise<{ ok: true; model: any; repository: string } | { ok: false; text: string }> {
+export async function pageResult(kind: Kind, number: number): Promise<{ ok: true; model: any; repository: string; version: string | null; facts: PageWriteFacts | null } | { ok: false; text: string }> {
   const got = await readItem(kind, number);
   if (!got.ok) return got;
   const read = got.read;
   if (read.kind === 'issue') {
-    return { ok: true, repository: read.repository, model: buildPageModel({ repository: read.repository, kind, item: read.issue, comments: read.comments, ownerPosts: read.ownerPosts }) };
+    const model = buildPageModel({ repository: read.repository, kind, item: read.issue, comments: read.comments, ownerPosts: read.ownerPosts });
+    // The version the page's decisions are bound to: the same digest the text report uses (#383).
+    const version = createHash('sha256').update(`${read.issue.title}\0${read.issue.body ?? ''}`).digest('hex');
+    return { ok: true, repository: read.repository, model, version, facts: await pageWriteFacts({ repository: read.repository, kind, number, state: model.state }) };
   }
   const { built, evidence } = pullRequestReportOf(read, number);
   reportContent?.remember(reportUri(kind, number), evidence);
   const summary = summarizePullRequest({ repository: read.repository, pullRequest: read.pullRequest, snapshot: read.snapshot, comments: read.comments });
-  return { ok: true, repository: read.repository, model: buildPageModel({ repository: read.repository, kind, item: read.pullRequest, comments: read.comments, reviews: read.reviews, reviewComments: read.reviewComments, files: read.files, shownFiles: built.files ?? [], summary, ownerPosts: read.ownerPosts }) };
+  const model = buildPageModel({ repository: read.repository, kind, item: read.pullRequest, comments: read.comments, reviews: read.reviews, reviewComments: read.reviewComments, files: read.files, shownFiles: built.files ?? [], summary, ownerPosts: read.ownerPosts });
+  // A pull request's decisions are bound to the head this page shows, which is the head of the snapshot they were judged from (#383).
+  const version = evidence && typeof read.snapshot?.headSha === 'string' && read.snapshot.headSha.toLowerCase() === evidence.version ? evidence.version : null;
+  return { ok: true, repository: read.repository, model, version, facts: await pageWriteFacts({ repository: read.repository, kind, number, state: model.state, snapshot: read.snapshot }) };
 }
 
 /** Failures are written into the report, not thrown. */
@@ -571,6 +577,57 @@ class ReportFileLinks implements vscode.DocumentLinkProvider {
 }
 
 let reportContent: ReportContent | undefined;
+// The lists and open text reports read again (set when the reports are registered).
+let refreshReports = (): void => {};
+
+// What the person is told after a review, merge, branch deletion or close, from the text report or from the page (#383): the same words.
+type WriteResult = { ok: boolean; code?: string; ownerRecorded?: boolean };
+function tellReview(result: WriteResult): void {
+  if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : `Formal pull request review submitted and verified for this head.${result.ownerRecorded === false ? OWNER_NOT_RECORDED : ''}`);
+  else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
+}
+function tellMerge(result: WriteResult): void {
+  if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
+  else if (result.code === 'human-merge-required') {
+    void vscode.window.showErrorMessage('Pull request merge was refused: human-merge-required (default merge authority is Human only).', 'Configure Merge Authority').then((picked) => {
+      if (picked === 'Configure Merge Authority') void vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority);
+    });
+  } else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Pull request was not merged: ${result.code ?? 'unknown'}.`);
+}
+function tellDelete(result: WriteResult): void {
+  if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-deleted' ? 'This branch was already deleted.' : 'Branch deleted.');
+  else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Branch was not deleted: ${result.code ?? 'unknown'}.`);
+}
+function tellClose(result: WriteResult): void {
+  if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-closed' ? 'This Issue was already closed with that reason.' : 'Issue closed and verified.');
+  else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Issue was not closed: ${result.code ?? 'unknown'}.`);
+}
+
+/**
+ * The decisions of the Issue and pull request page (#383): each calls the function the text report's command calls, bound to the
+ * version the page showed, with the person's own confirmation (and every check) inside it. Only the button and the typed review come
+ * from the page.
+ */
+const pageWrites: PageWrites = {
+  async run(target: PublicTarget, action: PageAction, typed: string) {
+    let result: WriteResult;
+    if (action === 'approve' || action === 'requestChanges') {
+      result = await reviewPullRequestReport(target, { chosen: { decision: action === 'approve' ? 'approve' : 'request_changes', typed } });
+      tellReview(result);
+    } else if (action === 'merge') {
+      result = await mergePullRequestReport(target, {});
+      tellMerge(result);
+    } else if (action === 'deleteBranch') {
+      result = await deleteMergedBranchReport(target, {});
+      tellDelete(result);
+    } else {
+      result = await closeIssueReport(target, { chosen: action === 'closeCompleted' ? 'completed' : 'not_planned' });
+      tellClose(result);
+    }
+    if (result.ok) refreshReports();
+    return { ok: result.ok, ...(result.code !== undefined ? { code: result.code } : {}) };
+  }
+};
 
 // Where the Issue and pull request page (#353) reads from and what it opens: the same reads, diffs and text report as the report lists.
 const pageSource: PageSource = {
@@ -752,7 +809,10 @@ export function registerReports(context: vscode.ExtensionContext): void {
     for (const document of vscode.workspace.textDocuments) {
       if (document.uri.scheme === REPORT_SCHEME) content.changed.fire(document.uri);
     }
+    readOpenPagesAgain();
   };
+  refreshReports = refresh;
+  setPageWrites(pageWrites);
   const issueView = vscode.window.createTreeView(REPORT_VIEWS.issues, { treeDataProvider: trees.issue });
   const pullRequestView = vscode.window.createTreeView(REPORT_VIEWS.pullRequests, { treeDataProvider: trees.pullRequest });
   trees.issue.setView(issueView);
@@ -808,7 +868,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(REPORT_COMMANDS.refresh, refresh),
     vscode.commands.registerCommand(REPORT_COMMANDS.configurePublisher, async () => {
       const result = await configurePublicFeedback();
-      if (result.ok) void vscode.window.showInformationMessage('Public feedback publisher configured in private storage.');
+      if (result.ok) { readOpenPagesAgain(); void vscode.window.showInformationMessage('Public feedback publisher configured in private storage.'); }
       else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Could not configure public feedback: ${result.code ?? 'unknown'}.`);
       return result;
     }),
@@ -852,12 +912,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
       const result = await reviewPullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { decision: input.decision, body: input.body, interactive });
-      if (result.ok) {
-        refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : `Formal pull request review submitted and verified for this head.${result.ownerRecorded === false ? OWNER_NOT_RECORDED : ''}`);
-      } else if (interactive && result.code !== 'cancelled') {
-        void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
-      }
+      if (result.ok) refresh();
+      if (interactive) tellReview(result);
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.mergePullRequest, async (value?: unknown) => {
@@ -867,18 +923,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
       const result = await mergePullRequestReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive });
-      if (result.ok) {
-        refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
-      } else if (interactive && result.code !== 'cancelled') {
-        if (result.code === 'human-merge-required') {
-          void vscode.window.showErrorMessage('Pull request merge was refused: human-merge-required (default merge authority is Human only).', 'Configure Merge Authority').then((picked) => {
-            if (picked === 'Configure Merge Authority') void vscode.commands.executeCommand(REPORT_COMMANDS.configureMergeAuthority);
-          });
-        } else {
-          void vscode.window.showErrorMessage(`Pull request was not merged: ${result.code ?? 'unknown'}.`);
-        }
-      }
+      if (result.ok) refresh();
+      if (interactive) tellMerge(result);
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.deleteBranch, async (value?: unknown) => {
@@ -888,12 +934,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'pullRequest') return { ok: false, code: 'no-pr-report-open' };
       const result = await deleteMergedBranchReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { interactive });
-      if (result.ok) {
-        refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-deleted' ? 'This branch was already deleted.' : 'Branch deleted.');
-      } else if (interactive && result.code !== 'cancelled') {
-        void vscode.window.showErrorMessage(`Branch was not deleted: ${result.code ?? 'unknown'}.`);
-      }
+      if (result.ok) refresh();
+      if (interactive) tellDelete(result);
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.closeIssue, async (value?: unknown) => {
@@ -903,12 +945,8 @@ export function registerReports(context: vscode.ExtensionContext): void {
       const target = uri?.scheme === REPORT_SCHEME ? content.evidenceFor(uri) : null;
       if (!target || target.kind !== 'issue') return { ok: false, code: 'no-issue-report-open' };
       const result = await closeIssueReport({ repository: target.repository, kind: target.kind, number: target.number, version: target.version }, { reason: input.reason, interactive });
-      if (result.ok) {
-        refresh();
-        if (interactive) void vscode.window.showInformationMessage(result.code === 'already-closed' ? 'This Issue was already closed with that reason.' : 'Issue closed and verified.');
-      } else if (interactive && result.code !== 'cancelled') {
-        void vscode.window.showErrorMessage(`Issue was not closed: ${result.code ?? 'unknown'}.`);
-      }
+      if (result.ok) refresh();
+      if (interactive) tellClose(result);
       return result;
     }),
     vscode.commands.registerCommand(REPORT_COMMANDS.feedback, async (value?: unknown) => {
