@@ -97,7 +97,7 @@ export interface PreparedInstructions {
   /** The role group's effective level for each tool (a stronger layer's ban applied), or null without a role group: what the launch turns into the CLI's own permission settings (issue #310). */
   toolPermissions: Record<string, string> | null;
   /** How many rules, shared notes and skills were put into the prepared instructions (prepared, not proof that the CLI read them). */
-  injectedCounts: { rules: number; memories: number; skills: number };
+  injectedCounts: { rules: number; memories: number; skills: number; leftOutNotes: number };
   /** How much of each part that is (#359): characters, and an estimate of tokens. */
   injectedSizes: InjectedSizes | null;
 }
@@ -413,7 +413,7 @@ export async function prepareInstructionSnapshot(
     injectionStatusLabel,
     renderedContext,
     summaryText,
-    injectedCounts: { rules: effectiveRules ? effectiveRules.instructions.length + effectiveRules.forbids.length + effectiveRules.requires.length : 0, memories: memories.length, skills: skills.length },
+    injectedCounts: { rules: effectiveRules ? effectiveRules.instructions.length + effectiveRules.forbids.length + effectiveRules.requires.length : 0, memories: memories.length, skills: skills.length, leftOutNotes: Array.isArray(memoryOmitted?.items) ? memoryOmitted.items.length : 0 },
     injectedSizes,
     toolPermissions: group && previewResult && previewResult.ok ? Object.fromEntries(previewResult.permissions.map((entry: { tool: string; effective: string }) => [entry.tool, entry.effective])) : null
   };

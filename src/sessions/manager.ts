@@ -69,7 +69,7 @@ export interface SessionInstructionsInput {
   argv?: string[];
   injectionState?: 'prepared' | 'launch-requested' | 'manual' | 'unsupported' | 'none';
   injectionStatusLabel?: string;
-  injectedCounts?: { rules: number; memories: number; skills?: number };
+  injectedCounts?: { rules: number; memories: number; skills?: number; leftOutNotes?: number };
   /** How much of each part of the instructions that is (#359): characters and an estimate of tokens. */
   injectedSizes?: InjectedSizes | null;
 }
@@ -93,7 +93,7 @@ export interface SessionView extends SessionIdentity {
   instructionDigest?: string | null;
   instructionReviewDigest?: string | null;
   /** What was put into the prepared instructions of this session (prepared, not proof that the CLI read it); null when unknown. */
-  injectedCounts?: { rules: number; memories: number; skills?: number } | null;
+  injectedCounts?: { rules: number; memories: number; skills?: number; leftOutNotes?: number } | null;
   injectedSizes?: InjectedSizes | null;
   instructionMethod?: string | null;
   /** Fresh, verified provider evidence only. It is never persisted with the session record. */
@@ -202,7 +202,7 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
   private readonly instructionDigests = new Map<string, string>();
   // The digest of what the person reviewed (#362): the instructions without this session's codename. This window only.
   private readonly reviewDigests = new Map<string, string>();
-  private readonly injectedCounts = new Map<string, { rules: number; memories: number; skills?: number }>();
+  private readonly injectedCounts = new Map<string, { rules: number; memories: number; skills?: number; leftOutNotes?: number }>();
   private readonly injectedSizes = new Map<string, InjectedSizes>();
   private readonly instructionMethods = new Map<string, string>();
   private readonly codenames = new Map<string, string>();

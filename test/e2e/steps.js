@@ -1047,6 +1047,60 @@ const ITEMS = [
           check('and no claim of how much was saved', plain, (value) => /does not say how much was saved/.test(value) && !/savings|saved \d/i.test(value));
           await clearNotifications(page);
         }
+      },
+      {
+        name: 'memory-past-limit',
+        does: 'Let "E2E Developers" use shared notes ("Edit role group…", "Set memory scope", "Role group"), add two long notes with "Multiagent: Add Shared Memory Note" (for "Work A"), start "E2E Agent 8" and open its card\'s Details.',
+        run: async ({ page, check, box }) => {
+          await clickInWorkbench(page, 'Edit role group…', { tab: 'Agents' });
+          const edited = await drive(page, [
+            { when: /^Edit E2E Developers/, pick: 'Set memory scope' },
+            { when: /reviewed project notes/, pick: 'Role group' },
+            { when: /role group/i, pick: ROLE },
+            { dialog: /memory|role group/i, button: 'Save' }
+          ], async (seen) => seen.some((line) => /→ Role group/.test(line)) && !(await page.locator('.quick-input-widget:visible, .monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the role group now uses shared notes', edited.join(' | '), /Set memory scope[\s\S]*Role group/);
+          await clearNotifications(page);
+          // Two reviewed notes of about 1,100 characters each: only one fits the 2,000-character limit of what an agent is given.
+          const notes = [
+            'Release checklist: build the package with the packaging script, run the whole unit suite and the host smoke, then read the report before tagging. ',
+            'Review habits: read the issue first, then the diff file by file, and write the verdict on the first line with the head it applies to. '
+          ].map((first, index) => first + Array.from({ length: 13 }, (_, n) => `Step ${n + 1} of note ${index + 1} keeps the same order every time so nobody skips a check.`).join(' '));
+          for (const text of notes) {
+            await timed('the command "Multiagent: Add Shared Memory Note"', () => runCommand(page, 'Multiagent: Add Shared Memory Note'));
+            const added = await drive(page, [
+              { when: /Which role group should receive this note/, pick: ROLE },
+              { when: /Whose agents may read it/, pick: ACCOUNT },
+              { when: /A short, durable note for agents of this role/, type: text },
+              { dialog: /^Add this shared note/, button: 'Add' }
+            ], async (seen) => seen.some((line) => /→ Add$/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+            check('the note was added after its confirmation', added.join(' | '), /Add this shared note[\s\S]*→ Add/);
+            await clearNotifications(page);
+          }
+          const before = agentStarts(box).length;
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E Agent 8' },
+            { when: /Choose a role group for this agent/, pick: ROLE },
+            { when: /Choose an account for this new session/, pick: ACCOUNT },
+            ...START_ANSWERS
+          ], async () => agentStarts(box).length > before, 90000);
+          const args = agentStarts(box).at(-1).args;
+          const context = require('node:fs').readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8');
+          check('the note that fits is in its instructions whole', context, (text) => text.includes(notes[0].slice(0, 60)) || text.includes(notes[1].slice(0, 60)));
+          check('the other is listed by its title, with the file that holds it', context, /1 more reviewed note was left out to stay within the size limit\. Their full text is in .*_left-out-notes\.md/);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 8' }).first();
+          await card.waitFor({ timeout: 30000 });
+          await card.locator('summary', { hasText: 'Details' }).first().click();
+          check('its card says one note did not fit the size limit', await card.locator('details').first().innerText(), /1 shared note and 1 skill[\s\S]*1 more shared note did not fit the size limit \(listed by title only\)/);
+          for (let tries = 0; tries < 5; tries += 1) {
+            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 8' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await pause(500); }
+          }
+          await clearNotifications(page);
+        }
       }
     ]
   },
