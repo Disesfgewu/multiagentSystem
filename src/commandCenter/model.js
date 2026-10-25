@@ -120,7 +120,9 @@ function describeGiven(counts, sizes) {
   const skills = isCount(counts.skills) ? counts.skills : null;
   const parts = [plural(counts.rules, 'rule'), plural(counts.memories, 'shared note'), ...(skills === null ? [] : [`${plural(skills, 'skill')} (their names, not their text)`])];
   const tokens = describeSizes(sizes) ? ` — about ${sizes.total.tokens.toLocaleString('en-US')} tokens (an estimate)` : '';
-  return `Given at start: ${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}${tokens}. The CLI is told about them; that does not prove it read them.`;
+  // Notes past the size limit (#359): listed by title only, with their full text in a file the agent may read.
+  const left = isCount(counts.leftOutNotes) && counts.leftOutNotes > 0 ? ` ${plural(counts.leftOutNotes, 'more shared note')} did not fit the size limit (listed by title only).` : '';
+  return `Given at start: ${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}${tokens}.${left} The CLI is told about them; that does not prove it read them.`;
 }
 
 /**

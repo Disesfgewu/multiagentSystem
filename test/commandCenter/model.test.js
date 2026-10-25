@@ -463,3 +463,10 @@ test('what an agent was given is one line: what was prepared, about how many tok
   assert.equal(describeGiven({ rules: 1, memories: 0 }), 'Given at start: 1 rule and 0 shared notes. The CLI is told about them; that does not prove it read them.');
   assert.equal(describeGiven({ rules: -1, memories: 0 }), 'Given at start: unknown (it was not started in this window)');
 });
+
+test('the card says how many shared notes did not fit the size limit, and only when some did not (#359)', () => {
+  const { describeGiven } = require('../../src/commandCenter/model');
+  assert.equal(describeGiven({ rules: 7, memories: 1, skills: 1, leftOutNotes: 2 }), 'Given at start: 7 rules, 1 shared note and 1 skill (their names, not their text). 2 more shared notes did not fit the size limit (listed by title only). The CLI is told about them; that does not prove it read them.');
+  assert.match(describeGiven({ rules: 7, memories: 1, leftOutNotes: 1 }), /\. 1 more shared note did not fit the size limit \(listed by title only\)\./);
+  for (const none of [0, -1, undefined, 'x']) assert.equal(/did not fit/.test(describeGiven({ rules: 7, memories: 1, leftOutNotes: none })), false, String(none));
+});

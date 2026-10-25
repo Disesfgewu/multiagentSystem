@@ -1003,7 +1003,7 @@ test('an agent is given the list of its role group\'s skills, with their files i
   for (const absent of ['other-role', 'turned-off', 'suggested', 'STEPS OF RUN-TESTS']) assert.equal(context.includes(absent), false, absent);
   assert.match(fs.readFileSync(path.join(skillsDir, 'run-tests', 'SKILL.md'), 'utf8'), /STEPS OF RUN-TESTS/);
   assert.deepEqual(fs.readdirSync(skillsDir), ['run-tests']);
-  assert.deepEqual(result.injectedCounts, { rules: result.injectedCounts.rules, memories: 0, skills: 1 });
+  assert.deepEqual(result.injectedCounts, { rules: result.injectedCounts.rules, memories: 0, skills: 1, leftOutNotes: 0 });
   assert.ok(result.injectedSizes && result.injectedSizes.skills.chars > 0 && result.injectedSizes.total.tokens > 0);
   assert.deepEqual(result.snapshot.skillBindings, [{ name: 'run-tests', revision: 1 }]);
 
@@ -1069,6 +1069,7 @@ test('notes past the size limit are listed by title and written whole into the f
   const notesFile = path.join(folder, '_left-out-notes.md');
   const context = fs.readFileSync(result.argv[1], 'utf8');
   assert.equal(result.injectedCounts.memories, 1, 'one note fits in 2,000 characters');
+  assert.equal(result.injectedCounts.leftOutNotes, 2, 'and the card can say how many did not fit');
   assert.ok(context.includes(`Their full text is in ${notesFile};`), context);
   assert.ok(context.includes('  - Second note does not fit. Details') && context.includes('  - Third note does not fit either. Details'));
   assert.ok(context.split('\n').filter((line) => line.startsWith('  - ')).every((line) => Array.from(line.slice(4)).length <= 80), 'each title is 80 characters at most');

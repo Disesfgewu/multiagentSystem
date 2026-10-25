@@ -37,6 +37,17 @@ const MODEL = /^[a-z][a-z0-9._:/-]{0,127}$/i;
 const SOURCE = /^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*$/;
 
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const GIVEN_KEYS = Object.freeze(['tokens', 'rules', 'notes', 'skills']);
+/**
+ * What the session was given at its start (#359), as the extension measured it: an estimate of tokens, and how many rules, notes and
+ * skills. Only counts, never their text. Null when it is not known (a session not started in this window, or an older entry).
+ */
+function givenFrom(sizes, counts) {
+  if (!isPlain(sizes) || !isPlain(sizes.total) || !Number.isSafeInteger(sizes.total.tokens) || sizes.total.tokens < 0) return null;
+  const n = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+  return { tokens: sizes.total.tokens, rules: n(isPlain(counts) ? counts.rules : null), notes: n(isPlain(counts) ? counts.memories : null), skills: n(isPlain(counts) ? counts.skills : null) };
+}
+const validGiven = (value) => value === null || (isPlain(value) && Object.keys(value).every((key) => GIVEN_KEYS.includes(key)) && Number.isSafeInteger(value.tokens) && value.tokens >= 0 && ['rules', 'notes', 'skills'].every((key) => count(value[key] ?? null)));
 const validTime = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const count = (value) => value === null || (Number.isSafeInteger(value) && value >= 0);
 const money = (value) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1e6);
@@ -45,7 +56,7 @@ const money = (value) => value === null || (typeof value === 'number' && Number.
  * One log entry from a session observation snapshot (`SessionObservationRuntime.snapshot`), or null when the snapshot holds no
  * usage figure the provider really reported or a local estimate. Unknown readings are not entries.
  */
-function entryFromSnapshot(snapshot) {
+function entryFromSnapshot(snapshot, given = null) {
   if (!isPlain(snapshot) || !Array.isArray(snapshot.usage)) return null;
   const values = {};
   let at = null;
@@ -66,7 +77,8 @@ function entryFromSnapshot(snapshot) {
   const model = isPlain(snapshot.model) && snapshot.model.confidence === 'actual' && typeof snapshot.model.value === 'string' && MODEL.test(snapshot.model.value) ? snapshot.model.value : null;
   const entry = {
     at, sessionId: snapshot.sessionId, provider: snapshot.provider, accountProfileId: snapshot.accountProfileId, model,
-    ...values, measurement: measures.size === 1 ? [...measures][0] : 'mixed', source: source && SOURCE.test(source) ? source : 'unknown'
+    ...values, measurement: measures.size === 1 ? [...measures][0] : 'mixed', source: source && SOURCE.test(source) ? source : 'unknown',
+    given: validGiven(given) ? given : null
   };
   return validateEntry(entry).ok ? validateEntry(entry).entry : null;
 }
@@ -79,7 +91,10 @@ function validateEntry(raw) {
   if (!TOKEN_KEYS.every((key) => count(raw[key])) || !money(raw.costUsd)) return { ok: false };
   if (!MEASUREMENTS.has(raw.measurement) || typeof raw.source !== 'string' || !(SOURCE.test(raw.source) || raw.source === 'unknown')) return { ok: false };
   if (TOKEN_KEYS.every((key) => raw[key] === null) && raw.costUsd === null) return { ok: false };
-  return { ok: true, entry: Object.freeze({ at: new Date(raw.at).toISOString(), sessionId: raw.sessionId, provider: raw.provider, accountProfileId: raw.accountProfileId, model: raw.model, inputTokens: raw.inputTokens, outputTokens: raw.outputTokens, cacheReadTokens: raw.cacheReadTokens, cacheWriteTokens: raw.cacheWriteTokens, costUsd: raw.costUsd, measurement: raw.measurement, source: raw.source }) };
+  // Older entries have no `given`: it is unknown for them.
+  const given = raw.given === undefined ? null : raw.given;
+  if (!validGiven(given)) return { ok: false };
+  return { ok: true, entry: Object.freeze({ at: new Date(raw.at).toISOString(), sessionId: raw.sessionId, provider: raw.provider, accountProfileId: raw.accountProfileId, model: raw.model, inputTokens: raw.inputTokens, outputTokens: raw.outputTokens, cacheReadTokens: raw.cacheReadTokens, cacheWriteTokens: raw.cacheWriteTokens, costUsd: raw.costUsd, measurement: raw.measurement, source: raw.source, given: given === null ? null : Object.freeze({ tokens: given.tokens, rules: given.rules ?? null, notes: given.notes ?? null, skills: given.skills ?? null }) }) };
 }
 
 const recordId = (accountProfileId) => `u-${crypto.createHash('sha256').update(String(accountProfileId)).digest('hex').slice(0, 40)}`;
@@ -170,9 +185,9 @@ function readRecord(value) {
  * @param {{ snapshot: unknown, openStore: () => Promise<unknown> | unknown, now?: Date }} input `openStore` resolves to a PrivateStore, or to something falsy when storage is unavailable
  * @returns {Promise<{ recorded: boolean, reason: string }>}
  */
-async function recordReading({ snapshot, openStore, now = new Date() }) {
+async function recordReading({ snapshot, openStore, given = null, now = new Date() }) {
   try {
-    const entry = entryFromSnapshot(snapshot);
+    const entry = entryFromSnapshot(snapshot, given);
     if (!entry) return { recorded: false, reason: 'nothing-reported' };
     const store = await openStore();
     if (!store) return { recorded: false, reason: 'storage-unavailable' };
@@ -240,6 +255,64 @@ function sessionsByRecency(entries, limit = 50) {
   return [...latest.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, limit).map(([id]) => id);
 }
 
+/**
+ * Two sessions side by side (#359): what each was given at its start (an estimate of tokens, and how many rules, notes and skills),
+ * and its latest reported usage, with the difference where both are known. Only figures that were reported or measured are shown;
+ * nothing here says how much was saved. Returns plain lines for the read-only document, or null when either session has no entry.
+ */
+function compareSessions(entries, firstId, secondId, { nameOf = (id) => `session ${String(id).slice(0, 8)}` } = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  const of = (id) => {
+    const own = list.filter((entry) => isPlain(entry) && entry.sessionId === id).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    if (own.length === 0) return null;
+    return { latest: own[0], readings: own.length, given: (own.find((entry) => entry.given) ?? {}).given ?? null };
+  };
+  const a = of(firstId);
+  const b = of(secondId);
+  if (!a || !b || firstId === secondId) return null;
+  const cells = (value) => (value === null || value === undefined ? '—' : String(value));
+  const signed = (x, y, show) => (x === null || x === undefined || y === null || y === undefined ? '—' : y === x ? 'same' : `${y > x ? '+' : '−'}${show(Math.abs(y - x))}`);
+  const tokens = (value) => `${value.toLocaleString('en-US')} tokens`;
+  const usd = (value) => `$${value.toFixed(4)}`;
+  const mark = (entry) => (entry.measurement === 'actual' ? 'actual' : entry.measurement === 'estimated' ? 'ESTIMATE' : 'actual + estimate');
+  const parts = (given) => (given ? `${cells(given.rules)} / ${cells(given.notes)} / ${cells(given.skills)}` : '—');
+  const rows = [
+    ['', nameOf(firstId), nameOf(secondId), 'second − first'],
+    ['Given at start (estimate)', a.given ? `about ${tokens(a.given.tokens)}` : 'unknown', b.given ? `about ${tokens(b.given.tokens)}` : 'unknown', signed(a.given?.tokens, b.given?.tokens, tokens)],
+    ['  rules / notes / skills', parts(a.given), parts(b.given), ''],
+    ['Model', cells(a.latest.model), cells(b.latest.model), ''],
+    ['Input tokens', cells(a.latest.inputTokens?.toLocaleString('en-US')), cells(b.latest.inputTokens?.toLocaleString('en-US')), signed(a.latest.inputTokens, b.latest.inputTokens, tokens)],
+    ['Output tokens', cells(a.latest.outputTokens?.toLocaleString('en-US')), cells(b.latest.outputTokens?.toLocaleString('en-US')), signed(a.latest.outputTokens, b.latest.outputTokens, tokens)],
+    ['Cache read tokens', cells(a.latest.cacheReadTokens?.toLocaleString('en-US')), cells(b.latest.cacheReadTokens?.toLocaleString('en-US')), signed(a.latest.cacheReadTokens, b.latest.cacheReadTokens, tokens)],
+    ['Cache write tokens', cells(a.latest.cacheWriteTokens?.toLocaleString('en-US')), cells(b.latest.cacheWriteTokens?.toLocaleString('en-US')), signed(a.latest.cacheWriteTokens, b.latest.cacheWriteTokens, tokens)],
+    ['Cost', a.latest.costUsd === null ? '—' : usd(a.latest.costUsd), b.latest.costUsd === null ? '—' : usd(b.latest.costUsd), signed(a.latest.costUsd, b.latest.costUsd, usd)],
+    ['Measured as', mark(a.latest), mark(b.latest), ''],
+    ['Latest reading', `${a.latest.at.slice(0, 16).replace('T', ' ')} (${a.readings})`, `${b.latest.at.slice(0, 16).replace('T', ' ')} (${b.readings})`, '']
+  ];
+  const widths = [0, 1, 2].map((column) => Math.max(...rows.map((row) => Array.from(row[column]).length)));
+  const pad = (text, width) => text + ' '.repeat(Math.max(0, width - Array.from(text).length));
+  return [
+    'PRIVATE — two sessions\' token usage side by side. Do not publish this document.',
+    '',
+    'Each session\'s latest reported reading, and what it was given at its start.',
+    '"ESTIMATE" is a local estimate (for Claude Code, its list-price cost); a dash means it was not reported.',
+    'These are the numbers only: it does not say how much was saved. That needs two sessions of the same task',
+    'on a real CLI (#135). "Latest reading" is its time (UTC), with how many readings of it are in the log.',
+    '',
+    ...rows.map((row) => `${pad(row[0], widths[0])}   ${pad(row[1], widths[1])}   ${pad(row[2], widths[2])}   ${row[3]}`.trimEnd())
+  ];
+}
+
+/** A comparison document's address: the account (or `*`), then the two sessions, each after a `~`. */
+const comparisonAddress = (account, first, second) => `${account}~${first}~${second}`;
+function parseComparison(query) {
+  if (typeof query !== 'string') return undefined;
+  const [account, first, second, ...extra] = query.split('~');
+  if (extra.length > 0 || !(account === ALL_ACCOUNTS || ACCOUNT_ID.test(account))) return undefined;
+  if (typeof first !== 'string' || typeof second !== 'string' || !SESSION_ID.test(first) || !SESSION_ID.test(second) || first === second) return undefined;
+  return { account, first, second };
+}
+
 const ALL_ACCOUNTS = '*';
 /** A log document's address: the account (or `*` for all), and optionally one session after a `~` (neither can contain one). */
 const addressOf = (account, session) => (session ? `${account}~${session}` : account);
@@ -251,4 +324,4 @@ function parseAddress(query) {
   return { account, ...(session !== undefined ? { session } : {}) };
 }
 
-module.exports = { sessionsByRecency, addressOf, parseAddress, recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };
+module.exports = { givenFrom, compareSessions, comparisonAddress, parseComparison, sessionsByRecency, addressOf, parseAddress, recordReading, entryFromSnapshot, validateEntry, UsageLog, rotate, describeLog, exportRows, toCsv, toJson, COLLECTION, MAX_ENTRIES_PER_ACCOUNT, MAX_AGE_MS, CSV_COLUMNS };

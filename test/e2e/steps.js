@@ -932,8 +932,8 @@ const ITEMS = [
     id: '10',
     title: 'Skills and shared memory that save tokens',
     issue: '#359',
-    acceptance: 'not-done',
-    pending: 'Proven here: the library, and an agent given only the list of its role group\'s skills (their files in its own session folder, readable through --add-dir) with how much it was given shown on its card. Not proven: that a real CLI reads a skill when it needs one, and how many tokens that saves in practice (#135: two sessions of the same task compared in the usage log).',
+    acceptance: 'accepted',
+    // Accepted by the PM (2026-10-26). What a real CLI does with a skill, and the tokens saved on one task, are #135's real-machine items.
     steps: [
       {
         name: 'add-starter-skills',
@@ -1012,6 +1012,92 @@ const ITEMS = [
           check('the card says what it was given, and how much as an estimate', details, /Given at start: \d+ rules?, \d+ shared notes? and 1 skill \(their names, not their text\) — about [\d,]+ tokens \(an estimate\)/);
           for (let tries = 0; tries < 5; tries += 1) {
             try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 7' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
+          }
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'compare-sessions',
+        does: 'Run "Multiagent: Compare Two Sessions\' Token Usage": All accounts, then "E2E Agent 7" (given a skill) and "E2E Agent 1" (started before there were skills).',
+        run: async ({ page, check }) => {
+          // Its first reading (the status line's session cost) reaches the log when the extension reads it: wait for the card to show it.
+          const frame = await workbenchFrame(page);
+          const seen = Date.now() + 30000;
+          while (Date.now() < seen && !/Session cost: \$/.test(await frame.locator('section[data-id]', { hasText: 'E2E Agent 7' }).first().innerText().catch(() => ''))) await pause(500);
+          await pause(5000);
+          await timed('the command "Multiagent: Compare Two Sessions\' Token Usage"', () => runCommand(page, 'Multiagent: Compare Two Sessions\' Token Usage'));
+          await drive(page, [{ when: /Whose token usage\?/, pick: 'All accounts' }], async (seen) => seen.length > 0, 30000);
+          // The sessions offered are the ones with readings in the log, each with what it was given at its start.
+          await page.locator('.quick-input-widget .monaco-list-row').first().waitFor({ timeout: 20000 }).catch(() => {});
+          const offered = await textsOf(page.locator('.quick-input-widget .monaco-list-row'), 'the sessions offered');
+          check('the sessions with readings are offered, with what each was given', offered.join(' | '), (text) => /E2E Agent 7[^|]*given about [\d,]+ tokens at start, 1 skill/.test(text) && /E2E Agent 1[^|]*given about/.test(text));
+          const answered = await drive(page, [
+            { when: /First session to compare/, pick: 'E2E Agent 7' },
+            { when: /with which session\?/, pick: 'E2E Agent 1' }
+          ], async () => /token-usage-compare/.test(await page.locator('.tabs-container .tab.active').innerText().catch(() => '')), 60000);
+          check('it asked which two sessions', answered.join(' | '), /E2E Agent 7[\s\S]*E2E Agent 1/);
+          const deadline = Date.now() + 20000;
+          let text = '';
+          while (Date.now() < deadline && !/Latest reading/.test(text)) { text = await page.locator('.editor-instance .view-lines').first().innerText().catch(() => ''); await pause(300); }
+          const plain = text.replace(/\u00a0/g, ' ');
+          check('the two sessions are side by side', plain, /E2E Agent 7[\s\S]*E2E Agent 1/);
+          check('with what each was given at its start, and the difference', plain, /Given at start \(estimate\)\s+about [\d,]+ tokens\s+about [\d,]+ tokens\s+[+−][\d,]+ tokens/);
+          check('the skill counts differ', plain, /rules \/ notes \/ skills\s+\d+ \/ \d+ \/ 1\s+\d+ \/ \d+ \/ 0/);
+          check('each with its latest reported cost, marked as an estimate', plain, /Cost\s+\$\d\.\d{4}\s+\$\d\.\d{4}/);
+          check('and no claim of how much was saved', plain, (value) => /does not say how much was saved/.test(value) && !/savings|saved \d/i.test(value));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'memory-past-limit',
+        does: 'Let "E2E Developers" use shared notes ("Edit role group…", "Set memory scope", "Role group"), add two long notes with "Multiagent: Add Shared Memory Note" (for "Work A"), start "E2E Agent 8" and open its card\'s Details.',
+        run: async ({ page, check, box }) => {
+          await clickInWorkbench(page, 'Edit role group…', { tab: 'Agents' });
+          const edited = await drive(page, [
+            { when: /^Edit E2E Developers/, pick: 'Set memory scope' },
+            { when: /reviewed project notes/, pick: 'Role group' },
+            { when: /role group/i, pick: ROLE },
+            { dialog: /memory|role group/i, button: 'Save' }
+          ], async (seen) => seen.some((line) => /→ Role group/.test(line)) && !(await page.locator('.quick-input-widget:visible, .monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the role group now uses shared notes', edited.join(' | '), /Set memory scope[\s\S]*Role group/);
+          await clearNotifications(page);
+          // Two reviewed notes of about 1,100 characters each: only one fits the 2,000-character limit of what an agent is given.
+          const notes = [
+            'Release checklist: build the package with the packaging script, run the whole unit suite and the host smoke, then read the report before tagging. ',
+            'Review habits: read the issue first, then the diff file by file, and write the verdict on the first line with the head it applies to. '
+          ].map((first, index) => first + Array.from({ length: 13 }, (_, n) => `Step ${n + 1} of note ${index + 1} keeps the same order every time so nobody skips a check.`).join(' '));
+          for (const text of notes) {
+            await timed('the command "Multiagent: Add Shared Memory Note"', () => runCommand(page, 'Multiagent: Add Shared Memory Note'));
+            const added = await drive(page, [
+              { when: /Which role group should receive this note/, pick: ROLE },
+              { when: /Whose agents may read it/, pick: ACCOUNT },
+              { when: /A short, durable note for agents of this role/, type: text },
+              { dialog: /^Add this shared note/, button: 'Add' }
+            ], async (seen) => seen.some((line) => /→ Add$/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+            check('the note was added after its confirmation', added.join(' | '), /Add this shared note[\s\S]*→ Add/);
+            await clearNotifications(page);
+          }
+          const before = agentStarts(box).length;
+          await clickInWorkbench(page, 'Start agent…', { tab: 'Agents' });
+          await drive(page, [
+            { when: /Choose the CLI to run in a native terminal/, pick: 'Claude Code' },
+            { when: /Terminal name/, type: 'E2E Agent 8' },
+            { when: /Choose a role group for this agent/, pick: ROLE },
+            { when: /Choose an account for this new session/, pick: ACCOUNT },
+            ...START_ANSWERS
+          ], async () => agentStarts(box).length > before, 90000);
+          const args = agentStarts(box).at(-1).args;
+          const context = require('node:fs').readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8');
+          check('the note that fits is in its instructions whole', context, (text) => text.includes(notes[0].slice(0, 60)) || text.includes(notes[1].slice(0, 60)));
+          check('the other is listed by its title, with the file that holds it', context, /1 more reviewed note was left out to stay within the size limit\. Their full text is in .*_left-out-notes\.md/);
+          await clickInWorkbench(page, 'Refresh', { tab: 'Agents' });
+          const frame = await workbenchFrame(page);
+          const card = frame.locator('section[data-id]', { hasText: 'E2E Agent 8' }).first();
+          await card.waitFor({ timeout: 30000 });
+          await card.locator('summary', { hasText: 'Details' }).first().click();
+          check('its card says one note did not fit the size limit', await card.locator('details').first().innerText(), /1 shared note and 1 skill[\s\S]*1 more shared note did not fit the size limit \(listed by title only\)/);
+          for (let tries = 0; tries < 5; tries += 1) {
+            try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 8' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await pause(500); }
           }
           await clearNotifications(page);
         }

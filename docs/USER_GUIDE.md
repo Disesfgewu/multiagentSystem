@@ -277,7 +277,24 @@ token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1）�
 
 ![agent 拿到 skill 清單](user-guide/images/10-start-agent-with-skills.png)
 
+**比較兩次 session**：
+1. 用 Command Palette 執行 `Multiagent: Compare Two Sessions' Token Usage`。
+2. 選帳號，或 **All accounts**。
+3. 依序選兩個 session。清單只列出用量紀錄裡有讀數的 session，每一個都寫著啟動時給了多少，例如 `given about 334 tokens at start, 1 skill`。
+4. 編輯區會開一份唯讀文件，左右並排兩個 session：
+   - 啟動時給了多少（估算的 tokens，以及 rules／notes／skills 各幾個）；
+   - 最近一次回報的用量：input／output／cache tokens、費用；
+   - 兩者都有數字時寫出差多少，一樣時寫 `same`，任一邊沒有回報就寫 `—`。
+
+這份文件只列實際的數字，不推算「省了多少」。要知道省了多少，需要在實機上用同一個任務跑兩次 session 來比較（#135）。Claude Code 只回報費用（list price 的估算，標成 ESTIMATE），不回報累計的 token 數，所以 token 那幾行是 `—`。
+
+![比較兩次 session](user-guide/images/10-compare-sessions.png)
+
 **共享記憶的上限**：每個 agent 啟動時，只拿到自己身份組、自己隱私範圍內、已採納的共享記憶，依相關度排序，最多 2,000 字。超出的記憶不會丟掉：指示裡只列出每則的標題（第一句，最多 80 字），全文寫在 skills 同一個資料夾的 `_left-out-notes.md`，agent 需要時自己去讀。這些記憶也算在你要確認的內容裡，改了任何一則都要重新確認。
+
+卡片的 **Details** 會寫出有幾則沒放進去，例如 `Given at start: 7 rules, 1 shared note and 1 skill … 1 more shared note did not fit the size limit (listed by title only).`。要讓身份組使用共享記憶：**Edit role group…** → **Set memory scope** → **Role group**。新增記憶：Command Palette 執行 `Multiagent: Add Shared Memory Note`。
+
+![超過上限的記憶](user-guide/images/10-memory-past-limit.png)
 
 **還沒驗證的部分**：真實的 CLI 是否真的會在需要時讀 skill，以及實際省了多少 tokens（比較兩個做相同工作的 session 的用量紀錄），列在 #135 的實機項目。
 
