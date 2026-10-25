@@ -955,7 +955,7 @@ const ITEMS = [
           const forged = lane('review').locator('.work-card', { hasText: '#30 ' }).first();
           check('a verdict typed by another account moves nothing', await textOf(forged, 'the card of #30'), /PM: none yet/);
           const changed = lane('changes').locator('.work-card').first();
-          check('the card says the PR, head, checks, the verdict and since when', await textOf(changed, 'the card of #26'), (text) => /PR #27 · head abcdefa · checks failed/.test(text) && /PM: Needs changes by PM-01 for head abcdefa · this head/.test(text) && /In this column: verdict \d+[mhd] ago/.test(text) && /Agent: no agent/.test(text));
+          check('the card says the PR, head, checks, the verdict and since when', await textOf(changed, 'the card of #26'), (text) => /PR #27 · head abcdefa · checks failed/.test(text) && /PM: Needs changes by PM-01（自稱） for head abcdefa · this head/.test(text) && /In this column: verdict \d+[mhd] ago/.test(text) && /Agent: no agent/.test(text));
           await frame.locator('.board').first().scrollIntoViewIfNeeded();
           await clearNotifications(page);
         }

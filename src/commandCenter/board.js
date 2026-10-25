@@ -55,14 +55,15 @@ function trustedVerdict(posts, { owner, ownerPosts, head }) {
     if (!isPlain(post) || typeof post.body !== 'string') continue;
     // The repository owner's account (#241): everyone else's words are comments, not results.
     if (typeof post.author !== 'string' || typeof owner !== 'string' || owner === '' || post.author.toLowerCase() !== owner.toLowerCase()) continue;
-    // That account is shared with the agents (#342): only the owner's own recorded post, or one signed by a PM, is a verdict.
+    // That account is shared with the agents (#342): only the owner's own recorded post, or one signed by a PM, is a verdict. Who wrote
+    // it is said as the page's badges say it: 管理者, or the signature with （自稱）, since a signature is only a claim.
     const author = authorOf(post, post.kind === 'review' ? 'review' : 'comment', ownerPosts ?? null);
     const trusted = author.who === 'owner' || (author.who === 'agent' && PM_CODENAME.test(author.codename ?? ''));
     if (!trusted) continue;
     const conclusion = parseConclusion(post.body, head);
     if (!conclusion) continue;
     const at = timeOf(post.createdAt ?? post.submittedAt);
-    if (newest === null || (at ?? -1) > (newest.at ?? -1)) newest = { ...conclusion, at, by: author.who === 'owner' ? '管理者' : author.codename };
+    if (newest === null || (at ?? -1) > (newest.at ?? -1)) newest = { ...conclusion, at, by: author.who === 'owner' ? '管理者' : `${author.codename}（自稱）` };
   }
   return newest;
 }
