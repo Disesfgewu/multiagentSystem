@@ -124,6 +124,16 @@
 
 ![Decide：哪些能按、哪些不能、為什麼](user-guide/images/04-see-decisions.png)
 
+**和 PM agent 一起看**：
+- 前提：要有一個 PM 角色的 agent 在執行。用 Command Palette 執行 `Multiagent: Create Role Group`（還沒有任何身份組時，工作台 **Agents** 分頁也有 **Create role group…**），選 **PM** 範本建立身份組，再用 **Start agent…** 以這個身份組啟動一個 agent，它的代號會是 `PM-01` 這類名稱。
+- 在任一則留言或 review 下按 **Discuss with PM**，確認視窗會問 `Ask the PM agent to read this post on PR #7 and reply there?`，按 **Send Now**。
+- PM 的終端機只會收到一行編號，例如 `管理者請你閱讀 PR #7 的 review（ID 7101），並在 PR #7 回覆你的看法。`，不會收到 review 的內容。PM 讀完後會在 GitHub 回覆，回覆會出現在這個頁面上，標著 **New**。
+- 你也可以在留言框寫好留言，按 **Comment and tell PM**（見第 8 章）。
+
+![啟動 PM agent](user-guide/images/04-start-pm-agent.png)
+
+![請 PM 看這則 review](user-guide/images/04-discuss-with-pm.png)
+
 **Approve／Request changes**：
 1. 在頁面最下方的留言框寫好 review 內容（留言框是空的話，會跳出輸入框問你）。
 2. 按 **Approve** 或 **Request changes**。
