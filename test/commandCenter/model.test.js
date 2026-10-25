@@ -412,3 +412,54 @@ test('the card\'s Details carry what the agent was given, from its session (#359
   assert.match(card.injected, /and 1 skill \(listed, not their text\)/);
   assert.equal(build([session()]).agents[0].given, null, 'nothing is said when it is not known');
 });
+
+test('a card\'s Details say each thing once, in plain words, and only what the card does not show already (#357)', () => {
+  const { describeGiven } = require('../../src/commandCenter/model');
+  const ide = "VS Code: connected through this window's Claude Code port (40123)";
+  // The overview's tooltip as the #384 screenshot showed it: most of it repeats the card.
+  const tooltip = ['Role: E2E Developers', 'Provider: Claude Code', 'Requested model: CLI default (not confirmed)', 'Actual model: claude-sonnet-4-5',
+    'Auto mode: on (won\'t ask for each approval) — passed: --permission-mode auto', 'Permission mode: auto (a classifier approves actions instead of you), reported by Claude Code', ide,
+    'Git (local, read just now): 0 changed, 2 untracked; at 5bc9841556ad', "Provider session: the observation file's id is consistent; terminal routing is not verified", 'Session cost: unknown',
+    'Account: Work A (identity verified by the CLI)', 'Provider state: waiting (from the CLI\'s own hooks)', 'Terminal lifecycle: CLI launch requested, not confirmed', 'Branch: main', 'Issue: unknown',
+    'Pull request: no open pull request', 'CI: unknown', 'The role group is read from its current definition. Its rules are not sent to the CLI yet, so editing it does not change what an agent that is already started was told.', 'Fields marked unknown have no verified source yet.'];
+  const [card] = buildCards({
+    sessions: [session({ requestedModel: null, ideLabel: ide, autoModeLabel: 'Auto mode: on (won\'t ask for each approval) — passed: --permission-mode auto', requestedAutoMode: 'on', reportedPermissionMode: { mode: 'auto' }, injectedCounts: { rules: 7, memories: 0, skills: 1 }, injectedSizes: { rules: { chars: 433, tokens: 100 }, memories: { chars: 0, tokens: 0 }, skills: { chars: 575, tokens: 150 }, total: { chars: 1008, tokens: 334 } } })],
+    agents: [agent({ tooltip })], accounts: [account()], roles
+  }).agents;
+  const texts = card.facts.map((fact) => fact.text);
+  assert.equal(texts[0], 'Model: asked for CLI default; the CLI reports claude-sonnet-4-5');
+  for (const [word, times] of [[/auto mode|permission mode/i, 1], [/^VS Code/, 1], [/Given at start/, 1], [/^Folder \(Git\)/, 1], [/^State: /, 1]]) {
+    assert.equal(texts.filter((text) => word.test(text)).length, times, `${word} once: ${texts.join(' | ')}`);
+  }
+  for (const repeated of [/^Role:/, /^Provider:/, /^Requested model:/, /^Actual model:/, /^Account:/, /^Provider state:/, /^Terminal lifecycle:/, /^Issue:/, /^Pull request:/, /^Git/, /unknown$/, /^Provider session:/, /^Fields marked/, /^The role group is read/]) {
+    assert.equal(texts.some((text) => repeated.test(text)), false, `${repeated} is not repeated in Details`);
+  }
+  assert.ok(texts.includes('Branch: main'));
+  assert.equal(texts.some((text) => /session:/i.test(text) && !/^State:/.test(text)), false, 'the normal CLI session says nothing');
+  const [mismatched] = buildCards({ sessions: [session()], agents: [agent({ tooltip: ['Provider session: the CLI session changed, so its evidence is turned off for this session'] })], accounts: [account()], roles }).agents;
+  assert.ok(mismatched.facts.some((fact) => fact.text === 'CLI session: the CLI session changed, so its evidence is turned off for this session'), 'a problem with it is said');
+  assert.ok(texts.includes('Sign-in: the CLI confirmed which account this is'));
+  assert.ok(texts.includes(describeGiven({ rules: 7, memories: 0, skills: 1 }, { rules: { chars: 433, tokens: 100 }, memories: { chars: 0, tokens: 0 }, skills: { chars: 575, tokens: 150 }, total: { chars: 1008, tokens: 334 } })));
+  assert.ok(texts.length <= 10, `${texts.length} lines: ${texts.join(' | ')}`);
+});
+
+test('the Details say the mode that was asked for only when the CLI has not reported one, and mark what needs a look (#357)', () => {
+  const [asked] = build([session({ autoModeLabel: 'Auto mode: on (synthetic)' })]).agents;
+  assert.ok(asked.facts.some((fact) => fact.text === 'Auto mode: on (synthetic)'));
+  const [fell] = build([session({ requestedAutoMode: 'on', reportedPermissionMode: { mode: 'default' }, ideLabel: 'VS Code: not connected (no lock file)', trustLabel: 'Folder trust: not pre-written, so Codex asks once (x)' })]).agents;
+  const alerts = fell.facts.filter((fact) => fact.alert).map((fact) => fact.text);
+  assert.equal(fell.facts.some((fact) => fact.text === 'Auto mode: on (synthetic)'), false, 'the reported mode takes its place');
+  assert.equal(alerts.length, 3, alerts.join(' | '));
+  assert.ok(alerts.some((text) => /not connected/.test(text)) && alerts.some((text) => /asks once/.test(text)));
+  assert.equal(fell.facts.find((fact) => fact.text === 'Branch: feat/x').alert, false);
+  assert.ok(fell.facts.some((fact) => fact.text === 'CI: passing'), 'a known CI result is kept');
+  assert.ok(build([session()]).agents[0].facts.some((fact) => fact.text === 'Model: asked for sonnet; the CLI has not said which one it uses yet'));
+});
+
+test('what an agent was given is one line: what was prepared, about how many tokens, and what that does not prove (#357, #359)', () => {
+  const { describeGiven } = require('../../src/commandCenter/model');
+  const size = (chars, tokens) => ({ chars, tokens });
+  assert.equal(describeGiven({ rules: 7, memories: 1, skills: 2 }, { rules: size(1234, 300), memories: size(10, 3), skills: size(456, 114), total: size(1700, 1450) }), 'Given at start: 7 rules, 1 shared note and 2 skills (their names, not their text) — about 1,450 tokens (an estimate). The CLI is told about them; that does not prove it read them.');
+  assert.equal(describeGiven({ rules: 1, memories: 0 }), 'Given at start: 1 rule and 0 shared notes. The CLI is told about them; that does not prove it read them.');
+  assert.equal(describeGiven({ rules: -1, memories: 0 }), 'Given at start: unknown (it was not started in this window)');
+});

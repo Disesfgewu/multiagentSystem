@@ -8,6 +8,10 @@ const { renderPage, SCRIPT } = require('../../src/commandCenter/page');
 const NONCE = 'AbCdEfGhIjKlMnOp-_12';
 const html = () => renderPage({ nonce: NONCE });
 
+// The page draws the Details the model decided (#357): the cards here get them from the model's own function.
+const { detailFacts } = require('../../src/commandCenter/model');
+const withFacts = (card) => ({ ...card, facts: detailFacts(card, card.details ?? []) });
+
 test('the policy allows nothing from outside: no remote source, no frames, no forms, only this page\'s own nonce', () => {
   const page = html();
   const policy = /Content-Security-Policy" content="([^"]+)"/.exec(page)[1];
@@ -79,7 +83,7 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   vm.runInNewContext(SCRIPT, sandbox);
   assert.equal(JSON.stringify(posted), JSON.stringify([{ type: 'ready' }]), 'the page announces itself and nothing else');
   const hostile = '<img src=x onerror=alert(1)>';
-  const card = (id, over = {}) => ({ id, name: hostile, role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested, not confirmed', status: { state: 'working', text: 'working', source: 'from the CLI\'s own hooks' }, terminalOpen: true, task: { issue: 1, pullRequest: 7, text: 'Issue #1 · PR #7' }, worktree: '2 changed, 0 untracked; 1 ahead, 0 behind its upstream', report: { lines: ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing'] }, summary: 's', details: ['Branch: x'], quota: { lines: ['Usage (five_hour): 42% used'], policy: '', gate: 'warn' }, autoMode: 'Auto mode: on', alert: 'quota: near the limit', pinned: false, collapsed: false, ...over });
+  const card = (id, over = {}) => withFacts({ id, name: hostile, role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested, not confirmed', status: { state: 'working', text: 'working', source: 'from the CLI\'s own hooks' }, terminalOpen: true, task: { issue: 1, pullRequest: 7, text: 'Issue #1 · PR #7' }, worktree: '2 changed, 0 untracked; 1 ahead, 0 behind its upstream', report: { lines: ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing'] }, summary: 's', details: ['Branch: x'], quota: { lines: ['Usage (five_hour): 42% used'], policy: '', gate: 'warn' }, autoMode: 'Auto mode: on', alert: 'quota: near the limit', pinned: false, collapsed: false, ...over });
   listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [card('pm-1', { role: 'pm' })], agents: [card('a-1'), card('a-2', { collapsed: true, task: { issue: null, pullRequest: null, text: 'no task is known' } }), card('a-3', { status: { state: 'waiting', text: 'waiting for input', source: 'from the CLI\'s own hooks' }, ide: 'VS Code: not connected (no lock file)' }), card('a-6', { ide: "VS Code: connected through this window's Claude Code port (40002)", trust: 'Folder trust: not pre-written, so Codex asks once (x)' }), card('a-4', { status: { state: 'ended', text: 'ended', source: 'from the CLI\'s own hooks' }, permission: { text: 'Auto mode is not in effect: Claude Code reports default (asks before actions)', attention: true, lines: ['Next: reopen the session'] } }), card('a-5', { status: { state: 'unknown', text: 'state unknown', source: 'no hook evidence' } })], accounts: [
       { id: 'acct', label: 'Main', provider: 'Claude Code', signIn: 'sign-in checked', identity: 'identity verified (abcd1234)', issues: ['Another profile logs in to the same real account.'], plan: null, windows: [{ window: 'five_hour', label: '5-hour', usedPercent: 42, text: '42% used', kind: 'actual', trust: 'verified and current', resets: 'resets in 2h', resetsAt: '2026-10-22T12:00:00.000Z', read: 'read 1m ago', source: 'claude status line rate_limits' }], usageKnown: true, reason: null, policy: 'Limits: warn at 80% used.', gate: 'block', alert: 'new agents on this account are held back', agents: ['Worker One'], agentCount: 3 },
       { id: 'acct-2', label: `Codex <b>${hostile}`, provider: 'Codex CLI', signIn: 'sign-in not checked in this window', identity: 'identity unknown', issues: [], plan: 'plus', windows: [], usageKnown: false, reason: { short: 'no Codex session log yet', detail: 'This account has no session log yet.', hint: 'Run Codex once with this account.', next: { action: 'details', label: 'Open the account details' } }, policy: 'Limits: none set.', gate: null, alert: null, agents: [], agentCount: 0 }
@@ -110,7 +114,7 @@ test('the page really runs: given a state it draws every card, the PM panel and 
   const sourceBox = firstAccount.children.flatMap((child) => child.children).find((child) => child.tag === 'details');
   assert.ok(sourceBox && sourceBox.textContent.includes('from claude status line rate_limits'), 'the source is under Details');
   for (const expected of ['waiting for input', 'ended', 'state unknown', 'working']) assert.ok(text.includes(expected), `the status text "${expected}" is drawn on a card`);
-  assert.ok(text.includes('Worktree: 2 changed, 0 untracked; 1 ahead, 0 behind its upstream'), 'the card itself carries one line about the working folder');
+  assert.ok(text.includes('Folder (Git): 2 changed, 0 untracked; 1 ahead, 0 behind its upstream'), 'the card itself carries one line about the working folder');
   for (const expected of ['Latest report (PR #7): PM report current', 'User can: open the Command Center', 'Review: approval approved · CI passing']) assert.ok(text.includes(expected), `the latest report is drawn: ${expected}`);
   assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'badge badge-waiting' && entry.textContent === 'waiting for input'));
   assert.ok(nodes.some((entry) => entry.tag === 'span' && entry.className === 'badge badge-ended' && entry.textContent === 'ended'));
@@ -218,13 +222,13 @@ test('a card says in four plain lines who it is, which account, which mode and w
   const app = node('div');
   const listeners = {};
   vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage() {} }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
-  const card = { id: 'a-1', codename: 'Worker-01', name: 'Agent One', role: 'worker', roleName: 'Developers', provider: 'Claude Code', account: 'Work A (owner-a@example.test)', model: 'CLI default', modelNote: 'requested, not confirmed', mode: 'Auto', status: { state: 'unknown', text: 'state unknown', source: 'no hook evidence' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task is known' }, worktree: '0 changed; upstream unknown; at e68869580e0a', report: { lines: ['Latest report: none'] }, summary: '', details: ['Branch: x'], quota: { lines: [], policy: '', gate: null }, autoMode: 'Auto mode: on (won\'t ask)', ide: 'VS Code: not connected (no lock file)', injected: 'Prepared for this agent: 7 rules', alert: null, pinned: false, collapsed: false };
+  const card = withFacts({ id: 'a-1', codename: 'Worker-01', name: 'Agent One', role: 'worker', roleName: 'Developers', provider: 'Claude Code', account: 'Work A (owner-a@example.test)', model: 'CLI default', modelNote: 'requested, not confirmed', mode: 'Auto', status: { state: 'unknown', text: 'state unknown', source: 'no hook evidence' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task is known' }, worktree: '0 changed; upstream unknown; at e68869580e0a', report: { lines: ['Latest report: none'] }, summary: '', details: ['Branch: x'], quota: { lines: [], policy: '', gate: null }, autoMode: 'Auto mode: on (won\'t ask)', ide: 'VS Code: not connected (no lock file)', givenLine: 'Given at start: 7 rules and 0 shared notes.', alert: null, pinned: false, collapsed: false });
   listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [card], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
   const body = nodes.filter((entry) => entry.className === 'card-body').at(-1);
   const top = body.children.filter((child) => child.tag === 'div').map((child) => child.textContent);
   assert.deepEqual(top, ['Claude Code · CLI default', 'Account: Work A (owner-a@example.test)', 'Mode: Auto', 'Doing: no task is known']);
   const details = body.children.find((child) => child.tag === 'details');
-  for (const hidden of ['Worktree: 0 changed', 'Prepared for this agent', 'State: no hook evidence', 'VS Code: not connected (no lock file)']) {
+  for (const hidden of ['Folder (Git): 0 changed', 'Given at start: 7 rules', 'State: no hook evidence', 'VS Code: not connected (no lock file)', 'Branch: x']) {
     assert.ok(details.textContent.includes(hidden), `${hidden} is in the details`);
     assert.equal(top.some((line) => line.includes(hidden)), false, `${hidden} is not in the plain lines`);
   }
@@ -247,13 +251,13 @@ test('a card\'s Details that the person opened stay open when the cards are draw
   }
   const app = node('div');
   vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage() {} }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
-  const card = { id: 'a-1', name: 'Agent', role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', status: { state: 'working', text: 'working', source: 'hooks' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false, given: 'Given at start: about 50 tokens (an estimate) — rules 100 characters, shared notes 0, skills list 80' };
+  const card = withFacts({ id: 'a-1', name: 'Agent', role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', status: { state: 'working', text: 'working', source: 'hooks' }, terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false, givenLine: 'Given at start: 2 rules and 0 shared notes — about 50 tokens (an estimate).' });
   const state = { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [card], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] };
   listeners.message({ data: { type: 'state', state } });
   const detailsOf = () => nodes.filter((entry) => entry.tag === 'details').at(-1);
   const first = detailsOf();
   assert.equal(first.open, false);
-  assert.ok(first.textContent.includes('Given at start: about 50 tokens'), 'the size line is in Details');
+  assert.ok(first.textContent.includes('about 50 tokens'), 'the size line is in Details');
   first.open = true;
   first.listeners.toggle();
   listeners.message({ data: { type: 'state', state } });

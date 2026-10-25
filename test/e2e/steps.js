@@ -1009,8 +1009,8 @@ const ITEMS = [
           await card.waitFor({ timeout: 30000 });
           await card.locator('summary', { hasText: 'Details' }).first().click();
           const details = await card.locator('details').first().innerText();
-          check('the card says what it was given', details, /Prepared for this agent: \d+ rules?, \d+ shared notes? and 1 skill \(listed, not their text\)/);
-          check('and how much, as an estimate', details, /Given at start: about [\d,]+ tokens \(an estimate\) — rules [\d,]+ characters, shared notes [\d,]+, skills list [\d,]+/);
+          // One line (#357): what it was given, and about how many tokens.
+          check('the card says what it was given, and how much as an estimate', details, /Given at start: \d+ rules?, \d+ shared notes? and 1 skill \(their names, not their text\) — about [\d,]+ tokens \(an estimate\)/);
           for (let tries = 0; tries < 5; tries += 1) {
             try { await frame.locator('section[data-id]', { hasText: 'E2E Agent 7' }).first().scrollIntoViewIfNeeded({ timeout: 5000 }); break; } catch { await page.waitForTimeout(500); }
           }
@@ -1053,6 +1053,12 @@ const ITEMS = [
           check('and not the warning the other cards have', (await card.locator('.tag').allInnerTexts()).join(' | '), (text) => !/not connected/.test(text));
           await card.locator('summary', { hasText: 'Details' }).first().click();
           check('its details say how', await card.locator('details').first().innerText(), new RegExp(`VS Code: connected through this window's Claude Code port \\(${port}\\)`));
+          // The Details say each thing once, in plain words (#357): one line for the mode, one for VS Code, one for the model.
+          const detailLines = (await card.locator('details .detail').allInnerTexts()).map((text) => text.trim()).filter(Boolean);
+          for (const [what, pattern] of [['the mode', /auto mode|permission mode/i], ['VS Code', /^VS Code/], ['the model', /^Model:/], ['the folder', /^Folder \(Git\)/]]) {
+            check(`${what} is said once in Details`, detailLines.filter((text) => pattern.test(text)).length, 1);
+          }
+          check('nothing on the card is repeated there', detailLines.join(' | '), (text) => !/Role:|Provider:|Requested model:|Provider state:|Terminal lifecycle:|Fields marked unknown/.test(text));
           check('the lock file\'s token is nowhere on the screen', await frame.locator('body').innerText(), (text) => !text.includes('synthetic-token-never-read'));
           // The Workbench draws its cards again when an agent reports: find the card again if it was redrawn under the scroll.
           for (let tries = 0; tries < 5; tries += 1) {

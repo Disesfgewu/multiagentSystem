@@ -271,9 +271,7 @@ agent 提出的 skill 只會成為「suggested by an agent」，你按 **Approve
 - 關掉的 skill、別的身份組的 skill、還沒核准的 agent 建議，都不會出現在清單裡。
 - 確認啟動之後，如果 skill 在 agent 真正啟動前被改過、被加入或被關掉，這次啟動會被判定為過期，請重新確認，避免 agent 拿到你沒看過的清單。
 
-**看得到給了多少**：在 agent 卡片按 **Details** 會看到：
-- `Prepared for this agent: 7 rules, 0 shared notes and 1 skill (listed, not their text)`。
-- `Given at start: about 650 tokens (an estimate) — rules 1,234 characters, shared notes 0, skills list 456`。
+**看得到給了多少**：在 agent 卡片按 **Details**，會看到一行 `Given at start: 7 rules, 0 shared notes and 1 skill (their names, not their text) — about 650 tokens (an estimate). The CLI is told about them; that does not prove it read them.`
 
 token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1），只顯示實際給了多少，不推算「省了多少」。
 
@@ -299,7 +297,16 @@ token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1）�
     - `Account: Work A (owner-a@example.test)`：email 是這個視窗最近一次登入檢查讀到的，只存在記憶體裡。
     - `Mode: Auto`。
     - `Doing: …`：正在處理的 Issue 或 PR。
-  - **Details**：點開才看得到工作資料夾、報告、實際的權限模式、黃色小標的原因、額度與其他證據。
+  - **Details**：點開才看得到。每件事只寫一次、用白話，依序是：
+    - 模型：要求的是哪個、CLI 回報實際用的是哪個；
+    - 權限模式：CLI 回報的模式，還沒回報時寫要求的模式；
+    - VS Code 連線、資料夾信任；
+    - 啟動時給了什麼；
+    - 工作資料夾（Git）、狀態從哪裡來；
+    - 分支、CI、費用等只有這裡才有的資訊；
+    - 報告與額度。
+
+    卡片上已經寫過的帳號、身份組、狀態，不會在這裡重複。需要注意的行會以黃色顯示。
   - 主要按鈕：**Focus terminal**。
 - 左邊是 PM 與待決定的事項。
 - agent 的終端機只會顯示一行「Multiagent: starting Claude Code (Worker-01)」，不會顯示一長串啟動指令。
