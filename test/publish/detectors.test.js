@@ -106,3 +106,32 @@ test('sensitive file names are recognised only for names that usually hold priva
     assert.equal(d.sensitiveFileName(name), false, name);
   }
 });
+
+test('a known value that begins or ends with a letter or digit is found only as a whole word on that side (#389)', () => {
+  const detector = d.knownValues([{ id: 'test', value: 'test' }, { id: 'acct', value: 'Work A' }, { id: 'mail', value: 'me@corp.example' }, { id: 'cjk', value: '私人備註' }, { id: 'dash', value: '-v2-' }]);
+  const ids = (text) => detector.detect(text).map((hit) => hit.id);
+  assert.deepEqual(ids('the latest build'), [], 'a private "test" inside "latest" is not it');
+  assert.deepEqual(ids('tests pass'), [], 'nor inside "tests"');
+  assert.deepEqual(ids('a test.'), ['test']);
+  assert.deepEqual(ids('(Test)'), ['test'], 'punctuation and case do not hide it');
+  assert.deepEqual(ids('test'), ['test'], 'at the very start and end of the text');
+  assert.deepEqual(ids('the Work Area'), []);
+  const room = d.knownValues([{ id: 'room', value: 'Room 42' }]);
+  assert.deepEqual(room.detect('see Room 420').map((hit) => hit.id), [], 'a digit after it makes another number');
+  assert.deepEqual(room.detect('see Room 42.').map((hit) => hit.id), ['room']);
+  assert.deepEqual(ids('signed in as Work A, then'), ['acct']);
+  assert.deepEqual(ids('write to me@corp.example today'), ['mail']);
+  assert.deepEqual(ids('write to me@corp.examples'), [], 'a longer word is another word');
+  assert.deepEqual(ids('這是私人備註的內容'), ['cjk'], 'CJK text still matches anywhere');
+  assert.deepEqual(ids('build-v2-final'), ['dash'], 'a value that starts and ends with punctuation matches anywhere');
+  // The whole text is looked at, not only the first place: a later whole word is still found.
+  assert.deepEqual(ids('latest, then test'), ['test']);
+  assert.equal(detector.detect('latest, then test')[0].index, 13);
+});
+
+test('whole-word matching stays linear when a value is everywhere inside words (#389)', () => {
+  const detector = d.knownValues([{ id: 'test', value: 'test' }]);
+  const started = Date.now();
+  assert.deepEqual(detector.detect('latest'.repeat(60000)), []);
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+});

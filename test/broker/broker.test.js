@@ -457,7 +457,11 @@ test('scan options may only add private reference material; a detectors option c
   const leaked = await loose.request({ operation: 'createIssue', requestId: id(), title: 'ok', body: `leak ${TOKEN}` });
   assert.deepEqual([leaked.ok, leaked.reason], [false, 'content-blocked'], 'a detectors key set later is ignored');
   const caught = new Broker({ ...broker.d, scanOptions: { knownValues: [{ id: 'k', value: 'private-label-value' }] } });
-  assert.equal((await caught.request({ operation: 'createIssue', requestId: id(), title: 'about private-label-value', body: 'b' })).reason, 'content-blocked');
+  const stopped = await caught.request({ operation: 'createIssue', requestId: id(), title: 'about private-label-value', body: 'b' });
+  assert.equal(stopped.reason, 'content-blocked');
+  // What was found goes back by kind and the caller's id, so the person can be told which kind of data it is (#389); never the value.
+  assert.deepEqual(stopped.found, [{ category: 'known-value', id: 'k' }]);
+  assert.equal(JSON.stringify(stopped).includes('private-label-value'), false);
 });
 
 test('text fields have a size limit and over-long text is refused before any scan', async () => {

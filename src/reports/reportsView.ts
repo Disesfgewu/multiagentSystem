@@ -9,6 +9,8 @@ import { requireInteractive } from '../shared/testMode';
 import { openGitHubPage, PageAction, PageSource, PageWrites, readOpenPagesAgain, setPageWrites } from './githubPage';
 import * as fsp from 'node:fs/promises';
 import * as nodePath from 'node:path';
+// Which kind of private data stopped a post, in words, never the value (#389).
+const { blockedSentence } = require('../publish/blocked-words') as { blockedSentence(found: unknown): string };
 const { OwnerPostStore } = require('./ownerPosts') as { OwnerPostStore: new (store: unknown) => { read(repository: string): { ok: true; comments: Map<number, string>; reviews: Map<number, string> } | { ok: false; reason: string } } };
 const { inspectWorktree, readPullRequestFileVersions } = require('../projects/gitEvidence') as {
   inspectWorktree(folder: string): Promise<{ state: string; dirty?: boolean }>;
@@ -581,10 +583,10 @@ let reportContent: ReportContent | undefined;
 let refreshReports = (): void => {};
 
 // What the person is told after a review, merge, branch deletion or close, from the text report or from the page (#383): the same words.
-type WriteResult = { ok: boolean; code?: string; ownerRecorded?: boolean };
+type WriteResult = { ok: boolean; code?: string; ownerRecorded?: boolean; found?: unknown };
 function tellReview(result: WriteResult): void {
   if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-reviewed' ? 'This formal pull request review was already submitted for this head.' : `Formal pull request review submitted and verified for this head.${result.ownerRecorded === false ? OWNER_NOT_RECORDED : ''}`);
-  else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.`);
+  else if (result.code !== 'cancelled') void vscode.window.showErrorMessage(`Formal pull request review was not submitted: ${result.code ?? 'unknown'}.${blockedSentence(result.found)}`);
 }
 function tellMerge(result: WriteResult): void {
   if (result.ok) void vscode.window.showInformationMessage(result.code === 'already-merged' ? 'This pull request head was already merged.' : 'Pull request merged and verified for this head.');
@@ -900,7 +902,7 @@ export function registerReports(context: vscode.ExtensionContext): void {
             if (picked === 'Configure PM Publisher') void vscode.commands.executeCommand(REPORT_COMMANDS.configurePublisher);
           });
         } else {
-          void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code ?? 'unknown'}.`);
+          void vscode.window.showErrorMessage(`Public feedback was not sent: ${result.code ?? 'unknown'}.${blockedSentence(result.found)}`);
         }
       }
       return result;

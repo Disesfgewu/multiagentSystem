@@ -112,11 +112,27 @@ function localPaths() {
 const MIN_KNOWN_VALUE = 4;
 
 /**
- * Exact (case-insensitive) occurrences of values the caller knows are private: account labels,
+ * Exact (case-insensitive, whole-word at an ASCII letter or digit) occurrences of values the caller knows are private: account labels,
  * session ids, system instruction snippets. The list is injected by the caller and is never stored
  * or echoed; findings carry only the caller's id. A value that is too short to match without
  * matching ordinary words is reported as unmatchable instead of being skipped quietly.
  */
+// A value that begins or ends with an ASCII letter or digit is found only as a whole word on that side (#389): "test" is not in
+// "latest", and an account named "Work A" is not in "Work Area". Other characters (CJK text, punctuation) still match anywhere.
+const WORD = /[a-z0-9]/;
+
+/** The first place `needle` stands in `lower` with no ASCII letter or digit glued to an end that is one, or -1. */
+function wordIndex(lower, needle) {
+  const open = WORD.test(needle[0]);
+  const close = WORD.test(needle[needle.length - 1]);
+  for (let index = lower.indexOf(needle); index >= 0; index = lower.indexOf(needle, index + 1)) {
+    const before = index > 0 ? lower[index - 1] : '';
+    const after = lower[index + needle.length] ?? '';
+    if ((!open || !WORD.test(before)) && (!close || !WORD.test(after))) return index;
+  }
+  return -1;
+}
+
 function knownValues(values) {
   const usable = [];
   const unmatchable = [];
@@ -132,7 +148,7 @@ function knownValues(values) {
       const lower = text.toLowerCase();
       const hits = [];
       for (const { id, needle } of usable) {
-        const index = lower.indexOf(needle);
+        const index = wordIndex(lower, needle);
         if (index >= 0) hits.push({ code: 'known-value', category: 'known-value', index, id });
       }
       return hits;
