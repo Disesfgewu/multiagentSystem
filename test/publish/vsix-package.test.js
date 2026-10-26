@@ -65,3 +65,16 @@ test('generated candidate artifacts are excluded from every later VSIX package',
   assert.match(ignore, /^artifacts\/\*\*$/m);
   assert.throws(() => verifyVsix(archive({ 'extension/artifacts/release-candidate.json': '{}' }), lock), /unexpected entry/);
 });
+
+test('VSIX verifier accepts the six walkthrough pages by name, and nothing else in their folder (#357)', () => {
+  const pages = Object.fromEntries(['workbench', 'account', 'role', 'agent', 'task', 'review'].map((id) => [`extension/media/walkthrough/${id}.md`, `# ${id}`]));
+  assert.equal(verifyVsix(archive(pages), lock).fileCount, Object.keys(base).length + 6);
+  assert.throws(() => verifyVsix(archive({ ...pages, 'extension/media/walkthrough/extra.md': 'x' }), lock), /unexpected entry: extension\/media\/walkthrough\/extra\.md/);
+  assert.throws(() => verifyVsix(archive({ 'extension/media/other.svg': '<svg/>' }), lock), /unexpected entry/);
+});
+
+test('every walkthrough page the manifest names is on the VSIX list (#357)', () => {
+  const manifest = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '../../package.json'), 'utf8'));
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../scripts/verify-vsix.js'), 'utf8');
+  for (const step of manifest.contributes.walkthroughs.flatMap((walkthrough) => walkthrough.steps)) assert.ok(source.includes(`'extension/${step.media.markdown}'`), step.media.markdown);
+});

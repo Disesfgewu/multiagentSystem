@@ -18,6 +18,10 @@
 
 ![VS Code 歡迎頁的導覽](user-guide/images/07-see-walkthrough.png)
 
+**限制**：
+- VS Code 導覽只有在你按它自己的按鈕時才會打勾。在工作台做完的步驟，導覽裡不會打勾（上圖就是這樣）。哪些步驟真的完成了，請看工作台 Agents 分頁的那一行，或 Setup 分頁。
+- 「Review a pull request with the PM」只要在這個專案打開過任何一個 PR 頁面就算完成，不代表真的看完或審查過。
+
 ![第一次使用時自動開啟的工作台](user-guide/images/00-first-open.png)
 
 ![Setup 分頁的 5 個步驟全部完成](user-guide/images/07-see-first-steps-done.png)
