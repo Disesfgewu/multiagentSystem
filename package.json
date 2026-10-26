@@ -453,6 +453,82 @@
       { "command": "multiagentSystem.skills.libraryImport", "title": "Multiagent: Bring This Repository's Skills into the Library" },
       { "command": "multiagentSystem.skills.libraryExport", "title": "Multiagent: Write Library Skills into This Repository" }
     ],
+    "walkthroughs": [
+      {
+        "id": "multiagentSystem.gettingStarted",
+        "title": "Get started with Multiagent",
+        "description": "Five steps from an empty window to a team of agents: an account, a role group, an agent, a task and a pull request reviewed with the PM.",
+        "steps": [
+          {
+            "id": "workbench",
+            "title": "Open the Workbench",
+            "description": "One screen for your agent team: the agents, the work, the accounts and what needs you.\n[Open Workbench](command:multiagentSystem.workbench.open)",
+            "media": {
+              "markdown": "media/walkthrough/workbench.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.workbench.open"
+            ]
+          },
+          {
+            "id": "account",
+            "title": "Add an account",
+            "description": "An account is the CLI sign-in an agent works with. The wizard makes its own folder and opens the sign-in.\n[Add Claude Code account](command:multiagentSystem.accounts.addClaude)",
+            "media": {
+              "markdown": "media/walkthrough/account.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.accounts.addClaude",
+              "onCommand:multiagentSystem.accounts.addCodex"
+            ]
+          },
+          {
+            "id": "role",
+            "title": "Create a role group",
+            "description": "A role group says what its agents are for and what they may do, for example Developer or PM.\n[Create role group](command:multiagentSystem.roles.create)",
+            "media": {
+              "markdown": "media/walkthrough/role.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.roles.create"
+            ]
+          },
+          {
+            "id": "agent",
+            "title": "Start your first agent",
+            "description": "Each agent is a CLI in a terminal of its own, with an account and a role group. Its card shows on the Workbench.\n[Start agent](command:multiagentSystem.launchAgent)",
+            "media": {
+              "markdown": "media/walkthrough/agent.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.launchAgent"
+            ]
+          },
+          {
+            "id": "task",
+            "title": "Send it a first task",
+            "description": "One line, typed into the agent's terminal only after you confirm it. You can also write it in the box at the top of the Workbench.\n[Send task](command:multiagentSystem.dispatch.sendTask)",
+            "media": {
+              "markdown": "media/walkthrough/task.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.dispatch.sendTask"
+            ]
+          },
+          {
+            "id": "review",
+            "title": "Review a pull request with the PM",
+            "description": "The Work tab shows each Issue's stage; a pull request's page shows what changed, the checks and the PM's verdict.\n[Open the Work tab](command:multiagentSystem.workbench.open?%5B%7B%22tab%22%3A%22work%22%7D%5D)",
+            "media": {
+              "markdown": "media/walkthrough/review.md"
+            },
+            "completionEvents": [
+              "onCommand:multiagentSystem.reports.openPage"
+            ]
+          }
+        ]
+      }
+    ],
     "menus": {
       "editor/context": [
         { "command": "multiagentSystem.discuss.withPm", "when": "editorHasSelection && (resourceScheme == file || resourceScheme == multiagent-report-diff)", "group": "9_multiagent@1" }

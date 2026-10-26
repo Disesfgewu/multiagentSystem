@@ -136,7 +136,7 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sayPreview', 'sayRun', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'guideHide', 'guideShow', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sayPreview', 'sayRun', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
   // The board (#397): loadBoard carries nothing; openWorkItem names only an item the board showed, by kind and number.
   const items = new Set(['issue:12', 'pullRequest:7']);
   assert.deepEqual(parseMessage({ type: 'loadBoard' }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'loadBoard' } });
@@ -173,6 +173,9 @@ test('the command list is exactly what the page can send: it stops or restarts n
     assert.equal(parseMessage({ type, text: 7 }).reason, 'invalid-text');
     assert.equal(parseMessage({ type, text: 'q', ids: ['s-1'] }, new Set(['s-1'])).ok, false, 'no target from the page');
   }
+  // guideHide and guideShow (#357) carry nothing.
+  assert.deepEqual(parseMessage({ type: 'guideHide' }), { ok: true, message: { type: 'guideHide' } });
+  assert.equal(parseMessage({ type: 'guideShow', step: 'review' }).ok, false);
   // askSend (#357) names an agent on the screen, the typed question and whether to include the selection; nothing else.
   assert.deepEqual(parseMessage({ type: 'askSend', id: 's-1', question: 'What does this do?', withSelection: true }, new Set(['s-1'])), { ok: true, message: { type: 'askSend', id: 's-1', question: 'What does this do?', withSelection: true } });
   for (const [raw, reason] of [
@@ -518,4 +521,23 @@ test('a card carries its role group, so the Broadcast tab can send to everyone o
   assert.equal(build([session({ roleGroupId: 'g-worker' })]).agents[0].roleGroupId, 'g-worker');
   assert.equal(build([session({ roleGroupId: 'unassigned' })]).agents[0].roleGroupId, null);
   assert.equal(build([session({ roleGroupId: undefined })]).agents[0].roleGroupId, null);
+});
+
+test('the five first steps: done only when what was read says so, unknown with its reason when it could not be read, and the next one named (#357)', () => {
+  const { buildGettingStarted } = require('../../src/commandCenter/model');
+  const fresh = buildGettingStarted({ accounts: 0, roleGroups: 0, agents: 0, tasks: 0, reviewed: false });
+  assert.deepEqual(fresh.steps.map((step) => [step.id, step.done, step.action]), [['account', false, 'addAccount'], ['role', false, 'createRole'], ['agent', false, 'startAgent'], ['task', false, 'sendTask'], ['review', false, 'openWork']]);
+  assert.deepEqual([fresh.done, fresh.next, fresh.complete], [0, 'account', false]);
+  const some = buildGettingStarted({ accounts: 2, roleGroups: 1, agents: 0, tasks: 3, reviewed: false });
+  assert.deepEqual([some.done, some.next], [3, 'agent'], 'the next is the first not done, in order');
+  const all = buildGettingStarted({ accounts: 1, roleGroups: 1, agents: 1, tasks: 1, reviewed: true });
+  assert.deepEqual([all.done, all.next, all.complete], [5, null, true]);
+  // Unread is unknown, with why; it is never done, and it is the next step.
+  const unread = buildGettingStarted({ accounts: null, roleGroups: 1, agents: 1, tasks: 1, reviewed: null });
+  assert.deepEqual(unread.steps.map((step) => step.done), ['unknown', true, true, true, 'unknown']);
+  assert.match(unread.steps[0].reason, /could not be read/);
+  assert.deepEqual([unread.next, unread.complete], ['account', false]);
+  for (const bad of [undefined, null, [], { accounts: -1, roleGroups: 1.5, agents: '1', tasks: NaN, reviewed: 'yes' }]) {
+    assert.deepEqual(buildGettingStarted(bad).steps.map((step) => step.done), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown'], JSON.stringify(bad));
+  }
 });

@@ -28,6 +28,7 @@ import { runWorkBoardChecks } from './workBoard';
 import { runBroadcastTabChecks } from './broadcastTab';
 import { runAskTabChecks } from './askTab';
 import { runSayBoxChecks } from './sayBox';
+import { runGettingStartedChecks } from './gettingStarted';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
@@ -1098,6 +1099,7 @@ export async function run(): Promise<void> {
   await runBroadcastTabChecks();
   await runAskTabChecks(workspace);
   await runSayBoxChecks(workspace);
+  await runGettingStartedChecks();
   await runBroadcastDeliveryChecks(workspace);
   await runMemoryPanelChecks(workspace);
   await runReviewJumpChecks();

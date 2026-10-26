@@ -326,6 +326,26 @@ function buildAccountRows(input) {
   return { rows, alerts };
 }
 
+/**
+ * The five first steps of the Workbench (#357 acceptance 3, #360 guideline 7), in order. A step is done only when what was read says
+ * so; one whose source could not be read is "unknown" and says why, and is never ticked by a guess. `next` is the first step not done.
+ * @param {{ accounts: number|null, roleGroups: number|null, agents: number|null, tasks: number|null, reviewed: boolean|null }} read null = could not be read
+ */
+function buildGettingStarted(read) {
+  const input = isPlain(read) ? read : {};
+  const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+  const state = (value, why) => (value === null ? { done: UNKNOWN, reason: why } : { done: value });
+  const steps = [
+    { id: 'account', title: 'Add an account', why: 'An account is the CLI sign-in an agent works with.', action: 'addAccount', ...state(count(input.accounts) === null ? null : count(input.accounts) > 0, 'The accounts could not be read.') },
+    { id: 'role', title: 'Create a role group', why: 'A role group says what its agents are for and what they may do.', action: 'createRole', ...state(count(input.roleGroups) === null ? null : count(input.roleGroups) > 0, 'The role groups could not be read.') },
+    { id: 'agent', title: 'Start your first agent', why: 'Each agent is a CLI in a terminal of its own, with an account and a role group.', action: 'startAgent', ...state(count(input.agents) === null ? null : count(input.agents) > 0, 'The agents could not be read.') },
+    { id: 'task', title: 'Send it a first task', why: 'One line, typed into the agent\'s terminal after you confirm it.', action: 'sendTask', ...state(count(input.tasks) === null ? null : count(input.tasks) > 0, 'The tasks sent could not be read.') },
+    { id: 'review', title: 'Review a pull request with the PM', why: 'Its page shows what changed, the checks and the PM\'s verdict.', action: 'openWork', ...state(typeof input.reviewed === 'boolean' ? input.reviewed : null, 'Whether a pull request page was opened could not be read.') }
+  ];
+  const next = steps.find((step) => step.done !== true);
+  return { steps, done: steps.filter((step) => step.done === true).length, next: next ? next.id : null, complete: !next };
+}
+
 /** The decisions waiting for the person, from what the report views have already read; unknown until they have. */
 function describeDecisions(counts) {
   const read = (entry, noun) => (isPlain(entry) && Number.isSafeInteger(entry.count) && entry.count >= 0 && typeof entry.at === 'string'
@@ -401,7 +421,7 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent', 'sayPreview', 'sayRun']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent', 'sayPreview', 'sayRun', 'guideHide', 'guideShow']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
@@ -413,7 +433,9 @@ const SHAPES = Object.freeze({
   // A card's Stop… and Restart… (#357): the card only; the session commands ask before anything stops.
   stopAgent: ['id'], restartAgent: ['id'],
   // The "say it" box (#357, #360 guideline 3): only the line the person typed; the extension works out what it means and to whom.
-  sayPreview: ['text'], sayRun: ['text']
+  sayPreview: ['text'], sayRun: ['text'],
+  // The first steps (#357): hide them on the Agents tab, or show them there again from the Setup tab. Nothing else.
+  guideHide: [], guideShow: []
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -562,4 +584,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { describeSizes, describeInjected, describeGiven, detailFacts, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { buildGettingStarted, describeSizes, describeInjected, describeGiven, detailFacts, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

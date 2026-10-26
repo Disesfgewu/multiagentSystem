@@ -481,3 +481,63 @@ test('the "say it" box: the line goes to the extension alone; what it understood
   listeners.message({ data: { type: 'showTab', tab: 'ask' } });
   assert.equal(last('button', 'Ask').attrs['aria-selected'], 'true');
 });
+
+test('the first steps: on the Agents tab until done or hidden, always on the Setup tab; each button opens the existing window (#357)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', value: '', checked: false, title: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node, createTextNode: (text) => ({ textContent: String(text), tag: '#text', listeners: {} }) }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const { buildGettingStarted } = require('../../src/commandCenter/model');
+  const show = (read, hidden) => listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [], guide: { ...buildGettingStarted(read), hidden } } } });
+  const json = (value) => JSON.parse(JSON.stringify(value));
+  const buttons = (text) => nodes.filter((entry) => entry.tag === 'button' && entry.textContent === text);
+  const tabButton = (name) => nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab' && entry.textContent === name).at(-1);
+  show({ accounts: 1, roleGroups: 0, agents: 0, tasks: null, reviewed: false }, false);
+  // On the Agents tab: one line, how far, the next step and its button.
+  assert.ok(app.textContent.includes('Getting started: 1 of 5 steps done. Next: Create a role group'));
+  const within = (root) => [root, ...root.children.flatMap((child) => (child.children ? within(child) : []))];
+  const guide = nodes.filter((entry) => entry.className === 'guide guide-line').at(-1);
+  assert.deepEqual(within(guide).filter((entry) => entry.tag === 'button').map((entry) => entry.textContent), ['Create role group…', 'All steps', 'Hide these steps']);
+  assert.equal(app.textContent.includes('Send it a first task'), false, 'the whole list is on the Setup tab');
+  buttons('Create role group…').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'open', target: 'createRole' });
+  buttons('Hide these steps').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'guideHide' });
+  show({ accounts: 1, roleGroups: 0, agents: 0, tasks: null, reviewed: false }, true);
+  assert.equal(app.textContent.includes('Getting started'), false, 'hidden from the Agents tab');
+  // The Setup tab always has them, every step with its button, and can show them on the Agents tab again.
+  tabButton('Setup').listeners.click();
+  assert.ok(app.textContent.includes('Getting started: 1 of 5 steps done'));
+  assert.ok(app.textContent.includes('✓ done Add an account'));
+  assert.ok(app.textContent.includes('→ next Create a role group'));
+  assert.ok(app.textContent.includes('? unknown Send it a first task') && app.textContent.includes('The tasks sent could not be read.'));
+  buttons('Add Claude Code account').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'accountAction', action: 'addClaude' });
+  buttons('Show on the Agents tab again').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'guideShow' });
+  buttons('Open the Work tab').at(-1).listeners.click();
+  assert.equal(tabButton('Work').attrs['aria-selected'], 'true', 'the last step opens the Work tab');
+  // "All steps" on the Agents tab opens the Setup tab.
+  show({ accounts: 1, roleGroups: 0, agents: 0, tasks: null, reviewed: false }, false);
+  tabButton('Agents').listeners.click();
+  buttons('All steps').at(-1).listeners.click();
+  assert.equal(tabButton('Setup').attrs['aria-selected'], 'true');
+  // All done: gone from the Agents tab, still on Setup.
+  show({ accounts: 1, roleGroups: 1, agents: 1, tasks: 1, reviewed: true }, false);
+  tabButton('Agents').listeners.click();
+  assert.equal(app.textContent.includes('Getting started'), false);
+  tabButton('Setup').listeners.click();
+  assert.ok(app.textContent.includes('Getting started: all 5 steps done'));
+  assert.equal(app.textContent.includes('Show on the Agents tab again'), false, 'nothing to show again when they are not hidden');
+});

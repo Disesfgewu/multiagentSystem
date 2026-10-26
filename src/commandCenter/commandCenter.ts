@@ -13,7 +13,8 @@ import { quotaDetail } from '../accounts/quotaGateUi';
 import { builtIn } from '../providers/registry';
 import { TEAM_RULES_COMMANDS, teamRulesSummary } from '../teamRules/commands';
 import { onDidChangeSkillLibrary, skillLibrarySummary } from '../skills/libraryCommands';
-import { DISPATCH_COMMANDS, readAssignments, previewBroadcast, sendBroadcast } from '../dispatch/commands';
+import { DISPATCH_COMMANDS, countTasksSent, readAssignments, previewBroadcast, sendBroadcast } from '../dispatch/commands';
+import { onDidOpenPullRequestPage } from '../reports/githubPage';
 
 const model = require('./model') as {
   buildCards(input: Record<string, unknown>): { pm: any[]; agents: any[]; accounts: any[]; counts: { agents: number; pm: number } };
@@ -22,6 +23,7 @@ const model = require('./model') as {
   arrange(cards: any[], layout: Layout): any[];
   parseMessage(raw: unknown, known: Set<string>, accounts?: Set<string>, skills?: Set<string>, boardItems?: Set<string>, groups?: Set<string>): { ok: true; message: Message } | { ok: false; reason: string };
   buildSkills(summary: unknown): { known: boolean; text: string; items: Array<{ name: string }> };
+  buildGettingStarted(read: { accounts: number | null; roleGroups: number | null; agents: number | null; tasks: number | null; reviewed: boolean | null }): { steps: unknown[]; done: number; next: string | null; complete: boolean };
   SKILL_ACTIONS: Record<string, string>;
   buildAccountRows(input: Record<string, unknown>): { rows: any[]; alerts: string[] };
   applyLayoutMessage(layout: Layout, message: Message): Layout;
@@ -34,6 +36,10 @@ const { createRefreshLoop } = require('./refreshLoop') as { createRefreshLoop(ru
 export const COMMAND_CENTER_COMMAND = 'multiagentSystem.commandCenter.open';
 export const COMMAND_CENTER_VIEW_TYPE = 'multiagentSystem.commandCenter';
 const LAYOUT_KEY = 'commandCenter.layout';
+// The first steps (#357): whether a pull request page was opened in this workspace, and whether the person hid the steps.
+const GUIDE_REVIEWED_KEY = 'commandCenter.guide.reviewed';
+const GUIDE_HIDDEN_KEY = 'commandCenter.guide.hidden';
+const FIRST_OPEN_KEY = 'workbench.openedOnce';
 // The export command lives in `export/commands.ts`, which reads this module's cards; the name is repeated here to keep the imports one-way.
 const EXPORT_PROJECT_REPORT = 'multiagentSystem.export.projectReport';
 
@@ -47,11 +53,28 @@ let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | n
 export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
   try { return teamReader ? await teamReader() : null; } catch { return null; }
 }
-let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown; ask(): unknown; say(): unknown } | undefined;
+let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown; ask(): unknown; say(): unknown; forgetReviewed(): Thenable<void> } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
   if (!controllerForTest) throw new Error('The Command Center is only exposed in Extension Host tests.');
   return controllerForTest;
+}
+
+/** How many accounts and role groups there are, for the first steps (#357); null when it cannot be read, never 0 by a guess. */
+async function guideCounts(live: Array<Record<string, unknown>>): Promise<{ accounts: number | null; roleGroups: number | null }> {
+  let accounts: number | null = null;
+  let groups: number | null = null;
+  try {
+    const service = await accountService(() => live as never);
+    const loaded = service.ok ? service.service.list() : null;
+    if (loaded && loaded.ok) accounts = loaded.profiles.length;
+  } catch { /* unknown */ }
+  try {
+    const opened = await privateStorage()?.use();
+    const listed = opened?.ok ? (opened.store as { list(collection: string): { ok: boolean; items?: unknown[] } }).list('roleGroups') : null;
+    if (listed && listed.ok) groups = (listed.items ?? []).length;
+  } catch { /* unknown */ }
+  return { accounts, roleGroups: groups };
 }
 
 async function roleGroups(): Promise<Record<string, { name?: string; role?: string }>> {
@@ -173,7 +196,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   const samePlan = (a: SayPlan, b: SayPlan): boolean => a.ok && b.ok && a.kind === b.kind && (a.kind === 'ask' ? b.kind === 'ask' && a.id === b.id && a.withSelection === b.withSelection : b.kind !== 'ask' && a.ids.join(',') === b.ids.join(','));
   const payload = () => {
     if (!cached) return null;
-    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null) };
+    return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null), guide: { ...model.buildGettingStarted(guideRead), hidden: context.workspaceState.get(GUIDE_HIDDEN_KEY) === true } };
   };
   const post = (): void => { const state = payload(); if (panel && state) void panel.webview.postMessage({ type: 'state', state }); };
 
@@ -181,6 +204,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
   let lastReports: Record<string, unknown> = {};
   let lastAssignments: Record<string, unknown> = {};
   const publish = (next: NonNullable<typeof cached>): void => { cached = next; post(); };
+  // What the first steps were last read from; unknown until the first refresh has read it.
+  let guideRead: { accounts: number | null; roleGroups: number | null; agents: number | null; tasks: number | null; reviewed: boolean | null } = { accounts: null, roleGroups: null, agents: null, tasks: null, reviewed: null };
   // The e-mail address of each agent's account from this window's sign-in checks (#357): memory only, for the cards.
   const emailsOf = (live: Array<{ accountProfileId?: string }>): Record<string, string> => Object.fromEntries(live.map((entry) => entry.accountProfileId).filter((id): id is string => typeof id === 'string').map((id) => [id, accountEmail(id)]).filter((pair): pair is [string, string] => typeof pair[1] === 'string'));
   /**
@@ -204,6 +229,8 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     const accountRows = await readAccounts(live);
     const teamRules = await teamRulesSummary();
     const skills = model.buildSkills(await skillLibrarySummary());
+    const counts = await guideCounts(live);
+    guideRead = { ...counts, agents: live.length, tasks: await countTasksSent(), reviewed: context.workspaceState.get(GUIDE_REVIEWED_KEY) === true };
     publish({ pm: built.pm, agents: built.agents, accounts: accountRows.rows, alerts: accountRows.alerts, decisions: model.describeDecisions(decisionCountsSnapshot()), notes: notesWith(teamRules), skills });
   };
   // At most one refresh at a time; a request meanwhile runs one more afterwards (#368).
@@ -400,6 +427,11 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'skillAction':
         void vscode.commands.executeCommand(model.SKILL_ACTIONS[message.action as string], { name: message.name });
         return { ok: true, command: `skillAction:${message.action}` };
+      case 'guideHide':
+      case 'guideShow':
+        await context.workspaceState.update(GUIDE_HIDDEN_KEY, message.type === 'guideHide');
+        post();
+        return { ok: true, command: message.type };
       case 'showClassicViews': {
         // A change to the person's own settings: said first, and made only when they agree (#357).
         const answer = await vscode.window.showInformationMessage('Show the classic views in the side bar?', { modal: true, detail: 'This turns on the setting multiagentSystem.showClassicViews in your user settings: the nine views (Overview, Issues Report, PRs Report, GitHub, Accounts and Sessions, Role Groups and Rules, Administrator Broadcasts, Shared Memory, Tools Setup) appear under Multiagent. Turn it off there to hide them again.' }, 'Show Classic Views');
@@ -413,7 +445,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     }
   };
   teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
-  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast, ask: () => lastAsk, say: () => lastSay };
+  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast, ask: () => lastAsk, say: () => lastSay, forgetReviewed: () => context.workspaceState.update(GUIDE_REVIEWED_KEY, undefined) };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
   // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).
@@ -436,8 +468,15 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     sessions.onDidChange(() => scheduleRefresh()),
     onDidChangeAccounts(() => scheduleRefresh()),
     onDidChangeSkillLibrary(() => scheduleRefresh()),
+    onDidOpenPullRequestPage(() => { void context.workspaceState.update(GUIDE_REVIEWED_KEY, true).then(() => scheduleRefresh()); }),
     { dispose: () => { panel?.dispose(); if (timer) clearTimeout(timer); } }
   );
+  // The first time the extension starts (#357 acceptance 3; it starts when the side bar or one of its commands is first used, not with
+  // every window): the Workbench opens by itself, at the Agents tab and its first steps. Once per user, and never in the extension's own
+  // tests, which open it themselves.
+  if (context.extensionMode !== vscode.ExtensionMode.Test && context.globalState.get(FIRST_OPEN_KEY) !== true) {
+    void context.globalState.update(FIRST_OPEN_KEY, true).then(() => open({ tab: 'agents' }));
+  }
 }
 
 /** Whether the Command Center panel is open (Extension Host tests). */

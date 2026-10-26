@@ -7,7 +7,10 @@ const { scanPublication } = require('../src/publish/scan');
 
 const ROOT_FILES = new Set([
   'extension/package.json', 'extension/readme.md', 'extension/LICENSE.txt',
-  'extension/THIRD_PARTY_NOTICES.md', 'extension/media/multiagent.svg'
+  'extension/THIRD_PARTY_NOTICES.md', 'extension/media/multiagent.svg',
+  // The pages of the VS Code walkthrough (#357), each by name.
+  'extension/media/walkthrough/workbench.md', 'extension/media/walkthrough/account.md', 'extension/media/walkthrough/role.md',
+  'extension/media/walkthrough/agent.md', 'extension/media/walkthrough/task.md', 'extension/media/walkthrough/review.md'
 ]);
 const META_FILES = new Set(['[Content_Types].xml', 'extension.vsixmanifest']);
 // The runtime dependencies, exactly: version and license as locked, the files that must be there, and the notice line.
