@@ -461,6 +461,57 @@ const ITEMS = [
           check('the cards sit under the "Agents (4)" heading, not in a column beside it', Boolean(heading && first && first.y > heading.y && Math.abs(first.x - heading.x) < 40), true);
           await clearNotifications(page);
         }
+      },
+      {
+        name: 'stop-agent',
+        does: 'On the card of "E2E Agent 4", press Stop… and confirm with Stop Session.',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          const card = () => frame.locator('section[data-id]', { hasText: 'E2E Agent 4' }).first();
+          check('a running agent\'s card has Stop… and Restart…', await card().innerText(), (text) => /Stop…/.test(text) && /Restart…/.test(text));
+          await card().locator('button', { hasText: 'Stop…' }).first().click();
+          const seen = await drive(page, [{ dialog: /^Stop session "E2E Agent 4"\?/, button: 'Stop Session' }], async () => !/Stop…/.test(await card().innerText().catch(() => 'Stop…')), 60000);
+          check('it asked first', seen.join(' | '), /Stop session "E2E Agent 4"\? → Stop Session/);
+          const text = await card().innerText();
+          check('the stopped card stays, without Stop…, and can be restarted', text, (value) => !/Stop…/.test(value) && /Restart…/.test(value));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'restart-agent',
+        does: 'On the same card, press Restart… and confirm with Restart Agent.',
+        run: async ({ page, check, box }) => {
+          const frame = await workbenchFrame(page);
+          const card = () => frame.locator('section[data-id]', { hasText: 'E2E Agent 4' }).first();
+          const codename = ((await card().innerText()).match(/\b[A-Z][A-Za-z]*-\d{2,4}\b/) || [])[0];
+          const started = () => require('./fakes').readCalls(box.fakes.calls).filter((call) => call.cli === 'claude' && !call.args.includes('auth') && !call.args.includes('--version')).length;
+          const before = started();
+          await card().locator('button', { hasText: 'Restart…' }).first().click();
+          const seen = await drive(page, [
+            { dialog: /^Restart “E2E Agent 4”\?/, button: 'Restart Agent' },
+            { dialog: /Account isolation is not verified/, button: 'Continue' },
+            { dialog: /auto mode|Auto mode/, button: 'I Understand, Continue' },
+            { dialog: /Effective agent instructions prepared/, button: 'Start Agent' },
+            { dialog: /usage|quota|limit/i, button: 'Start Anyway' }
+          ], async () => started() > before, 90000);
+          check('it asked first, and said the agent starts again in the same folder', seen.join(' | '), /Restart “E2E Agent 4”\? → Restart Agent/);
+          check('the synthetic claude started once more', started(), before + 1);
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
+          const again = await workbenchFrame(page);
+          await again.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
+          const deadline = Date.now() + 30000;
+          let cards = [];
+          while (Date.now() < deadline) {
+            cards = (await again.locator('section[data-id]').allInnerTexts()).filter((text) => /E2E Agent 4/.test(text));
+            if (cards.length === 1 && /waiting for input/.test(cards[0])) break;
+            await pause(500);
+          }
+          check('one card for the agent, not two', cards.length, 1);
+          check('it runs again and waits for input', cards[0] || '', /waiting for input/);
+          check('it keeps its codename', Boolean(codename) && (cards[0] || '').includes(codename), true);
+          check('its card has Stop… again', cards[0] || '', /Stop…/);
+          await clearNotifications(page);
+        }
       }
     ]
   },

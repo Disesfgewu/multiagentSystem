@@ -106,6 +106,8 @@ const SCRIPT = String.raw`
     }
     var actions = el('footer', 'card-actions');
     actions.appendChild(button(card.terminalOpen ? 'Focus terminal' : 'Terminal closed', function () { post({ type: 'focus', id: card.id }); }));
+    if (card.terminalOpen) actions.appendChild(button('Stop…', function () { post({ type: 'stopAgent', id: card.id }); }, 'Stop this agent and close its terminal (you are asked first)'));
+    actions.appendChild(button('Restart…', function () { post({ type: 'restartAgent', id: card.id }); }, 'Start this agent again with the same account, role group and model, in a new conversation (you are asked first)'));
     actions.appendChild(button('Switch account…', function () { post({ type: 'switchAccount', id: card.id }); }, 'Restart this agent with another account (you are asked first)'));
     if (card.task.pullRequest !== null) {
       actions.appendChild(button('Open report', function () { post({ type: 'openReport', id: card.id }); }));

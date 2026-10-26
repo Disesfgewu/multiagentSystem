@@ -272,6 +272,13 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
       case 'switchAccount':
         void vscode.commands.executeCommand('multiagentSystem.sessions.restartWithAccount', { id: message.id });
         return { ok: true, command: message.type };
+      // The card's Stop… and Restart… (#357): the session commands' own confirmations say what stops and what starts again.
+      case 'stopAgent':
+        void vscode.commands.executeCommand('multiagentSystem.sessions.stop', { id: message.id });
+        return { ok: true, command: message.type };
+      case 'restartAgent':
+        void vscode.commands.executeCommand('multiagentSystem.sessions.restart', { id: message.id });
+        return { ok: true, command: message.type };
       case 'focus':
         await vscode.commands.executeCommand('multiagentSystem.sessions.focus', { id: message.id });
         return { ok: true, command: message.type };

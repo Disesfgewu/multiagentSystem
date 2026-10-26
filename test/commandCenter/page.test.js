@@ -233,7 +233,7 @@ test('a card says in four plain lines who it is, which account, which mode and w
     assert.equal(top.some((line) => line.includes(hidden)), false, `${hidden} is not in the plain lines`);
   }
   const footer = nodes.filter((entry) => entry.tag === 'footer').at(-1);
-  assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal', 'Switch account…'], 'one main button, and switching the account (#352)');
+  assert.deepEqual(footer.children.map((child) => child.textContent), ['Focus terminal', 'Stop…', 'Restart…', 'Switch account…'], 'one main button, then stopping, restarting and switching the account (#352, #357)');
 });
 
 test('a card\'s Details that the person opened stay open when the cards are drawn again (#359)', () => {
@@ -386,4 +386,34 @@ test('the Ask tab: one agent, the question and the selection; the answer is the 
   last('input').listeners.change();
   last('button', 'Ask…').listeners.click();
   assert.deepEqual(json(posted.at(-1)), { type: 'askSend', id: 'pm-1', question: 'What does this do?', withSelection: false });
+});
+
+test('a card offers Stop… only while its terminal is open, and Restart… always; each posts only the card (#357)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const base = { role: 'worker', roleName: 'Worker', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', mode: 'Auto', status: { state: 'waiting', text: 'waiting for input', source: 'hooks' }, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false };
+  const cards = [withFacts({ ...base, id: 'open-1', name: 'Open', terminalOpen: true }), withFacts({ ...base, id: 'closed-1', name: 'Closed', terminalOpen: false })];
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: cards, accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  const footers = nodes.filter((entry) => entry.tag === 'footer');
+  const labels = (footer) => footer.children.map((child) => child.textContent);
+  const open = footers.find((footer) => labels(footer)[0] === 'Focus terminal');
+  const closed = footers.find((footer) => labels(footer)[0] === 'Terminal closed');
+  assert.deepEqual(labels(closed), ['Terminal closed', 'Restart…', 'Switch account…'], 'nothing to stop when the terminal is closed');
+  open.children.find((child) => child.textContent === 'Stop…').listeners.click();
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'stopAgent', id: 'open-1' }));
+  closed.children.find((child) => child.textContent === 'Restart…').listeners.click();
+  assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'restartAgent', id: 'closed-1' }));
 });

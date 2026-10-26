@@ -72,6 +72,7 @@ test('an item is either accepted with nothing pending, or not done with what is 
   assert.deepEqual(three.steps.map((step) => step.name), ['add-codex-account', 'set-default-account', 'see-default-first', 'start-with-default', 'confirm-switch', 'switch-account']);
   const eleven = ITEMS.find((item) => item.id === '11');
   assert.ok(eleven.steps.some((step) => step.name === 'start-four-agents') && eleven.steps.some((step) => step.name === 'see-four-cards'), 'item 11 starts four agents and looks at their cards');
+  assert.deepEqual(eleven.steps.slice(-2).map((step) => step.name), ['stop-agent', 'restart-agent'], 'and stops one from its card, then restarts it (#357)');
 });
 
 test('a step that does not finish in time fails with a screenshot and the run goes on (PR #380 review)', async () => {

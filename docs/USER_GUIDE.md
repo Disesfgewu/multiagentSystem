@@ -390,6 +390,16 @@ token 數是估算（中日韓文字每字算 1、其他每 4 個字元算 1）�
 
 ![4 個 agent 的卡片](user-guide/images/11-see-four-cards.png)
 
+**停止或重新啟動一個 agent**：在卡片下方按：
+- **Stop…**：只有終端機還開著的卡片才有這個按鈕。確認視窗寫著 `Stop session "名稱"?`，按 **Stop Session** 後，終端機會關閉，裡面的 agent 會停止。卡片會留在畫面上，**Stop…** 換成灰色的 **Terminal closed**，仍然可以按 **Restart…**。
+- **Restart…**：確認視窗寫著 `Restart “名稱”?`，並說明 agent 會在同一個資料夾，用同樣的身份組、名稱、帳號和模型重新啟動，對話是新的，指令會重新準備，代號不變。按 **Restart Agent** 後，接著會出現和啟動新 agent 時一樣的確認視窗。終端機還開著時，會先關掉它。重新啟動後只有一張卡片，不會變成兩張。
+
+![停止後的卡片](user-guide/images/11-stop-agent.png)
+
+![重新啟動後的卡片](user-guide/images/11-restart-agent.png)
+
+在確認視窗按取消，什麼都不會改變。重新啟動是新的對話，agent 不會記得之前終端機裡的內容。
+
 **常見問題**：
 - **卡片有黃色小標「VS Code not connected」**：點開 Details 可以看到原因，通常是這個視窗裡沒有 VS Code 的 Claude Code 擴充套件（見第 6 章）。
 - **卡片寫 `state unknown`**：agent 還沒回報狀態，畫面不會猜測。

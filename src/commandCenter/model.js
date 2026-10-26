@@ -401,7 +401,7 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
@@ -409,7 +409,9 @@ const SHAPES = Object.freeze({
   // The Broadcast tab (#357): the text the person typed, and either one role group on the screen or agents on the screen.
   broadcastPreview: ['text', 'group', 'ids'], broadcastSend: ['text', 'group', 'ids'],
   // The Ask tab (#357, #360 item 5): what is selected now; ask one agent on the screen the typed question, with the selection or not.
-  askContext: [], askSend: ['id', 'question', 'withSelection']
+  askContext: [], askSend: ['id', 'question', 'withSelection'],
+  // A card's Stop… and Restart… (#357): the card only; the session commands ask before anything stops.
+  stopAgent: ['id'], restartAgent: ['id']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });

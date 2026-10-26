@@ -16,6 +16,7 @@ import { runFolderTrustChecks } from './folderTrust';
 import { runSkillLibraryChecks } from './skillLibrary';
 import { runSkillInjectionChecks } from './skillInjection';
 import { runSwitchAccountChecks } from './switchAccount';
+import { runRestartAgentChecks } from './restartAgent';
 import { runPermissionModeChecks } from './permissionMode';
 import { runConfirmOnceChecks } from './confirmOnce';
 import { runQuotaDispatchChecks } from './quotaDispatch';
@@ -1116,6 +1117,7 @@ export async function run(): Promise<void> {
   await runSkillLibraryChecks(workspace);
   await runSkillInjectionChecks(workspace);
   await runSwitchAccountChecks(workspace);
+  await runRestartAgentChecks(workspace);
   await runPermissionModeChecks(workspace);
   await runConfirmOnceChecks(workspace);
   await agyFlow(workspace);
