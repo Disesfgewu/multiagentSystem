@@ -346,6 +346,62 @@ function buildGettingStarted(read) {
   return { steps, done: steps.filter((step) => step.done === true).length, next: next ? next.id : null, complete: !next };
 }
 
+// The Setup tab (#357): the tools, in plain words, each with the existing command that sets it up again.
+const TOOL_REASONS = Object.freeze({
+  'not-prepared': 'not set up yet',
+  'private-storage-unavailable': 'the extension\'s private storage cannot be used',
+  'download-cancelled': 'the download was cancelled',
+  'platform-or-source-unverified': 'there is no verified build for this computer'
+});
+const toolReason = (reason) => (typeof reason !== 'string' ? 'the reason is unknown' : TOOL_REASONS[reason] || (/^[a-z][a-z-]{0,60}$/.test(reason) ? reason.replace(/-/g, ' ') : 'the reason is unknown'));
+const toolVersion = (version) => (typeof version === 'string' && /^[0-9A-Za-z.+_-]{1,40}$/.test(version) ? version : null);
+
+/**
+ * @param {{ git?: { onPath?: boolean }, gh?: object, claude?: object, codex?: object, agy?: { onPath?: boolean } } | null} raw what the setup controller read; null when it could not be read
+ * @returns {{ known: boolean, rows: Array<{ id: string, name: string, state: 'ready'|'attention'|'unknown', text: string, action: string|null }> }}
+ */
+function describeTools(raw) {
+  if (!isPlain(raw)) return { known: false, rows: [] };
+  const managed = (id, name, entry, action) => {
+    const value = isPlain(entry) ? entry : {};
+    if (value.preparing === true) return { id, name, state: 'unknown', text: 'Setting up…', action: null };
+    if (value.state === 'ready') return { id, name, state: 'ready', text: `Ready${toolVersion(value.version) ? ` · ${toolVersion(value.version)}` : ''}, checked by its fixed release and SHA-256`, action: null };
+    if (value.state === 'unsupported') return { id, name, state: 'attention', text: 'Not available on this computer', action: null };
+    if (value.state === 'missing') return { id, name, state: 'attention', text: `Needs setup: ${toolReason(value.reason)}`, action };
+    return { id, name, state: 'unknown', text: 'Unknown: its state could not be read', action };
+  };
+  const onPath = (entry) => isPlain(entry) && entry.onPath === true;
+  return {
+    known: true,
+    rows: [
+      { id: 'git', name: 'Git', state: onPath(raw.git) ? 'ready' : 'attention', text: onPath(raw.git) ? 'Found on PATH (not checked by setup)' : 'Not found: install Git; worktrees need it', action: null },
+      managed('gh', 'GitHub CLI (gh)', raw.gh, 'setupRetryGh'),
+      managed('claude', 'Claude Code', raw.claude, 'setupRetryClaude'),
+      managed('codex', 'Codex CLI', raw.codex, 'setupRetryCodex'),
+      { id: 'agy', name: 'agy', state: onPath(raw.agy) ? 'unknown' : 'attention', text: onPath(raw.agy) ? 'Found on PATH; it cannot be checked or set up here' : 'Not found; it cannot be set up here: install it yourself', action: null }
+    ]
+  };
+}
+
+// The modes on the Setup tab (#357): user settings only, each said in plain words; "Change…" opens that setting.
+const MODE_SETTINGS = Object.freeze(['multiagentSystem.agents.autoMode', 'multiagentSystem.isolation.mode', 'multiagentSystem.agents.preTrustManagedWorktrees']);
+/**
+ * @param {{ autoMode?: unknown, overrides?: unknown, isolation?: unknown, preTrust?: unknown }} read the user-level values (undefined = not set: the default)
+ */
+function describeModes(read) {
+  const input = isPlain(read) ? read : {};
+  const pick = (value, allowed, fallback) => (value === undefined ? fallback : allowed.includes(value) ? value : null);
+  const auto = pick(input.autoMode, ['on', 'off'], 'on');
+  const overrides = isPlain(input.overrides) ? Object.entries(input.overrides).filter(([key, value]) => /^[a-z][a-z0-9-]{0,40}$/.test(key) && (value === 'on' || value === 'off')).map(([key, value]) => `${key}: ${value}`) : [];
+  const isolation = pick(input.isolation, ['advisory', 'enforced'], 'advisory');
+  const trust = pick(input.preTrust, ['ask', 'on', 'off'], 'ask');
+  return [
+    { key: MODE_SETTINGS[0], title: 'Auto mode', value: auto === null ? 'unknown (the value is not one this version knows)' : auto === 'on' ? 'on: agents do not stop to ask before each action' : 'off: agents ask as usual', note: overrides.length ? `Per CLI: ${overrides.join(', ')}` : 'The same for every CLI' },
+    { key: MODE_SETTINGS[1], title: 'Isolation', value: isolation === null ? 'unknown (the value is not one this version knows)' : isolation === 'advisory' ? 'advisory: GitHub writes are checked, but nothing stops an agent from going around the checks' : 'enforced: each CLI starts in a sandbox (macOS), or does not start', note: 'Read from your user settings only' },
+    { key: MODE_SETTINGS[2], title: 'New worktrees', value: trust === null ? 'unknown (the value is not one this version knows)' : trust === 'ask' ? 'ask once, then remember' : trust === 'on' ? 'trusted without asking' : 'the CLI asks each time', note: 'Whether Claude Code and Codex may start in this project\'s worktrees without asking' }
+  ];
+}
+
 /** The decisions waiting for the person, from what the report views have already read; unknown until they have. */
 function describeDecisions(counts) {
   const read = (entry, noun) => (isPlain(entry) && Number.isSafeInteger(entry.count) && entry.count >= 0 && typeof entry.at === 'string'
@@ -418,10 +474,15 @@ const TARGETS = Object.freeze({
   skillImport: 'multiagentSystem.skills.libraryImport',
   skillExport: 'multiagentSystem.skills.libraryExport',
   setupRefresh: 'multiagentSystem.setup.refresh',
-  setupDiagnose: 'multiagentSystem.setup.diagnose'
+  setupDiagnose: 'multiagentSystem.setup.diagnose',
+  // The Setup tab (#357): set a tool up. Pressing it starts the fixed official download at once (with progress and Cancel), verified
+  // by SHA-256 before use; nothing is downloaded before it is pressed.
+  setupRetryGh: 'multiagentSystem.setup.retryGh',
+  setupRetryClaude: 'multiagentSystem.setup.retryClaude',
+  setupRetryCodex: 'multiagentSystem.setup.retryCodex'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent', 'sayPreview', 'sayRun', 'guideHide', 'guideShow']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent', 'sayPreview', 'sayRun', 'guideHide', 'guideShow', 'loadSetup', 'openSetting']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
@@ -435,7 +496,9 @@ const SHAPES = Object.freeze({
   // The "say it" box (#357, #360 guideline 3): only the line the person typed; the extension works out what it means and to whom.
   sayPreview: ['text'], sayRun: ['text'],
   // The first steps (#357): hide them on the Agents tab, or show them there again from the Setup tab. Nothing else.
-  guideHide: [], guideShow: []
+  guideHide: [], guideShow: [],
+  // The Setup tab (#357): read the tools and modes now; open one of the mode settings, by its key from a fixed list.
+  loadSetup: [], openSetting: ['key']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -528,6 +591,10 @@ function parseMessage(raw, knownIds, accountIds, skillNames, boardItems, knownGr
     if (typeof raw.withSelection !== 'boolean') return { ok: false, reason: 'invalid-field' };
     return { ok: true, message: { type: raw.type, id: raw.id, question: raw.question, withSelection: raw.withSelection } };
   }
+  if (raw.type === 'openSetting') {
+    if (typeof raw.key !== 'string' || !MODE_SETTINGS.includes(raw.key)) return { ok: false, reason: 'invalid-field' };
+    return { ok: true, message: { type: raw.type, key: raw.key } };
+  }
   if (raw.type === 'sayPreview' || raw.type === 'sayRun') {
     // Checked again by the interpreter and by the flow it leads to; here only its kind and size.
     if (typeof raw.text !== 'string' || raw.text.length > MAX_SAY_TEXT) return { ok: false, reason: 'invalid-text' };
@@ -584,4 +651,4 @@ function applyLayoutMessage(layout, message) {
   return lay;
 }
 
-module.exports = { buildGettingStarted, describeSizes, describeInjected, describeGiven, detailFacts, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };
+module.exports = { describeTools, describeModes, MODE_SETTINGS, buildGettingStarted, describeSizes, describeInjected, describeGiven, detailFacts, buildSkills, SKILL_ACTIONS, modeWord, buildCards, buildAccountRows, relative, ACCOUNT_ACTIONS, describeDecisions, normalizeLayout, arrange, parseMessage, applyLayoutMessage, statusOf, COMMANDS, LAYOUTS, MAX_CARDS, MAX_IDS, STATES, TABS, TARGETS };

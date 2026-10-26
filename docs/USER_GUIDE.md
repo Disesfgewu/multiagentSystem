@@ -26,6 +26,16 @@
 
 ![Setup 分頁的 5 個步驟全部完成](user-guide/images/07-see-first-steps-done.png)
 
+**Setup 分頁**：工作台 → **Setup**，除了上面的 5 個步驟，還有：
+- **Tools**：Git、GitHub CLI（gh）、Claude Code、Codex CLI、agy，每一個都寫出 `ready`、`needs you` 或 `unknown`，再加一句話，例如 `Ready · 2.60.1, checked by its fixed release and SHA-256` 或 `Needs setup: not set up yet`。只有需要設定的工具才會有 **Download and verify** 按鈕：按下去才會開始下載固定的官方版本，可以看到進度、可以取消，用之前會先檢查 SHA-256。只是看這個分頁，什麼都不會下載。agy 不能在這裡設定，需要自己安裝。
+- **Modes**：Auto mode、Isolation、New worktrees 三個設定目前的值，用白話寫出來。值只從你的使用者設定讀取，專案裡的設定不算。按 **Change…** 會打開 VS Code 的設定頁面，直接停在那一個設定，請在那裡修改。
+- **Models**：每個 agent 的模型是在啟動時選的；選「Use CLI default model」就是交給 CLI 決定。卡片上會寫出要求用的模型，以及 CLI 回報實際用的模型。
+- **Read again** 會重新讀一次；**Open diagnostics**、**Sessions…**、**Show classic views** 和之前一樣。
+
+![Setup 分頁](user-guide/images/00-see-setup-tab.png)
+
+![按 Change… 打開的設定頁面](user-guide/images/00-change-mode-setting.png)
+
 以下是從打開側欄開始，一步一步的做法：
 
 1. **打開側欄**：點左側活動列的 **Multiagent** 圖示（四個方塊）。側欄只有一個區塊：最上面是 **Open Workbench**，下面三行分別是 agent、需要你處理的事、帳號。點任何一行，都會打開工作台的對應分頁。

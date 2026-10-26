@@ -133,6 +133,12 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
     this.syncPath('claude', status);
     return status;
   }
+  /** What the Workbench's Setup tab shows (#357): the same reads as this view, nothing prepared or downloaded. */
+  async summary(): Promise<Record<string, unknown>> {
+    const [gh, codex, claude] = await Promise.all([this.ghStatus(), this.codexStatus(), this.claudeStatus()]);
+    const plain = (status: { state: string; version?: string; reason?: string }, preparing: boolean) => ({ state: status.state, version: status.version, reason: status.reason, preparing });
+    return { git: { onPath: executableAvailable('git') }, gh: plain(gh as never, this.preparingGh), claude: plain(claude as never, this.preparingClaude), codex: plain(codex as never, this.preparingCodex), agy: { onPath: executableAvailable('agy') } };
+  }
   managedBinForTests(): string | undefined { return [...this.managedBins.values()].join(path.delimiter) || undefined; }
 
   async getChildren(): Promise<vscode.TreeItem[]> {
@@ -511,6 +517,11 @@ class SetupController implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 let latestDiagnosticsText = '# Multiagent Masked Setup & Storage Diagnostics\n\nRun `Multiagent: Open Masked Setup and Storage Diagnostics` to generate a report.\n';
 const diagnosticsEmitter = new vscode.EventEmitter<vscode.Uri>();
+
+/** The tools as the Setup view reads them, for the Workbench (#357); null before the view is registered or when reading fails. */
+export async function readToolsSummary(): Promise<Record<string, unknown> | null> {
+  try { return active ? await active.summary() : null; } catch { return null; }
+}
 
 export function managedPathContributionForTests(): string | undefined { return active?.managedBinForTests(); }
 

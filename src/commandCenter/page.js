@@ -195,7 +195,12 @@ const SCRIPT = String.raw`
   // The Work tab's board (#397): asked for the first time the tab is shown, and again with its Refresh.
   var board = null;
   var boardAsked = false;
-  function showingWork() { if (tab === 'work' && !boardAsked) { boardAsked = true; post({ type: 'loadBoard' }); } }
+  // The Setup tab's tools and modes (#357): read each time the tab is shown, and again with its "Read again".
+  var setup = null;
+  function showingWork() {
+    if (tab === 'work' && !boardAsked) { boardAsked = true; post({ type: 'loadBoard' }); }
+    if (tab === 'setup') post({ type: 'loadSetup' });
+  }
   function open(target) { post({ type: 'open', target: target }); }
   function nextSteps(title, steps) {
     var box = el('div', 'next');
@@ -255,7 +260,7 @@ const SCRIPT = String.raw`
       var action = GUIDE_ACTIONS[step.action];
       if (action) box.appendChild(button(action[0], action[1]));
     }
-    box.appendChild(button('All steps', function () { tab = 'setup'; render(); }));
+    box.appendChild(button('All steps', function () { tab = 'setup'; showingWork(); render(); }));
     box.appendChild(button('Hide these steps', function () { post({ type: 'guideHide' }); }, 'They stay on the Setup tab'));
     return box;
   }
@@ -649,6 +654,35 @@ const SCRIPT = String.raw`
     sayOut.appendChild(box);
   }
 
+  var TOOL_ACTIONS = { setupRetryGh: 'Download and verify', setupRetryClaude: 'Download and verify', setupRetryCodex: 'Download and verify' };
+  var STATE_WORDS = { ready: 'ready', attention: 'needs you', unknown: 'unknown' };
+  function setupTab(panel) {
+    if (state.guide) panel.appendChild(guideBox(state.guide));
+    panel.appendChild(el('h2', null, 'Tools'));
+    if (!setup) panel.appendChild(el('p', 'muted', 'Reading the tools…'));
+    else if (!setup.tools || !setup.tools.known) panel.appendChild(el('p', 'alert', 'The tools could not be read. Open diagnostics to see why.'));
+    else setup.tools.rows.forEach(function (row) {
+      var line = el('div', 'setup-row');
+      line.appendChild(el('span', 'chip state-' + row.state, STATE_WORDS[row.state] || 'unknown'));
+      line.appendChild(el('strong', null, ' ' + row.name + ' '));
+      line.appendChild(el('span', null, row.text));
+      if (row.action && TOOL_ACTIONS[row.action]) line.appendChild(button(TOOL_ACTIONS[row.action], function () { open(row.action); }, 'Downloads the fixed official release now, with progress and Cancel, and verifies it before use'));
+      panel.appendChild(line);
+    });
+    panel.appendChild(el('h2', null, 'Modes'));
+    if (setup && Array.isArray(setup.modes)) setup.modes.forEach(function (mode) {
+      var line = el('div', 'setup-row');
+      line.appendChild(el('strong', null, mode.title + ': '));
+      line.appendChild(el('span', null, mode.value));
+      line.appendChild(button('Change…', function () { post({ type: 'openSetting', key: mode.key }); }, 'Opens this setting in VS Code\'s Settings (your user settings)'));
+      line.appendChild(el('div', 'muted', mode.note));
+      panel.appendChild(line);
+    });
+    panel.appendChild(el('h2', null, 'Models'));
+    panel.appendChild(el('p', null, 'Each agent\'s model is chosen when it starts; "Use CLI default model" leaves it to the CLI. The card says which model was asked for and which the CLI reports.'));
+    panel.appendChild(nextSteps('Next step', [['Read again', function () { setup = null; render(); post({ type: 'loadSetup' }); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]));
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -672,7 +706,7 @@ const SCRIPT = String.raw`
     else if (tab === 'broadcast') broadcastTab(panel);
     else if (tab === 'ask') askTab(panel);
     else if (tab === 'knowledge') knowledgeTab(panel);
-    else if (tab === 'setup') { if (state.guide) panel.appendChild(guideBox(state.guide)); placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]); }
+    else if (tab === 'setup') setupTab(panel);
     root.appendChild(panel);
     root.appendChild(el('p', 'muted', 'Values without a source are shown as unknown.'));
   }
@@ -680,6 +714,7 @@ const SCRIPT = String.raw`
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; showingWork(); render(); return; }
+    if (data && data.type === 'setup') { setup = { tools: data.tools && typeof data.tools === 'object' ? data.tools : null, modes: Array.isArray(data.modes) ? data.modes : [] }; if (tab === 'setup') render(); return; }
     if (data && data.type === 'board' && data.board && typeof data.board === 'object') { board = data; if (tab === 'work') render(); return; }
     if (data && data.type === 'broadcastPreview') { bc.preview = data.ok ? { ok: true, prompt: String(data.prompt), recipients: Array.isArray(data.recipients) ? data.recipients : [] } : { ok: false, reason: String(data.reason) }; if (tab === 'broadcast') render(); return; }
     if (data && data.type === 'sayState') { say.status = data; drawSay(); return; }
@@ -730,6 +765,9 @@ const STYLE = `
   .md-answer { overflow-wrap: anywhere; line-height: 1.5; } .md-code { background: var(--vscode-textCodeBlock-background); padding: 6px 8px; overflow-x: auto; }
   .md-inert { text-decoration: underline dotted; } .md-table td, .md-table th { border: 1px solid var(--vscode-panel-border); padding: 2px 6px; }
   .guide { border: 1px solid var(--vscode-panel-border); border-left: 3px solid var(--vscode-focusBorder); padding: 8px 12px; margin-bottom: 12px; }
+  .chip { display: inline-block; min-width: 64px; font-size: 0.85em; }
+  .setup-row { margin: 6px 0; } .setup-row .btn { margin-left: 8px; }
+  .chip.state-ready { color: var(--vscode-testing-iconPassed); } .chip.state-attention { color: var(--vscode-editorWarning-foreground); } .chip.state-unknown { color: var(--vscode-descriptionForeground); }
   .guide-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; }
   .guide-steps { margin: 4px 0; padding-left: 20px; } .guide-step { margin: 6px 0; } .guide-step .btn { margin-top: 4px; }
   .guide-step.done .guide-mark { color: var(--vscode-testing-iconPassed); } .guide-step.unknown .guide-mark { color: var(--vscode-descriptionForeground); }
