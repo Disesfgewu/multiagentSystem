@@ -428,24 +428,11 @@ const SCRIPT = String.raw`
         var box2 = el('section', 'bc-preview');
         box2.appendChild(el('h3', null, 'Preview' + (bc.previewKey === bcKey() ? '' : ' (out of date: preview again)')));
         box2.appendChild(el('pre', 'bc-line', bc.preview.prompt));
-        bc.preview.recipients.forEach(function (entry) {
-          var words = entry.decision === 'send' ? 'will receive it (' + entry.reason + ')' : entry.decision === 'unknown' ? 'state unknown: asked separately before it is typed' : 'skipped: ' + entry.reason;
-          box2.appendChild(el('div', entry.decision === 'skip' ? 'muted' : null, entry.label + ' — ' + words));
-        });
+        bc.preview.recipients.forEach(function (entry) { box2.appendChild(recipientLine(entry)); });
         panel.appendChild(box2);
       }
       if (bc.results === 'asking') panel.appendChild(el('p', 'muted', 'Waiting for your confirmation in the window…'));
-      else if (bc.results) {
-        var box3 = el('section', 'bc-results');
-        if (!bc.results.sent) box3.appendChild(el('p', 'muted', 'Nothing was typed.'));
-        else {
-          var sent = bc.results.results.filter(function (entry) { return entry.outcome === 'sent'; }).length;
-          box3.appendChild(el('h3', null, 'Typed into ' + sent + ' of ' + bc.results.results.length + ' agents'));
-          bc.results.results.forEach(function (entry) { box3.appendChild(el('div', entry.outcome === 'sent' ? null : 'muted', entry.label + ' — ' + (entry.outcome === 'sent' ? 'sent' : 'not sent: ' + entry.reason))); });
-          box3.appendChild(el('p', 'muted', '"Typed" is not proof that the agent read it or will do it.'));
-        }
-        panel.appendChild(box3);
-      }
+      else if (bc.results) panel.appendChild(resultsBox(bc.results));
     }
     panel.appendChild(nextSteps('Next step', [['Send task…', function () { post({ type: 'sendTask' }); }], ['Create broadcast notice…', function () { open('broadcastCreate'); }], ['Send broadcast to agents…', function () { open('broadcastDeliver'); }]]));
   }
@@ -540,6 +527,86 @@ const SCRIPT = String.raw`
     panel.appendChild(nextSteps('Next step', [['Talk to PM via GitHub…', function () { post({ type: 'talkToPm' }); }], ['Discuss selection with PM…', function () { open('discussWithPm'); }], ['Start meeting…', function () { post({ type: 'startMeeting' }); }]]));
   }
 
+  // Who gets a line, and what happened to it: the same words on the Broadcast tab and under the "say it" box.
+  function recipientLine(entry) {
+    var words = entry.decision === 'send' ? 'will receive it (' + entry.reason + ')' : entry.decision === 'unknown' ? 'state unknown: asked separately before it is typed' : 'skipped: ' + entry.reason;
+    return el('div', entry.decision === 'skip' ? 'muted' : null, entry.label + ' — ' + words);
+  }
+  function resultsBox(results) {
+    var box = el('section', 'bc-results');
+    if (!results.sent) { box.appendChild(el('p', 'muted', 'Nothing was typed.')); return box; }
+    var sent = results.results.filter(function (entry) { return entry.outcome === 'sent'; }).length;
+    box.appendChild(el('h3', null, 'Typed into ' + sent + ' of ' + results.results.length + ' agents'));
+    results.results.forEach(function (entry) { box.appendChild(el('div', entry.outcome === 'sent' ? null : 'muted', entry.label + ' — ' + (entry.outcome === 'sent' ? 'sent' : 'not sent: ' + entry.reason))); });
+    box.appendChild(el('p', 'muted', '"Typed" is not proof that the agent read it or will do it.'));
+    return box;
+  }
+
+  // The "say it" box at the top (#357, #360 guideline 3): one line in plain words. The extension says back what it understood, with the
+  // exact line and who gets it; "Do it…" carries out only that, through the same confirmation as the Broadcast and Ask tabs.
+  var say = { status: null, text: '' };
+  var sayInput = null;
+  var sayOut = null;
+  var WHO = { agent: 'a task for one agent', group: 'a broadcast to a role group', agents: 'a broadcast to the agents named', everyone: 'a broadcast to every agent' };
+  function sayPreview() {
+    if (!sayInput.value.trim()) return;
+    say.text = sayInput.value;
+    say.status = { state: 'asking' };
+    drawSay();
+    post({ type: 'sayPreview', text: say.text });
+  }
+  function sayBar() {
+    var box = el('div', 'say');
+    if (!sayInput) {
+      sayInput = el('input', 'say-text');
+      sayInput.type = 'text';
+      sayInput.maxLength = 500;
+      sayInput.placeholder = 'Say what to do, for example: Worker-01, fix the error on the login page — or ask: What does this PR change?';
+      sayInput.setAttribute('aria-label', 'Say what to do');
+      // A changed line is not the line previewed: its preview goes.
+      sayInput.addEventListener('input', function () { if (say.status && say.status.state === 'preview') { say.status = null; drawSay(); } });
+      sayInput.addEventListener('keydown', function (event) { if (event.key === 'Enter') { event.preventDefault(); sayPreview(); } });
+    }
+    // The page is drawn again at every refresh: someone typing here keeps typing, where they were.
+    var typing = document.activeElement === sayInput;
+    var caret = typing ? [sayInput.selectionStart, sayInput.selectionEnd] : null;
+    box.appendChild(sayInput);
+    if (typing) setTimeout(function () { sayInput.focus(); if (caret) sayInput.setSelectionRange(caret[0], caret[1]); }, 0);
+    box.appendChild(button('Preview', sayPreview, 'See what it would do; nothing is done yet'));
+    sayOut = el('div', 'say-out');
+    box.appendChild(sayOut);
+    drawSay();
+    return box;
+  }
+  function drawSay() {
+    if (!sayOut) return;
+    sayOut.textContent = '';
+    var status = say.status;
+    if (!status) return;
+    if (status.state === 'asking') { sayOut.appendChild(el('p', 'muted', 'Working out what it means…')); return; }
+    if (status.state === 'running') { sayOut.appendChild(el('p', 'muted', 'Waiting for your confirmation in the window…')); return; }
+    if (status.state === 'refused') { sayOut.appendChild(el('p', 'alert', status.reason)); return; }
+    if (status.state === 'asked') { sayOut.appendChild(el('p', null, 'Asked ' + status.to + '. The answer is shown on the Ask tab.')); return; }
+    if (status.state === 'results') { sayOut.appendChild(resultsBox(status)); return; }
+    if (status.state !== 'preview') return;
+    var box = el('section', 'say-preview');
+    if (status.kind === 'ask') {
+      box.appendChild(el('h3', null, 'Understood: a question for ' + status.to));
+      box.appendChild(el('pre', 'bc-line', status.question));
+      if (status.selection) box.appendChild(el('div', null, 'With the selected code: ' + status.selection.file + ', lines ' + status.selection.startLine + '–' + status.selection.endLine));
+      box.appendChild(el('p', 'muted', 'Its answer is shown on the Ask tab.'));
+    } else {
+      box.appendChild(el('h3', null, 'Understood: ' + (WHO[status.to] || 'a broadcast')));
+      box.appendChild(el('pre', 'bc-line', status.prompt));
+      (status.recipients || []).forEach(function (entry) { box.appendChild(recipientLine(entry)); });
+    }
+    var row = el('div', 'row');
+    row.appendChild(button(status.kind === 'ask' ? 'Ask…' : 'Send…', function () { say.status = { state: 'running' }; drawSay(); post({ type: 'sayRun', text: say.text }); }, 'The extension shows it whole and asks you to confirm before anything is typed'));
+    row.appendChild(button('Cancel', function () { say.status = null; drawSay(); }));
+    box.appendChild(row);
+    sayOut.appendChild(box);
+  }
+
   function placeholderTab(panel, what, issue, steps) {
     panel.appendChild(el('p', null, what));
     panel.appendChild(el('p', 'muted', 'This tab gets its own screen in ' + issue + '. Until then these open the existing windows:'));
@@ -552,6 +619,7 @@ const SCRIPT = String.raw`
     var bar = el('div', 'toolbar');
     bar.appendChild(el('h1', null, 'Workbench'));
     root.appendChild(bar);
+    root.appendChild(sayBar());
     root.appendChild(tabBar());
     var panel = el('section', 'tab-panel');
     panel.setAttribute('role', 'tabpanel');
@@ -572,6 +640,7 @@ const SCRIPT = String.raw`
     if (data && data.type === 'showTab' && TABS.some(function (entry) { return entry.id === data.tab; })) { tab = data.tab; showingWork(); render(); return; }
     if (data && data.type === 'board' && data.board && typeof data.board === 'object') { board = data; if (tab === 'work') render(); return; }
     if (data && data.type === 'broadcastPreview') { bc.preview = data.ok ? { ok: true, prompt: String(data.prompt), recipients: Array.isArray(data.recipients) ? data.recipients : [] } : { ok: false, reason: String(data.reason) }; if (tab === 'broadcast') render(); return; }
+    if (data && data.type === 'sayState') { say.status = data; drawSay(); return; }
     if (data && data.type === 'askState') {
       if (data.state === 'context') ask.context = { selection: data.selection && typeof data.selection === 'object' ? data.selection : null, reason: data.reason ? String(data.reason) : null };
       else ask.status = data;
@@ -593,6 +662,10 @@ const STYLE = `
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; padding: 12px 16px; }
   h1 { font-size: 1.3em; margin: 0; } h2 { font-size: 1.05em; margin: 0 0 8px; } h3 { font-size: 1em; margin: 12px 0 4px; }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .say { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-bottom: 12px; }
+  .say-text { padding: 6px 8px; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); }
+  .say-out { grid-column: 1 / -1; }
+  .say-preview { border: 1px solid var(--vscode-panel-border); padding: 8px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
   .badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
   .tag { font-size: 0.8em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
