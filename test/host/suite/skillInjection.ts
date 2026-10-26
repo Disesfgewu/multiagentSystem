@@ -41,7 +41,7 @@ export async function runSkillInjectionChecks(workspace: string): Promise<void> 
     assert.equal(session?.injectedCounts?.skills, 1, 'one skill is on and for this role group');
     assert.ok(session?.injectedSizes && session.injectedSizes.skills.chars > 0 && session.injectedSizes.total.tokens > 0, JSON.stringify(session?.injectedSizes));
     const folder = path.join(store.dir, 'sessions', id, 'skills');
-    assert.deepEqual(fs.readdirSync(folder), [names[0]], 'only the given skill is written, in the session\'s own folder');
+    assert.deepEqual(fs.readdirSync(folder).sort(), ['_answers', names[0]], 'only the given skill is written, in the session\'s own folder (with the folder its Ask answers go to, #357)');
     assert.match(fs.readFileSync(path.join(folder, names[0], 'SKILL.md'), 'utf8'), /THE-STEPS-OF-THE-GIVEN-SKILL/);
     const context = fs.readFileSync(path.join(store.dir, 'sessions', id, 'claude-context.md'), 'utf8');
     assert.ok(context.includes(`- ${names[0]}: Use it in this host test. (file: ${path.join(folder, names[0], 'SKILL.md')})`), context);

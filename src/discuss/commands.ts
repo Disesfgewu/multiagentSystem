@@ -27,7 +27,7 @@ const REFUSALS: Record<string, string> = {
 };
 
 /** Where the selected text is, in words the PM agent can use: a repository-relative path, or the file of a pull request patch. Null if it is neither. */
-function locate(document: vscode.TextDocument): { file: string; kind: 'file' | 'patch' } | { problem: string } {
+export function locate(document: vscode.TextDocument): { file: string; kind: 'file' | 'patch' } | { problem: string } {
   if (document.uri.scheme === DIFF_SCHEME) {
     const file = new URLSearchParams(document.uri.query).get('file');
     return file ? { file, kind: 'patch' } : { problem: 'This patch view does not say which file it shows.' };

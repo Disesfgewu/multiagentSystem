@@ -78,6 +78,18 @@ if (${JSON.stringify(name)} === 'claude' && configDir) {
   } catch { /* no settings: nothing to report */ }
 }
 process.stdout.write('synthetic ' + ${JSON.stringify(name)} + ' ready\\n');
+// Like an agent asked from the Ask tab (#357): a typed line that names a file to write the answer to gets a short Markdown answer there.
+if (${JSON.stringify(name)} === 'claude') {
+  let pending = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    pending += chunk;
+    const match = /Write your answer in Markdown to the file «([^»]+)»/.exec(pending);
+    if (!match) return;
+    pending = '';
+    try { fs.writeFileSync(match[1], '## What it does\\n\\n\\x60add\\x60 returns the sum of its two arguments.\\n\\n- It is called by the unit tests.\\n- See [the notes](https://example.test/notes) for more.\\n'); } catch { /* the answer could not be written */ }
+  });
+}
 setInterval(() => {}, 1 << 30);
 `;
 }

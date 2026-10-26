@@ -15,6 +15,7 @@ import { registerExportCommands } from './export/commands';
 import { registerDispatchCommands } from './dispatch/commands';
 import { registerUsageLogCommands } from './accounts/usageLogCommands';
 import { registerCommandCenter } from './commandCenter/commandCenter';
+import { trackAskSelection } from './ask/ask';
 import { registerHomeView } from './sidebar/homeView';
 import { registerOverview } from './overview/overviewView';
 import { registerReports } from './reports/reportsView';
@@ -103,6 +104,8 @@ export function activate(context: vscode.ExtensionContext): void {
   registerUsageLogCommands(context, sessions);
   registerOverview(context, sessions);
   registerCommandCenter(context, sessions);
+  // The selection the Ask tab sends is the one left in the last text editor (#357): the Workbench itself takes the focus.
+  trackAskSelection(context);
   registerHomeView(context, sessions);
   registerReports(context);
   registerRoleCommands(context, sessions);

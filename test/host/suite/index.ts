@@ -25,6 +25,7 @@ import { runCommandCenterChecks, runCommandCenterManyAgentsChecks } from './comm
 import { runWorkbenchChecks } from './workbench';
 import { runWorkBoardChecks } from './workBoard';
 import { runBroadcastTabChecks } from './broadcastTab';
+import { runAskTabChecks } from './askTab';
 import { runBroadcastDeliveryChecks } from './broadcastDelivery';
 import { runMeetingChecks } from './meeting';
 import { runDiscussWithPmChecks } from './discussWithPm';
@@ -1093,6 +1094,7 @@ export async function run(): Promise<void> {
   await runWorkbenchChecks();
   await runWorkBoardChecks();
   await runBroadcastTabChecks();
+  await runAskTabChecks(workspace);
   await runBroadcastDeliveryChecks(workspace);
   await runMemoryPanelChecks(workspace);
   await runReviewJumpChecks();

@@ -605,6 +605,15 @@ export class SessionManager<T extends TerminalHandle = TerminalHandle> {
    * waiting for input is the caller's decision (it needs evidence this class does not have). Typed is not read: the CLI's
    * reaction is not observed.
    */
+  /**
+   * Where this session's agent writes the answers of the Ask tab (#357), and the private folder that holds it: from the plan its
+   * instructions were written with. Null when it has none (agy and the manual plan, or a session restored from another window).
+   */
+  answerFolder(id: string): { dir: string; root: string } | null {
+    const plan = this.activePlans.get(id);
+    return plan && typeof plan.answersDir === 'string' && typeof plan.root === 'string' ? { dir: plan.answersDir, root: plan.root } : null;
+  }
+
   sendPrompt(id: string, prompt: string): void {
     if (!promptIsSafe(prompt)) throw new SessionError('prompt-invalid');
     const terminal = this.liveTerminal(id);
