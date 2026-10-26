@@ -219,7 +219,49 @@ const SCRIPT = String.raw`
     return bar;
   }
 
+  // The five first steps (#357): what is done, what is next and one button for it. Every step's button opens the existing window.
+  var GUIDE_ACTIONS = {
+    addAccount: ['Add Claude Code account', function () { post({ type: 'accountAction', action: 'addClaude' }); }],
+    createRole: ['Create role group…', function () { open('createRole'); }],
+    startAgent: ['Start agent…', function () { open('startAgent'); }],
+    sendTask: ['Send task…', function () { post({ type: 'sendTask' }); }],
+    openWork: ['Open the Work tab', function () { tab = 'work'; showingWork(); render(); }]
+  };
+  function guideBox(guide) {
+    var box = el('section', 'guide');
+    box.appendChild(el('h2', null, guide.complete ? 'Getting started: all 5 steps done' : 'Getting started: ' + guide.done + ' of 5 steps done'));
+    var list = el('ol', 'guide-steps');
+    guide.steps.forEach(function (step) {
+      var item = el('li', 'guide-step ' + (step.done === true ? 'done' : step.done === 'unknown' ? 'unknown' : 'todo') + (step.id === guide.next ? ' next' : ''));
+      item.appendChild(el('span', 'guide-mark', step.done === true ? '✓ done' : step.done === 'unknown' ? '? unknown' : step.id === guide.next ? '→ next' : '○ to do'));
+      item.appendChild(el('strong', null, ' ' + step.title));
+      item.appendChild(el('div', 'muted', step.done === 'unknown' ? step.reason : step.why));
+      var action = GUIDE_ACTIONS[step.action];
+      if (action) item.appendChild(button(action[0], action[1]));
+      list.appendChild(item);
+    });
+    box.appendChild(list);
+    if (guide.hidden) box.appendChild(button('Show on the Agents tab again', function () { post({ type: 'guideShow' }); }));
+    return box;
+  }
+
+  // On the Agents tab the steps take one line: how far, the next one and its button. The whole list is on the Setup tab.
+  function guideLine(guide) {
+    var box = el('section', 'guide guide-line');
+    var step = guide.steps.filter(function (entry) { return entry.id === guide.next; })[0];
+    box.appendChild(el('strong', null, 'Getting started: ' + guide.done + ' of 5 steps done.'));
+    if (step) {
+      box.appendChild(el('span', null, ' Next: ' + step.title + (step.done === 'unknown' ? ' (' + step.reason + ')' : '') + ' '));
+      var action = GUIDE_ACTIONS[step.action];
+      if (action) box.appendChild(button(action[0], action[1]));
+    }
+    box.appendChild(button('All steps', function () { tab = 'setup'; render(); }));
+    box.appendChild(button('Hide these steps', function () { post({ type: 'guideHide' }); }, 'They stay on the Setup tab'));
+    return box;
+  }
+
   function agentsTab(panel) {
+    if (state.guide && !state.guide.complete && !state.guide.hidden) panel.appendChild(guideLine(state.guide));
     var tools = el('div', 'row');
     tools.appendChild(button('Start agent…', function () { open('startAgent'); }));
     tools.appendChild(button('Edit role group…', function () { open('editRole'); }, 'Rename a role group, set its default account, its tools or its instructions'));
@@ -630,7 +672,7 @@ const SCRIPT = String.raw`
     else if (tab === 'broadcast') broadcastTab(panel);
     else if (tab === 'ask') askTab(panel);
     else if (tab === 'knowledge') knowledgeTab(panel);
-    else if (tab === 'setup') placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]);
+    else if (tab === 'setup') { if (state.guide) panel.appendChild(guideBox(state.guide)); placeholderTab(panel, 'Tools, CLIs, modes and the default models.', '#357', [['Check tools again', function () { open('setupRefresh'); }], ['Open diagnostics', function () { open('setupDiagnose'); }], ['Sessions…', function () { open('sessions'); }], ['Show classic views', function () { post({ type: 'showClassicViews' }); }]]); }
     root.appendChild(panel);
     root.appendChild(el('p', 'muted', 'Values without a source are shown as unknown.'));
   }
@@ -687,6 +729,11 @@ const STYLE = `
   .ask-answer { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 6px 12px; margin: 8px 0; }
   .md-answer { overflow-wrap: anywhere; line-height: 1.5; } .md-code { background: var(--vscode-textCodeBlock-background); padding: 6px 8px; overflow-x: auto; }
   .md-inert { text-decoration: underline dotted; } .md-table td, .md-table th { border: 1px solid var(--vscode-panel-border); padding: 2px 6px; }
+  .guide { border: 1px solid var(--vscode-panel-border); border-left: 3px solid var(--vscode-focusBorder); padding: 8px 12px; margin-bottom: 12px; }
+  .guide-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; }
+  .guide-steps { margin: 4px 0; padding-left: 20px; } .guide-step { margin: 6px 0; } .guide-step .btn { margin-top: 4px; }
+  .guide-step.done .guide-mark { color: var(--vscode-testing-iconPassed); } .guide-step.unknown .guide-mark { color: var(--vscode-descriptionForeground); }
+  .guide-step.next strong { text-decoration: underline; }
   .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 12px; flex-wrap: wrap; }
   .tab { background: transparent; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
   .tab:hover { background: var(--vscode-toolbar-hoverBackground); }

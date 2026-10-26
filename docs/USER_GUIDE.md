@@ -8,6 +8,22 @@
 
 ## 5 分鐘入門
 
+**第一次使用**：裝好擴充套件後，第一次點左側的 **Multiagent** 圖示（或第一次執行它的任何指令）時，工作台會自動在編輯區開啟 **Agents** 分頁。最上面有一行 `Getting started: 0 of 5 steps done. Next: Add an account`，旁邊的按鈕就是下一步要按的。5 個步驟依序是：新增帳號 → 建立身份組 → 啟動第一個 agent → 送出第一個任務 → 和 PM 一起看一個 PR。
+
+- 每一步是否完成，都依實際狀態判斷：有沒有帳號、身份組、agent，有沒有送過任務，有沒有在這個專案打開過 PR 頁面。讀不到資料的步驟會標成 `? unknown` 並寫出原因，不會被當成已完成。
+- 按 **All steps**，或打開 **Setup** 分頁，可以看到完整的 5 個步驟，每一步都有按鈕。之後隨時都能從 Setup 分頁重做。
+- 按 **Hide these steps**，這一行就不會再出現在 Agents 分頁，但 Setup 分頁還是看得到；在 Setup 分頁按 **Show on the Agents tab again** 可以讓它再出現。5 步都完成後，這一行會自動消失。
+- 工作台只會在第一次使用時自動打開。只開 VS Code、不碰 Multiagent 時，本擴充套件不會啟動，也不會自動打開任何畫面。
+- 裝好擴充套件後，VS Code 的歡迎頁也會顯示 **Get started with Multiagent** 導覽，步驟和上面相同，最前面多了一步 **Open the Workbench**。每一步的按鈕都會執行本擴充套件既有的指令，例如 **Add Claude Code account**。之後要再看，從 Command Palette 執行 `Welcome: Open Walkthrough...`，再選這個導覽。
+
+![VS Code 歡迎頁的導覽](user-guide/images/07-see-walkthrough.png)
+
+![第一次使用時自動開啟的工作台](user-guide/images/00-first-open.png)
+
+![Setup 分頁的 5 個步驟全部完成](user-guide/images/07-see-first-steps-done.png)
+
+以下是從打開側欄開始，一步一步的做法：
+
 1. **打開側欄**：點左側活動列的 **Multiagent** 圖示（四個方塊）。側欄只有一個區塊：最上面是 **Open Workbench**，下面三行分別是 agent、需要你處理的事、帳號。點任何一行，都會打開工作台的對應分頁。
 
    ![Multiagent 側欄](user-guide/images/00-open-side-bar.png)

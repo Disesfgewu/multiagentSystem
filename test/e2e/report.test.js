@@ -57,7 +57,7 @@ test('an item is either accepted with nothing pending, or not done with what is 
   // #397: item 12 shows the board on a synthetic GitHub and opens one card; it agrees with a real repository only once #135 says so.
   assert.deepEqual(ITEMS.find((item) => item.id === '12').steps.map((step) => step.name), ['see-board', 'open-from-board']);
   // #357: item 07 previews a line for a role group, sends it after the extension's confirmation and shows each agent's result.
-  assert.deepEqual(ITEMS.find((item) => item.id === '07').steps.map((step) => step.name), ['say-a-task', 'say-a-question', 'preview-broadcast', 'send-broadcast', 'see-in-terminal']);
+  assert.deepEqual(ITEMS.find((item) => item.id === '07').steps.map((step) => step.name), ['say-a-task', 'say-a-question', 'preview-broadcast', 'send-broadcast', 'see-in-terminal', 'see-first-steps-done', 'see-walkthrough']);
   // #357: item 05 asks the PM agent about selected code and shows the answer it wrote, as data.
   assert.deepEqual(ITEMS.find((item) => item.id === '05').steps.map((step) => step.name), ['select-code', 'ask-agent']);
   // #383: item 04 (after 08, which sets who publishes) sees which decisions are on and why, starts a PM agent and asks it about the

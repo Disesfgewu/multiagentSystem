@@ -269,6 +269,16 @@ export async function sendBroadcast(sessions: SessionCommands, input: { text: st
   return results ? results.map((entry) => ({ sessionId: entry.sessionId, outcome: entry.outcome, reason: entry.reason })) : null;
 }
 
+/** How many tasks were ever recorded as sent, for the Workbench's first steps (#357); null when the log cannot be read. */
+export async function countTasksSent(): Promise<number | null> {
+  try {
+    const opened = await privateStorage()?.use();
+    if (!opened?.ok) return null;
+    const listed = new DispatchStore(opened.store as Store).list();
+    return listed.ok ? (listed.items ?? []).length : null;
+  } catch { return null; }
+}
+
 /** The latest Issue each session was handed, for the Command Center cards. An unreadable log is "no information", never a guess. */
 export async function readAssignments(): Promise<Map<string, { issueNumber: number; at: string }>> {
   const { latestAssignments } = require('./task') as { latestAssignments(records: unknown[]): Map<string, { issueNumber: number; at: string }> };

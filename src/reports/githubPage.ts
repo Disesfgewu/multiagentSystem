@@ -237,6 +237,10 @@ export function readOpenPagesAgain(): void {
   }
 }
 
+// A pull request page was opened (#357): the Workbench's first steps count it as reviewing one with the PM.
+const openedPullRequest = new vscode.EventEmitter<number>();
+export const onDidOpenPullRequestPage = openedPullRequest.event;
+
 /** Opens the page of one Issue or pull request, or brings its open tab to the front and reads it again. */
 export async function openGitHubPage(source: PageSource, value: unknown): Promise<{ ok: boolean; code?: string }> {
   const input = value && typeof value === 'object' ? (value as { kind?: unknown; number?: unknown }) : {};
@@ -244,6 +248,7 @@ export async function openGitHubPage(source: PageSource, value: unknown): Promis
   const number = typeof input.number === 'number' && Number.isSafeInteger(input.number) && input.number > 0 ? input.number : null;
   if (!kind || number === null) return { ok: false, code: 'invalid-report' };
   const key = keyOf(kind, number);
+  if (kind === 'pullRequest') openedPullRequest.fire(number);
   const open = pages.get(key);
   if (open) {
     open.panel.reveal(vscode.ViewColumn.Active);

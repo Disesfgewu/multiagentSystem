@@ -331,6 +331,23 @@ const ITEMS = [
         }
       },
       {
+        name: 'first-open',
+        does: 'Look at the editor area after the Multiagent side bar was opened for the first time.',
+        run: async ({ page, check }) => {
+          // The first time the extension starts (here: the side bar opened above), the Workbench opens by itself at the Agents tab with
+          // its five first steps (#357).
+          const tab = page.locator('.tabs-container .tab', { hasText: 'Workbench' });
+          await timed('the Workbench to open by itself', () => tab.first().waitFor({ timeout: 30000 }));
+          const frame = await workbenchFrame(page);
+          const guide = frame.locator('section.guide');
+          await timed('the first steps', () => guide.waitFor({ timeout: 20000 }));
+          const text = await textOf(guide, 'the first steps');
+          check('the Workbench opened by itself, with the first steps', text, /Getting started: 0 of 5 steps done\./);
+          check('the first is next, with its button', text, (value) => /Next: Add an account/.test(value) && /Add Claude Code account/.test(value));
+          await clearNotifications(page);
+        }
+      },
+      {
         name: 'open-workbench',
         does: 'Click "Open Workbench" in the side bar.',
         run: async ({ page, check }) => {
@@ -1198,6 +1215,49 @@ const ITEMS = [
           while (Date.now() < deadline && !/run the tests before you push/.test(terminal)) { terminal = await page.locator('.terminal-wrapper.active .xterm-rows, .xterm-rows').last().innerText().catch(() => ''); await pause(300); }
           check('E2E Agent 1 got the line in its terminal', terminal.replace(/\s+/g, ' '), /\[Task from the administrator\].*run the tests before you push/);
           check('without a word about an Issue (#400)', terminal.replace(/\s+/g, ' '), (value) => !/The Issue text above/.test(value));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'see-first-steps-done',
+        does: 'In the Workbench, open the Setup tab.',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click();
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Setup' }).first().click();
+          const guide = frame.locator('section.guide');
+          await timed('the first steps on Setup', () => guide.waitFor({ timeout: 20000 }));
+          // Accounts (01), a role group and agents (11), a pull request page (08) and a task (this item) were all done above.
+          let text = '';
+          const deadline = Date.now() + 20000;
+          while (Date.now() < deadline && !/all 5 steps done/.test(text)) { text = await guide.innerText().catch(() => ''); await pause(500); }
+          check('all five first steps are done, each from what really happened', text, /Getting started: all 5 steps done/);
+          check('each says done', (text.match(/✓ done/g) || []).length, 5);
+          check('in order: account, role group, agent, task, pull request', text.replace(/\s+/g, ' '), /Add an account.*Create a role group.*Start your first agent.*Send it a first task.*Review a pull request with the PM/);
+          await frame.locator('button[role="tab"]', { hasText: 'Agents' }).first().click();
+          check('and they are no longer on the Agents tab', await frame.locator('section.guide').count(), 0);
+          await frame.locator('button[role="tab"]', { hasText: 'Setup' }).first().click();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'see-walkthrough',
+        does: 'Run "Welcome: Open Walkthrough..." from the command palette and choose "Get started with Multiagent".',
+        run: async ({ page, check }) => {
+          // VS Code's own walkthrough (#357): it needs nothing of the extension to run, and each step's button runs an existing command.
+          await timed('the command "Welcome: Open Walkthrough..."', () => runCommand(page, 'Welcome: Open Walkthrough...'));
+          const input = page.locator('.quick-input-widget .quick-input-box input').first();
+          await timed('the list of walkthroughs', () => input.waitFor({ state: 'visible', timeout: 10000 }));
+          await input.fill('Get started with Multiagent');
+          await timed('the walkthrough in the list', () => page.locator('.quick-input-widget .quick-input-list .monaco-list-row', { hasText: 'Get started with Multiagent' }).first().waitFor({ timeout: 10000 }));
+          await pressEnter(page);
+          const steps = page.locator('.getting-started-step:visible');
+          await timed('the walkthrough\'s steps', () => steps.first().waitFor({ timeout: 20000 }));
+          const titles = (await steps.allInnerTexts()).map((text) => text.split('\n')[0].trim());
+          check('the walkthrough shows six steps: the Workbench, then the five first steps', titles.join(' | '), 'Open the Workbench | Add an account | Create a role group | Start your first agent | Send it a first task | Review a pull request with the PM');
+          await timed('the step "Add an account"', () => steps.filter({ hasText: 'Add an account' }).first().click({ timeout: 10000 }));
+          const open = page.locator('.getting-started-step.expanded:visible');
+          check('a step says what it is for and has its button', await textOf(open, 'the open step'), (value) => /CLI sign-in an agent works with/.test(value) && /Add Claude Code account/.test(value));
           await clearNotifications(page);
         }
       }
