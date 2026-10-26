@@ -360,6 +360,37 @@ const ITEMS = [
           check('with its seven tabs', tabs.join(' | '), 'Agents | Work | Accounts | Broadcast | Ask | Knowledge | Setup');
           await clearNotifications(page);
         }
+      },
+      {
+        name: 'see-setup-tab',
+        does: 'In the Workbench click "Setup", read the tools and modes, and click "Change…" next to "Auto mode".',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('button[role="tab"]', { hasText: 'Setup' }).first().click();
+          const rows = frame.locator('.setup-row');
+          await timed('the tools and modes', () => rows.nth(7).waitFor({ timeout: 20000 }));
+          const text = (await textsOf(rows, 'the tools and modes')).join(' | ');
+          check('each tool is said in plain words', text, (value) => /Git/.test(value) && /GitHub CLI \(gh\)/.test(value) && /Claude Code/.test(value) && /Codex CLI/.test(value) && /agy/.test(value));
+          check('with its state: ready, needs you or unknown', text, /(ready|needs you|unknown) GitHub CLI/);
+          check('the modes, from the user settings', text, (value) => /Auto mode: on: agents do not stop to ask/.test(value) && /Isolation: advisory/.test(value) && /New worktrees: ask once, then remember/.test(value));
+          check('nothing was downloaded by looking', text, (value) => !/Setting up…/.test(value));
+          await frame.locator('h2', { hasText: 'Tools' }).first().scrollIntoViewIfNeeded();
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'change-mode-setting',
+        does: 'Click "Change…" next to "Auto mode".',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          await frame.locator('.setup-row', { hasText: 'Auto mode' }).locator('button', { hasText: 'Change…' }).first().click();
+          // VS Code's Settings opens, searched for that one setting; wait until the setting itself is drawn.
+          const item = page.locator('.settings-editor .setting-item-contents', { hasText: 'Auto Mode' });
+          await timed('the setting in VS Code\'s Settings', () => item.first().waitFor({ timeout: 20000 }));
+          check('Settings opens at that one setting, in the user settings', await textOf(item.first(), 'the setting'), /Agents: Auto Mode[\s\S]*user settings only/);
+          check('and only it', await page.locator('.settings-editor .setting-item-contents:visible').count(), 1);
+          await clearNotifications(page);
+        }
       }
     ]
   },

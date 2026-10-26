@@ -136,7 +136,7 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'guideHide', 'guideShow', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sayPreview', 'sayRun', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'guideHide', 'guideShow', 'loadBoard', 'loadSetup', 'open', 'openPullRequest', 'openReport', 'openReports', 'openSetting', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sayPreview', 'sayRun', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
   // The board (#397): loadBoard carries nothing; openWorkItem names only an item the board showed, by kind and number.
   const items = new Set(['issue:12', 'pullRequest:7']);
   assert.deepEqual(parseMessage({ type: 'loadBoard' }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'loadBoard' } });
@@ -540,4 +540,47 @@ test('the five first steps: done only when what was read says so, unknown with i
   for (const bad of [undefined, null, [], { accounts: -1, roleGroups: 1.5, agents: '1', tasks: NaN, reviewed: 'yes' }]) {
     assert.deepEqual(buildGettingStarted(bad).steps.map((step) => step.done), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown'], JSON.stringify(bad));
   }
+});
+
+test('the Setup tab says each tool\'s state in plain words, with its existing setup command only when it needs one (#357)', () => {
+  const { describeTools } = require('../../src/commandCenter/model');
+  assert.deepEqual(describeTools(null), { known: false, rows: [] });
+  const read = describeTools({ git: { onPath: true }, gh: { state: 'ready', version: '2.60.1' }, claude: { state: 'missing', reason: 'not-prepared' }, codex: { state: 'unsupported' }, agy: { onPath: false } });
+  assert.deepEqual(read.rows.map((row) => [row.id, row.state, row.action]), [['git', 'ready', null], ['gh', 'ready', null], ['claude', 'attention', 'setupRetryClaude'], ['codex', 'attention', null], ['agy', 'attention', null]]);
+  assert.match(read.rows[1].text, /^Ready · 2\.60\.1, checked by its fixed release and SHA-256$/);
+  assert.equal(read.rows[2].text, 'Needs setup: not set up yet');
+  assert.equal(read.rows[3].text, 'Not available on this computer');
+  assert.match(read.rows[4].text, /cannot be set up here/);
+  // Preparing, unreadable, odd reasons and versions: never shown as given, never ready.
+  const odd = describeTools({ gh: { state: 'missing', reason: 'Bad <b>reason</b>' }, claude: { state: 'ready', version: '1.0 <script>' }, codex: { preparing: true, state: 'ready' }, git: { onPath: 'yes' }, agy: { onPath: true } });
+  assert.equal(odd.rows[1].text, 'Needs setup: the reason is unknown');
+  assert.equal(odd.rows[2].text, 'Ready, checked by its fixed release and SHA-256', 'a version that is not one is left out');
+  assert.deepEqual([odd.rows[3].state, odd.rows[3].text, odd.rows[3].action], ['unknown', 'Setting up…', null]);
+  assert.equal(odd.rows[0].state, 'attention', 'only true means found');
+  assert.equal(odd.rows[4].state, 'unknown', 'agy found is still not checked');
+  assert.equal(describeTools({ gh: {} }).rows[1].state, 'unknown');
+  assert.equal(describeTools({ gh: { state: 'missing', reason: 'managed-binary-changed' } }).rows[1].text, 'Needs setup: managed binary changed');
+});
+
+test('the Setup tab says the modes from the user settings, the defaults when unset, and unknown for a value it does not know (#357)', () => {
+  const { describeModes, MODE_SETTINGS } = require('../../src/commandCenter/model');
+  const unset = describeModes({});
+  assert.deepEqual(unset.map((mode) => mode.key), MODE_SETTINGS);
+  assert.match(unset[0].value, /^on: /);
+  assert.equal(unset[0].note, 'The same for every CLI');
+  assert.match(unset[1].value, /^advisory: /);
+  assert.equal(unset[2].value, 'ask once, then remember');
+  const set = describeModes({ autoMode: 'off', overrides: { claude: 'on', 'bad key!': 'on', codex: 'maybe' }, isolation: 'enforced', preTrust: 'on' });
+  assert.deepEqual(set.map((mode) => mode.value.split(':')[0]), ['off', 'enforced', 'trusted without asking']);
+  assert.equal(set[0].note, 'Per CLI: claude: on');
+  for (const mode of describeModes({ autoMode: 'yes', isolation: 3, preTrust: null })) assert.match(mode.value, /^unknown/);
+});
+
+test('the Setup tab can open only the three mode settings, and reading it carries nothing (#357)', () => {
+  const { MODE_SETTINGS } = require('../../src/commandCenter/model');
+  for (const key of MODE_SETTINGS) assert.deepEqual(parseMessage({ type: 'openSetting', key }), { ok: true, message: { type: 'openSetting', key } });
+  for (const key of ['multiagentSystem.providers.custom', 'workbench.colorTheme', '', 5, undefined]) assert.equal(parseMessage({ type: 'openSetting', key }).ok, false, String(key));
+  assert.equal(parseMessage({ type: 'openSetting', key: MODE_SETTINGS[0], value: 'off' }).ok, false, 'it cannot set a value');
+  assert.deepEqual(parseMessage({ type: 'loadSetup' }), { ok: true, message: { type: 'loadSetup' } });
+  assert.equal(parseMessage({ type: 'loadSetup', force: true }).ok, false);
 });

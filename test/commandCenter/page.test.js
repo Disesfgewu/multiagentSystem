@@ -541,3 +541,45 @@ test('the first steps: on the Agents tab until done or hidden, always on the Set
   assert.ok(app.textContent.includes('Getting started: all 5 steps done'));
   assert.equal(app.textContent.includes('Show on the Agents tab again'), false, 'nothing to show again when they are not hidden');
 });
+
+test('the Setup tab: tools and modes read when it is shown; a tool that needs it can be set up, and a mode opens its setting (#357)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', value: '', checked: false, title: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node, createTextNode: (text) => ({ textContent: String(text), tag: '#text', listeners: {} }) }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const { describeTools, describeModes } = require('../../src/commandCenter/model');
+  listeners.message({ data: { type: 'state', state: { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] } } });
+  const json = (value) => JSON.parse(JSON.stringify(value));
+  const buttons = (text) => nodes.filter((entry) => entry.tag === 'button' && entry.textContent === text);
+  nodes.filter((entry) => entry.tag === 'button' && entry.attrs.role === 'tab' && entry.textContent === 'Setup').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'loadSetup' }, 'shown: it asks for the tools and modes');
+  assert.ok(app.textContent.includes('Reading the tools…'));
+  listeners.message({ data: { type: 'setup', tools: describeTools({ git: { onPath: true }, gh: { state: 'ready', version: '2.60.1' }, claude: { state: 'missing', reason: 'not-prepared' }, codex: { state: 'unsupported' }, agy: { onPath: false } }), modes: describeModes({ autoMode: 'off' }) } });
+  assert.ok(app.textContent.includes('ready GitHub CLI (gh) Ready · 2.60.1'));
+  assert.ok(app.textContent.includes('needs you Claude Code Needs setup: not set up yet'));
+  assert.equal(buttons('Download and verify').length, 1, 'only the tool that needs it has the button');
+  const within = (root) => [root, ...root.children.flatMap((child) => (child.children ? within(child) : []))];
+  const rows = nodes.filter((entry) => entry.className === 'setup-row');
+  assert.deepEqual(rows.map((row) => within(row).filter((entry) => entry.tag === 'button').length), [0, 0, 1, 0, 0, 1, 1, 1], 'no other row has a button');
+  buttons('Download and verify')[0].listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'open', target: 'setupRetryClaude' });
+  assert.ok(app.textContent.includes('Auto mode: off: agents ask as usual'));
+  buttons('Change…')[0].listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'openSetting', key: 'multiagentSystem.agents.autoMode' });
+  assert.ok(app.textContent.includes('Each agent\'s model is chosen when it starts'));
+  buttons('Read again').at(-1).listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'loadSetup' });
+  listeners.message({ data: { type: 'setup', tools: { known: false, rows: [] }, modes: [] } });
+  assert.ok(app.textContent.includes('The tools could not be read.'));
+});
