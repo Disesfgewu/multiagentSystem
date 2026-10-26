@@ -401,7 +401,7 @@ const TARGETS = Object.freeze({
   setupDiagnose: 'multiagentSystem.setup.diagnose'
 });
 
-const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent']);
+const COMMANDS = Object.freeze(['ready', 'refresh', 'setLayout', 'reorder', 'toggleCollapse', 'togglePin', 'focus', 'openReport', 'openPullRequest', 'openReports', 'startMeeting', 'accountAction', 'exportReport', 'editTeamRules', 'assignIssue', 'sendTask', 'talkToPm', 'open', 'showClassicViews', 'switchAccount', 'skillAction', 'loadBoard', 'openWorkItem', 'broadcastPreview', 'broadcastSend', 'askContext', 'askSend', 'stopAgent', 'restartAgent', 'sayPreview', 'sayRun']);
 const SHAPES = Object.freeze({
   ready: [], refresh: [], setLayout: ['mode'], reorder: ['order'], toggleCollapse: ['id'], togglePin: ['id'], focus: ['id'], openReport: ['id'], openPullRequest: ['id'], openReports: ['kind'], accountAction: ['action', 'id'], exportReport: [], editTeamRules: [], assignIssue: [], sendTask: [], startMeeting: [], talkToPm: [], open: ['target'], showClassicViews: [], switchAccount: ['id'], skillAction: ['action', 'name'],
   // The Work tab's board (#397): read it now; open one item it shows (by its kind and number, nothing else).
@@ -411,7 +411,9 @@ const SHAPES = Object.freeze({
   // The Ask tab (#357, #360 item 5): what is selected now; ask one agent on the screen the typed question, with the selection or not.
   askContext: [], askSend: ['id', 'question', 'withSelection'],
   // A card's Stop… and Restart… (#357): the card only; the session commands ask before anything stops.
-  stopAgent: ['id'], restartAgent: ['id']
+  stopAgent: ['id'], restartAgent: ['id'],
+  // The "say it" box (#357, #360 guideline 3): only the line the person typed; the extension works out what it means and to whom.
+  sayPreview: ['text'], sayRun: ['text']
 });
 // What the Knowledge tab may ask about one skill (#359): each is a command with its own windows; the page names the skill only.
 const SKILL_ACTIONS = Object.freeze({ edit: 'multiagentSystem.skills.libraryEdit', toggle: 'multiagentSystem.skills.libraryToggle', roles: 'multiagentSystem.skills.libraryRoles', remove: 'multiagentSystem.skills.libraryRemove', approve: 'multiagentSystem.skills.libraryApprove' });
@@ -471,6 +473,7 @@ function buildSkills(summary) {
  * @returns {{ ok: true, message: object } | { ok: false, reason: string }}
  */
 const MAX_BROADCAST_TEXT = 1500;
+const { MAX_SAY_TEXT } = require('./intent');
 const MAX_BROADCAST_IDS = 50;
 
 function parseMessage(raw, knownIds, accountIds, skillNames, boardItems, knownGroups) {
@@ -502,6 +505,11 @@ function parseMessage(raw, knownIds, accountIds, skillNames, boardItems, knownGr
     if (typeof raw.question !== 'string' || raw.question.length > 2000) return { ok: false, reason: 'invalid-text' };
     if (typeof raw.withSelection !== 'boolean') return { ok: false, reason: 'invalid-field' };
     return { ok: true, message: { type: raw.type, id: raw.id, question: raw.question, withSelection: raw.withSelection } };
+  }
+  if (raw.type === 'sayPreview' || raw.type === 'sayRun') {
+    // Checked again by the interpreter and by the flow it leads to; here only its kind and size.
+    if (typeof raw.text !== 'string' || raw.text.length > MAX_SAY_TEXT) return { ok: false, reason: 'invalid-text' };
+    return { ok: true, message: { type: raw.type, text: raw.text } };
   }
   if (raw.type === 'broadcastPreview' || raw.type === 'broadcastSend') {
     // What the person typed (checked again by the task builder), and exactly one target: a role group of an agent on the screen, or

@@ -136,7 +136,7 @@ test('only the known commands with exactly their fields are accepted, and an id 
 });
 
 test('the command list is exactly what the page can send: it stops or restarts nothing by itself (switchAccount only opens the session command, which asks first); exportReport, assignIssue and sendTask only open the command\'s own windows and carry no path or text', () => {
-  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
+  assert.deepEqual([...COMMANDS].sort(), ['accountAction', 'askContext', 'askSend', 'assignIssue', 'broadcastPreview', 'broadcastSend', 'editTeamRules', 'exportReport', 'focus', 'loadBoard', 'open', 'openPullRequest', 'openReport', 'openReports', 'openWorkItem', 'ready', 'refresh', 'reorder', 'restartAgent', 'sayPreview', 'sayRun', 'sendTask', 'setLayout', 'showClassicViews', 'skillAction', 'startMeeting', 'stopAgent', 'switchAccount', 'talkToPm', 'toggleCollapse', 'togglePin']);
   // The board (#397): loadBoard carries nothing; openWorkItem names only an item the board showed, by kind and number.
   const items = new Set(['issue:12', 'pullRequest:7']);
   assert.deepEqual(parseMessage({ type: 'loadBoard' }, new Set(), new Set(), new Set(), items), { ok: true, message: { type: 'loadBoard' } });
@@ -165,6 +165,13 @@ test('the command list is exactly what the page can send: it stops or restarts n
     assert.deepEqual(parseMessage({ type, id: 's-1' }, new Set(['s-1'])), { ok: true, message: { type, id: 's-1' } });
     assert.equal(parseMessage({ type, id: 's-9' }, new Set(['s-1'])).ok, false, `${type}: a card not on the screen`);
     assert.equal(parseMessage({ type, id: 's-1', force: true }, new Set(['s-1'])).ok, false, `${type}: nothing else`);
+  }
+  // sayPreview and sayRun (#357, #360 guideline 3) carry only the typed line; the extension works out what it means and to whom.
+  for (const type of ['sayPreview', 'sayRun']) {
+    assert.deepEqual(parseMessage({ type, text: 'Worker-01 fix it' }), { ok: true, message: { type, text: 'Worker-01 fix it' } });
+    assert.equal(parseMessage({ type, text: 'x'.repeat(501) }).reason, 'invalid-text');
+    assert.equal(parseMessage({ type, text: 7 }).reason, 'invalid-text');
+    assert.equal(parseMessage({ type, text: 'q', ids: ['s-1'] }, new Set(['s-1'])).ok, false, 'no target from the page');
   }
   // askSend (#357) names an agent on the screen, the typed question and whether to include the selection; nothing else.
   assert.deepEqual(parseMessage({ type: 'askSend', id: 's-1', question: 'What does this do?', withSelection: true }, new Set(['s-1'])), { ok: true, message: { type: 'askSend', id: 's-1', question: 'What does this do?', withSelection: true } });

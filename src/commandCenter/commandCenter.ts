@@ -47,7 +47,7 @@ let teamReader: (() => Promise<{ pm: any[]; agents: any[]; accounts: any[] } | n
 export async function readTeamSnapshot(): Promise<{ pm: any[]; agents: any[]; accounts: any[] } | null> {
   try { return teamReader ? await teamReader() : null; } catch { return null; }
 }
-let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown; ask(): unknown } | undefined;
+let controller: { handle(raw: unknown): Promise<CommandCenterResult>; state(): unknown; refresh(): Promise<void>; board(): unknown; broadcast(): unknown; ask(): unknown; say(): unknown } | undefined;
 let controllerForTest: typeof controller;
 export function commandCenterForTests(): NonNullable<typeof controller> {
   if (!controllerForTest) throw new Error('The Command Center is only exposed in Extension Host tests.');
@@ -99,6 +99,8 @@ async function readAccounts(live: Array<Record<string, unknown>>): Promise<{ row
 const ASK_WAIT_MS = 10 * 60 * 1000;
 const { parseMarkdown } = require('../reports/markdown') as { parseMarkdown(text: string, options: { links: string[] }): { blocks: unknown[]; truncated: boolean } };
 const { reasonText: broadcastReason } = require('../broadcast/deliver') as { reasonText(reason: string): string };
+type SayPlan = { ok: true; kind: 'ask'; id: string; question: string; withSelection: boolean } | { ok: true; kind: 'task' | 'broadcast'; ids: string[]; text: string; to: string } | { ok: false; reason: string };
+const { interpret } = require('./intent') as { interpret(text: string, context: { cards: unknown[] }): SayPlan };
 
 /** The Command Center: a read-only team screen in the editor area (issue #309). Everything it shows comes from the existing services. */
 export function registerCommandCenter(context: vscode.ExtensionContext, sessions: SessionCommands): void {
@@ -162,6 +164,13 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     look();
   };
   const tellPage = (message: unknown): void => { lastBroadcast = message; if (panel) void panel.webview.postMessage(message); };
+  // The "say it" box (#357, #360 guideline 3): the plan last previewed, and only that plan, for that same text, can be carried out.
+  let lastSay: unknown = null;
+  let previewed: { text: string; plan: SayPlan } | null = null;
+  const tellSay = (message: Record<string, unknown>): void => { lastSay = { type: 'sayState', ...message }; if (panel) void panel.webview.postMessage(lastSay); };
+  const sayCards = (): unknown[] => [...(cached?.pm ?? []).map((card) => ({ ...card, pm: true })), ...(cached?.agents ?? []).map((card) => ({ ...card, pm: false }))]
+    .map((card) => ({ id: card.id, codename: card.codename, name: card.name, roleGroupId: card.roleGroupId, roleName: card.roleName, pm: card.pm }));
+  const samePlan = (a: SayPlan, b: SayPlan): boolean => a.ok && b.ok && a.kind === b.kind && (a.kind === 'ask' ? b.kind === 'ask' && a.id === b.id && a.withSelection === b.withSelection : b.kind !== 'ask' && a.ids.join(',') === b.ids.join(','));
   const payload = () => {
     if (!cached) return null;
     return { layout, pm: model.arrange(cached.pm, { ...layout, pinned: [] }), agents: model.arrange(cached.agents, layout), accounts: cached.accounts, alerts: cached.alerts, decisions: cached.decisions, notes: cached.notes, skills: cached.skills ?? model.buildSkills(null) };
@@ -240,6 +249,50 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
         if (!asked.ok) { tellAsk({ state: 'refused', from: label, reason: asked.reason }); return { ok: true, command: message.type }; }
         tellAsk({ state: 'waiting', from: label, file: asked.file });
         watchAnswer(asked, label);
+        return { ok: true, command: message.type };
+      }
+      // The "say it" box: what the line means, said back with exactly what would be typed and to whom; nothing is typed.
+      case 'sayPreview': {
+        previewed = null;
+        const plan = interpret(message.text ?? '', { cards: sayCards() });
+        if (!plan.ok) { tellSay({ state: 'refused', reason: plan.reason }); return { ok: true, command: message.type }; }
+        if (plan.kind === 'ask') {
+          const selection = plan.withSelection ? currentSelection() : null;
+          if (selection && !selection.ok) { tellSay({ state: 'refused', reason: `${selection.reason} Select the code in the editor first, or ask without "this code".` }); return { ok: true, command: message.type }; }
+          previewed = { text: message.text ?? '', plan };
+          tellSay({ state: 'preview', kind: 'ask', to: labelOf(plan.id), question: plan.question, selection: selection && selection.ok ? { file: selection.file, startLine: selection.startLine, endLine: selection.endLine } : null });
+          return { ok: true, command: message.type };
+        }
+        const preview = previewBroadcast(sessions, { text: plan.text, ids: plan.ids });
+        if (!preview.ok) { tellSay({ state: 'refused', reason: preview.reason }); return { ok: true, command: message.type }; }
+        previewed = { text: message.text ?? '', plan };
+        tellSay({ state: 'preview', kind: plan.kind, to: plan.to, prompt: preview.prompt, recipients: preview.recipients.map((entry) => ({ label: labelOf(entry.id), decision: entry.decision, reason: entry.reason })) });
+        return { ok: true, command: message.type };
+      }
+      // Carried out only as previewed: the same text, meaning the same thing to the same agents now, through the flow's own confirmation.
+      case 'sayRun': {
+        const before = previewed;
+        previewed = null;
+        if (!before || before.text !== message.text) { tellSay({ state: 'refused', reason: 'Preview it first: the text changed since the preview.' }); return { ok: true, command: message.type }; }
+        const plan = interpret(message.text ?? '', { cards: sayCards() });
+        if (!plan.ok || !samePlan(plan, before.plan)) { tellSay({ state: 'refused', reason: 'The agents on the screen changed since the preview. Preview it again.' }); return { ok: true, command: message.type }; }
+        if (plan.kind === 'ask') {
+          const label = labelOf(plan.id);
+          tellSay({ state: 'running' });
+          const asked = await askAgent(sessions, { sessionId: plan.id, question: plan.question, withSelection: plan.withSelection });
+          if (!asked.ok) { tellSay({ state: 'refused', reason: asked.reason }); return { ok: true, command: message.type }; }
+          tellSay({ state: 'asked', to: label });
+          tellAsk({ state: 'waiting', from: label, file: asked.file });
+          watchAnswer(asked, label);
+          if (panel) void panel.webview.postMessage({ type: 'showTab', tab: 'ask' });
+          return { ok: true, command: message.type };
+        }
+        tellSay({ state: 'running' });
+        const results = await sendBroadcast(sessions, { text: plan.text, ids: plan.ids });
+        tellSay(results
+          ? { state: 'results', sent: true, results: results.map((entry) => ({ label: labelOf(entry.sessionId), outcome: entry.outcome, reason: broadcastReason(entry.reason) })) }
+          : { state: 'results', sent: false, results: [] });
+        void refresh();
         return { ok: true, command: message.type };
       }
       // The Broadcast tab (#357, #360 item 7): what would be typed and to whom; nothing is typed.
@@ -360,7 +413,7 @@ export function registerCommandCenter(context: vscode.ExtensionContext, sessions
     }
   };
   teamReader = async () => { await refresh(); return cached ? { pm: cached.pm, agents: cached.agents, accounts: cached.accounts } : null; };
-  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast, ask: () => lastAsk };
+  controller = { handle, state: payload, refresh, board: () => lastBoard, broadcast: () => lastBroadcast, ask: () => lastAsk, say: () => lastSay };
   controllerForTest = context.extensionMode === vscode.ExtensionMode.Test ? controller : undefined;
 
   // The Workbench (#357), at the tab asked for (a fixed list; anything else opens the Agents tab).

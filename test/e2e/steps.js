@@ -1020,7 +1020,7 @@ const ITEMS = [
           check('it says which code goes with the question', where, /Selected: add\.js, lines 1–4/);
           check('the PM agent is asked by default', await frame.locator('select.ask-agent option:checked').innerText(), /E2E PM agent/);
           await frame.locator('textarea.ask-text').fill('What does this do?');
-          await frame.locator('button', { hasText: 'Ask…' }).first().click();
+          await frame.locator('.tab-panel button', { hasText: 'Ask…' }).first().click();
           const answered = await drive(page, [
             { dialog: /^Ask E2E PM agent this question\?/, button: 'Send Now' }
           ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
@@ -1092,6 +1092,58 @@ const ITEMS = [
     acceptance: 'accepted',
     steps: [
       {
+        name: 'say-a-task',
+        does: 'At the top of the Workbench, type "E2E Agent 2, please write a short status note." and press Enter; read what it understood, click "Send…" and "Send Now".',
+        run: async ({ page, check }) => {
+          await page.locator('.tabs-container .tab', { hasText: 'Workbench' }).first().click().catch(() => {});
+          const frame = await workbenchFrame(page);
+          const input = frame.locator('input.say-text');
+          await timed('the "say it" box', () => input.waitFor({ timeout: 20000 }));
+          await input.fill('E2E Agent 2, please write a short status note.');
+          await input.press('Enter');
+          const preview = frame.locator('.say-preview');
+          await timed('what it understood', () => preview.waitFor({ timeout: 20000 }));
+          const text = await textOf(preview, 'what it understood');
+          check('it says what it understood: a task for one agent', text, /Understood: a task for one agent/);
+          check('with the exact line', text, /\[Task from the administrator\][\s\S]*E2E Agent 2, please write a short status note\./);
+          check('and only the agent named gets it', text, (value) => /E2E Agent 2 — will receive it/.test(value) && !/E2E Agent [134] —/.test(value));
+          await preview.locator('button', { hasText: 'Send…' }).first().click();
+          const answered = await drive(page, [
+            { dialog: /^Type this into the chosen agents\?/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the extension asked before typing anything', answered.join(' | '), /dialog: Type this into the chosen agents\?[\s\S]*→ Send Now/);
+          const results = frame.locator('.say-out .bc-results');
+          await timed('the results', () => results.waitFor({ timeout: 30000 }));
+          check('it was typed into that one agent', await textOf(results, 'the results'), (value) => /Typed into 1 of 1 agents/.test(value) && /E2E Agent 2 — sent/.test(value));
+          await clearNotifications(page);
+        }
+      },
+      {
+        name: 'say-a-question',
+        does: 'In the same box, type "E2E Agent 3, what does add.js do?" and press Enter; click "Ask…" and "Send Now", and read the answer on the Ask tab.',
+        run: async ({ page, check }) => {
+          const frame = await workbenchFrame(page);
+          const input = frame.locator('input.say-text');
+          await input.fill('E2E Agent 3, what does add.js do?');
+          await input.press('Enter');
+          const preview = frame.locator('.say-preview');
+          await timed('what it understood', () => preview.waitFor({ timeout: 20000 }));
+          check('a question is asked, of the agent named', await textOf(preview, 'what it understood'), /Understood: a question for Worker-\d+ · E2E Agent 3[\s\S]*what does add\.js do\?/);
+          await preview.locator('button', { hasText: 'Ask…' }).first().click();
+          const answered = await drive(page, [
+            { dialog: /^Ask .*E2E Agent 3 this question\?/, button: 'Send Now' }
+          ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);
+          check('the extension asked before typing anything', answered.join(' | '), /this question\?[\s\S]*→ Send Now/);
+          const answer = frame.locator('.ask-answer');
+          const deadline = Date.now() + 30000;
+          let text = '';
+          while (Date.now() < deadline && !/Answer from/.test(text)) { text = await answer.innerText().catch(() => ''); await pause(500); }
+          check('the Ask tab opens with the agent\'s answer', text, /Answer from Worker-\d+ · E2E Agent 3[\s\S]*returns the sum of its two arguments/);
+          check('the Ask tab is the one shown', await frame.locator('button[role="tab"][aria-selected="true"]').first().innerText(), 'Ask');
+          await clearNotifications(page);
+        }
+      },
+      {
         name: 'preview-broadcast',
         does: 'In the Workbench click "Broadcast", choose the role group "E2E Developers", type "Please pull main and run the tests before you push." and click "Preview".',
         run: async ({ page, check }) => {
@@ -1104,15 +1156,15 @@ const ITEMS = [
           check('the role groups of the running agents are offered, with how many run', options.join(' | '), (text) => Boolean(developers) && /E2E Developers \(\d+ running\)/.test(text));
           await frame.locator('select.bc-group').selectOption({ label: developers });
           await frame.locator('textarea.bc-text').fill('Please pull main and run the tests before you push.');
-          check('Send waits for a preview', await frame.locator('button', { hasText: 'Send…' }).first().isDisabled(), true);
-          await frame.locator('button', { hasText: 'Preview' }).first().click();
+          check('Send waits for a preview', await frame.locator('.tab-panel button', { hasText: 'Send…' }).first().isDisabled(), true);
+          await frame.locator('.tab-panel button', { hasText: 'Preview' }).first().click();
           const preview = frame.locator('.bc-preview');
           await timed('the preview', () => preview.waitFor({ timeout: 20000 }));
           const text = await textOf(preview, 'the preview');
           check('the preview shows the exact line', text, /\[Task from the administrator\][\s\S]*Please pull main and run the tests before you push\./);
           check('and says nothing about an Issue that is not there (#400)', text, (value) => !/The Issue text above/.test(value) && /Reply when you are done or blocked\./.test(value));
           check('and who gets it now', text, /E2E Agent 1 — will receive it/);
-          check('Send is on for the previewed text', await frame.locator('button', { hasText: 'Send…' }).first().isDisabled(), false);
+          check('Send is on for the previewed text', await frame.locator('.tab-panel button', { hasText: 'Send…' }).first().isDisabled(), false);
           await preview.scrollIntoViewIfNeeded();
           await clearNotifications(page);
         }
@@ -1122,7 +1174,7 @@ const ITEMS = [
         does: 'Click "Send…", read the window and click "Send Now".',
         run: async ({ page, check }) => {
           const frame = await workbenchFrame(page);
-          await frame.locator('button', { hasText: 'Send…' }).first().click();
+          await frame.locator('.tab-panel button', { hasText: 'Send…' }).first().click();
           const answered = await drive(page, [
             { dialog: /^Type this into the chosen agents\?/, button: 'Send Now' }
           ], async (seen) => seen.some((line) => /Send Now/.test(line)) && !(await page.locator('.monaco-dialog-box:visible').first().isVisible().catch(() => false)), 60000);

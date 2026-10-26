@@ -417,3 +417,67 @@ test('a card offers Stop… only while its terminal is open, and Restart… alwa
   closed.children.find((child) => child.textContent === 'Restart…').listeners.click();
   assert.equal(JSON.stringify(posted.at(-1)), JSON.stringify({ type: 'restartAgent', id: 'closed-1' }));
 });
+
+test('the "say it" box: the line goes to the extension alone; what it understood comes back, and only that is carried out (#357, #360 guideline 3)', () => {
+  const listeners = {};
+  const nodes = [];
+  const posted = [];
+  function node(tag) {
+    const entry = { tag, className: '', children: [], attrs: {}, listeners: {}, _text: '', value: '', checked: false, title: '',
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+      get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); },
+      set textContent(value) { this._text = String(value); if (value === '') this.children = []; } };
+    nodes.push(entry);
+    return entry;
+  }
+  const app = node('div');
+  vm.runInNewContext(SCRIPT, { document: { getElementById: () => app, createElement: node, createTextNode: (text) => ({ textContent: String(text), tag: '#text', listeners: {} }) }, acquireVsCodeApi: () => ({ postMessage(message) { posted.push(message); } }), window: { addEventListener: (name, fn) => { listeners[name] = fn; } } });
+  const base = { role: 'worker', roleName: 'Developers', provider: 'Claude Code', account: 'Main', model: 'sonnet', modelNote: 'requested', mode: 'Auto', terminalOpen: true, task: { issue: null, pullRequest: null, text: 'no task' }, worktree: 'clean', report: { lines: [] }, summary: '', details: [], quota: { lines: [], policy: '', gate: null }, autoMode: null, alert: null, pinned: false, collapsed: false, status: { state: 'waiting', text: 'waiting for input', source: 'hooks' } };
+  const state = { layout: { mode: 'grid', order: [], collapsed: [], pinned: [] }, pm: [], agents: [withFacts({ ...base, id: 'w-1', codename: 'Worker-01', name: 'One' })], accounts: [], alerts: [], decisions: { issues: { known: false, text: 'x' }, pullRequests: { known: false, text: 'y' } }, notes: [] };
+  listeners.message({ data: { type: 'state', state } });
+  const json = (value) => JSON.parse(JSON.stringify(value));
+  const last = (tag, text) => nodes.filter((entry) => entry.tag === tag && (text === undefined || entry.textContent === text)).at(-1);
+  const input = nodes.find((entry) => entry.className === 'say-text');
+  assert.ok(input, 'the box is at the top of every tab');
+  // Empty: nothing is sent.
+  const before = posted.length;
+  last('button', 'Preview').listeners.click();
+  assert.equal(posted.length, before);
+  input.value = '請 Worker-01 修好登入頁的錯誤';
+  input.listeners.keydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(json(posted.at(-1)), { type: 'sayPreview', text: '請 Worker-01 修好登入頁的錯誤' }, 'only the line, no target');
+  listeners.message({ data: { type: 'sayState', state: 'preview', kind: 'task', to: 'agent', prompt: '[Task from the administrator] 請 Worker-01 修好登入頁的錯誤', recipients: [{ label: 'Worker-01 · One', decision: 'send', reason: 'waiting for input' }] } });
+  assert.ok(app.textContent.includes('Understood: a task for one agent'));
+  assert.ok(app.textContent.includes('[Task from the administrator] 請 Worker-01 修好登入頁的錯誤'));
+  assert.ok(app.textContent.includes('Worker-01 · One — will receive it (waiting for input)'));
+  // The cards are drawn again at a refresh: the preview and the line stay.
+  listeners.message({ data: { type: 'state', state } });
+  assert.ok(app.textContent.includes('Understood: a task for one agent'));
+  assert.equal(nodes.filter((entry) => entry.className === 'say-text').length, 1, 'the same box, not a new one');
+  // What is carried out is the line previewed, whatever the box holds now.
+  input.value = 'Worker-01 delete everything';
+  last('button', 'Send…').listeners.click();
+  assert.deepEqual(json(posted.at(-1)), { type: 'sayRun', text: '請 Worker-01 修好登入頁的錯誤' });
+  assert.ok(app.textContent.includes('Waiting for your confirmation in the window…'));
+  listeners.message({ data: { type: 'sayState', state: 'results', sent: true, results: [{ label: 'Worker-01 · One', outcome: 'sent', reason: '' }] } });
+  assert.ok(app.textContent.includes('Typed into 1 of 1 agents'));
+  // A changed line loses its preview: what is carried out is what was previewed.
+  listeners.message({ data: { type: 'sayState', state: 'preview', kind: 'ask', to: 'PM-01 · Lead', question: 'What does this do?', selection: { file: 'a.js', startLine: 1, endLine: 4 } } });
+  assert.ok(app.textContent.includes('Understood: a question for PM-01 · Lead'));
+  assert.ok(app.textContent.includes('With the selected code: a.js, lines 1–4'));
+  assert.ok(last('button', 'Ask…'));
+  input.value = 'something else';
+  input.listeners.input();
+  assert.equal(app.textContent.includes('Understood'), false);
+  for (const reason of ['Say who should do it: an agent\'s codename', 'The agents on the screen changed since the preview. Preview it again.']) {
+    listeners.message({ data: { type: 'sayState', state: 'refused', reason } });
+    assert.ok(app.textContent.includes(reason));
+  }
+  listeners.message({ data: { type: 'sayState', state: 'asked', to: 'PM-01 · Lead' } });
+  assert.ok(app.textContent.includes('Asked PM-01 · Lead. The answer is shown on the Ask tab.'));
+  // The host opens the Ask tab for the answer.
+  listeners.message({ data: { type: 'showTab', tab: 'ask' } });
+  assert.equal(last('button', 'Ask').attrs['aria-selected'], 'true');
+});
